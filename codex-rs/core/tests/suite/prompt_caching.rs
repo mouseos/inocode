@@ -276,7 +276,6 @@ async fn prompt_tools_are_consistent_across_requests(
         "apply_patch",
         "view_image",
         "tool_search",
-        "web_search",
     ]);
     let body0 = req1.single_request().body_json();
 

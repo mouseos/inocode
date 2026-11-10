@@ -41,7 +41,6 @@ Settings:
       - function/sandbox_meta
       - function/sync
       - function/sync_readonly
-    - web_search; hash=f103e327c6870a46
 -- request 1 (turn) --
 00:message/developer[2]:
     [01] <skills_instructions>

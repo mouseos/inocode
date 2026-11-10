@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<!-- SYNTHETIC fixture (hand-written, NOT measured HTML).
+     Purpose: the measured sample pages contain no ad results, so ad
+     classification is exercised here using the ad markup conventions
+     that Baidu's own in-page stylesheet (ec_ls_css) defines:
+     .ec_wise_ad / .ec_ad_results containers and a visible 广告 label. -->
+<html><head><meta charset="utf-8"><title>synthetic ad fixture</title></head>
+<body>
+<div id="results" class="results">
+  <div class="c-result result" srcid="www_index" new_srcid="1599" order="1" tpl="www_index"
+       data-log="{&quot;mu&quot;:&quot;https://example.com/organic&quot;}">
+    <article rl-link-href="https://m.baidu.com/from=0/baiduid=REDACTED/w=0_10_/t=zbios/l=1/tc?ref=www_zbios">
+      <h3 class="cosc-title"><span class="cosc-title-a">Organic &amp; Title</span></h3>
+      <div data-module="abstract"><span class="summary-text_x">An organic snippet with <em>emphasis</em> kept.</span></div>
+    </article>
+  </div>
+  <div class="c-result result" srcid="ec_ad" new_srcid="0" order="2" tpl="www_index"
+       data-log="{&quot;mu&quot;:&quot;https://ads.example.com/landing&quot;}">
+    <div class="ec_wise_ad"><div class="ec_ad_results">
+      <h3 class="cosc-title"><span class="cosc-title-a">Sponsored Thing</span></h3>
+      <span class="ec-label">广告</span>
+    </div></div>
+  </div>
+  <div class="c-result result" srcid="future" new_srcid="999999" order="3" tpl="some_future_tpl"
+       data-log="{&quot;mu&quot;:&quot;&quot;}">
+    <h3 class="cosc-title"><span class="cosc-title-a">Future Template</span></h3>
+  </div>
+  <div class="c-result result" srcid="www_index" new_srcid="1599" order="4" tpl="www_index"
+       data-log="{&quot;mu&quot;:&quot;https://example.org/relative&quot;}">
+    <h3 class="cosc-title"><a href="/s?word=rel">Relative Link Title</a></h3>
+  </div>
+</div>
+</body></html>

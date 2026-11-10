@@ -32,7 +32,6 @@ Settings:
     - namespace/mcp__cached_rmcp: Use the tools from cached-helper.; hash=504240b4b47f91f5
       - function/cwd
       - function/echo
-    - web_search; hash=8586237e354ee5ed
 -- request 1 (request) --
 00:message/developer:
     <MODEL_INSTRUCTIONS>

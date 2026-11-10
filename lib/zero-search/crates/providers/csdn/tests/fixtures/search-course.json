@@ -1,0 +1,91 @@
+{
+ "aiTopData": null,
+ "code": 200,
+ "data": [
+  {
+   "avatar": "https://img-bss.csdnimg.cn/201503290524441352.jpg?imageMogr2/auto-orient/thumbnail/150x150!/format/jpg",
+   "course_author": "u011379939",
+   "course_body": null,
+   "course_count": "4",
+   "course_description": "你了解<em>Java</em>吗？你知道<em>Java</em>能做什么吗？你知道<em>Java</em>该怎么学吗？你知道<em>Java</em>未来的发展趋势、发展状况吗？",
+   "course_digest": "你了解<em>Java</em>吗？你知道<em>Java</em>能做什么吗？你知道<em>Java</em>该怎么学吗？你知道<em>Java</em>未来的发展趋势、发展状况吗？",
+   "course_id": "772",
+   "course_logo": "https://img-bss.csdnimg.cn/202105171520339443.png",
+   "course_name": "<em>Java</em>之路",
+   "item_vip": true,
+   "last_post_time": "2020-07-21 00:00:00",
+   "report_data": {
+    "data": {
+     "ab_strategy": "default",
+     "biz_id": "3",
+     "dist_request_id": "silkroad_1794099483226",
+     "extra": "{\"utm_medium\":\"distribute.app_search_result_v6.none-task-course-2~all~ElasticSearch~search_v2-1-772-null-null.nonecase\",\"dist_request_id\":\"silkroad_1794099483226\"}",
+     "index": "1",
+     "mod": "",
+     "opensearch_request_id": "silkroad_1794099483226",
+     "ops_request_misc": "elastic_search_misc",
+     "request_id": "silkroad_1794099483226",
+     "strategy": "2~all~ElasticSearch~search_v2",
+     "trace_id": "silkroad_1794099483226"
+    },
+    "eventClick": true,
+    "eventView": true,
+    "urlParams": {
+     "biz_id": "3",
+     "depth_1-utm_source": "distribute.app_search_result_v6.none-task-course-2~all~ElasticSearch~search_v2-1-772-null-null.nonecase",
+     "opensearch_request_id": "silkroad_1794099483226",
+     "ops_request_misc": "elastic_search_misc",
+     "request_id": "silkroad_1794099483226",
+     "utm_medium": "distribute.app_search_result_v6.none-task-course-2~all~ElasticSearch~search_v2-1-772-null-null.nonecase",
+     "utm_term": "Java"
+    }
+   },
+   "student_count": 2681474,
+   "url": "https://edu.csdn.net/course/detail/772"
+  },
+  {
+   "avatar": "https://img-bss.csdnimg.cn/201506030052462536.jpg?imageMogr2/auto-orient/thumbnail/150x150!/format/jpg",
+   "course_author": "iamshaofa",
+   "course_body": null,
+   "course_count": "118",
+   "course_description": "这是<em>Java</em>学习指南系列课程的第1篇，介绍<em>Java</em>语言的入门语法，引领希望学习<em>Java</em>语言编程的初学者进入<em>Java</em>大门。\r\n\r\n\r\n\t本课程不需要其他语言作为基础，可以直接学习。\r\n\r\n\r\n\t课程从<em>Java</em>开发平台的下载和安装开始，从浅到深、从易到难，循序渐进地进行语法讲解。\r\n\r\n\r\n\t为了让学员更好的掌握<em>Java</em>语言，本课程配套在线的<em>Java</em>题库及答案解析。\r\n\r\n\r\n\t相比于其他语言，<em>Java</em>语言更科学、更容易掌握，快来和大家一起学习<em>Java</em>吧。",
+   "course_digest": "这是<em>Java</em>学习指南系列课程的第1篇，介绍<em>Java</em>语言的入门语法，引领希望学习<em>Java</em>语言编程的初学者进入<em>Java</em>大门。\r\n\r\n\r\n\t本课程不需要其他语言作为基础，可以直接学习。\r\n\r\n\r\n\t课程从<em>Java</em>开发平台的下载和安装开始，从浅到深、从易到难，循序渐进地进行语法讲解。\r\n\r\n\r\n\t为了让学员更好的掌握<em>Java</em>语言，本课程配套在线的<em>Java</em>题库及答案解析。\r\n\r\n\r\n\t相比于其他语言，<em>Java</em>语言更科学、更容易掌握，快来和大家一起学习<em>Java</em>吧。",
+   "course_id": "5556",
+   "course_logo": "https://img-bss.csdnimg.cn/202105171522199007.png",
+   "course_name": "<em>Java</em>学习指南（<em>Java</em>入门与进阶）",
+   "item_vip": false,
+   "last_post_time": "2021-04-01 00:00:00",
+   "report_data": {
+    "data": {
+     "ab_strategy": "default",
+     "biz_id": "3",
+     "dist_request_id": "silkroad_1794099483226",
+     "extra": "{\"utm_medium\":\"distribute.app_search_result_v6.none-task-course-2~all~ElasticSearch~search_v2-2-5556-null-null.nonecase\",\"dist_request_id\":\"silkroad_1794099483226\"}",
+     "index": "2",
+     "mod": "",
+     "opensearch_request_id": "silkroad_1794099483226",
+     "ops_request_misc": "elastic_search_misc",
+     "request_id": "silkroad_1794099483226",
+     "strategy": "2~all~ElasticSearch~search_v2",
+     "trace_id": "silkroad_1794099483226"
+    },
+    "eventClick": true,
+    "eventView": true,
+    "urlParams": {
+     "biz_id": "3",
+     "depth_1-utm_source": "distribute.app_search_result_v6.none-task-course-2~all~ElasticSearch~search_v2-2-5556-null-null.nonecase",
+     "opensearch_request_id": "silkroad_1794099483226",
+     "ops_request_misc": "elastic_search_misc",
+     "request_id": "silkroad_1794099483226",
+     "utm_medium": "distribute.app_search_result_v6.none-task-course-2~all~ElasticSearch~search_v2-2-5556-null-null.nonecase",
+     "utm_term": "Java"
+    }
+   },
+   "student_count": 101975,
+   "url": "https://edu.csdn.net/course/detail/5556"
+  }
+ ],
+ "debugDetail": null,
+ "isHitAppTopExperiment": false,
+ "msg": "success"
+}

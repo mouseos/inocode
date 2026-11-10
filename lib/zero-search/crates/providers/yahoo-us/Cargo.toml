@@ -1,0 +1,25 @@
+[package]
+name = "yahoo-us-mcp-provider"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Yahoo (US) search client library (web, image, video, news, suggestions) — no API key or login required. Imported as `yahoo_us_search`; also powers the Yahoo_US_MCP server."
+repository = "https://github.com/mouseos/ZeroSearch_MCP"
+
+[lib]
+name = "yahoo_us_search"
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+regex = { workspace = true }
+anyhow = { workspace = true }
+scraper = "0.22"
+# NOTE: no browser-grade HTTP client here. Image search pages are
+# fetched by the separate `zero-search-yahoo-us-image-helper` binary
+# (crates/helpers/yahoo-us-image), which this crate spawns — its
+# BoringSSL-based client must not be linked into the same binary as
+# this workspace's OpenSSL users. See src/helper.rs.

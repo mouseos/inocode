@@ -1,0 +1,33 @@
+[package]
+name = "sgharness"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Goofish signing harness for ZeroSearch MCP: runs the app's own SecurityGuard native library under the Unicorn engine (no JVM) and serves signatures over a stdio JSON-lines protocol."
+repository = "https://github.com/mouseos/ZeroSearch_MCP"
+
+[[bin]]
+name = "sgharness"
+path = "src/main.rs"
+
+# Standalone crate (excluded from the parent workspace on purpose —
+# see the note in the repository root Cargo.toml). Dependencies are
+# therefore spelled out here instead of inherited.
+#
+# The Unicorn build (cmake + bindgen over the bundled C sources) is
+# heavy and needs libclang at build time; keeping it out of the
+# workspace build graph means a signer build problem can never
+# break the server, the launcher or the other providers, exactly
+# like the Yahoo US image helper's BoringSSL isolation.
+[dependencies]
+# Only the AArch64 target is built: the harness emulates exactly
+# one guest architecture (the app's arm64 library), and building
+# Unicorn's other nine targets would multiply the C build time and
+# the binary size for nothing.
+unicorn-engine = { version = "2.1", default-features = false, features = ["arch_aarch64"] }
+
+# The emulation loop is throughput-bound (harness startup runs the
+# whole SecurityGuard init under emulation), so keep the profile
+# the harness was validated under instead of a size/LTO profile.
+[profile.release]
+opt-level = 3

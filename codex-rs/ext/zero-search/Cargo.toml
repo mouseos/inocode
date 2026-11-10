@@ -1,0 +1,30 @@
+[package]
+edition.workspace = true
+license.workspace = true
+name = "codex-zero-search-extension"
+version.workspace = true
+
+[lib]
+name = "codex_zero_search_extension"
+path = "src/lib.rs"
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+codex-core = { workspace = true }
+codex-extension-api = { workspace = true }
+codex-extension-items = { workspace = true }
+codex-protocol = { workspace = true }
+codex-utils-rustls-provider = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+# Built-in search library kept in lib/zero-search; no MCP server is involved.
+zero-search = { path = "../../../lib/zero-search/crates/facade" }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+rustls = { workspace = true }
+tokio = { workspace = true }

@@ -17,7 +17,6 @@ Settings:
   text: {"verbosity":"low"}
   tool_choice: "auto"
   tools (1; hash=16d317804b13dd3d):
-    - web_search; hash=e214d4db1bc49e89
 -- request 1 (turn) --
 00:additional_tools/developer (2; hash=019c865b71a05fec):
         - namespace/functions; hash=f3355f5705e28592

@@ -1,0 +1,309 @@
+{
+ "api": "mtop.taobao.idle.local.home",
+ "v": "4.0",
+ "ret": [
+  "SUCCESS::调用成功"
+ ],
+ "data": {
+  "sections": [
+   {
+    "data": {
+     "auctionType": "b",
+     "bizType": "item",
+     "clickParam": {
+      "arg1": "Item",
+      "args": {
+       "item_id": "900000000001"
+      }
+     },
+     "detailParams": {
+      "isVideo": "false",
+      "itemId": "900000000001",
+      "itemType": "detailCommonBuy",
+      "picHeight": "129",
+      "picUrl": "https://placeholder.invalid/measured-image.jpg",
+      "picWidth": "172",
+      "soldPrice": "100",
+      "title": "placeholder title",
+      "userAvatarUrl": "https://placeholder.invalid/measured-image.jpg",
+      "userNick": "gE/8ColhQwGIDiBqaigohQ=="
+     },
+     "hotPoint": {
+      "text": "1人想要",
+      "topTags": []
+     },
+     "isAuction": "false",
+     "isVideo": "false",
+     "itemId": "900000000001",
+     "mainPicInfo": {
+      "heightSize": "129",
+      "major": "true",
+      "type": "0",
+      "url": "https://placeholder.invalid/measured-image.jpg",
+      "widthSize": "172"
+     },
+     "needRequestMario": "false",
+     "priceInfo": {
+      "oriPrice": "0.00",
+      "preText": "¥",
+      "price": "100",
+      "priceUnitInfos": [
+       {
+        "bold": "true",
+        "marginBottom": "2.5",
+        "text": "¥",
+        "textColor": "#FF4400",
+        "textSize": "10"
+       },
+       {
+        "bold": "true",
+        "marginBottom": "0.0",
+        "text": "120",
+        "textColor": "#FF4400",
+        "textSize": "16"
+       },
+       null
+      ]
+     },
+     "redirectUrl": "fleamarket://awesome_detail?id=900000000001",
+     "regionIcon": "https://placeholder.invalid/measured-image.jpg",
+     "rewardItem": "false",
+     "richTitle": [
+      {
+       "data": {
+        "height": "16",
+        "marginRight": "4",
+        "url": "https://placeholder.invalid/measured-image.jpg",
+        "width": "28"
+       },
+       "type": "Image"
+      },
+      {
+       "data": {
+        "fontWeight": "w700",
+        "text": "placeholder title",
+        "textColor": "0xFF333333",
+        "textSize": "14"
+       },
+       "type": "Text"
+      }
+     ],
+     "showDislike": "false",
+     "targetUrl": "fleamarket://awesome_detail?id=900000000001",
+     "titleSummary": {
+      "text": "placeholder title",
+      "topTags": [
+       {
+        "height": "84",
+        "tagUrl": "https://placeholder.invalid/measured-image.jpg",
+        "width": "48"
+       }
+      ]
+     },
+     "topHotPoint": {
+      "areaText": "某区",
+      "storeGroup": "false"
+     },
+     "user": {
+      "userNick": "placeholder-nick",
+      "avatar": "https://placeholder.invalid/measured-image.jpg"
+     }
+    },
+    "template": {
+     "cardEnum": "normal",
+     "columnType": "half",
+     "name": "fish_home_common_item_card_d3",
+     "url": "https://placeholder.invalid/measured-template.json",
+     "version": "1634633453092"
+    }
+   },
+   {
+    "data": {
+     "bizType": "AD",
+     "clickParam": {
+      "arg1": null,
+      "args": {
+       "itemId": "900000000002"
+      }
+     },
+     "hotPoint": {
+      "text": "36人付款"
+     },
+     "mainPicInfo": {
+      "major": "true",
+      "url": "https://placeholder.invalid/measured-image.jpg"
+     },
+     "priceInfo": {
+      "preText": "¥",
+      "price": "100",
+      "priceUnitInfos": [
+       {
+        "bold": "true",
+        "marginBottom": "2.5",
+        "text": "¥",
+        "textColor": "#FF4400",
+        "textSize": "10"
+       },
+       {
+        "bold": "true",
+        "marginBottom": "0.0",
+        "text": "429",
+        "textColor": "#FF4400",
+        "textSize": "16"
+       },
+       null
+      ]
+     },
+     "rewardItem": "false",
+     "richTitle": [
+      {
+       "data": {
+        "fontWeight": "w700",
+        "text": "placeholder title",
+        "textColor": "0xFF333333",
+        "textSize": "14"
+       },
+       "type": "Text"
+      }
+     ],
+     "targetUrl": "https://placeholder.invalid/measured-image.jpg",
+     "user": {
+      "userNick": "placeholder-nick",
+      "avatar": "https://placeholder.invalid/measured-image.jpg"
+     }
+    },
+    "template": {
+     "cardEnum": "ads",
+     "columnType": "half",
+     "name": "fish_home_advertise_card_d3",
+     "url": "https://placeholder.invalid/measured-template.json",
+     "version": "1617879154395"
+    }
+   },
+   {
+    "data": {
+     "auctionType": "b",
+     "bizType": "item",
+     "clickParam": {
+      "arg1": "Item",
+      "args": {
+       "item_id": "900000000003"
+      }
+     },
+     "detailParams": {
+      "isVideo": "true",
+      "itemId": "900000000003",
+      "itemType": "detailCommonBuy",
+      "picHeight": "292",
+      "picUrl": "https://placeholder.invalid/measured-image.jpg",
+      "picWidth": "172",
+      "soldPrice": "100",
+      "title": "placeholder title",
+      "userAvatarUrl": "https://placeholder.invalid/measured-image.jpg",
+      "userNick": "826c2Kio0fbdfTIGXBh9Sg=="
+     },
+     "hotPoint": {
+      "text": "43人想要",
+      "topTags": []
+     },
+     "isAuction": "false",
+     "isVideo": "true",
+     "itemId": "900000000003",
+     "mainPicInfo": {
+      "heightSize": "292",
+      "major": "true",
+      "type": "10000",
+      "url": "https://placeholder.invalid/measured-image.jpg",
+      "videoId": "900000001",
+      "videoUrl": "https://placeholder.invalid/measured-video.mp4",
+      "widthSize": "172"
+     },
+     "needRequestMario": "false",
+     "priceInfo": {
+      "oriPrice": "0.00",
+      "preText": "¥",
+      "price": "100",
+      "priceUnitInfos": [
+       {
+        "bold": "true",
+        "marginBottom": "2.5",
+        "text": "¥",
+        "textColor": "#FF4400",
+        "textSize": "10"
+       },
+       {
+        "bold": "true",
+        "marginBottom": "0.0",
+        "text": "800",
+        "textColor": "#FF4400",
+        "textSize": "16"
+       },
+       null
+      ]
+     },
+     "redirectUrl": "fleamarket://awesome_detail?id=900000000003",
+     "regionIcon": "https://placeholder.invalid/measured-image.jpg",
+     "rewardItem": "false",
+     "richTitle": [
+      {
+       "data": {
+        "height": "16",
+        "marginRight": "4",
+        "url": "https://placeholder.invalid/measured-image.jpg",
+        "width": "28"
+       },
+       "type": "Image"
+      },
+      {
+       "data": {
+        "fontWeight": "w700",
+        "text": "placeholder title",
+        "textColor": "0xFF333333",
+        "textSize": "14"
+       },
+       "type": "Text"
+      }
+     ],
+     "showDislike": "false",
+     "targetUrl": "fleamarket://awesome_detail?id=900000000003",
+     "titleSummary": {
+      "text": "placeholder title",
+      "topTags": [
+       {
+        "height": "84",
+        "tagUrl": "https://placeholder.invalid/measured-image.jpg",
+        "width": "48"
+       }
+      ]
+     },
+     "topHotPoint": {
+      "areaText": "某区",
+      "storeGroup": "false"
+     },
+     "user": {
+      "userNick": "placeholder-nick",
+      "avatar": "https://placeholder.invalid/measured-image.jpg"
+     },
+     "videoInfo": {
+      "heightSize": "292",
+      "major": "true",
+      "type": "10000",
+      "url": "https://placeholder.invalid/measured-image.jpg",
+      "videoId": "900000001",
+      "videoUrl": "https://placeholder.invalid/measured-video.mp4",
+      "widthSize": "172"
+     }
+    },
+    "template": {
+     "cardEnum": "normal",
+     "columnType": "half",
+     "name": "fish_home_common_item_card_d3",
+     "url": "https://placeholder.invalid/measured-template.json",
+     "version": "1634633453092"
+    }
+   }
+  ],
+  "feedsCount": "3",
+  "nextPage": "false"
+ }
+}

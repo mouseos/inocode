@@ -32,7 +32,6 @@ Settings:
       - function/wait_agent
     - namespace/mcp__shared: Use these tools to exercise the rmcp test server.; hash=c2583dfa504bbe3f
       - function/echo
-    - web_search; hash=f103e327c6870a46
 -- request 1 (turn; creator) --
 00:message/developer:
     <MODEL_INSTRUCTIONS>

@@ -29,7 +29,6 @@ Settings:
       - function/send_message
       - function/spawn_agent
       - function/wait_agent
-    - web_search; hash=e214d4db1bc49e89
 -- request 1 (turn) --
 00:message/developer:
     You are Codex, an agent based on GPT-6. You and the user share one workspace, and your job is to collabo...them until their intended goal is completely handled. [hash=efa50f074efa5803]

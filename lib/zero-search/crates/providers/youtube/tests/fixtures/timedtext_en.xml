@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8" ?><timedtext format="3">
+<head>
+<ws id="0"/>
+<ws id="1" mh="2" ju="0" sd="3"/>
+<wp id="0"/>
+<wp id="1" ap="6" ah="20" av="100" rc="2" cc="40"/>
+</head>
+<body>
+<w t="0" id="1" wp="1" ws="1"/>
+<p t="160" d="6119" w="1"><s ac="0">rust a memory safe compiled programming
+language that delivers highlevel</s></p>
+<p t="4160" d="5800" w="1"><s ac="0">Simplicity with low-level performance
+it&#39;s a popular choice for Building</s></p>
+<p t="7839" d="6680" w="1"><s ac="0">Systems where performance is absolutely
+critical like game engines databases or</s></p>
+<p t="12599" d="6081" w="1"><s ac="0">operating systems and is an excellent
+choice when targeting web assembly it</s></p>
+<p t="16320" d="6959" w="1"><s ac="0">started as a side project of gr on
+in 2007 who named it after the rust</s></p>
+<p t="21039" d="6080" w="1"><s ac="0">fungus it was sponsored by Mozilla in
+2009 and has been ranked the most Lov</s></p>
+<p t="25400" d="6679" w="1"><s ac="0">programming language every year since
+2016 with its fans being known as</s></p>
+<p t="29359" d="6841" w="1"><s ac="0">restation traditionally highle languages
+provide a garbage collector to Nerf your</s></p>
+<p t="34280" d="6160" w="1"><s ac="0">control over memory management while
+lower level languages provide functions</s></p>
+<p t="38280" d="5720" w="1"><s ac="0">like free and allocate to shoot yourself
+in the foot rust takes a different</s></p>
+<p t="42000" d="6239" w="1"><s ac="0">approach it has no garbage collector but
+achieves memory safety with a concept</s></p>
+<p t="46039" d="6121" w="1"><s ac="0">known as ownership and borrowing by
+default every variable in Rust is</s></p>
+<p t="50160" d="5760" w="1"><s ac="0">immutable this allows values to be used
+in the stack memory which has minimal</s></p>
+<p t="53840" d="6399" w="1"><s ac="0">performance overhead however mutable
+values or objects with an unknown size</s></p>
+<p t="58039" d="6721" w="1"><s ac="0">at compile time are stored in the keep
+memory every value in a rust program is</s></p>
+<p t="62600" d="6000" w="1"><s ac="0">assigned to a single variable known as
+its owner when that variable goes out of</s></p>
+<p t="66640" d="5600" w="1"><s ac="0">scope the memory allocated to it is
+dropped automatically in some cases</s></p>
+<p t="70640" d="5320" w="1"><s ac="0">though you may want to pass a reference
+to a different part of the program</s></p>
+<p t="73960" d="5519" w="1"><s ac="0">borrowing allows you to access a
+reference in memory without taking</s></p>
+<p t="77520" d="6000" w="1"><s ac="0">ownership of it there are a ton of rules
+to go along with the system that the r</s></p>
+<p t="81439" d="5961" w="1"><s ac="0">borrow Checker will validate at compile
+time these rules keep your code safe</s></p>
+<p t="85479" d="5481" w="1"><s ac="0">while providing absolute control over
+performance rust also has a package</s></p>
+<p t="89360" d="6200" w="1"><s ac="0">manager called cargo where each
+individual package is a crate to get</s></p>
+<p t="93079" d="6720" w="1"><s ac="0">started install rest then run cargo new
+from the command line in the main. RS</s></p>
+<p t="97720" d="5759" w="1"><s ac="0">file you&#39;ll find a main function which
+is where the program will start</s></p>
+<p t="101119" d="6241" w="1"><s ac="0">executing declare a variable with let
+followed by its name and type the value</s></p>
+<p t="105719" d="5760" w="1"><s ac="0">can&#39;t be changed or reassigned by
+default so add mut to make it mutable</s></p>
+<p t="109520" d="5279" w="1"><s ac="0">the name of the variable is the owner a
+reference to its location and memory can</s></p>
+<p t="113280" d="5879" w="1"><s ac="0">be Borrowed by other parts of the
+program by prefixing it with an Amper</s></p>
+<p t="116960" d="6040" w="1"><s ac="0">sand then use a macro like print line to
+log the value to the standard output</s></p>
+<p t="121000" d="6960" w="1"><s ac="0">rust also comes with a standard library
+that contains modules to handle IO the</s></p>
+<p t="125439" d="6201" w="1"><s ac="0">file system concurrency among many other
+things now compile your code to an</s></p>
+<p t="129720" d="5280" w="1"><s ac="0">executable with the rust compiler you
+just built a memory safe executable that</s></p>
+<p t="133760" d="5520" w="1"><s ac="0">can handle the most performance
+intensive system requirements this has</s></p>
+<p t="137000" d="5560" w="1"><s ac="0">been rust in 100 seconds hit the like
+button and subscribe if you want to see</s></p>
+<p t="140840" d="5479" w="1"><s ac="0">more short videos like this and leave a
+comment if you want to see a full R</s></p>
+<p t="144200" d="6039" w="1"><s ac="0">tutorial thanks for watching and I will
+see you in the next one</s></p>
+</body>
+</timedtext>

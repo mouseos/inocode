@@ -45,7 +45,6 @@ Settings:
       - function/_create_event
       - function/_extract_text
       - function/_list_events
-    - web_search; hash=f103e327c6870a46
 -- request 1 (turn) --
 00:message/developer[3]:
     [01] <skills_instructions>

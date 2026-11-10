@@ -308,17 +308,8 @@ async fn incremental_tools_append_changed_catalog_without_rewriting_history(
         }
         for request in &requests {
             let body = request.body_json();
-            if !use_responses_lite {
-                assert!(
-                    body["tools"]
-                        .as_array()
-                        .expect("hosted tools")
-                        .iter()
-                        .any(|tool| tool["type"] == "web_search")
-                );
-            }
             if let Some(tools) = body["tools"].as_array() {
-                assert!(tools.iter().all(|tool| tool["type"] == "web_search"));
+                assert!(tools.is_empty());
             }
             assert!(
                 body["input"]

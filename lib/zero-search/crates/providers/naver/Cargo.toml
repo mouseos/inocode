@@ -1,0 +1,21 @@
+[package]
+name = "naver-mcp-provider"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Naver search client library (integrated, web, image, news, video, blog, suggestions) — derived from APK analysis of the Naver Android app, no API key or login required. Imported as `naver_search`; also powers the Naver_MCP server."
+repository = "https://github.com/mouseos/ZeroSearch_MCP"
+
+[lib]
+name = "naver_search"
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+regex = { workspace = true }
+anyhow = { workspace = true }
+scraper = "0.22"
+url = "2"

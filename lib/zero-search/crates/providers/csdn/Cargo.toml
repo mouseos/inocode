@@ -1,0 +1,23 @@
+[package]
+name = "csdn-provider"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "CSDN (net.csdn.csdnplus) search and article provider, reproducing the Android app's own gateway API. Imported as `csdn_search`."
+repository = "https://github.com/mouseos/ZeroSearch_MCP"
+
+[lib]
+name = "csdn_search"
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+hmac = "0.12"
+sha2 = "0.10"
+base64 = { workspace = true }
+md-5 = "0.10"

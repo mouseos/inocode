@@ -1,0 +1,71 @@
+{
+ "aiTopData": null,
+ "code": 200,
+ "data": [
+  {
+   "avatar": "https://i-avatar.csdnimg.cn/65cb1c150f4b468889696721b2eaa40f.jpg!1",
+   "certificate": false,
+   "certificate_pic": "",
+   "description": null,
+   "fansCount": 138,
+   "focus": false,
+   "followCount": 0,
+   "nickName": "Java Java Java",
+   "org": "",
+   "originalCount": 0,
+   "report_data": {
+    "data": {
+     "ab_strategy": "default",
+     "biz_id": "206",
+     "dist_request_id": "silkroad_1794099516519",
+     "extra": "{\"utm_medium\":\"distribute.app_search_result_v6.none-task-user-null-1-173621232-null-null.nonecase\",\"dist_request_id\":\"silkroad_1794099516519\"}",
+     "index": "1",
+     "mod": ""
+    },
+    "eventClick": true,
+    "eventView": true,
+    "urlParams": {
+     "biz_id": "206",
+     "depth_1-utm_source": "distribute.app_search_result_v6.none-task-user-null-1-173621232-null-null.nonecase",
+     "utm_medium": "distribute.app_search_result_v6.none-task-user-null-1-173621232-null-null.nonecase",
+     "utm_term": "Java"
+    }
+   },
+   "userName": "2401_85773384"
+  },
+  {
+   "avatar": "https://profile-avatar.csdnimg.cn/c367ff53617e4cc899154f83665143e6_weixin_74767865.jpg!1",
+   "certificate": false,
+   "certificate_pic": "",
+   "description": null,
+   "fansCount": 58,
+   "focus": false,
+   "followCount": 0,
+   "nickName": "java。。",
+   "org": "",
+   "originalCount": 0,
+   "report_data": {
+    "data": {
+     "ab_strategy": "default",
+     "biz_id": "206",
+     "dist_request_id": "silkroad_1794099516519",
+     "extra": "{\"utm_medium\":\"distribute.app_search_result_v6.none-task-user-null-2-159416239-null-null.nonecase\",\"dist_request_id\":\"silkroad_1794099516519\"}",
+     "index": "2",
+     "mod": ""
+    },
+    "eventClick": true,
+    "eventView": true,
+    "urlParams": {
+     "biz_id": "206",
+     "depth_1-utm_source": "distribute.app_search_result_v6.none-task-user-null-2-159416239-null-null.nonecase",
+     "utm_medium": "distribute.app_search_result_v6.none-task-user-null-2-159416239-null-null.nonecase",
+     "utm_term": "Java"
+    }
+   },
+   "userName": "weixin_74767865"
+  }
+ ],
+ "debugDetail": null,
+ "isHitAppTopExperiment": false,
+ "msg": "success"
+}

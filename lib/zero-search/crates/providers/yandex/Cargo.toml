@@ -1,0 +1,19 @@
+[package]
+name = "yandex-mcp-provider"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Yandex search client library (web, image, video, suggest) — no API key or login required. Imported as `yandex_search`; also powers the Yandex_MCP server."
+repository = "https://github.com/mouseos/ZeroSearch_MCP"
+
+[lib]
+name = "yandex_search"
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+regex = { workspace = true }
+anyhow = { workspace = true }

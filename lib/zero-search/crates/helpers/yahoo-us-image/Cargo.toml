@@ -1,0 +1,29 @@
+[package]
+name = "zero-search-yahoo-us-image-helper"
+version = "0.2.2"
+edition = "2021"
+license = "MIT"
+description = "Helper process for ZeroSearch MCP: fetches Yahoo (US) image search pages with a browser-grade (Firefox-profile) HTTP client. Kept in a separate binary because that client's TLS stack (BoringSSL) cannot link into the main server binary alongside OpenSSL."
+repository = "https://github.com/mouseos/ZeroSearch_MCP"
+
+[[bin]]
+name = "zero-search-yahoo-us-image-helper"
+path = "src/main.rs"
+
+# Standalone crate (excluded from the parent workspace on purpose —
+# see the note in the repository root Cargo.toml). Dependencies are
+# therefore spelled out here instead of inherited.
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Browser-grade HTTP client (the maintained successor of the `rquest`
+# fork of reqwest). Yahoo's image host refuses plain HTTP clients
+# (HTTP 500) and answers only browser-grade request fingerprints; the
+# Firefox emulation profile reproduces the TLS/HTTP2 fingerprint of a
+# real Firefox without driving a browser. This dependency — and its
+# BoringSSL TLS stack — must never be linked into the main server
+# binary (which uses OpenSSL via reqwest/native-tls and libcurl), so
+# it lives only in this helper process.
+wreq = { version = "0.16.3", features = ["cookies", "socks", "gzip", "brotli", "deflate"] }
+wreq-util = "0.2"

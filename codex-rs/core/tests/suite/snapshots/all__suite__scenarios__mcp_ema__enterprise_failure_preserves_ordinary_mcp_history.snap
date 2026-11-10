@@ -39,7 +39,6 @@ Settings:
       - function/calendar_create_event
       - function/calendar_extract_text
       - function/calendar_list_events
-    - web_search; hash=f103e327c6870a46
 -- request 1 (turn) --
 00:message/developer:
     <MODEL_INSTRUCTIONS>

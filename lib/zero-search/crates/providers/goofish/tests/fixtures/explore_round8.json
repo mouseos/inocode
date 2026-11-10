@@ -1,0 +1,402 @@
+{
+  "_fixture_note": "SYNTHETIC fixture bundle (round 8). Built only from JSON paths and bean fields confirmed by static analysis; not a measured server response.",
+  "city_feed": {
+    "api": "mtop.taobao.idle.local.home.feeds",
+    "data": {
+      "cardList": [],
+      "extraParam": {
+        "sessionId": "synthetic-session"
+      },
+      "feedsCount": 40,
+      "headers": [
+        {
+          "item": {
+            "content": {
+              "title": "同城精选"
+            }
+          },
+          "template": {
+            "name": "fish_home_header_swiper",
+            "url": "https://example.invalid/tpl.zip",
+            "version": "9"
+          }
+        }
+      ],
+      "nextPage": true,
+      "sections": [
+        {
+          "item": {
+            "clickParam": {
+              "args": {
+                "item_id": "700000000001"
+              }
+            },
+            "content": {
+              "area": "杭州 · 西湖区",
+              "soldPrice": "¥88"
+            },
+            "exContent": {
+              "picUrl": "https://example.invalid/p.jpg",
+              "title": "九成新自行车"
+            },
+            "ext": {
+              "isAliMaMa": "false"
+            },
+            "itemBizCode": "FISH_HOME",
+            "targetUrl": "fleamarket://item?id=700000000001",
+            "template": "fish_home_item_card_grid"
+          },
+          "template": {
+            "name": "fish_home_item_card_grid",
+            "url": "https://example.invalid/tpl.zip",
+            "version": "12"
+          }
+        }
+      ]
+    },
+    "ret": [
+      "SUCCESS::调用成功"
+    ],
+    "v": "3.0"
+  },
+  "city_feed_error": {
+    "api": "mtop.taobao.idle.local.home.feeds",
+    "data": {},
+    "ret": [
+      "FAIL_BIZ_ERROR::synthetic failure"
+    ],
+    "v": "3.0"
+  },
+  "city_feed_last": {
+    "api": "mtop.taobao.idle.local.home",
+    "data": {
+      "cardList": [],
+      "feedsCount": "0",
+      "hasNext": false,
+      "headers": [],
+      "sections": []
+    },
+    "ret": [
+      "SUCCESS::调用成功"
+    ],
+    "v": "4.0"
+  },
+  "city_nearby": {
+    "api": "mtop.taobao.idle.local.near.by.corner.info",
+    "data": {
+      "nearByItemInfos": [
+        {
+          "catLevel4Name": "手机",
+          "clickParam": {
+            "args": {
+              "item_id": "700000000002"
+            }
+          },
+          "distanceDesc": "500m",
+          "itemId": "700000000002",
+          "picLink": "https://example.invalid/n.jpg",
+          "preDesc": "附近",
+          "targetUrl": "fleamarket://item?id=700000000002"
+        }
+      ]
+    },
+    "ret": [
+      "SUCCESS::调用成功"
+    ],
+    "v": "1.0"
+  },
+  "fishpond_comments": {
+    "api": "com.taobao.idle.fishpool.comment.list",
+    "data": {
+      "items": [
+        {
+          "commentId": "c100",
+          "content": "还有货吗",
+          "imgSize": "100x100",
+          "imgUrl": "https://example.invalid/c.jpg",
+          "longReportTime": 1700000000000,
+          "poolId": "88001234",
+          "position": "杭州",
+          "reporterId": "220011",
+          "reporterNick": "买家甲",
+          "subContent": "原帖内容",
+          "subUserId": "220022",
+          "subUserNick": "卖家乙",
+          "type": 1
+        }
+      ],
+      "nextPage": false,
+      "poolId": 88001234,
+      "poolName": "杭州数码闲置",
+      "serverTime": "1700000000000",
+      "sysCommentList": [],
+      "totalCount": 3
+    },
+    "ret": [
+      "SUCCESS::调用成功"
+    ],
+    "v": "2.0"
+  },
+  "fishpond_info": {
+    "api": "mtop.taobao.idle.fishpool.id",
+    "data": {
+      "defaultFishPool": {
+        "adminUserNick": "塘主甲",
+        "announcementList": [
+          {
+            "content": "synthetic公告",
+            "title": "公告"
+          }
+        ],
+        "area": "西湖区",
+        "city": "杭州",
+        "distanceKm": 2.5,
+        "distanceString": "2.5km",
+        "followerNum": "321",
+        "iconUrl": "https://example.invalid/pond_icon.jpg",
+        "id": 88001234,
+        "itemNum": "1234",
+        "level": 3,
+        "picUrl": "https://example.invalid/pond.jpg",
+        "poolName": "杭州数码闲置",
+        "poolStatus": "open",
+        "poolType": "normal",
+        "prov": "浙江",
+        "topicTitleList": [
+          "数码",
+          "自提"
+        ]
+      },
+      "serverTime": "1700000000000"
+    },
+    "ret": [
+      "SUCCESS::调用成功"
+    ],
+    "v": "6.0"
+  },
+  "fishpond_list": {
+    "api": "com.taobao.idle.fishpool.list",
+    "data": {
+      "itemUrls": [
+        [
+          "https://example.invalid/a",
+          "https://example.invalid/b"
+        ]
+      ],
+      "items": [
+        {
+          "adminUserId": 99001122,
+          "adminUserNick": "塘主甲",
+          "area": "西湖区",
+          "city": "杭州",
+          "distanceKm": "1.5",
+          "distanceString": "1.5km",
+          "iconUrl": "https://example.invalid/pond_icon.jpg",
+          "id": 88001234,
+          "isAllowPublish": true,
+          "itemNum": "1234",
+          "picUrl": "https://example.invalid/pond.jpg",
+          "poolDimension": 1,
+          "poolName": "杭州数码闲置",
+          "poolStatus": "open",
+          "poolType": "normal",
+          "prov": "浙江",
+          "unknownFutureKey": {
+            "x": 1
+          },
+          "userCntStr": "5.6万"
+        },
+        {
+          "id": 88005678,
+          "itemNum": "42",
+          "poolName": "同城自提群"
+        }
+      ],
+      "nextPage": true,
+      "totalCount": 57
+    },
+    "ret": [
+      "SUCCESS::调用成功"
+    ],
+    "v": "3.0"
+  },
+  "fun_comments": {
+    "api": "mtop.taobao.idle.fun.general.comment.list",
+    "data": {
+      "commentCnt": 42,
+      "itemId": "700000000009",
+      "items": [
+        {
+          "commentId": 9001,
+          "content": "写得不错",
+          "cursor": "cur_1",
+          "hasReply": true,
+          "hot": true,
+          "images": [
+            {
+              "url": "https://example.invalid/i.jpg"
+            }
+          ],
+          "ipRegionAddress": "浙江",
+          "itemId": "700000000009",
+          "likeCount": 12,
+          "parentCommentId": 0,
+          "portraitUrl": "https://example.invalid/avatar.jpg",
+          "reply": [
+            {
+              "commentId": 9002,
+              "content": "同感",
+              "likeCount": 1,
+              "reply": [],
+              "reporterId": "330022",
+              "reporterNick": "读者乙"
+            }
+          ],
+          "replyTotalCount": 1,
+          "reportTimeStr": "2026-10-01 10:00",
+          "reporterId": "330011",
+          "reporterNick": "读者甲",
+          "top": false
+        }
+      ],
+      "lastCursor": "cur_2",
+      "next": true,
+      "sellerId": "440011",
+      "targetId": "700000000009",
+      "targetType": "item",
+      "targetUserId": "440011",
+      "total": 42
+    },
+    "ret": [
+      "SUCCESS::调用成功"
+    ],
+    "v": "1.0"
+  },
+  "fun_comments_empty": {
+    "api": "mtop.taobao.idle.fun.general.comment.list",
+    "data": {
+      "items": [],
+      "lastCursor": null,
+      "next": false,
+      "total": 0
+    },
+    "ret": [
+      "SUCCESS::调用成功"
+    ],
+    "v": "1.0"
+  },
+  "fun_detail": {
+    "api": "mtop.taobao.idle.fun.item.detail",
+    "data": {
+      "data": {
+        "needRefresh": true
+      },
+      "flowData": {
+        "floating": {
+          "components": [
+            {
+              "render": {},
+              "type": "synthetic"
+            }
+          ]
+        },
+        "sections": []
+      }
+    },
+    "ret": [
+      "SUCCESS::调用成功"
+    ],
+    "v": "2.0"
+  },
+  "search_filter_untyped": {
+    "api": "mtop.taobao.idle.item.search.filter",
+    "data": {
+      "unknownServerKey": {
+        "anything": [
+          1,
+          2,
+          3
+        ]
+      }
+    },
+    "ret": [
+      "SUCCESS::调用成功"
+    ],
+    "v": "3.0"
+  },
+  "search_filters": {
+    "api": "mtop.taobao.idlemtopsearch.search",
+    "data": {
+      "filterSheetDO": {
+        "useFilterSheet": true
+      },
+      "flexFilter": {
+        "data": [
+          {
+            "element": [
+              {
+                "data": {
+                  "cardType": 1,
+                  "pid": "20000",
+                  "pname": "成色",
+                  "valueList": [
+                    {
+                      "propId": "20000",
+                      "selected": true,
+                      "valueId": "1",
+                      "valueName": "全新"
+                    },
+                    {
+                      "propId": "20000",
+                      "selected": false,
+                      "valueId": "2",
+                      "valueName": "几乎全新"
+                    }
+                  ]
+                },
+                "filterType": "cpv",
+                "selected": false
+              }
+            ],
+            "name": "属性"
+          }
+        ],
+        "property": {
+          "style": "sheet"
+        },
+        "protocol": "v1"
+      },
+      "resultList": [],
+      "smartUiFilterPanelDO": {
+        "filterPanelDOList": [
+          {
+            "cardData": {
+              "placeholder": "最低价",
+              "priceRange": "0-500",
+              "propId": "price",
+              "propName": "价格",
+              "req": false,
+              "value": [
+                {
+                  "request": {
+                    "idleCateId": "50008090",
+                    "pid": "price",
+                    "vid": "0-100"
+                  },
+                  "selected": false,
+                  "valueId": "0-100",
+                  "valueName": "100以下"
+                }
+              ]
+            },
+            "cardType": "price"
+          }
+        ]
+      }
+    },
+    "ret": [
+      "SUCCESS::调用成功"
+    ],
+    "v": "1.0"
+  }
+}
