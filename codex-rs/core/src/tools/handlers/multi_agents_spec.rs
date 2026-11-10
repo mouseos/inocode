@@ -303,7 +303,7 @@ pub fn create_wait_agent_tool_v1(options: WaitAgentTimeoutOptions) -> ToolSpec {
 pub fn create_wait_agent_tool_v2(options: WaitAgentTimeoutOptions) -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "wait_agent".to_string(),
-        description: "Wait for a mailbox update from any live agent, including queued messages and final-status notifications. The wait also ends early when new user input is steered into the active turn. Does not return the content; returns either a summary of which agents have updates (if any), an interruption summary for steered input, or a timeout summary if no activity arrives before the deadline."
+        description: "Wait for child agents to finish. Returns each finished child with its final output in `completed`, and the children still running in `pending`. mode `any` (default) returns when one child finishes or a mailbox message arrives; mode `all` returns when every running child has finished. Prefer one long wait over repeated short polls. The wait also ends early when new user input is steered into the active turn, or at the timeout."
             .to_string(),
         strict: false,
         defer_loading: None,
@@ -541,11 +541,30 @@ fn wait_output_schema_v2() -> Value {
         "properties": {
             "message": {
                 "type": "string",
-                "description": "Brief wait summary without the agent's final content, including any timeout adjustment."
+                "description": "Brief wait summary, including any timeout adjustment."
             },
             "timed_out": {
                 "type": "boolean",
                 "description": "Whether the wait call returned because no mailbox update arrived before the timeout."
+            },
+            "completed": {
+                "type": "array",
+                "description": "Children that finished since the last wait, with their final output.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "agent": {"type": "string"},
+                        "status": {"type": "string"},
+                        "output": {"type": ["string", "null"]}
+                    },
+                    "required": ["agent", "status", "output"],
+                    "additionalProperties": false
+                }
+            },
+            "pending": {
+                "type": "array",
+                "description": "Child agents that are still running.",
+                "items": {"type": "string"}
             }
         },
         "required": ["message", "timed_out"],
@@ -915,13 +934,22 @@ fn wait_agent_tool_parameters_v1(options: WaitAgentTimeoutOptions) -> JsonSchema
 }
 
 fn wait_agent_tool_parameters_v2(options: WaitAgentTimeoutOptions) -> JsonSchema {
-    let properties = BTreeMap::from([(
-        "timeout_ms".to_string(),
-        JsonSchema::number(Some(format!(
-            "Timeout in milliseconds. Defaults to {}, min {}, max {}.",
-            options.default_timeout_ms, options.min_timeout_ms, options.max_timeout_ms,
-        ))),
-    )]);
+    let properties = BTreeMap::from([
+        (
+            "timeout_ms".to_string(),
+            JsonSchema::number(Some(format!(
+                "Timeout in milliseconds. Defaults to {}, min {}, max {}.",
+                options.default_timeout_ms, options.min_timeout_ms, options.max_timeout_ms,
+            ))),
+        ),
+        (
+            "mode".to_string(),
+            JsonSchema::string(Some(
+                "\"any\" (default): return when one child finishes. \"all\": return when every running child has finished."
+                    .to_string(),
+            )),
+        ),
+    ]);
 
     JsonSchema::object(properties, /*required*/ None, Some(false.into()))
 }

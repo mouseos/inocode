@@ -346,9 +346,8 @@ fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
         .expect("wait_agent should use object params");
     assert!(!properties.contains_key("targets"));
     assert!(properties.contains_key("timeout_ms"));
-    assert!(description.contains(
-        "Does not return the content; returns either a summary of which agents have updates (if any)"
-    ));
+    assert!(properties.contains_key("mode"));
+    assert!(description.contains("Returns each finished child with its final output in `completed`"));
     assert_eq!(
         properties
             .get("timeout_ms")
@@ -359,7 +358,7 @@ fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
     assert_eq!(
         output_schema.expect("wait output schema").to_value()["properties"]["message"]["description"],
         json!(
-            "Brief wait summary without the agent's final content, including any timeout adjustment."
+            "Brief wait summary, including any timeout adjustment."
         )
     );
 }

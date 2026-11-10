@@ -3059,16 +3059,66 @@ async fn multi_agent_v2_wait_agent_accepts_timeout_only_argument() {
         .expect("wait task should join")
         .expect("timeout-only args should be accepted in v2 mode");
     let (content, success) = expect_text_output(output);
-    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+    let mut result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
+    // Running children are reported in `pending`; these tests only check the summary.
+    result.pending.clear();
     assert_eq!(
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait completed.".to_string(),
             timed_out: false,
+            ..Default::default()
         }
     );
     assert_eq!(success, None);
+}
+
+#[tokio::test]
+async fn multi_agent_v2_wait_agent_lists_running_children_as_pending() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let root = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .expect("root thread should start");
+    set_agent_control(&mut session, manager.agent_control());
+    session.thread_id = root.thread_id;
+    let mut config = (*turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    config.multi_agent_v2.min_wait_timeout_ms = 1;
+    set_turn_config(&mut turn, config);
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+
+    SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({"message": "boot worker", "task_name": "worker"})),
+        ))
+        .await
+        .expect("spawn worker");
+
+    let output = WaitAgentHandlerV2::default()
+        .handle(invocation(
+            session,
+            turn,
+            "wait_agent",
+            function_payload(json!({"timeout_ms": 50, "mode": "all"})),
+        ))
+        .await
+        .expect("wait_agent should succeed");
+    let (content, _) = expect_text_output(output);
+    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+        serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert!(result.timed_out, "{result:?}");
+    assert!(result.completed.is_empty(), "{result:?}");
+    assert_eq!(result.pending, vec!["/root/worker".to_string()]);
 }
 
 #[tokio::test]
@@ -3104,8 +3154,10 @@ async fn multi_agent_v2_wait_agent_clamps_timeout_below_configured_min() {
         "wait_agent should time out at the configured minimum: {elapsed:?}"
     );
     let (content, success) = expect_text_output(output);
-    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+    let mut result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
+    // Running children are reported in `pending`; these tests only check the summary.
+    result.pending.clear();
     assert_eq!(
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
@@ -3113,6 +3165,7 @@ async fn multi_agent_v2_wait_agent_clamps_timeout_below_configured_min() {
                 "Wait timed out.\n\nRequested timeout of 1ms was clamped to the minimum of 50ms."
                     .to_string(),
             timed_out: true,
+            ..Default::default()
         }
     );
     assert_eq!(success, None);
@@ -3141,13 +3194,16 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_min() 
         .await
         .expect("wait_agent should succeed");
     let (content, success) = expect_text_output(output);
-    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+    let mut result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
+    // Running children are reported in `pending`; these tests only check the summary.
+    result.pending.clear();
     assert_eq!(
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait timed out.".to_string(),
             timed_out: true,
+            ..Default::default()
         }
     );
     assert_eq!(success, None);
@@ -3196,13 +3252,16 @@ async fn multi_agent_v2_wait_agent_uses_configured_default_timeout() {
     .expect("configured default should be shorter than the test timeout")
     .expect("wait_agent should succeed");
     let (content, success) = expect_text_output(output);
-    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+    let mut result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
+    // Running children are reported in `pending`; these tests only check the summary.
+    result.pending.clear();
     assert_eq!(
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait timed out.".to_string(),
             timed_out: true,
+            ..Default::default()
         }
     );
     assert_eq!(success, None);
@@ -3236,13 +3295,16 @@ async fn multi_agent_v2_wait_agent_allows_zero_configured_timeout() {
     .expect("zero timeout should complete immediately")
     .expect("wait_agent should succeed");
     let (content, success) = expect_text_output(output);
-    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+    let mut result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
+    // Running children are reported in `pending`; these tests only check the summary.
+    result.pending.clear();
     assert_eq!(
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait timed out.".to_string(),
             timed_out: true,
+            ..Default::default()
         }
     );
     assert_eq!(success, None);
@@ -3301,13 +3363,16 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_max() 
         .await
         .expect("wait_agent should succeed");
     let (content, success) = expect_text_output(output);
-    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+    let mut result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
+    // Running children are reported in `pending`; these tests only check the summary.
+    result.pending.clear();
     assert_eq!(
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait timed out.".to_string(),
             timed_out: true,
+            ..Default::default()
         }
     );
     assert_eq!(success, None);
@@ -3560,13 +3625,16 @@ async fn multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity() {
         .expect("wait task should join")
         .expect("wait_agent should succeed");
     let (content, success) = expect_text_output(wait_output);
-    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+    let mut result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
+    // Running children are reported in `pending`; these tests only check the summary.
+    result.pending.clear();
     assert_eq!(
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait completed.".to_string(),
             timed_out: false,
+            ..Default::default()
         }
     );
     assert_eq!(success, None);
@@ -3645,13 +3713,16 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
     .expect("already queued mail should complete wait_agent immediately")
     .expect("wait_agent should succeed");
     let (content, success) = expect_text_output(output);
-    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+    let mut result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
+    // Running children are reported in `pending`; these tests only check the summary.
+    result.pending.clear();
     assert_eq!(
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait completed.".to_string(),
             timed_out: false,
+            ..Default::default()
         }
     );
     assert_eq!(success, None);
@@ -3740,13 +3811,16 @@ async fn multi_agent_v2_wait_agent_wakes_on_any_mailbox_notification() {
         .expect("wait task should join")
         .expect("wait_agent should succeed");
     let (content, success) = expect_text_output(output);
-    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+    let mut result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
+    // Running children are reported in `pending`; these tests only check the summary.
+    result.pending.clear();
     assert_eq!(
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait completed.".to_string(),
             timed_out: false,
+            ..Default::default()
         }
     );
     assert_eq!(success, None);
@@ -3832,13 +3906,16 @@ async fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
         .expect("wait task should join")
         .expect("wait_agent should succeed");
     let (content, success) = expect_text_output(output);
-    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+    let mut result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
         serde_json::from_str(&content).expect("wait_agent result should be json");
+    // Running children are reported in `pending`; these tests only check the summary.
+    result.pending.clear();
     assert_eq!(
         result,
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait completed.".to_string(),
             timed_out: false,
+            ..Default::default()
         }
     );
     assert!(!content.contains("sensitive child output"));
@@ -4676,7 +4753,13 @@ async fn build_agent_spawn_config_uses_captured_step_settings_and_turn_context_v
     expected.model_provider = turn.provider.info().clone();
     expected.model_reasoning_effort = Some(ReasoningEffort::High);
     expected.model_reasoning_summary = Some(ReasoningSummary::Detailed);
-    expected.developer_instructions = turn.developer_instructions.clone();
+    expected.developer_instructions = if codex_inocode_flags::InocodeFlags::load().protocol_enabled {
+        Some(codex_inocode_protocol::append_to_instructions(
+            turn.developer_instructions.as_deref(),
+        ))
+    } else {
+        turn.developer_instructions.clone()
+    };
     #[allow(deprecated)]
     {
         expected.cwd = turn.cwd.clone();
@@ -4764,7 +4847,13 @@ async fn build_agent_resume_config_clears_base_instructions() {
     expected.model_provider = turn.provider.info().clone();
     expected.model_reasoning_effort = turn.reasoning_effort().cloned();
     expected.model_reasoning_summary = Some(turn.reasoning_summary());
-    expected.developer_instructions = turn.developer_instructions.clone();
+    expected.developer_instructions = if codex_inocode_flags::InocodeFlags::load().protocol_enabled {
+        Some(codex_inocode_protocol::append_to_instructions(
+            turn.developer_instructions.as_deref(),
+        ))
+    } else {
+        turn.developer_instructions.clone()
+    };
     #[allow(deprecated)]
     {
         expected.cwd = turn.cwd.clone();
