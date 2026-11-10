@@ -952,6 +952,20 @@ impl ToolRegistry {
             });
         }
         emit_metric_for_tool_read(&invocation, success);
+        if crate::inocode_loop::advisor_enabled() {
+            let output_text = match &result {
+                Ok(result) => result.result.log_output(),
+                Err(err) => err.to_string(),
+            };
+            crate::inocode_loop::observe_tool_result(
+                &invocation.session,
+                &invocation.turn,
+                flat_tool_name(&invocation.tool_name).as_ref(),
+                invocation.payload.log_payload().as_ref(),
+                success,
+                &output_text,
+            );
+        }
         let post_tool_use_payload = if success {
             result
                 .as_ref()
