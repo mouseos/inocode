@@ -101,38 +101,51 @@ pub struct InocodeKnowledgeRecord {
     pub title: String,
     pub scope: InocodeKnowledgeScope,
     pub status: InocodeKnowledgeStatus,
-    #[ts(optional = nullable)]
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     pub confidence: InocodeKnowledgeConfidence,
     pub created_at: String,
     pub updated_at: String,
     pub created_by: String,
-    #[ts(optional = nullable)]
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supersedes: Option<String>,
     // rule
-    #[ts(optional = nullable)]
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub severity: Option<InocodeRuleSeverity>,
     #[serde(rename = "match")]
-    #[ts(rename = "match", optional = nullable)]
+    #[ts(rename = "match", optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub match_: Option<InocodeRuleMatch>,
-    #[ts(optional = nullable)]
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
-    #[ts(optional = nullable)]
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enforced_by: Option<InocodeRuleEnforcedBy>,
-    #[ts(optional = nullable)]
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from_failure: Option<String>,
     // failure_case
-    #[ts(optional = nullable)]
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
-    #[ts(optional = nullable)]
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub symptom: Option<String>,
-    #[ts(optional = nullable)]
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_cause: Option<String>,
-    #[ts(optional = nullable)]
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub do_not: Option<String>,
-    #[ts(optional = nullable)]
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub what_worked: Option<String>,
-    #[ts(optional = nullable)]
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<Vec<String>>,
     pub body: String,
 }
@@ -143,44 +156,62 @@ pub struct InocodeKnowledgeRecord {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct InocodeKnowledgeRecordInput {
-    #[ts(optional = nullable)]
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     pub kind: InocodeKnowledgeKind,
     pub title: String,
-    #[ts(optional = nullable)]
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<InocodeKnowledgeScope>,
-    #[ts(optional = nullable)]
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<InocodeKnowledgeStatus>,
-    #[ts(optional = nullable)]
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
-    #[ts(optional = nullable)]
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confidence: Option<InocodeKnowledgeConfidence>,
-    #[ts(optional = nullable)]
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_by: Option<String>,
-    #[ts(optional = nullable)]
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supersedes: Option<String>,
-    #[ts(optional = nullable)]
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub severity: Option<InocodeRuleSeverity>,
     #[serde(rename = "match")]
-    #[ts(rename = "match", optional = nullable)]
+    #[ts(rename = "match", optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub match_: Option<InocodeRuleMatch>,
-    #[ts(optional = nullable)]
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
-    #[ts(optional = nullable)]
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enforced_by: Option<InocodeRuleEnforcedBy>,
-    #[ts(optional = nullable)]
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from_failure: Option<String>,
-    #[ts(optional = nullable)]
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
-    #[ts(optional = nullable)]
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub symptom: Option<String>,
-    #[ts(optional = nullable)]
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_cause: Option<String>,
-    #[ts(optional = nullable)]
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub do_not: Option<String>,
-    #[ts(optional = nullable)]
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub what_worked: Option<String>,
-    #[ts(optional = nullable)]
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<Vec<String>>,
     #[serde(default)]
     pub body: String,
@@ -292,7 +323,8 @@ pub struct InocodeEvidenceSource {
     pub kind: String,
     pub hash: String,
     pub retrieved_at: String,
-    #[ts(optional = nullable)]
+    #[ts(optional)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
 }
 

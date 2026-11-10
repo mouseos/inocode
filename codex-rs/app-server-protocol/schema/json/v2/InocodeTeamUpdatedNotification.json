@@ -1,0 +1,103 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "InocodeTeamAgent": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "ownedPaths": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "startedAt": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/InocodeTeamAgentState"
+        },
+        "tokens": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "ownedPaths",
+        "startedAt",
+        "state",
+        "tokens"
+      ],
+      "type": "object"
+    },
+    "InocodeTeamAgentState": {
+      "enum": [
+        "running",
+        "waiting",
+        "blocked",
+        "done"
+      ],
+      "type": "string"
+    },
+    "InocodeTeamDecision": {
+      "enum": [
+        "single",
+        "multi"
+      ],
+      "type": "string"
+    },
+    "InocodeTeamEstimate": {
+      "properties": {
+        "costMultiplier": {
+          "format": "double",
+          "type": "number"
+        },
+        "decision": {
+          "$ref": "#/definitions/InocodeTeamDecision"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "speedup": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "costMultiplier",
+        "decision",
+        "reason",
+        "speedup"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "Notification: the team of `thread_id` changed. Carries only the agents that changed.",
+  "properties": {
+    "agents": {
+      "items": {
+        "$ref": "#/definitions/InocodeTeamAgent"
+      },
+      "type": "array"
+    },
+    "estimate": {
+      "$ref": "#/definitions/InocodeTeamEstimate"
+    },
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "agents",
+    "estimate",
+    "threadId"
+  ],
+  "title": "InocodeTeamUpdatedNotification",
+  "type": "object"
+}

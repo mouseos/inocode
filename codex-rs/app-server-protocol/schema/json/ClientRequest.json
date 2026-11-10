@@ -1851,6 +1851,231 @@
       ],
       "type": "object"
     },
+    "InocodeKnowledgeConfidence": {
+      "enum": [
+        "high",
+        "medium",
+        "low"
+      ],
+      "type": "string"
+    },
+    "InocodeKnowledgeKind": {
+      "enum": [
+        "rule",
+        "failure_case",
+        "issue",
+        "decision",
+        "fact",
+        "contract",
+        "procedure"
+      ],
+      "type": "string"
+    },
+    "InocodeKnowledgeRecordInput": {
+      "description": "A record to write. Omitted fields get defaults (`id` is assigned, status `unverified`, timestamps now).",
+      "properties": {
+        "body": {
+          "default": "",
+          "type": "string"
+        },
+        "confidence": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/InocodeKnowledgeConfidence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "createdBy": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "doNot": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enforcedBy": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/InocodeRuleEnforcedBy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "fromFailure": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/definitions/InocodeKnowledgeKind"
+        },
+        "match": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/InocodeRuleMatch"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rootCause": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/InocodeKnowledgeScope"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "severity": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/InocodeRuleSeverity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "signature": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/InocodeKnowledgeStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "supersedes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "symptom": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": "string"
+        },
+        "whatWorked": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "title"
+      ],
+      "type": "object"
+    },
+    "InocodeKnowledgeScope": {
+      "enum": [
+        "project",
+        "global"
+      ],
+      "type": "string"
+    },
+    "InocodeKnowledgeStatus": {
+      "enum": [
+        "unverified",
+        "verified",
+        "superseded",
+        "retracted"
+      ],
+      "type": "string"
+    },
+    "InocodeRuleEnforcedBy": {
+      "enum": [
+        "prompt",
+        "hook",
+        "execpolicy"
+      ],
+      "type": "string"
+    },
+    "InocodeRuleMatch": {
+      "properties": {
+        "commands": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "paths": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "InocodeRuleSeverity": {
+      "enum": [
+        "block",
+        "warn"
+      ],
+      "type": "string"
+    },
     "InternalChatMessageMetadataPassthrough": {
       "description": "Internal Responses API passthrough metadata copied into underlying chat messages.\n\nResponses API strongly types this payload. Do not modify it without first getting API approval and making the corresponding Responses API change.",
       "properties": {

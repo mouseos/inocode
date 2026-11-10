@@ -78,7 +78,7 @@ cliVersion: string, /**
  * Null when the recorded originator is unavailable.
  */
 originator: string | null, /**
- * Origin of the thread (CLI, VSCode, codex exec, codex app-server, etc.).
+ * Origin of the thread (CLI, VSCode, inocode exec, inocode app-server, etc.).
  */
 source: SessionSource, /**
  * Optional analytics source classification for this thread.
