@@ -534,6 +534,90 @@ client_request_definitions! {
         response: v2::ServerDiagnosticsResponse,
     },
 
+    #[experimental("inocode/knowledge/list")]
+    InocodeKnowledgeList => "inocode/knowledge/list" {
+        params: v2::InocodeKnowledgeListParams,
+        serialization: None,
+        response: v2::InocodeKnowledgeListResponse,
+    },
+    #[experimental("inocode/knowledge/read")]
+    InocodeKnowledgeRead => "inocode/knowledge/read" {
+        params: v2::InocodeKnowledgeReadParams,
+        serialization: None,
+        response: v2::InocodeKnowledgeReadResponse,
+    },
+    #[experimental("inocode/knowledge/write")]
+    InocodeKnowledgeWrite => "inocode/knowledge/write" {
+        params: v2::InocodeKnowledgeWriteParams,
+        serialization: None,
+        response: v2::InocodeKnowledgeWriteResponse,
+    },
+    #[experimental("inocode/knowledge/setStatus")]
+    InocodeKnowledgeSetStatus => "inocode/knowledge/setStatus" {
+        params: v2::InocodeKnowledgeSetStatusParams,
+        serialization: None,
+        response: v2::InocodeKnowledgeSetStatusResponse,
+    },
+    #[experimental("inocode/knowledge/search")]
+    InocodeKnowledgeSearch => "inocode/knowledge/search" {
+        params: v2::InocodeKnowledgeSearchParams,
+        serialization: None,
+        response: v2::InocodeKnowledgeSearchResponse,
+    },
+    #[experimental("inocode/evidence/listSources")]
+    InocodeEvidenceListSources => "inocode/evidence/listSources" {
+        params: v2::InocodeEvidenceListSourcesParams,
+        serialization: None,
+        response: v2::InocodeEvidenceListSourcesResponse,
+    },
+    #[experimental("inocode/evidence/readSource")]
+    InocodeEvidenceReadSource => "inocode/evidence/readSource" {
+        params: v2::InocodeEvidenceReadSourceParams,
+        serialization: None,
+        response: v2::InocodeEvidenceReadSourceResponse,
+    },
+    #[experimental("inocode/evidence/listClaims")]
+    InocodeEvidenceListClaims => "inocode/evidence/listClaims" {
+        params: v2::InocodeEvidenceListClaimsParams,
+        serialization: None,
+        response: v2::InocodeEvidenceListClaimsResponse,
+    },
+    #[experimental("inocode/evidence/graph")]
+    InocodeEvidenceGraph => "inocode/evidence/graph" {
+        params: v2::InocodeEvidenceGraphParams,
+        serialization: None,
+        response: v2::InocodeEvidenceGraphResponse,
+    },
+    #[experimental("inocode/evidence/verifyDocument")]
+    InocodeEvidenceVerifyDocument => "inocode/evidence/verifyDocument" {
+        params: v2::InocodeEvidenceVerifyDocumentParams,
+        serialization: None,
+        response: v2::InocodeEvidenceVerifyDocumentResponse,
+    },
+    #[experimental("inocode/team/status")]
+    InocodeTeamStatus => "inocode/team/status" {
+        params: v2::InocodeTeamStatusParams,
+        serialization: None,
+        response: v2::InocodeTeamStatusResponse,
+    },
+    #[experimental("inocode/metrics/summary")]
+    InocodeMetricsSummary => "inocode/metrics/summary" {
+        params: v2::InocodeMetricsSummaryParams,
+        serialization: None,
+        response: v2::InocodeMetricsSummaryResponse,
+    },
+    #[experimental("inocode/flags/read")]
+    InocodeFlagsRead => "inocode/flags/read" {
+        params: v2::InocodeFlagsReadParams,
+        serialization: None,
+        response: v2::InocodeFlagsReadResponse,
+    },
+    #[experimental("inocode/flags/write")]
+    InocodeFlagsWrite => "inocode/flags/write" {
+        params: v2::InocodeFlagsWriteParams,
+        serialization: None,
+        response: v2::InocodeFlagsWriteResponse,
+    },
     #[experimental("userVerification/status")]
     UserVerificationStatus => "userVerification/status" {
         params: v2::UserVerificationStatusParams,
@@ -2057,6 +2141,8 @@ server_notification_definitions! {
     ThreadSectionChanged => "thread/section/changed" (v2::ThreadSectionChangedNotification),
     ThreadAttachmentUpdated => "thread/attachment/updated" (v2::ThreadAttachmentUpdatedNotification),
     ThreadGoalUpdated => "thread/goal/updated" (v2::ThreadGoalUpdatedNotification),
+    #[experimental("inocode/team/updated")]
+    InocodeTeamUpdated => "inocode/team/updated" (v2::InocodeTeamUpdatedNotification),
     #[experimental("thread/prediction/updated")]
     ThreadPredictionUpdated => "thread/prediction/updated" (v2::ThreadPredictionUpdatedNotification),
     ThreadGoalCleared => "thread/goal/cleared" (v2::ThreadGoalClearedNotification),

@@ -62,6 +62,7 @@ codex-file-watcher = { workspace = true }
 codex-hooks = { workspace = true }
 codex-history-notes-extension = { workspace = true }
 codex-http-client = { workspace = true }
+codex-inocode-flags = { workspace = true }
 codex-otel = { workspace = true }
 codex-plugin = { workspace = true }
 codex-shell-command = { workspace = true }

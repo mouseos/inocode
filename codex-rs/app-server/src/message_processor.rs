@@ -1208,6 +1208,20 @@ impl MessageProcessor {
                 .await;
             }
             ClientRequest::ServerDiagnostics { .. } => Ok(Some(read_server_diagnostics().into())),
+            request @ (ClientRequest::InocodeKnowledgeList { .. }
+            | ClientRequest::InocodeKnowledgeRead { .. }
+            | ClientRequest::InocodeKnowledgeWrite { .. }
+            | ClientRequest::InocodeKnowledgeSetStatus { .. }
+            | ClientRequest::InocodeKnowledgeSearch { .. }
+            | ClientRequest::InocodeEvidenceListSources { .. }
+            | ClientRequest::InocodeEvidenceReadSource { .. }
+            | ClientRequest::InocodeEvidenceListClaims { .. }
+            | ClientRequest::InocodeEvidenceGraph { .. }
+            | ClientRequest::InocodeEvidenceVerifyDocument { .. }
+            | ClientRequest::InocodeTeamStatus { .. }
+            | ClientRequest::InocodeMetricsSummary { .. }
+            | ClientRequest::InocodeFlagsRead { .. }
+            | ClientRequest::InocodeFlagsWrite { .. }) => crate::inocode::handle(request).await,
             ClientRequest::ConfigRead { params, .. } => self
                 .config_processor
                 .read(params)

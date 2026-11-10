@@ -2228,6 +2228,7 @@ dependencies = [
  "codex-home",
  "codex-hooks",
  "codex-http-client",
+ "codex-inocode-flags",
  "codex-image-generation-extension",
  "codex-login",
  "codex-mcp",

@@ -129,6 +129,7 @@ mod fs_watch;
 mod fuzzy_file_search;
 mod gateway_oauth_notifications;
 mod image_url;
+mod inocode;
 pub mod in_process;
 mod log_write_warning;
 #[cfg(unix)]
