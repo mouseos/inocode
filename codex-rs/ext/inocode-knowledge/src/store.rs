@@ -496,4 +496,40 @@ mod tests {
         let pack = s.build_handoff_pack("E0308 を直す");
         assert!(pack.contains("禁止事項") && pack.contains("as で握りつぶさない"));
     }
+
+    #[test]
+    fn action_extraction() {
+        let a = crate::guard::action_from_tool_input(
+            "apply_patch",
+            &serde_json::json!({"command": "*** Begin Patch
+*** Update File: src/a.rs
+*** End Patch"}),
+        );
+        assert_eq!(a.paths, vec!["src/a.rs"]);
+        assert!(a.command.is_none());
+        let b = crate::guard::action_from_tool_input(
+            "Bash",
+            &serde_json::json!({"command": "git push --force", "workdir": "x"}),
+        );
+        assert_eq!(b.command.as_deref(), Some("git push --force"));
+    }
+
+    #[test]
+    fn guard_disabled_by_flag() {
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join("config.toml"), "[inocode.knowledge]
+guard = false
+").unwrap();
+        let s = Store::new(Some(d.path().join("proj")), home.clone());
+        s.write(rule("x", Severity::Block, &["rm -rf"], &[])).unwrap();
+        let flags = codex_inocode_flags::InocodeFlags::load_from(&home);
+        assert!(!flags.knowledge_guard);
+        let act = GuardAction { command: Some("rm -rf /".into()), paths: vec![] };
+        let v = crate::guard_check_with(&flags, &s, &act);
+        assert!(v.blocked.is_empty() && v.warnings.is_empty());
+        let on = codex_inocode_flags::InocodeFlags::default();
+        assert_eq!(crate::guard_check_with(&on, &s, &act).blocked.len(), 1);
+    }
 }

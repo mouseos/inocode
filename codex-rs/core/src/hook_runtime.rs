@@ -236,6 +236,25 @@ pub(crate) async fn run_pre_tool_use_hooks(
     emit_hook_completed_events(sess, turn_context, hook_events).await;
     record_additional_contexts(sess, turn_context, additional_contexts).await;
 
+    // InoCode knowledge guard: rules matching this operation block (with the reason)
+    // or warn. No-op when `knowledge.enabled` / `knowledge.guard` is false.
+    {
+        let guard_cwd = tool_hook_cwd(&step_context.environments, turn_context);
+        let action = codex_inocode_knowledge::action_from_tool_input(tool_name.name(), tool_input);
+        let verdict = codex_inocode_knowledge::guard_check(guard_cwd.as_path(), &action);
+        if let Some(message) = codex_inocode_knowledge::guard_message(&verdict) {
+            if !verdict.blocked.is_empty() {
+                return PreToolUseHookResult::Blocked(message);
+            }
+            record_additional_contexts(
+                sess,
+                turn_context,
+                vec![codex_hooks::HookContext::harness(message)],
+            )
+            .await;
+        }
+    }
+
     if !should_block {
         return PreToolUseHookResult::Continue { updated_input };
     }

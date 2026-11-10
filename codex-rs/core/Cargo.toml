@@ -53,6 +53,7 @@ codex-guardian-context = { workspace = true }
 codex-guardian-reviewer = { workspace = true }
 codex-history = { workspace = true }
 codex-hooks = { workspace = true }
+codex-inocode-knowledge = { workspace = true }
 codex-http-client = { workspace = true }
 codex-install-context = { workspace = true }
 codex-network-proxy = { workspace = true }

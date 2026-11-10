@@ -115,3 +115,50 @@ fn path_matches(glob: &str, path: &str) -> bool {
     let parts: Vec<&str> = norm.split('/').collect();
     (1..parts.len()).any(|i| m.is_match(parts[i..].join("/")))
 }
+
+/// ツール入力(JSON)から、照合する操作を取り出す。
+/// `command`(文字列または配列)はコマンド、`path` / `file_path` / `paths` / `workdir` 系はパス。
+/// apply_patch の本文からは `*** Add/Update/Delete File:` と `*** Move to:` のパスを取る。
+pub fn action_from_tool_input(tool_name: &str, input: &serde_json::Value) -> GuardAction {
+    let mut action = GuardAction::default();
+    let Some(obj) = input.as_object() else {
+        return action;
+    };
+    let is_patch = tool_name == "apply_patch";
+    if let Some(cmd) = obj.get("command").or_else(|| obj.get("cmd")) {
+        let text = match cmd {
+            serde_json::Value::String(s) => Some(s.clone()),
+            serde_json::Value::Array(a) => Some(
+                a.iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ),
+            _ => None,
+        };
+        if let Some(t) = text {
+            if is_patch || t.contains("*** Begin Patch") {
+                for line in t.lines() {
+                    for p in ["*** Add File: ", "*** Update File: ", "*** Delete File: ", "*** Move to: "] {
+                        if let Some(path) = line.strip_prefix(p) {
+                            action.paths.push(path.trim().to_string());
+                        }
+                    }
+                }
+            } else {
+                action.command = Some(t);
+            }
+        }
+    }
+    for key in ["path", "file_path", "filePath", "file", "target_file"] {
+        if let Some(s) = obj.get(key).and_then(|v| v.as_str()) {
+            action.paths.push(s.to_string());
+        }
+    }
+    if let Some(a) = obj.get("paths").and_then(|v| v.as_array()) {
+        action
+            .paths
+            .extend(a.iter().filter_map(|v| v.as_str()).map(str::to_string));
+    }
+    action
+}

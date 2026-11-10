@@ -151,7 +151,7 @@ pub struct Record {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub what_worked: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub evidence: Option<String>,
+    pub evidence: Option<Vec<String>>,
     /// Markdown 本文(front-matter の外)。
     #[serde(default)]
     pub body: String,

@@ -10,7 +10,7 @@ mod guard;
 mod record;
 mod store;
 
-pub use guard::{GuardAction, GuardHit, GuardVerdict, check_action, guard_message};
+pub use guard::{GuardAction, action_from_tool_input, GuardHit, GuardVerdict, check_action, guard_message};
 pub use record::{Confidence, Kind, MatchSpec, Record, Scope, Severity, Status};
 pub use store::{ListQuery, Store, SummaryRow};
 
@@ -76,9 +76,17 @@ pub fn record_failure_case(
 /// PreToolUse ガード用: cwd のプロジェクトと共通領域の rule に照合する。
 /// `knowledge.enabled` / `knowledge.guard` が false なら何も合わない(空の判定)。
 pub fn guard_check(cwd: &Path, action: &GuardAction) -> GuardVerdict {
-    let f = codex_inocode_flags::load();
-    if !(f.knowledge_enabled && f.knowledge_guard) {
+    guard_check_with(&codex_inocode_flags::load(), &store_for(cwd), action)
+}
+
+/// フラグと Store を明示するガード(テスト用に分離)。
+pub fn guard_check_with(
+    flags: &codex_inocode_flags::InocodeFlags,
+    store: &Store,
+    action: &GuardAction,
+) -> GuardVerdict {
+    if !(flags.knowledge_enabled && flags.knowledge_guard) {
         return GuardVerdict::default();
     }
-    check_action(&store_for(cwd), action)
+    check_action(store, action)
 }
