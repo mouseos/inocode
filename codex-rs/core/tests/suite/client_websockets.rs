@@ -1856,7 +1856,7 @@ async fn responses_websocket_usage_limit_error_emits_rate_limit_event() {
         .expect("build websocket codex");
 
     let submission = test
-        .inocode
+        .codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "hello".into(),
             text_elements: Vec::new(),
@@ -1947,7 +1947,7 @@ async fn responses_websocket_invalid_request_error_with_status_is_forwarded() {
         .expect("build websocket codex");
 
     let submission = test
-        .inocode
+        .codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "hello".into(),
             text_elements: Vec::new(),

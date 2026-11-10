@@ -76,7 +76,7 @@ fn file_citations_inside_code_existing_links_and_html_remain_literal() {
 fn file_citations_accept_unquoted_paths_and_trailing_windows_separators() {
     for (citation, expected) in [
         (
-            r#":codex-file-citation{path="C:\Users\me\.inocode\report.xlsx"}"#,
+            r#":codex-file-citation{path="C:\Users\me\.codex\report.xlsx"}"#,
             "C:/Users/me/.inocode/report.xlsx",
         ),
         (

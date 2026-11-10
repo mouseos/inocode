@@ -31,7 +31,7 @@ async fn trusted_server_without_policy_support_keeps_caller_metadata() -> anyhow
         .build_with_remote_and_local_env(&server)
         .await?;
     let result = fixture
-        .inocode
+        .codex
         .call_mcp_tool(
             "legacy",
             "network_policy_meta",

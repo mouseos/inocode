@@ -280,7 +280,7 @@ async fn mailbox_preemption_drains_websocket(scenario: MailboxDrain) -> anyhow::
             .await;
         let steering = "Use both worker updates.";
         let submission = test
-            .inocode
+            .codex
             .start_or_steer_turn(TurnInputRequest::user_input(vec![super::text(steering)]))
             .await?;
         assert!(matches!(submission, TurnInputSubmission::Steered { .. }));

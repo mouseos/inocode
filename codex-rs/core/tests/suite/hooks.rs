@@ -6312,7 +6312,7 @@ async fn model_request_post_hook_orders_tool_dispatch(
         let requests = mount_sse_once(&server, responses::sse_completed("resumed")).await;
         let resumed = test_codex().restart(&server, &test).await?;
         let usage = resumed
-            .inocode
+            .codex
             .token_usage_info()
             .await
             .context("restored usage")?;

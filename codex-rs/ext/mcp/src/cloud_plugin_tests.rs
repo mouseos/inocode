@@ -705,7 +705,7 @@ async fn run_cloud_catalog_refresh_lifecycle() -> anyhow::Result<()> {
                     if resources.auth_cache_key_for_server(codex_mcp::INOCODE_APPS_MCP_SERVER_NAME)
                         != previous_auth
                         && test
-                            .inocode
+                            .codex
                             .thread_extension_data()
                             .get::<SelectedPluginSnapshot>()
                             .is_some_and(|snapshot| snapshot.plugins.is_empty())
@@ -791,7 +791,7 @@ async fn run_cloud_catalog_refresh_lifecycle() -> anyhow::Result<()> {
             .await??;
             // Refresh under the new auth without retaining the old catalog.
             let state = test
-                .inocode
+                .codex
                 .thread_extension_data()
                 .get::<PluginsThreadState>()
                 .context("plugin state missing")?;

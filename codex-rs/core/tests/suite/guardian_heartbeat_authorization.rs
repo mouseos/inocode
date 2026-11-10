@@ -208,7 +208,7 @@ async fn heartbeat_root_projection_uses_latest_turn_skills(
     let root_id = test.session_configured.thread_id;
     let mut created = test.thread_manager.subscribe_thread_created();
     let evidence = test
-        .inocode
+        .codex
         .thread_extension_data()
         .get_or_init(GuardianReviewEvidence::default);
     mount_sse_once(&server, sse(vec![ev_completed("monitor-request")])).await;
@@ -250,7 +250,7 @@ async fn heartbeat_root_projection_uses_latest_turn_skills(
             first_prompt = prompt.clone();
         }
         let submission = test
-            .inocode
+            .codex
             .start_or_steer_turn(
                 TurnInputRequest::user_input(vec![UserInput::Text {
                     text: prompt,

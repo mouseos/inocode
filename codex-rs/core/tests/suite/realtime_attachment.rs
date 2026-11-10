@@ -365,7 +365,7 @@ async fn start(
     let params = params(session, url);
     let (reply, result) = oneshot::channel();
     let id = test
-        .inocode
+        .codex
         .submit(Op::RealtimeConversationAttach {
             params,
             reply,

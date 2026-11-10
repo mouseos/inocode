@@ -625,7 +625,7 @@ async fn start_turn_if_idle_keeps_automatic_plan_rejections_atomic(
         ..Default::default()
     };
     let submission = test
-        .inocode
+        .codex
         .start_turn_if_idle(
             TurnInputRequest::new(TurnInput::ResponseItem(responses::user_message_item(
                 "rejected automatic input",
@@ -653,7 +653,7 @@ async fn start_turn_if_idle_keeps_automatic_plan_rejections_atomic(
     )
     .await;
     let started = test
-        .inocode
+        .codex
         .start_turn_if_idle(
             user_message_request("explicit user input").with_thread_settings(overrides),
         )
@@ -685,7 +685,7 @@ async fn recover_turn_if_idle_preserves_id_and_resumes_plan_mode() {
     let turn_id = "durable-recovered-turn";
 
     let submission = test
-        .inocode
+        .codex
         .recover_turn_if_idle(RecoverTurnRequest {
             turn_id: turn_id.to_string(),
             thread_settings: ThreadSettingsOverrides {
@@ -1027,7 +1027,7 @@ async fn recovery_preserves_durable_turn_attribution(
         turn_id: next_turn_id,
         ..
     } = test
-        .inocode
+        .codex
         .start_or_steer_turn(
             user_message_request("new human work").on_start(TurnStartOptions {
                 turn_trigger: Some("composer".to_owned()),
@@ -1082,7 +1082,7 @@ async fn continue_turn_if_idle_starts_new_turn_with_internal_input() {
         turn_id: previous_turn_id,
         ..
     } = test
-        .inocode
+        .codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "Do the work".to_string(),
             text_elements: Vec::new(),
@@ -1104,7 +1104,7 @@ async fn continue_turn_if_idle_starts_new_turn_with_internal_input() {
     ));
     let schema = serde_json::json!({"type":"object","properties":{},"additionalProperties":false});
     let submission = test
-        .inocode
+        .codex
         .continue_turn_if_idle(
             TurnInputRequest::new(TurnInput::ResponseItem(input.clone())).on_start(
                 TurnStartOptions {
@@ -1613,7 +1613,7 @@ async fn sampling_is_ready_for_daemon_recovery(
     }
     let test = builder.build_with_streaming_server(&server).await?;
     let StartIfIdleSubmission::Started { turn_id, .. } = test
-        .inocode
+        .codex
         .start_turn_if_idle(TurnInputRequest::user_input(input))
         .await?
     else {
@@ -1671,7 +1671,7 @@ async fn daemon_recovery_includes_local_environment_that_finished_starting() -> 
     // A different workspace starts a new attachment. On this single-threaded runtime,
     // turn startup captures it before the spawned setup task can run.
     let started = test
-        .inocode
+        .codex
         .start_turn_if_idle(
             user_message_request("wait for the environment").with_thread_settings(
                 ThreadSettingsOverrides {

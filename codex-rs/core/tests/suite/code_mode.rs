@@ -2790,13 +2790,13 @@ async fn code_mode_result_metadata_follows_runtime_recording_enablement() -> Res
                 .enable(Feature::ExecutedToolCallMetadata)
                 .unwrap();
             let _ = test
-                .inocode
+                .codex
                 .refresh_runtime_config(current_config, config)
                 .await;
             // Runtime recording changes without updating the session's execution features.
             assert!(
                 !test
-                    .inocode
+                    .codex
                     .config()
                     .await
                     .features
@@ -2957,7 +2957,7 @@ async fn code_mode_result_metadata_keeps_prepared_call_binding_across_runtime_re
     };
     let current_config = test.codex.config().await;
     let _ = test
-        .inocode
+        .codex
         .refresh_runtime_config(current_config, test.config.clone())
         .await;
     release_tx.send(()).unwrap();
@@ -7225,7 +7225,7 @@ async fn code_mode_node_repl_screenshots_can_be_captured_without_guardian_transc
     let test = builder.build_with_auto_env(&server).await?;
     core_test_support::wait_for_mcp_server(&test.codex, repl_server).await?;
     let evidence = test
-        .inocode
+        .codex
         .thread_extension_data()
         .get_or_init(NodeReplReviewEvidence::default);
     evidence.enable_image_capture();

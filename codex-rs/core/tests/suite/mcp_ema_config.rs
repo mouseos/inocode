@@ -59,7 +59,7 @@ async fn refresh_ema_denial_clears_authority_for_configured_servers() -> Result<
         .await?;
     assert_eq!(
         fixture
-            .inocode
+            .codex
             .refresh_mcp_config(current_config, refreshed)
             .await,
         ConfigRefreshOutcome::Published

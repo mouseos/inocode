@@ -129,7 +129,7 @@ async fn apps_call_survives_catalog_restoration_while_awaiting_approval() -> any
     .await;
     let completion = responses::mount_sse_once(&server, responses::sse_completed("done")).await;
     fixture
-        .inocode
+        .codex
         .start_or_steer_turn(
             TurnInputRequest::user_input(vec![UserInput::Text {
                 text: "Use [$calendar](app://calendar) to create a calendar event.".into(),
@@ -173,7 +173,7 @@ async fn apps_call_survives_catalog_restoration_while_awaiting_approval() -> any
     assert!(!peer.refresh_codex_apps_tools().await?.tools.is_empty());
 
     fixture
-        .inocode
+        .codex
         .submit(Op::ResolveElicitation {
             server_name: approval.server_name,
             request_id: approval.id,

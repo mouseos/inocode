@@ -261,7 +261,7 @@ async fn workspace_roots_allow_file_and_command_writes_in_secondary_root(
         .join(&secondary_root_name)?;
     if owner_resolved_roots {
         let selection = test
-            .inocode
+            .codex
             .environment_selections()
             .await
             .into_iter()

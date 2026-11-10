@@ -515,7 +515,7 @@ async fn starting_a_selected_item_while_active_leaves_it_queued() -> anyhow::Res
         .await?;
 
     let active_turn = test
-        .inocode
+        .codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "active turn".to_string(),
             text_elements: Vec::new(),

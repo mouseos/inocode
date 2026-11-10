@@ -2751,7 +2751,7 @@ impl RuntimeKeymap {
                     }
                     return Err(format!(
                         "Ambiguous approval overlay keymap bindings: `{previous}` and `{action}` use the same key. \
-Set unique keys in `~/.inocode/config.toml` and retry. \
+Set unique keys in `~/.codex/config.toml` and retry. \
 See the InoCode keymap documentation for supported actions and examples."
                     ));
                 }
@@ -2777,7 +2777,7 @@ fn validate_unique<'a>(
             if let Some(previous) = seen.insert(key, action) {
                 return Err(format!(
                     "Ambiguous `tui.keymap.{context}` bindings: `{previous}` and `{action}` use the same key. \
-Set unique keys in `~/.inocode/config.toml` and retry. \
+Set unique keys in `~/.codex/config.toml` and retry. \
 See the InoCode keymap documentation for supported actions and examples."
                 ));
             }
@@ -2813,7 +2813,7 @@ fn validate_no_shadow_with_allowed_overlaps<const N: usize, const M: usize, cons
                 }
                 return Err(format!(
                     "Ambiguous `tui.keymap.{context}` bindings: `{previous}` shadows `{action}` with the same key. \
-Set unique keys in `~/.inocode/config.toml` and retry. \
+Set unique keys in `~/.codex/config.toml` and retry. \
 See the InoCode keymap documentation for supported actions and examples."
                 ));
             }
@@ -2846,7 +2846,7 @@ fn validate_no_reserved<'a, const A: usize>(
                 }
                 return Err(format!(
                     "Ambiguous `tui.keymap.{context}` bindings: `{action}` uses a key reserved by `{reserved_action}`. \
-Set a different key in `~/.inocode/config.toml` and retry. \
+Set a different key in `~/.codex/config.toml` and retry. \
 See the InoCode keymap documentation for supported actions and examples."
                 ));
             }

@@ -273,7 +273,7 @@ mode = "full"
         );
     }
     let selection = test
-        .inocode
+        .codex
         .environment_selections()
         .await
         .pop()

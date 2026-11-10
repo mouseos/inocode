@@ -122,7 +122,7 @@ async fn recovery_without_a_snapshot_keeps_each_threads_originator() -> Result<(
                 ))]),
                 environments: Some(
                     fixture
-                        .inocode
+                        .codex
                         .environment_selections()
                         .await
                         .into_iter()

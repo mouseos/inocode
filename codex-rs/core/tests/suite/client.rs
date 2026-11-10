@@ -472,7 +472,7 @@ async fn non_openai_responses_requests_include_item_ids_without_passthrough_meta
         .build(&server)
         .await
         .unwrap()
-        .inocode;
+        .codex;
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -526,7 +526,7 @@ async fn sends_audio_urls_to_responses() {
         .build(&server)
         .await
         .unwrap()
-        .inocode;
+        .codex;
     let audio_url = "data:audio/wav;base64,AAAA";
 
     codex
@@ -572,7 +572,7 @@ async fn sends_local_audio_to_responses() -> anyhow::Result<()> {
         })
         .build(&server)
         .await?
-        .inocode;
+        .codex;
     let temp_dir = tempfile::tempdir()?;
     let audio_path = temp_dir.path().join("recording.wav");
     std::fs::write(&audio_path, b"audio")?;
@@ -1919,7 +1919,7 @@ async fn includes_base_instructions_override_in_request() {
         .build(&server)
         .await
         .expect("create new conversation")
-        .inocode;
+        .codex;
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -2216,7 +2216,7 @@ async fn includes_apps_guidance_as_developer_message_for_chatgpt_auth() {
         .build(&server)
         .await
         .expect("create new conversation")
-        .inocode;
+        .codex;
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -2273,7 +2273,7 @@ async fn omits_apps_guidance_for_api_key_auth_even_when_feature_enabled() {
         .build(&server)
         .await
         .expect("create new conversation")
-        .inocode;
+        .codex;
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -2326,7 +2326,7 @@ async fn omits_apps_guidance_when_configured_off() {
         .build(&server)
         .await
         .expect("create new conversation")
-        .inocode;
+        .codex;
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -2397,7 +2397,7 @@ async fn omits_apps_guidance_when_orchestrator_mcp_is_disabled() {
         .build(&server)
         .await
         .expect("create new conversation")
-        .inocode;
+        .codex;
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -2473,7 +2473,7 @@ async fn omits_environment_context_when_configured_off() {
         .build(&server)
         .await
         .expect("create new conversation")
-        .inocode;
+        .codex;
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -3546,7 +3546,7 @@ async fn token_count_includes_rate_limits_snapshot() {
         .build(&server)
         .await
         .expect("create conversation")
-        .inocode;
+        .codex;
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -4171,7 +4171,7 @@ async fn azure_overrides_assign_properties_used_for_responses_url() {
         .build(&server)
         .await
         .expect("create new conversation")
-        .inocode;
+        .codex;
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -4262,7 +4262,7 @@ async fn env_var_overrides_loaded_auth() {
         .build(&server)
         .await
         .expect("create new conversation")
-        .inocode;
+        .codex;
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -4321,7 +4321,7 @@ async fn history_dedupes_streamed_and_final_messages_across_turns() {
         .build(&server)
         .await
         .expect("create new conversation")
-        .inocode;
+        .codex;
 
     // Turn 1: user sends U1; wait for completion.
     codex

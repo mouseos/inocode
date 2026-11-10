@@ -1858,7 +1858,7 @@ async fn unattributed_network_request_uses_active_turn_environment_fallback(
             .await?;
         tokio::time::timeout(Duration::from_secs(/*secs*/ 5), async {
             while !test
-                .inocode
+                .codex
                 .inspect_selected_capability_roots()
                 .ready_roots
                 .contains(&root)

@@ -366,7 +366,7 @@ async fn run_no_shell_turn(harness: &TestCodexHarness) -> Result<()> {
         ]),
     )
     .await;
-    let codex = &harness.test().inocode;
+    let codex = &harness.test().codex;
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "hello".to_string(),
@@ -612,7 +612,7 @@ async fn shell_snapshot_v2_prewarm_stops_on_shutdown() -> Result<()> {
     wait_for_file_contents(&profile_home.path().join("captures"), "x").await?;
     let pid = fs::read_to_string(profile_home.path().join("pid")).await?;
 
-    let codex = &harness.test().inocode;
+    let codex = &harness.test().codex;
     codex.submit(Op::Shutdown {}).await?;
     wait_for_event(codex, |event| matches!(event, EventMsg::ShutdownComplete)).await;
     tokio::time::timeout(Duration::from_secs(2), async {
@@ -1004,7 +1004,7 @@ async fn shell_snapshot_v2_preserves_legacy_snapshots_for_user_shell() -> Result
     let harness = TestCodexHarness::with_auto_env_builder(builder).await?;
     let snapshot_path = wait_for_snapshot(harness.test().home.path()).await?;
     assert_posix_snapshot_sections(&fs::read_to_string(snapshot_path).await?);
-    let codex = &harness.test().inocode;
+    let codex = &harness.test().codex;
     codex
         .submit(Op::RunUserShellCommand {
             command: "printf legacy".to_string(),

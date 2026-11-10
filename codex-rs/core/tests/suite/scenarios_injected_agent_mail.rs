@@ -120,7 +120,7 @@ async fn injected_mail_respects_delivery_boundaries() -> anyhow::Result<()> {
         "idle injection must not start a turn"
     );
     let TurnInputSubmission::Started { turn_id, .. } = test
-        .inocode
+        .codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![super::text(
             "Plan the next action.",
         )]))

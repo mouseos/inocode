@@ -763,7 +763,7 @@ def main() -> int:
         f"rc={rc}",
     )
 
-    # 34. WS: policy tamper (.inocode artifacts) denied
+    # 34. WS: policy tamper (.codex artifacts) denied
     codex_home = Path(os.environ["USERPROFILE"]) / ".inocode"
     cap_sid_target = codex_home / "cap_sid"
     rc, out, err = run_sbx(

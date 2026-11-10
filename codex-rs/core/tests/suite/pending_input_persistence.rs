@@ -269,7 +269,7 @@ async fn steered_input_checkpoint_controls_next_request(
         .build_with_auto_env(&config_server)
         .await?;
     let first = test
-        .inocode
+        .codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "first prompt".to_string(),
             text_elements: Vec::new(),
@@ -413,7 +413,7 @@ async fn steer_during_final_flush_reaches_the_model_before_turn_completion() -> 
         turn_id,
         root_turn_id,
     } = test
-        .inocode
+        .codex
         .start_or_steer_turn(user_message("first prompt", None))
         .await?
     else {
@@ -638,7 +638,7 @@ async fn local_preparation_is_durable_before_first_input_and_survives_restart(
         "content": [{"type": "input_text", "text": PREPARED_CONTEXT}],
     }))?;
     initial
-        .inocode
+        .codex
         .inject_response_items(vec![prepared.clone()])
         .await?;
 

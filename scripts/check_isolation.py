@@ -29,7 +29,7 @@ ba10c618_84e7_4b83_8f74_36e22b2fa1ff fe7f22b8_5cf5_4adb_b2aa_71fc0a8f5d44
 
 RULES = [
     ("Codex env var (use INOCODE_*)", re.compile(r"\bCODEX_(?=[A-Z0-9])"), None),
-    ("Codex home directory (use .inocode)", re.compile(r"(?<![\w])\.codex(?![-\w.])"), None),
+    ("Codex home directory (use .inocode)", re.compile(r"(?<![\w])\.codex(?![-\w.])"), "strings-in-code"),
     ("Codex keyring service", re.compile(r'"Codex Auth"|"Codex MCP Credentials"|KEYRING_SERVICE: &str = "codex"'), None),
     ("Codex Windows sandbox OS name", re.compile(r"(?<!InoCode)CodexSandbox|CodexLastStop|codex_wfp_|OpenAI\.CodexSandbox"), None),
     ("Codex URL scheme / bundle id", re.compile(r"\bcodex://|com\.openai\.codex"), None),
@@ -42,6 +42,7 @@ ALLOW = {
     ("codex-rs/utils/home-dir/src/lib.rs", ".codex"),
     ("codex-rs/windows-sandbox-rs/src/runtime_ownership_tests.rs", "CODEX_"),
 }
+STRING_RE = re.compile(r'"(?:[^"\\\\\n]|\\\\.)*"')
 GUID_RE = re.compile("|".join(re.escape(g) for g in UPSTREAM_WFP_GUIDS), re.I)
 # Fixed loopback ports shared with Codex (OAuth callback) may only appear in the login server.
 PORT_RE = re.compile(r"\b(1455|1457)\b")
@@ -62,9 +63,13 @@ def main() -> int:
                 continue
             rel = pathlib.PurePosixPath(p.relative_to(ROOT).as_posix())
             for label, rx, only in RULES:
-                if only and p.name != only:
+                if only and only != "strings-in-code" and p.name != only:
                     continue
-                for m in rx.finditer(text):
+                scan = text
+                if only == "strings-in-code" and p.suffix in (".rs", ".ts", ".js", ".py"):
+                    # '.codex' is also a common field name in code; only string literals name the directory
+                    scan = "\n".join(" ".join(STRING_RE.findall(ln)) if not ln.lstrip().startswith("//") else "" for ln in text.split("\n"))
+                for m in rx.finditer(scan):
                     line = text.count("\n", 0, m.start()) + 1
                     if (str(rel), m.group(0)) in ALLOW:
                         continue

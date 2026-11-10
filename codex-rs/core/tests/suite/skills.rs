@@ -368,7 +368,7 @@ async fn user_turn_selects_symlinked_skill_by_advertised_discovery_path() -> Res
     .await;
 
     let submission = test
-        .inocode
+        .codex
         .start_turn_if_idle(TurnInputRequest::new(TurnInput::UserInput {
             content: vec![
                 UserInput::Text {
@@ -455,7 +455,7 @@ async fn idle_user_turn_includes_skill_instructions_in_the_first_request() -> Re
     .await;
 
     let submission = test
-        .inocode
+        .codex
         .start_turn_if_idle(TurnInputRequest::new(TurnInput::UserInput {
             content: vec![
                 UserInput::Text {

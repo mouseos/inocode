@@ -31,9 +31,9 @@ fn classifies_reads_in_both_memory_versions() {
 #[test]
 fn attributes_mixed_version_reads_to_their_roots() {
     let command = "cat /tmp/.inocode/memories/MEMORY.md \
-        && sed -n '1,20p' /tmp/.inocode/memories_v2/rollout_summaries/thread.md \
-        && cat /tmp/.inocode/memories/raw_memories.md \
-        && cat /tmp/.inocode/memories_v2/skills/testing/SKILL.md";
+        && sed -n '1,20p' /tmp/.codex/memories_v2/rollout_summaries/thread.md \
+        && cat /tmp/.codex/memories/raw_memories.md \
+        && cat /tmp/.codex/memories_v2/skills/testing/SKILL.md";
     assert_eq!(
         memories_usage_from_command(command),
         vec![

@@ -664,7 +664,7 @@ pub(super) async fn cached_stdio_first_use_scenario() -> anyhow::Result<Vec<Valu
     )
     .await;
     fixture
-        .inocode
+        .codex
         .start_or_steer_turn(user_turn("use the echo tool"))
         .await?;
     let first_pid = wait_for_new_pid(fs.as_ref(), &pid_file, /*previous_pid*/ None).await?;

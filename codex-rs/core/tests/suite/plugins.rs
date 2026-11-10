@@ -1014,7 +1014,7 @@ async fn thread_disabled_plugins_filter_skills_and_tools_without_changing_shared
         // Direct Apps RPC calls keep their existing behavior outside model tool filtering.
         for (server_name, tool, arguments) in &tool_calls {
             let result = test
-                .inocode
+                .codex
                 .call_mcp_tool(server_name, tool, arguments.clone(), /*meta*/ None)
                 .await;
             assert_eq!(
@@ -1052,7 +1052,7 @@ async fn agent_plugin_skills_use_shared_catalog_and_direct_child_discovery() -> 
     let test_codex = builder.build_with_auto_env(&server).await?;
 
     test_codex
-        .inocode
+        .codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Skill {
             name: "acme.tools:review".into(),
             path: skill_path,
@@ -1210,7 +1210,7 @@ async fn legacy_plugin_skill_prompt_remains_complete() -> Result<()> {
     let test_codex = builder.build_with_auto_env(&server).await?;
 
     test_codex
-        .inocode
+        .codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Skill {
             name: "sample:sample-search".into(),
             path: skill_path,
@@ -1449,7 +1449,7 @@ async fn agent_plugin_root_mcp_stdio_tool_round_trip_expands_reserved_paths_and_
     );
 
     test_codex
-        .inocode
+        .codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "call the Agent Plugin echo tool".into(),
             text_elements: Vec::new(),

@@ -174,7 +174,7 @@ await tools.exec_command({
     harness.assert_result_held().await;
     harness
         .test
-        .inocode
+        .codex
         .submit(Op::ExecApproval {
             id: approval.effective_approval_id(),
             turn_id: Some(harness.turn_id.clone()),
@@ -205,7 +205,7 @@ await tools.apply_patch("*** Begin Patch\n*** Add File: code_mode_patch_approval
     harness.assert_result_held().await;
     harness
         .test
-        .inocode
+        .codex
         .submit(Op::PatchApproval {
             id: approval.call_id,
             decision: ReviewDecision::Approved,
@@ -249,7 +249,7 @@ await tools.request_permissions({
     harness.assert_result_held().await;
     harness
         .test
-        .inocode
+        .codex
         .submit(Op::RequestPermissionsResponse {
             id: request.call_id,
             response: RequestPermissionsResponse {

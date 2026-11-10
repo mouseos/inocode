@@ -174,7 +174,7 @@ fn production_record_without_optional_core_or_desktop_fields_still_loads() {
     let mut expected = record();
     expected.runtime = None;
     expected.desktop_installation = None;
-    let json = r#"{"user_sid":"S-1-5-21-1-2-3-1000","codex_home":"C:\\Users\\owner\\.inocode","session_id":1}"#;
+    let json = r#"{"user_sid":"S-1-5-21-1-2-3-1000","codex_home":"C:\\Users\\owner\\.codex","session_id":1}"#;
     assert_eq!(
         serde_json::from_str::<InstallationRecord>(json).unwrap(),
         expected

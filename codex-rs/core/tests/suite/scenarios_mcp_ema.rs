@@ -476,7 +476,7 @@ http_headers = {{ Authorization = "Bearer ordinary-access" }}
             codex_core::ConfigRefreshOutcome::Published
         );
         let error = test
-            .inocode
+            .codex
             .call_mcp_tool(
                 "enterprise",
                 "calendar_create_event",
@@ -560,7 +560,7 @@ http_headers = {{ Authorization = "Bearer ordinary-access" }}
         })
         .await;
         let ordinary = test
-            .inocode
+            .codex
             .call_mcp_tool(
                 "ordinary",
                 "calendar_create_event",

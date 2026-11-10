@@ -476,7 +476,7 @@ async fn v2_changed_inventory_refreshes_mcp_without_selection_changes() -> Resul
     // Refresh before another step can discover the new inventory. This fixture has no Apps
     // server, but the refresh must still publish exactly once before reporting that absence.
     let error = test
-        .inocode
+        .codex
         .refresh_codex_apps_tools()
         .await
         .err()

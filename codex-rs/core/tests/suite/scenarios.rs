@@ -840,7 +840,7 @@ async fn unavailable_images_are_rechecked_without_rewriting_history() -> Result<
     );
 
     let recorded_images = test
-        .inocode
+        .codex
         .load_history(/*include_archived*/ false)
         .await?
         .items
@@ -3965,7 +3965,7 @@ async fn astra_async_compaction_keeps_work_added_after_its_snapshot(
         );
     }
     let history = test
-        .inocode
+        .codex
         .load_history(/*include_archived*/ false)
         .await?
         .items;
@@ -4187,7 +4187,7 @@ async fn astra_async_compaction_preserves_exec_catalog(change: ExecCatalogRefres
         .collect::<serde_json::Result<Vec<_>>>()?;
     assert_eq!(requests.len(), 4);
     let history = test
-        .inocode
+        .codex
         .load_history(/*include_archived*/ false)
         .await?
         .items;
@@ -4743,7 +4743,7 @@ async fn catalog_plugin_guidance_follows_model_and_survives_resume() -> Result<(
         "plugins-a",
     ] {
         resumed
-            .inocode
+            .codex
             .start_or_steer_turn(
                 TurnInputRequest::user_input(vec![text("Continue with the selected model.")])
                     .with_thread_settings(codex_protocol::protocol::ThreadSettingsOverrides {

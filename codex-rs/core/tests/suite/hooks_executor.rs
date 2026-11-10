@@ -692,7 +692,7 @@ async fn thread_plugin_selection_disables_executor_hooks_without_disabling_their
     }
     fixture
         .test
-        .inocode
+        .codex
         .call_mcp_tool(
             "node_repl",
             "js",
@@ -789,7 +789,7 @@ async fn session_hooks_survive_turn_skill_discovery_failure() -> Result<()> {
     fixture.attach().await?;
     fixture
         .test
-        .inocode
+        .codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "Grant skill access, then finish.".into(),
             text_elements: Vec::new(),
@@ -802,7 +802,7 @@ async fn session_hooks_survive_turn_skill_discovery_failure() -> Result<()> {
     .await;
     fixture
         .test
-        .inocode
+        .codex
         .submit(Op::RequestPermissionsResponse {
             id: request.call_id,
             response: codex_protocol::request_permissions::RequestPermissionsResponse {
@@ -870,7 +870,7 @@ async fn executor_stop_hook_uses_plugin_policy_refreshed_during_turn() -> Result
     fixture.attach().await?;
     fixture
         .test
-        .inocode
+        .codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "Ask before finishing this turn".to_string(),
             text_elements: Vec::new(),
@@ -890,12 +890,12 @@ async fn executor_stop_hook_uses_plugin_policy_refreshed_during_turn() -> Result
     )?;
     let _ = fixture
         .test
-        .inocode
+        .codex
         .refresh_runtime_config(current_config, config)
         .await;
     fixture
         .test
-        .inocode
+        .codex
         .submit(Op::UserInputAnswer {
             id: request.turn_id,
             response: RequestUserInputResponse {
@@ -986,7 +986,7 @@ async fn executor_interrupt_hook_runs_after_attachment() -> Result<()> {
     fixture.attach().await?;
     fixture
         .test
-        .inocode
+        .codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "interrupt this turn".to_string(),
             text_elements: Vec::new(),
@@ -1045,7 +1045,7 @@ async fn executor_interrupt_hook_skips_turn_without_step_context() -> Result<()>
     // Standalone shell turns have no model step, despite the previous turn's discovery.
     fixture
         .test
-        .inocode
+        .codex
         .submit(Op::RunUserShellCommand {
             command: "sleep 60".to_string(),
             timeout_ms: None,
@@ -1076,7 +1076,7 @@ async fn executor_stop_hook_stops_after_disconnection() -> Result<()> {
 
     fixture
         .test
-        .inocode
+        .codex
         .environment_failed(&selection, "executor disconnected".to_string())
         .await?;
     fixture
@@ -1158,7 +1158,7 @@ async fn executor_stop_hook_rejects_mismatched_environment() -> Result<()> {
         .await?;
     let attached_selection = fixture
         .test
-        .inocode
+        .codex
         .environment_selections()
         .await
         .into_iter()
@@ -1204,12 +1204,12 @@ async fn executor_stop_hook_rejects_mismatched_environment() -> Result<()> {
     )?;
     let _ = fixture
         .test
-        .inocode
+        .codex
         .refresh_mcp_config(current_config, mismatched_config)
         .await;
     fixture
         .test
-        .inocode
+        .codex
         .call_mcp_tool(
             "node_repl",
             "js",
@@ -1220,7 +1220,7 @@ async fn executor_stop_hook_rejects_mismatched_environment() -> Result<()> {
     assert_eq!(
         fixture
             .test
-            .inocode
+            .codex
             .inspect_selected_capability_roots()
             .ready_roots
             .len(),
@@ -1374,7 +1374,7 @@ async fn executor_browser_and_computer_use_cleanup_hooks_use_separate_mcp_routes
         // Cached subagent MCP servers start on first use; cleanup must not start them.
         fixture
             .test
-            .inocode
+            .codex
             .call_mcp_tool(
                 "node_repl",
                 "js",
@@ -1386,7 +1386,7 @@ async fn executor_browser_and_computer_use_cleanup_hooks_use_separate_mcp_routes
     if hook_event == "Interrupt" {
         fixture
             .test
-            .inocode
+            .codex
             .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
                 text: "interrupt browsing".to_string(),
                 text_elements: Vec::new(),
@@ -1656,14 +1656,14 @@ impl ExecutorHookFixture {
     async fn attach(&self) -> Result<TurnEnvironmentSelection> {
         let selection = self
             .test
-            .inocode
+            .codex
             .environment_selections()
             .await
             .into_iter()
             .next()
             .context("thread should select its executor environment")?;
         self.test
-            .inocode
+            .codex
             .environment_ready(
                 &selection,
                 EnvironmentConfig {

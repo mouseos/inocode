@@ -734,7 +734,7 @@ async fn runtime_trust_reload_refreshes_project_instructions() -> Result<()> {
     let mut untrusted_config = current_config.as_ref().clone();
     untrusted_config.active_project.trust_level = Some(TrustLevel::Untrusted);
     let _ = test
-        .inocode
+        .codex
         .refresh_runtime_config(current_config, untrusted_config)
         .await;
     test.submit_turn("untrusted project").await?;
@@ -747,7 +747,7 @@ async fn runtime_trust_reload_refreshes_project_instructions() -> Result<()> {
     let mut trusted_config = current_config.as_ref().clone();
     trusted_config.active_project.trust_level = Some(TrustLevel::Trusted);
     let _ = test
-        .inocode
+        .codex
         .refresh_runtime_config(current_config, trusted_config)
         .await;
     test.submit_turn("trusted again").await?;
@@ -920,7 +920,7 @@ async fn symlinked_writable_root_reports_sandbox_failure_instead_of_session_corr
         .replace(&home_path, "$INOCODE_HOME");
     insta::assert_snapshot!(error, @"
     failed to load AGENTS.md instructions for environment `local`: failed to prepare fs sandbox: failed to prepare Seatbelt sandbox: writable root $INOCODE_HOME/visualizations contains symlink component $INOCODE_HOME/visualizations; symlinked writable roots are not supported.
-    If this writable root is at or beneath INOCODE_HOME and you trust its symlink targets, set `allow_symlinked_codex_home = true` at the top level of `$INOCODE_HOME/config.toml` (normally `~/.inocode/config.toml`) on the execution host, then restart Codex or its executor. This opt-out trusts targets outside INOCODE_HOME and targets changed between commands. It does not apply to other writable roots.
+    If this writable root is at or beneath INOCODE_HOME and you trust its symlink targets, set `allow_symlinked_codex_home = true` at the top level of `$INOCODE_HOME/config.toml` (normally `~/.codex/config.toml`) on the execution host, then restart Codex or its executor. This opt-out trusts targets outside INOCODE_HOME and targets changed between commands. It does not apply to other writable roots.
     ");
 
     Ok(())

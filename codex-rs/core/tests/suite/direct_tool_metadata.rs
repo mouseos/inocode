@@ -419,7 +419,7 @@ async fn direct_call_metadata_during_compaction_respects_provider_support(
         let mut config = test.config.clone();
         config.features.disable(Feature::ExecutedToolCallMetadata)?;
         let _ = test
-            .inocode
+            .codex
             .refresh_runtime_config(current_config, config)
             .await;
     }
@@ -913,7 +913,7 @@ async fn direct_metadata_limit_respects_provider_support(
         .await
         .expect("run resumed turn");
     resumed
-        .inocode
+        .codex
         .shutdown_and_wait()
         .await
         .expect("shutdown resumed thread");

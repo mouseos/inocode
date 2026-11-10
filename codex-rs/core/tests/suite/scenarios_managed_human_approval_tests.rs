@@ -148,7 +148,7 @@ justification = "A person must approve this command."
         }))?])
         .await?;
     let error = test
-        .inocode
+        .codex
         .guardian_review(&CancellationToken::new())
         .await
         .expect_err("managed checkpoint requires a human");

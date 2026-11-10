@@ -1995,7 +1995,7 @@ async fn executor_skill_tool_reads_references_under_current_permissions(
         .with_config(configure_catalog_test);
     let test = builder.build_with_auto_env(&server).await?;
     let selection = test
-        .inocode
+        .codex
         .environment_selections()
         .await
         .into_iter()

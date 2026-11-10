@@ -381,9 +381,9 @@ fn host_only_prompts_preserve_existing_behavior_with_and_without_aliases() {
     ## Skills
     A skill is a set of instructions provided through a `SKILL.md` source. Below is the list of skills that can be used. Each entry includes a name, description, and source locator. `file` locators are on the host filesystem, `executor package` locators are owned by their execution environment, `cloud package` locators are opaque package identifiers, and `custom resource` locators use their provider's access mechanism.
     ### Available skills
-    - alpha: Alpha skill. (file: /Users/test/.inocode/plugins/cache/openai-curated/host-plugin/1.0.0/skills-with-a-long-shared-root/alpha/SKILL.md)
-    - beta: Beta skill. (file: /Users/test/.inocode/plugins/cache/openai-curated/host-plugin/1.0.0/skills-with-a-long-shared-root/beta/SKILL.md)
-    - gamma: Gamma skill. (file: /Users/test/.inocode/plugins/cache/openai-curated/host-plugin/1.0.0/skills-with-a-long-shared-root/gamma/SKILL.md)
+    - alpha: Alpha skill. (file: /Users/test/.codex/plugins/cache/openai-curated/host-plugin/1.0.0/skills-with-a-long-shared-root/alpha/SKILL.md)
+    - beta: Beta skill. (file: /Users/test/.codex/plugins/cache/openai-curated/host-plugin/1.0.0/skills-with-a-long-shared-root/beta/SKILL.md)
+    - gamma: Gamma skill. (file: /Users/test/.codex/plugins/cache/openai-curated/host-plugin/1.0.0/skills-with-a-long-shared-root/gamma/SKILL.md)
     ### How to use skills
     - Discovery: The list above is the skills available in this session (name + description + source locator). `file` entries live on the host filesystem, `executor package` and `cloud package` entries are accessed directly through `skills.read`, and `custom resource` entries use their provider's access mechanism.
     - Trigger rules: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown above, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.
@@ -416,7 +416,7 @@ fn host_only_prompts_preserve_existing_behavior_with_and_without_aliases() {
     ## Skills
     A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and a short path that can be expanded into an absolute path using the skill roots table.
     ### Skill roots
-    - `r0` = `/Users/test/.inocode/plugins/cache/openai-curated/host-plugin/1.0.0/skills-with-a-long-shared-root`
+    - `r0` = `/Users/test/.codex/plugins/cache/openai-curated/host-plugin/1.0.0/skills-with-a-long-shared-root`
     ### Available skills
     - alpha: Alpha skill. (file: r0/alpha/SKILL.md)
     - beta: Beta skill. (file: r0/beta/SKILL.md)

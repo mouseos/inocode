@@ -86,7 +86,7 @@ fi
 if (touch "$workspace/.inocode/forbidden.txt") 2>/dev/null; then
     exit 11
 fi
-for name in .git .agents .inocode .aws; do
+for name in .git .agents .codex .aws; do
     test -d "$visualization/$name"
     if (touch "$visualization/$name/forbidden.txt") 2>/dev/null; then
         exit 12

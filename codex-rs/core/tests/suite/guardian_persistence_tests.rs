@@ -292,7 +292,7 @@ async fn sender_history_read_does_not_block_turn_completion() -> anyhow::Result<
         .build_with_auto_env(&server)
         .await?;
     let first = test
-        .inocode
+        .codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "Inspect staging.".to_owned(),
             text_elements: Vec::new(),

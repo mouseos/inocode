@@ -254,13 +254,13 @@ async fn running_thread_uses_refreshed_optional_mcp_startup_grace(
     match refresh_path {
         ConfigRefreshPath::Runtime => {
             let _ = fixture
-                .inocode
+                .codex
                 .refresh_runtime_config(current_config, refreshed_config)
                 .await;
         }
         ConfigRefreshPath::Mcp => {
             let _ = fixture
-                .inocode
+                .codex
                 .refresh_mcp_config(current_config, refreshed_config)
                 .await;
         }

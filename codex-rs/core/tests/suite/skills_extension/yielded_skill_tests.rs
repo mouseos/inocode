@@ -136,7 +136,7 @@ async fn yielded_skill_read_keeps_originating_turn_metadata() -> Result<()> {
     )
     .await;
     let submitted = test
-        .inocode
+        .codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "Read the skill in this turn and release the previous read.".to_string(),
             text_elements: Vec::new(),

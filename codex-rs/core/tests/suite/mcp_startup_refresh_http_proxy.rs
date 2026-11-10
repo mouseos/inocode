@@ -179,11 +179,11 @@ async fn local_mcp_startup_and_refresh_use_configured_http_client() -> Result<()
         .set(servers)
         .expect("test MCP servers should accept the refreshed configuration");
     let _ = fixture
-        .inocode
+        .codex
         .refresh_runtime_config(current_config, refreshed_config)
         .await;
     let result = fixture
-        .inocode
+        .codex
         .call_mcp_tool(
             SERVER_NAME,
             "calendar_create_event",
@@ -391,7 +391,7 @@ async fn skill_mcp_dependency_oauth_uses_configured_http_client() -> Result<()> 
         selected_capability_roots: Vec::new(),
     });
     fixture
-        .inocode
+        .codex
         .start_or_steer_turn(
             TurnInputRequest::user_input(vec![
                 UserInput::Text {

@@ -281,7 +281,7 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
     let root_thread_id = initial.session_configured.thread_id;
     let root_session_id = initial.session_configured.session_id;
     initial
-        .inocode
+        .codex
         .start_or_steer_turn(
             TurnInputRequest::user_input(vec![UserInput::Text {
                 text: INITIAL_PROMPT.to_string(),
@@ -484,7 +484,7 @@ async fn cold_root_resume_restores_agent_identity_and_role_on_followup() -> Resu
         });
     let resumed = resume_builder.restart(&server, &initial).await?;
     resumed
-        .inocode
+        .codex
         .set_app_server_client_info(
             Some("resume-test".to_string()),
             Some("1.0.0".to_string()),

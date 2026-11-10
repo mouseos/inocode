@@ -103,8 +103,8 @@ async fn root_metadata_symlinks_cannot_reopen_approved_denials() {
     let script = r#"
         set -eu
         if cat /private/reopened/secret >/dev/null 2>&1 ||
-           cat /.inocode/secret >/dev/null 2>&1 || cat /.git/secret >/dev/null 2>&1; then exit 21; fi
-        if (printf bad > /.inocode/changed) 2>/dev/null; then exit 22; fi
+           cat /.codex/secret >/dev/null 2>&1 || cat /.git/secret >/dev/null 2>&1; then exit 21; fi
+        if (printf bad > /.codex/changed) 2>/dev/null; then exit 22; fi
         printf good > /.agents/allowed
         printf good > /tmp/marker
         printf 'root-metadata-denials-held\n'
@@ -125,7 +125,7 @@ async fn root_metadata_symlinks_cannot_reopen_approved_denials() {
 
     let script = r#"
         set -eu
-        printf safe > /.inocode/allowed
+        printf safe > /.codex/allowed
         if cat /.git/secret >/dev/null 2>&1; then exit 23; fi
     "#;
     let output = run(&private_denied, "/private", "/tmp/public", script);
@@ -139,7 +139,7 @@ async fn root_metadata_symlinks_cannot_reopen_approved_denials() {
         set -eu
         rm /private
         ln -s /tmp/public /private
-        cat /.inocode/secret
+        cat /.codex/secret
     "#;
     let output = run(&private_denied, "/real-private", "/private", script);
     assert!(!output.status.success(), "{output:?}");

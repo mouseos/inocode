@@ -5878,7 +5878,7 @@ async fn inbound_handoff_request_updates_realtime_state_during_active_turn(
     let test = builder.build_with_streaming_server(&api_server).await?;
 
     let started = test
-        .inocode
+        .codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "first prompt".to_string(),
             text_elements: Vec::new(),
@@ -5995,7 +5995,7 @@ async fn inbound_handoff_request_updates_realtime_state_during_active_turn(
         return Ok(());
     }
     let steered = test
-        .inocode
+        .codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "continue in text".to_string(),
             text_elements: Vec::new(),

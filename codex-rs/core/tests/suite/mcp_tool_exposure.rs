@@ -414,7 +414,7 @@ async fn rapid_mcp_refreshes_coalesce_to_the_latest_config() -> Result<()> {
     contributor.block_next.store(true, Ordering::SeqCst);
     let current_config = test.codex.config().await;
     let _ = test
-        .inocode
+        .codex
         .refresh_runtime_config(
             current_config,
             config_with_mcp_marker(&test.config, "config-a"),
@@ -428,7 +428,7 @@ async fn rapid_mcp_refreshes_coalesce_to_the_latest_config() -> Result<()> {
 
     let current_config = test.codex.config().await;
     let _ = test
-        .inocode
+        .codex
         .refresh_runtime_config(
             current_config,
             config_with_mcp_marker(&test.config, "config-b"),
@@ -436,7 +436,7 @@ async fn rapid_mcp_refreshes_coalesce_to_the_latest_config() -> Result<()> {
         .await;
     let current_config = test.codex.config().await;
     let _ = test
-        .inocode
+        .codex
         .refresh_runtime_config(
             current_config,
             config_with_mcp_marker(&test.config, "config-c"),
@@ -522,7 +522,7 @@ async fn root_reconciliation_reuses_pending_apps_startup() -> Result<()> {
     .expect("initial Apps startup should begin before root reconciliation");
 
     let selection = test
-        .inocode
+        .codex
         .environment_selections()
         .await
         .into_iter()
@@ -652,7 +652,7 @@ async fn timeout_refresh_replaces_pending_startup_and_reuses_ready_connection() 
     .await
     .expect("pending startup should begin before refresh");
     let ready_result = test
-        .inocode
+        .codex
         .call_mcp_tool(
             "ready",
             "calendar_list_events",
@@ -669,12 +669,12 @@ async fn timeout_refresh_replaces_pending_startup_and_reuses_ready_connection() 
     }
     refresh_config.mcp_servers.set(servers)?;
     let _ = test
-        .inocode
+        .codex
         .refresh_mcp_config(current_config, refresh_config)
         .await;
     // Publish without waiting for the held initialize to finish.
     let error = test
-        .inocode
+        .codex
         .read_mcp_resource("unknown", ReadResourceRequestParams::new("test://resource"))
         .await
         .expect_err("the unknown server should not exist");
@@ -685,7 +685,7 @@ async fn timeout_refresh_replaces_pending_startup_and_reuses_ready_connection() 
 
     for name in ["pending", "ready"] {
         let result = test
-            .inocode
+            .codex
             .call_mcp_tool(
                 name,
                 "calendar_list_events",
@@ -904,13 +904,13 @@ startup_timeout_sec = 0.1
         .config_layer_stack
         .with_user_config(&user_config_path, user_config)?;
     let _ = test
-        .inocode
+        .codex
         .refresh_runtime_config(current_config, refresh_config)
         .await;
     test.codex.submit(Op::RefreshMcpServers).await?;
 
     let _ = test
-        .inocode
+        .codex
         .read_mcp_resource(
             "refreshed",
             ReadResourceRequestParams::new("test://resource"),
@@ -1246,7 +1246,7 @@ enabled = false
         .config_layer_stack
         .with_user_config(&user_config_path, user_config)?;
     let _ = test
-        .inocode
+        .codex
         .refresh_runtime_config(current_config, refresh_config)
         .await;
     test.codex.submit(Op::RefreshMcpServers).await?;
@@ -1882,7 +1882,7 @@ async fn later_follow_up_uses_background_recovered_apps_after_mid_thread_startup
         let mut apps_ready = false;
         while !turn_complete || !apps_ready {
             let event = test
-                .inocode
+                .codex
                 .next_event()
                 .await
                 .expect("event stream should stay open");

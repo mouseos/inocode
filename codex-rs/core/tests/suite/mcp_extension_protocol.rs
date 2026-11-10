@@ -230,7 +230,7 @@ async fn request_metadata_is_scoped_to_the_selected_tool_and_registration(
         .build_with_auto_env(&model)
         .await?;
     fixture
-        .inocode
+        .codex
         .thread_extension_data()
         .insert(McpToolRequestMetaHook {
             server_name: "selected".into(),

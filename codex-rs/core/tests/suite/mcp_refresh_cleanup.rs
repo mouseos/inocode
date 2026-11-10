@@ -201,7 +201,7 @@ async fn refresh_keeps_superseded_mcp_server_alive_for_in_flight_calls() -> anyh
         }
     });
     fixture
-        .inocode
+        .codex
         .call_mcp_tool(
             "refresh_cleanup",
             "sync",

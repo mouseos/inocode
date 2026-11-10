@@ -1373,7 +1373,7 @@ async fn windows_elevated_approved_git_pull_preserves_deny_read() -> anyhow::Res
         "exec_command",
     )
     .await;
-    let codex = &harness.test().inocode;
+    let codex = &harness.test().codex;
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "pull the fixture repository".into(),

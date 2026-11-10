@@ -163,7 +163,7 @@ async fn resume_restores_windows_sandbox_override() -> Result<()> {
 
     assert_eq!(
         resumed
-            .inocode
+            .codex
             .restorable_thread_settings()
             .await
             .windows_sandbox_level,
@@ -239,7 +239,7 @@ async fn resume_switches_models_preserves_base_instructions() -> Result<()> {
         Some(Personality::None)
     );
     resumed
-        .inocode
+        .codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "Resume with different model".into(),
             text_elements: Vec::new(),
@@ -251,7 +251,7 @@ async fn resume_switches_models_preserves_base_instructions() -> Result<()> {
     .await;
 
     resumed
-        .inocode
+        .codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "Second turn after resume".into(),
             text_elements: Vec::new(),
@@ -350,7 +350,7 @@ async fn resume_model_switch_is_not_duplicated_after_pre_turn_override() -> Resu
     )
     .await?;
     resumed
-        .inocode
+        .codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "first turn after override".into(),
             text_elements: Vec::new(),
