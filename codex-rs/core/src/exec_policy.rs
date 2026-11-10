@@ -911,7 +911,16 @@ fn render_decision_for_unmatched_command_for_platform(
     // We prefer to prompt the user rather than outright forbid the command,
     // but if the user has explicitly disabled prompts, we must
     // forbid the command.
-    if dangerous_command_match.is_some() || windows_managed_fs_restrictions_without_sandbox_backend
+    //
+    // Exception: with approvals disabled and an unrestricted filesystem there is no sandbox to
+    // lean on, and the user has chosen to let commands run. Handing a URL to the shell or a
+    // browser changes no files, so only the file-destroying rules keep blocking in that mode.
+    let url_launch_allowed_without_approval = dangerous_command_match
+        == Some(DangerousCommandMatch::UrlLaunch)
+        && approval_policy == AskForApproval::Never
+        && file_system_sandbox_policy.kind == FileSystemSandboxKind::Unrestricted;
+    if (dangerous_command_match.is_some() && !url_launch_allowed_without_approval)
+        || windows_managed_fs_restrictions_without_sandbox_backend
     {
         return match approval_policy {
             AskForApproval::Never => Decision::Forbidden,
@@ -1223,7 +1232,9 @@ fn derive_forbidden_reason(
                 let reason = dangerous_command_rejection_reason(dangerous_command_match);
                 format!("`{command}` rejected: {reason}")
             } else {
-                format!("`{command}` rejected: blocked by policy")
+                format!(
+                    "`{command}` rejected: blocked by policy (no matching rule or command heuristic was recorded; check the approval policy and the sandbox settings, for example windows.sandbox)"
+                )
             }
         }
     }
@@ -1238,7 +1249,9 @@ fn derive_rejected_prompt_reason(
             dangerous_command_match @ (DangerousCommandMatch::ForcedRm
             | DangerousCommandMatch::ForcedDelete),
         ) => dangerous_command_rejection_reason(dangerous_command_match).to_string(),
-        Some(DangerousCommandMatch::Other) | None => fallback_reason.to_string(),
+        Some(DangerousCommandMatch::UrlLaunch | DangerousCommandMatch::Other) | None => {
+            fallback_reason.to_string()
+        }
     }
 }
 
@@ -1252,7 +1265,12 @@ fn dangerous_command_rejection_reason(
         DangerousCommandMatch::ForcedDelete => {
             "forced delete (for example Remove-Item -Force) is only allowed for literal paths inside the working directory or a temporary directory: no variables, wildcards, .. or .git. Use explicit paths there, or run in an approval mode that can ask"
         }
-        DangerousCommandMatch::Other => "blocked by policy",
+        DangerousCommandMatch::UrlLaunch => {
+            "opening a URL through the shell or a browser (Start-Process, Invoke-Item, explorer, cmd start) is blocked while approvals are disabled in a sandboxed session. Pass the URL to your own program as an argument (Start-Process <program> -ArgumentList <url>), or use a mode that can ask for approval"
+        }
+        DangerousCommandMatch::Other => {
+            "flagged as dangerous (cmd del /f, rd /s /q, or deeply nested shell wrappers) and approvals are disabled. Avoid these forms, or use a mode that can ask for approval"
+        }
     }
 }
 

@@ -2595,81 +2595,163 @@ async fn exec_policy_warnings_ignore_untrusted_project_rules_without_config_toml
 
 #[tokio::test]
 async fn windows_powershell_policy_classifies_only_independent_literal_commands() {
-    for (script, expected) in [
+    // (script, decision in a sandboxed profile, decision when unrestricted with approvals off).
+    // Opening a URL is only blocked when a sandbox is in place; file-destroying commands always are.
+    for (script, sandboxed, unrestricted) in [
         (
             "project-cli subtask start --text 'https://example.com'",
             Decision::Allow,
+            Decision::Allow,
         ),
-        ("Write-Output start 'https://example.com'", Decision::Allow),
+        (
+            "Write-Output start 'https://example.com'",
+            Decision::Allow,
+            Decision::Allow,
+        ),
         (
             "Start-Process notepad.exe; Invoke-WebRequest 'http://127.0.0.1/health'",
             Decision::Allow,
+            Decision::Allow,
         ),
-        ("Start-Process 'https://example.com'", Decision::Forbidden),
+        (
+            "Start-Process 'https://example.com'",
+            Decision::Forbidden,
+            Decision::Allow,
+        ),
         (
             "Write-Output start 'https://example.com' | Out-String",
             Decision::Forbidden,
+            Decision::Allow,
         ),
         (
             "$target = 'https://example.com/'; Start-Process $target",
             Decision::Forbidden,
+            Decision::Allow,
         ),
         (
             "Write-Output 'Start-Process https://example.com'",
             Decision::Forbidden,
+            Decision::Allow,
         ),
         (
             "wmic process call create 'powershell.exe -Command Start-Process https://example.com'",
             Decision::Forbidden,
+            Decision::Allow,
         ),
-        ("cmd /c start https://example.com", Decision::Forbidden),
+        (
+            "cmd /c start https://example.com",
+            Decision::Forbidden,
+            Decision::Allow,
+        ),
         (
             "wt cmd.exe /c start https://example.com",
             Decision::Forbidden,
+            Decision::Allow,
         ),
         (
             "wt.exe cmd.exe /c start https://example.com",
             Decision::Forbidden,
+            Decision::Allow,
         ),
-        ("wt.exe cmd.exe /c echo hello", Decision::Allow),
-        ("Remove-Item test -Force", Decision::Forbidden),
+        (
+            "wt.exe cmd.exe /c echo hello",
+            Decision::Allow,
+            Decision::Allow,
+        ),
+        // A URL that is only an argument of the launched program opens nothing by itself.
+        (
+            "$s = Start-Process 'C:\\bin\\inocode.exe' -ArgumentList 'app-server -c base_url=http://127.0.0.1:18800/v1' -WindowStyle Hidden -PassThru",
+            Decision::Allow,
+            Decision::Allow,
+        ),
+        (
+            "$m = Start-Process node -ArgumentList 'mock.mjs','18800' -WorkingDirectory 'D:\\work' -PassThru -RedirectStandardError 'http://x.invalid/err'",
+            Decision::Allow,
+            Decision::Allow,
+        ),
+        // A browser or shell given a URL does open it.
+        (
+            "Start-Process chrome 'https://example.com'",
+            Decision::Forbidden,
+            Decision::Allow,
+        ),
+        (
+            "Start-Process -FilePath 'https://example.com'",
+            Decision::Forbidden,
+            Decision::Allow,
+        ),
+        (
+            "Start-Process cmd -ArgumentList '/c start https://example.com'",
+            Decision::Forbidden,
+            Decision::Allow,
+        ),
+        (
+            "Remove-Item test -Force",
+            Decision::Forbidden,
+            Decision::Forbidden,
+        ),
     ] {
-        for flags in [&["-Command"][..], &["-NonInteractive", "-Command"][..]] {
-            for configured_executable in ["pwsh", "other-shell"] {
-                let manager = ExecPolicyManager::new(Arc::new(Policy::empty()));
-                let command = [vec_str(&["pwsh"]), vec_str(flags), vec_str(&[script])].concat();
-                let shell = crate::shell::Shell {
-                    shell_type: crate::shell::ShellType::PowerShell,
-                    shell_path: PathBuf::from(configured_executable),
-                };
-                let requirement = manager
-                    .create_exec_approval_requirement_for_shell(
-                        ExecApprovalRequest {
-                            command: &command,
-                            approval_policy: AskForApproval::Never,
-                            permission_profile: PermissionProfile::Disabled,
-                            environment_policy: None,
-                            windows_sandbox_level: WindowsSandboxLevel::Disabled,
-                            sandbox_permissions: SandboxPermissions::UseDefault,
-                            prefix_rule: None,
-                            allow_prefix_rules: AllowPrefixRules::Honor,
-                            delete_scope: None,
-                        },
-                        &shell,
-                        DangerousCommandPlatform::Windows,
-                    )
-                    .await;
-                let actual = match requirement {
-                    ExecApprovalRequirement::Skip { .. } => Decision::Allow,
-                    ExecApprovalRequirement::NeedsApproval { .. } => Decision::Prompt,
-                    ExecApprovalRequirement::NeedsHumanApproval { .. } => Decision::PromptUser,
-                    ExecApprovalRequirement::Forbidden { .. } => Decision::Forbidden,
-                };
-                assert_eq!(
-                    actual, expected,
-                    "{command:?}; shell: {configured_executable}"
-                );
+        for (permission_profile, windows_sandbox_level, expected) in [
+            (
+                PermissionProfile::workspace_write(),
+                WindowsSandboxLevel::RestrictedToken,
+                sandboxed,
+            ),
+            (
+                PermissionProfile::Disabled,
+                WindowsSandboxLevel::Disabled,
+                unrestricted,
+            ),
+        ] {
+            for flags in [&["-Command"][..], &["-NonInteractive", "-Command"][..]] {
+                for configured_executable in ["pwsh", "other-shell"] {
+                    let manager = ExecPolicyManager::new(Arc::new(Policy::empty()));
+                    let command =
+                        [vec_str(&["pwsh"]), vec_str(flags), vec_str(&[script])].concat();
+                    let shell = crate::shell::Shell {
+                        shell_type: crate::shell::ShellType::PowerShell,
+                        shell_path: PathBuf::from(configured_executable),
+                    };
+                    let requirement = manager
+                        .create_exec_approval_requirement_for_shell(
+                            ExecApprovalRequest {
+                                command: &command,
+                                approval_policy: AskForApproval::Never,
+                                permission_profile: permission_profile.clone(),
+                                environment_policy: None,
+                                windows_sandbox_level,
+                                sandbox_permissions: SandboxPermissions::UseDefault,
+                                prefix_rule: None,
+                                allow_prefix_rules: AllowPrefixRules::Honor,
+                                delete_scope: None,
+                            },
+                            &shell,
+                            DangerousCommandPlatform::Windows,
+                        )
+                        .await;
+                    let actual = match requirement {
+                        ExecApprovalRequirement::Skip { .. } => Decision::Allow,
+                        ExecApprovalRequirement::NeedsApproval { .. } => Decision::Prompt,
+                        ExecApprovalRequirement::NeedsHumanApproval { .. } => {
+                            Decision::PromptUser
+                        }
+                        ExecApprovalRequirement::Forbidden { .. } => Decision::Forbidden,
+                    };
+                    assert_eq!(
+                        actual, expected,
+                        "{command:?}; shell: {configured_executable}; profile: {permission_profile:?}"
+                    );
+                }
             }
         }
+    }
+}
+
+#[test]
+fn url_launch_and_other_danger_explain_why_they_were_blocked() {
+    for dangerous_match in [DangerousCommandMatch::UrlLaunch, DangerousCommandMatch::Other] {
+        let reason = dangerous_command_rejection_reason(dangerous_match);
+        assert_ne!(reason, "blocked by policy", "{dangerous_match:?}");
+        assert!(reason.contains("approval"), "{dangerous_match:?}: {reason}");
     }
 }

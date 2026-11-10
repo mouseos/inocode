@@ -22,8 +22,12 @@ pub(super) fn dangerous_command_windows_match(
         return Some(dangerous_match);
     }
 
-    if is_dangerous_cmd(command) || is_direct_gui_launch(command) {
-        return Some(DangerousCommandMatch::Other);
+    if let Some(dangerous_match) = dangerous_cmd_match(command) {
+        return Some(dangerous_match);
+    }
+
+    if is_direct_gui_launch(command) {
+        return Some(DangerousCommandMatch::UrlLaunch);
     }
 
     None
@@ -127,18 +131,8 @@ fn classify_powershell_words(
         .collect();
     let has_url = args_have_url(words);
 
-    if has_url
-        && tokens_lc.iter().enumerate().any(|(index, t)| {
-            ((index == 0 || matches!(kind, PowerShellCommandKind::Opaque))
-                && matches!(
-                    t.as_str(),
-                    "start-process" | "start" | "saps" | "invoke-item" | "ii"
-                ))
-                || t.contains("start-process")
-                || t.contains("invoke-item")
-        })
-    {
-        return Some(DangerousCommandMatch::Other);
+    if has_url && start_process_opens_url(words, &kind) {
+        return Some(DangerousCommandMatch::UrlLaunch);
     }
 
     if has_url
@@ -146,7 +140,7 @@ fn classify_powershell_words(
             .iter()
             .any(|t| t.contains("shellexecute") || t.contains("shell.application"))
     {
-        return Some(DangerousCommandMatch::Other);
+        return Some(DangerousCommandMatch::UrlLaunch);
     }
 
     if let Some(first) = tokens_lc.first() {
@@ -157,16 +151,16 @@ fn classify_powershell_words(
                 .any(|t| t.contains("url.dll,fileprotocolhandler"))
             && has_url
         {
-            return Some(DangerousCommandMatch::Other);
+            return Some(DangerousCommandMatch::UrlLaunch);
         }
         if first == "mshta" && has_url {
-            return Some(DangerousCommandMatch::Other);
+            return Some(DangerousCommandMatch::UrlLaunch);
         }
         if is_browser_executable(first) && has_url {
-            return Some(DangerousCommandMatch::Other);
+            return Some(DangerousCommandMatch::UrlLaunch);
         }
         if matches!(first.as_str(), "explorer" | "explorer.exe") && has_url {
-            return Some(DangerousCommandMatch::Other);
+            return Some(DangerousCommandMatch::UrlLaunch);
         }
     }
 
@@ -178,15 +172,11 @@ fn classify_powershell_words(
     has_force_delete_cmdlet(&trimmed, scope).then_some(DangerousCommandMatch::ForcedDelete)
 }
 
-fn is_dangerous_cmd(command: &[String]) -> bool {
-    let Some((exe, rest)) = command.split_first() else {
-        return false;
-    };
-    let Some(base) = executable_basename(exe) else {
-        return false;
-    };
+fn dangerous_cmd_match(command: &[String]) -> Option<DangerousCommandMatch> {
+    let (exe, rest) = command.split_first()?;
+    let base = executable_basename(exe)?;
     if base != "cmd" && base != "cmd.exe" {
-        return false;
+        return None;
     }
 
     let mut iter = rest.iter();
@@ -196,13 +186,13 @@ fn is_dangerous_cmd(command: &[String]) -> bool {
             "/c" | "/r" | "-c" => break,
             _ if lower.starts_with('/') => continue,
             // Unknown tokens before the command body => bail.
-            _ => return false,
+            _ => return None,
         }
     }
 
     let remaining: Vec<String> = iter.cloned().collect();
     if remaining.is_empty() {
-        return false;
+        return None;
     }
 
     let cmd_tokens: Vec<String> = match remaining.as_slice() {
@@ -219,30 +209,161 @@ fn is_dangerous_cmd(command: &[String]) -> bool {
     const CMD_SEPARATORS: &[&str] = &["&", "&&", "|", "||"];
     tokens
         .split(|t| CMD_SEPARATORS.contains(&t.as_str()))
-        .any(|segment| {
-            let Some(cmd) = segment.first() else {
-                return false;
-            };
+        .find_map(|segment| {
+            let cmd = segment.first()?;
 
             // Classic `cmd /c ... start https://...` ShellExecute path.
             if cmd.eq_ignore_ascii_case("start") && args_have_url(segment) {
-                return true;
+                return Some(DangerousCommandMatch::UrlLaunch);
             }
             // Force delete: del /f, erase /f
             if (cmd.eq_ignore_ascii_case("del") || cmd.eq_ignore_ascii_case("erase"))
                 && has_force_flag_cmd(segment)
             {
-                return true;
+                return Some(DangerousCommandMatch::Other);
             }
             // Recursive directory removal: rd /s /q, rmdir /s /q
             if (cmd.eq_ignore_ascii_case("rd") || cmd.eq_ignore_ascii_case("rmdir"))
                 && has_recursive_flag_cmd(segment)
                 && has_quiet_flag_cmd(segment)
             {
+                return Some(DangerousCommandMatch::Other);
+            }
+            None
+        })
+}
+
+/// Whether a `Start-Process` / `Invoke-Item` style launch in `words` opens a URL.
+///
+/// A URL that is only an argument for the launched program, as in
+/// `Start-Process node -ArgumentList 'http://127.0.0.1:18800/v1'`, opens nothing by itself, so only
+/// the launch target is inspected. A target that cannot be read literally keeps the command
+/// flagged whenever a URL appears anywhere in it.
+fn start_process_opens_url(words: &[String], kind: &PowerShellCommandKind) -> bool {
+    let tokens_lc: Vec<String> = words
+        .iter()
+        .map(|t| t.trim_matches('\'').trim_matches('"').to_ascii_lowercase())
+        .collect();
+    tokens_lc.iter().enumerate().any(|(index, token)| {
+        let exact = matches!(
+            token.as_str(),
+            "start-process" | "start" | "saps" | "invoke-item" | "ii"
+        ) && (index == 0 || matches!(kind, PowerShellCommandKind::Opaque));
+        let embedded = token.contains("start-process") || token.contains("invoke-item");
+        if !exact && !embedded {
+            return false;
+        }
+        if !exact {
+            // A whole script can arrive as one token: look inside it word by word.
+            if let Some(inner) = shlex_split(&words[index]).filter(|inner| inner.len() > 1) {
+                return start_process_opens_url(&inner, &PowerShellCommandKind::Opaque);
+            }
+            // `Start-Process('https://...')` arrives as one token: the URL is the target.
+            if looks_like_url(&words[index]) {
                 return true;
             }
-            false
-        })
+        }
+        match launch_target(&words[index + 1..]) {
+            Some(target) => launch_target_opens_url(&target, args_have_url(words)),
+            None => false,
+        }
+    })
+}
+
+/// The program or document a `Start-Process` / `Invoke-Item` call launches: the `-FilePath` or
+/// `-Path` value, or else the first positional word. Values of other parameters are skipped.
+fn launch_target(rest: &[String]) -> Option<String> {
+    let mut index = 0;
+    while index < rest.len() {
+        let token = rest[index].trim();
+        let bare = token.trim_matches(['\'', '"']);
+        index += 1;
+        if matches!(bare, ";" | "|" | "||" | "&" | "&&") {
+            return None;
+        }
+        if let Some(flag) = bare
+            .strip_prefix('-')
+            .filter(|flag| flag.starts_with(|c: char| c.is_ascii_alphabetic()))
+        {
+            let (name, inline_value) = match flag.split_once(':') {
+                Some((name, value)) => (name, Some(value)),
+                None => (flag, None),
+            };
+            let name = name.to_ascii_lowercase();
+            if is_launch_target_flag(&name) {
+                return match inline_value {
+                    Some(value) => Some(value.to_string()),
+                    None => rest.get(index).cloned(),
+                };
+            }
+            if inline_value.is_none() && is_launch_value_flag(&name) {
+                let skipped = rest.get(index)?;
+                index += 1;
+                if skipped.trim_end().ends_with(';') {
+                    return None;
+                }
+            }
+            continue;
+        }
+        // `cmd /c start "" <url>` passes an empty window title first.
+        if bare.is_empty() {
+            continue;
+        }
+        return Some(token.to_string());
+    }
+    None
+}
+
+fn is_launch_target_flag(name: &str) -> bool {
+    matches!(name, "path" | "literalpath" | "lp") || (name.len() >= 2 && "filepath".starts_with(name))
+}
+
+fn is_launch_value_flag(name: &str) -> bool {
+    const VALUE_FLAGS: &[&str] = &[
+        "argumentlist",
+        "workingdirectory",
+        "redirectstandardoutput",
+        "redirectstandarderror",
+        "redirectstandardinput",
+        "verb",
+        "windowstyle",
+        "credential",
+    ];
+    name == "args"
+        || (name.len() >= 2 && VALUE_FLAGS.iter().any(|flag| flag.starts_with(name)))
+}
+
+fn launch_target_opens_url(target: &str, args_have_url: bool) -> bool {
+    if looks_like_url(target) {
+        return true;
+    }
+    if !args_have_url {
+        return false;
+    }
+    // A variable, sub-expression or escape may hide a URL, and browsers and shells given a URL
+    // argument open it.
+    if target.contains(['$', '(', '`', '@']) {
+        return true;
+    }
+    let name = executable_basename(target.trim_matches(['\'', '"'])).unwrap_or_default();
+    is_browser_executable(&name)
+        || matches!(
+            name.as_str(),
+            "explorer"
+                | "explorer.exe"
+                | "mshta"
+                | "mshta.exe"
+                | "rundll32"
+                | "rundll32.exe"
+                | "cmd"
+                | "cmd.exe"
+                | "wt"
+                | "wt.exe"
+                | "powershell"
+                | "powershell.exe"
+                | "pwsh"
+                | "pwsh.exe"
+        )
 }
 
 fn is_direct_gui_launch(command: &[String]) -> bool {
@@ -992,6 +1113,76 @@ mod tests {
             "-Command",
             "rm test -Force"
         ])));
+    }
+
+    #[test]
+    fn start_process_with_url_only_in_arguments_is_not_flagged() {
+        for script in [
+            "$s = Start-Process 'C:\\bin\\inocode.exe' -ArgumentList 'app-server -c base_url=http://127.0.0.1:18800/v1' -WindowStyle Hidden -PassThru",
+            "Start-Process node -ArgumentList 'server.js','http://127.0.0.1:18800'",
+            "Start-Process -FilePath node -ArgumentList 'http://127.0.0.1:18800'",
+            "Start-Process node -Args 'http://127.0.0.1:18800' -PassThru",
+            "Start-Process node -RedirectStandardError 'http://x.invalid/err' -PassThru",
+        ] {
+            assert!(
+                !is_dangerous_command_windows(&vec_str(&["powershell", "-Command", script])),
+                "{script}"
+            );
+        }
+    }
+
+    #[test]
+    fn start_process_launching_a_url_target_is_flagged() {
+        for script in [
+            "Start-Process chrome 'https://example.com'",
+            "Start-Process -FilePath https://example.com",
+            "Start-Process -FilePath:https://example.com",
+            "Start-Process -WindowStyle Hidden https://example.com",
+            "saps https://example.com",
+            "Invoke-Item https://example.com",
+            "ii https://example.com",
+            "$target = 'https://example.com/'; Start-Process $target",
+            "Start-Process cmd -ArgumentList '/c start https://example.com'",
+            "Start-Process powershell -ArgumentList '-c ii https://example.com'",
+        ] {
+            assert!(
+                is_dangerous_command_windows(&vec_str(&["powershell", "-Command", script])),
+                "{script}"
+            );
+        }
+    }
+
+    #[test]
+    fn url_launches_are_reported_as_url_launch_and_deletes_are_not() {
+        use super::DangerousCommandMatch;
+        use super::dangerous_command_windows_match;
+
+        for command in [
+            vec_str(&["powershell", "-Command", "Start-Process 'https://example.com'"]),
+            vec_str(&["cmd", "/c", "start", "https://example.com"]),
+            vec_str(&["msedge.exe", "https://example.com"]),
+            vec_str(&["explorer.exe", "https://example.com"]),
+        ] {
+            assert_eq!(
+                dangerous_command_windows_match(&command, /*scope*/ None),
+                Some(DangerousCommandMatch::UrlLaunch),
+                "{command:?}"
+            );
+        }
+        assert_eq!(
+            dangerous_command_windows_match(
+                &vec_str(&["cmd", "/c", "del", "/f", "x.txt"]),
+                /*scope*/ None
+            ),
+            Some(DangerousCommandMatch::Other)
+        );
+        assert_eq!(
+            dangerous_command_windows_match(
+                &vec_str(&["powershell", "-Command", "Remove-Item x -Force"]),
+                /*scope*/ None
+            ),
+            Some(DangerousCommandMatch::ForcedDelete)
+        );
     }
 
     #[test]

@@ -174,6 +174,6 @@ fn scope_does_not_excuse_other_dangerous_powershell_commands() {
     let command = ["pwsh", "-Command", "Start-Process https://example.com"];
     assert_eq!(
         windows(&command, Some(&scope)),
-        Some(DangerousCommandMatch::Other)
+        Some(DangerousCommandMatch::UrlLaunch)
     );
 }

@@ -33,6 +33,10 @@ pub enum DangerousCommandMatch {
     /// A forced PowerShell delete (for example `Remove-Item -Force`) that is not provably limited to
     /// literal paths inside the working directory or a temporary directory.
     ForcedDelete,
+    /// The command hands a URL to the shell or a browser (for example `Start-Process <url>`,
+    /// `explorer <url>`, `cmd /c start <url>`). It opens a program on the user's desktop but does
+    /// not change files, so unrestricted sessions that disable approvals may still run it.
+    UrlLaunch,
     /// Another dangerous-command rule matched.
     Other,
 }
