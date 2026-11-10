@@ -1480,7 +1480,10 @@ async fn granular_dangerous_command_approval_does_not_authorize_escalation(
                     DangerousCommandPlatform::Posix => {
                         "rm -f style commands are not permitted. Use a safer approach".to_string()
                     }
-                    DangerousCommandPlatform::Windows => REJECT_SANDBOX_APPROVAL_REASON.to_string(),
+                    DangerousCommandPlatform::Windows => {
+                        dangerous_command_rejection_reason(DangerousCommandMatch::ForcedDelete)
+                            .to_string()
+                    }
                 },
             }
         };
