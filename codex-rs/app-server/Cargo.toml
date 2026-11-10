@@ -65,6 +65,7 @@ codex-http-client = { workspace = true }
 codex-inocode-flags = { workspace = true }
 codex-inocode-evidence = { workspace = true }
 codex-inocode-knowledge = { workspace = true }
+codex-inocode-team = { workspace = true }
 codex-otel = { workspace = true }
 codex-plugin = { workspace = true }
 codex-shell-command = { workspace = true }

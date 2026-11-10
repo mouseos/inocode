@@ -115,6 +115,20 @@ async fn handle_spawn_agent(
     let args: SpawnAgentArgs = parse_arguments(&arguments)?;
     let fork_mode = args.fork_mode()?;
     let message = message_content(args.message)?;
+    // Team contracts (`.inocode/knowledge/contract/`) travel with the sub-agent's instructions.
+    let message = {
+        #[allow(deprecated)]
+        let cwd = turn.cwd.as_path().to_path_buf();
+        let contracts = codex_inocode_team::contract_instruction(&cwd);
+        if contracts.is_empty() {
+            message
+        } else {
+            format!("{message}
+
+{contracts}")
+        }
+    };
+    let team_task_name = args.task_name.clone();
     let role_name = args
         .agent_type
         .as_deref()
@@ -179,6 +193,16 @@ async fn handle_spawn_agent(
         &[("role", role_tag), ("version", "v2")],
     );
     let task_name = String::from(new_agent_path);
+    codex_inocode_team::roster_for(&session.thread_id.to_string()).upsert(
+        codex_inocode_team::TeamAgent {
+            id: new_thread_id.to_string(),
+            name: team_task_name,
+            owned_paths: Vec::new(),
+            state: codex_inocode_team::AgentState::Running,
+            tokens: 0,
+            started_at: chrono::Utc::now().to_rfc3339(),
+        },
+    );
 
     let hide_agent_metadata = turn.config.multi_agent_v2.hide_spawn_agent_metadata;
     let output = if hide_agent_metadata {
@@ -223,7 +247,7 @@ impl SpawnAgentArgs {
             .as_deref()
             .map(str::trim)
             .filter(|fork_turns| !fork_turns.is_empty())
-            .unwrap_or("all");
+            .unwrap_or("none");
 
         if fork_turns.eq_ignore_ascii_case("none") {
             return Ok(None);
