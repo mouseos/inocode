@@ -1,0 +1,22 @@
+[package]
+edition.workspace = true
+license.workspace = true
+name = "codex-inocode-flags"
+version.workspace = true
+
+[lib]
+name = "codex_inocode_flags"
+path = "src/lib.rs"
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+dirs = { workspace = true }
+toml = { workspace = true }
+toml_edit = { workspace = true }
+
+[dev-dependencies]
+pretty_assertions = { workspace = true }
+tempfile = { workspace = true }
