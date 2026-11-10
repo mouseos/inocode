@@ -53,7 +53,6 @@ use uuid::Uuid;
 use wiremock::Mock;
 use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
-use wiremock::matchers::path;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn thread_creator_survives_resume_and_forks_use_current_auth() -> Result<()> {
