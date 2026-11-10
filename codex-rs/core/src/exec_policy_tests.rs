@@ -1198,6 +1198,7 @@ fn unmatched_granular_policy_still_prompts_for_restricted_sandbox_escalation() {
                 windows_sandbox_level: WindowsSandboxLevel::Disabled,
                 sandbox_permissions: SandboxPermissions::RequireEscalated,
                 command_origin: ExecPolicyCommandOrigin::Generic,
+                delete_scope: None,
             },
         )
     );
@@ -1217,6 +1218,7 @@ fn unmatched_on_request_uses_permission_profile_file_system_policy_for_escalatio
                 windows_sandbox_level: WindowsSandboxLevel::Disabled,
                 sandbox_permissions: SandboxPermissions::RequireEscalated,
                 command_origin: ExecPolicyCommandOrigin::Generic,
+                delete_scope: None,
             },
         )
     );
@@ -1236,6 +1238,7 @@ fn known_safe_on_request_still_prompts_for_restricted_sandbox_escalation() {
                 windows_sandbox_level: WindowsSandboxLevel::RestrictedToken,
                 sandbox_permissions: SandboxPermissions::RequireEscalated,
                 command_origin: ExecPolicyCommandOrigin::Generic,
+                delete_scope: None,
             },
         )
     );
@@ -1459,6 +1462,7 @@ async fn granular_dangerous_command_approval_does_not_authorize_escalation(
                     sandbox_permissions,
                     prefix_rule: None,
                     allow_prefix_rules: AllowPrefixRules::Honor,
+                    delete_scope: None,
                 },
                 platform,
             )
@@ -1539,6 +1543,7 @@ async fn mixed_rule_and_sandbox_prompt_prioritizes_rule_for_rejection_decision()
             sandbox_permissions: SandboxPermissions::RequireEscalated,
             prefix_rule: None,
             allow_prefix_rules: AllowPrefixRules::Honor,
+            delete_scope: None,
         })
         .await;
 
@@ -1578,6 +1583,7 @@ async fn forced_rm_preserves_rule_rejection_when_granular_rules_are_disabled() {
             sandbox_permissions: SandboxPermissions::UseDefault,
             prefix_rule: None,
             allow_prefix_rules: AllowPrefixRules::Honor,
+            delete_scope: None,
         })
         .await;
 
@@ -1604,6 +1610,7 @@ async fn exec_approval_requirement_falls_back_to_heuristics() {
             sandbox_permissions: SandboxPermissions::UseDefault,
             prefix_rule: None,
             allow_prefix_rules: AllowPrefixRules::Honor,
+            delete_scope: None,
         })
         .await;
 
@@ -1631,6 +1638,7 @@ async fn empty_bash_lc_script_falls_back_to_original_command() {
             sandbox_permissions: SandboxPermissions::UseDefault,
             prefix_rule: None,
             allow_prefix_rules: AllowPrefixRules::Honor,
+            delete_scope: None,
         })
         .await;
 
@@ -1662,6 +1670,7 @@ async fn whitespace_bash_lc_script_falls_back_to_original_command() {
             sandbox_permissions: SandboxPermissions::UseDefault,
             prefix_rule: None,
             allow_prefix_rules: AllowPrefixRules::Honor,
+            delete_scope: None,
         })
         .await;
 
@@ -1693,6 +1702,7 @@ async fn request_rule_uses_prefix_rule() {
             sandbox_permissions: SandboxPermissions::RequireEscalated,
             prefix_rule: Some(vec!["cargo".to_string(), "install".to_string()]),
             allow_prefix_rules: AllowPrefixRules::Honor,
+            delete_scope: None,
         })
         .await;
 
@@ -1727,6 +1737,7 @@ async fn request_rule_falls_back_when_prefix_rule_does_not_approve_all_commands(
             sandbox_permissions: SandboxPermissions::RequireEscalated,
             prefix_rule: Some(vec!["cargo".to_string(), "install".to_string()]),
             allow_prefix_rules: AllowPrefixRules::Honor,
+            delete_scope: None,
         })
         .await;
 
@@ -1768,6 +1779,7 @@ async fn heuristics_apply_when_other_commands_match_policy() {
                 sandbox_permissions: SandboxPermissions::UseDefault,
                 prefix_rule: None,
                 allow_prefix_rules: AllowPrefixRules::Honor,
+                delete_scope: None,
             })
             .await,
         ExecApprovalRequirement::NeedsApproval {
@@ -2229,6 +2241,7 @@ async fn forced_rm_requires_approval_or_specific_rejection_on_all_platforms() {
                 sandbox_permissions: permissions,
                 prefix_rule: None,
                 allow_prefix_rules: AllowPrefixRules::Honor,
+                delete_scope: None,
             })
             .await,
         r#"On all platforms, a forbidden command should require approval
@@ -2252,6 +2265,7 @@ async fn forced_rm_requires_approval_or_specific_rejection_on_all_platforms() {
                 sandbox_permissions: permissions,
                 prefix_rule: None,
                 allow_prefix_rules: AllowPrefixRules::Honor,
+                delete_scope: None,
             })
             .await,
         r#"On all platforms, a forbidden command should require approval
@@ -2312,6 +2326,7 @@ async fn verify_approval_requirement_for_unsafe_powershell_command() {
                 sandbox_permissions: permissions,
                 prefix_rule: None,
                 allow_prefix_rules: AllowPrefixRules::Honor,
+                delete_scope: None,
             })
             .await,
         "{pwsh_approval_reason}"
@@ -2406,6 +2421,7 @@ async fn exec_approval_requirement_for_command(
             sandbox_permissions,
             prefix_rule,
             allow_prefix_rules: AllowPrefixRules::Honor,
+            delete_scope: None,
         })
         .await
 }
@@ -2634,6 +2650,7 @@ async fn windows_powershell_policy_classifies_only_independent_literal_commands(
                             sandbox_permissions: SandboxPermissions::UseDefault,
                             prefix_rule: None,
                             allow_prefix_rules: AllowPrefixRules::Honor,
+                            delete_scope: None,
                         },
                         &shell,
                         DangerousCommandPlatform::Windows,

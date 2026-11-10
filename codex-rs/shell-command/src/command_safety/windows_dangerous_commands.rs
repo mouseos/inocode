@@ -1,34 +1,43 @@
+use super::DangerousCommandMatch;
+use super::DeleteScope;
 use crate::command_safety::powershell_tree_sitter::try_parse_powershell_commands;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use shlex::split as shlex_split;
 use url::Url;
 
+#[cfg(test)]
 pub fn is_dangerous_command_windows(command: &[String]) -> bool {
+    dangerous_command_windows_match(command, /*scope*/ None).is_some()
+}
+
+pub(super) fn dangerous_command_windows_match(
+    command: &[String],
+    scope: Option<&DeleteScope>,
+) -> Option<DangerousCommandMatch> {
     // Prefer structured parsing for PowerShell/CMD so we can spot URL-bearing
     // invocations of ShellExecute-style entry points before falling back to
     // simple argv heuristics.
-    if is_dangerous_powershell(command) {
-        return true;
+    if let Some(dangerous_match) = dangerous_powershell_match(command, scope) {
+        return Some(dangerous_match);
     }
 
-    if is_dangerous_cmd(command) {
-        return true;
+    if is_dangerous_cmd(command) || is_direct_gui_launch(command) {
+        return Some(DangerousCommandMatch::Other);
     }
 
-    is_direct_gui_launch(command)
+    None
 }
 
-fn is_dangerous_powershell(command: &[String]) -> bool {
-    let Some((exe, rest)) = command.split_first() else {
-        return false;
-    };
+fn dangerous_powershell_match(
+    command: &[String],
+    scope: Option<&DeleteScope>,
+) -> Option<DangerousCommandMatch> {
+    let (exe, rest) = command.split_first()?;
     if !is_powershell_executable(exe) {
-        return false;
+        return None;
     }
-    let Some(parsed) = parse_powershell_invocation(rest) else {
-        return false;
-    };
+    let parsed = parse_powershell_invocation(rest)?;
 
     if let Some(script) = parsed.script
         && let Some(commands) = try_parse_powershell_commands(script)
@@ -36,9 +45,9 @@ fn is_dangerous_powershell(command: &[String]) -> bool {
     {
         return commands
             .iter()
-            .any(|words| is_dangerous_powershell_literal_words(words));
+            .find_map(|words| powershell_literal_words_match(words, scope));
     }
-    is_dangerous_powershell_words(&parsed.tokens)
+    powershell_words_match(&parsed.tokens, scope)
 }
 
 /// Whether strictly lowered commands can be classified independently of the rest of the script.
@@ -81,11 +90,17 @@ enum PowerShellCommandKind {
     IndependentLiteral,
 }
 
-pub(crate) fn is_dangerous_powershell_words(words: &[String]) -> bool {
-    classify_powershell_words(words, PowerShellCommandKind::Opaque)
+pub(super) fn powershell_words_match(
+    words: &[String],
+    scope: Option<&DeleteScope>,
+) -> Option<DangerousCommandMatch> {
+    classify_powershell_words(words, PowerShellCommandKind::Opaque, scope)
 }
 
-pub(crate) fn is_dangerous_powershell_literal_words(words: &[String]) -> bool {
+pub(super) fn powershell_literal_words_match(
+    words: &[String],
+    scope: Option<&DeleteScope>,
+) -> Option<DangerousCommandMatch> {
     // Shell and terminal wrappers can interpret later words as commands, including `start`.
     let kind = if words.first().is_some_and(|word| {
         is_powershell_executable(word)
@@ -98,10 +113,14 @@ pub(crate) fn is_dangerous_powershell_literal_words(words: &[String]) -> bool {
     } else {
         PowerShellCommandKind::IndependentLiteral
     };
-    classify_powershell_words(words, kind)
+    classify_powershell_words(words, kind, scope)
 }
 
-fn classify_powershell_words(words: &[String], kind: PowerShellCommandKind) -> bool {
+fn classify_powershell_words(
+    words: &[String],
+    kind: PowerShellCommandKind,
+    scope: Option<&DeleteScope>,
+) -> Option<DangerousCommandMatch> {
     let tokens_lc: Vec<String> = words
         .iter()
         .map(|t| t.trim_matches('\'').trim_matches('"').to_ascii_lowercase())
@@ -119,7 +138,7 @@ fn classify_powershell_words(words: &[String], kind: PowerShellCommandKind) -> b
                 || t.contains("invoke-item")
         })
     {
-        return true;
+        return Some(DangerousCommandMatch::Other);
     }
 
     if has_url
@@ -127,7 +146,7 @@ fn classify_powershell_words(words: &[String], kind: PowerShellCommandKind) -> b
             .iter()
             .any(|t| t.contains("shellexecute") || t.contains("shell.application"))
     {
-        return true;
+        return Some(DangerousCommandMatch::Other);
     }
 
     if let Some(first) = tokens_lc.first() {
@@ -138,21 +157,25 @@ fn classify_powershell_words(words: &[String], kind: PowerShellCommandKind) -> b
                 .any(|t| t.contains("url.dll,fileprotocolhandler"))
             && has_url
         {
-            return true;
+            return Some(DangerousCommandMatch::Other);
         }
         if first == "mshta" && has_url {
-            return true;
+            return Some(DangerousCommandMatch::Other);
         }
         if is_browser_executable(first) && has_url {
-            return true;
+            return Some(DangerousCommandMatch::Other);
         }
         if matches!(first.as_str(), "explorer" | "explorer.exe") && has_url {
-            return true;
+            return Some(DangerousCommandMatch::Other);
         }
     }
 
     // Check for force delete operations (e.g., Remove-Item -Force)
-    has_force_delete_cmdlet(&tokens_lc)
+    let trimmed: Vec<String> = words
+        .iter()
+        .map(|t| t.trim_matches('\'').trim_matches('"').to_string())
+        .collect();
+    has_force_delete_cmdlet(&trimmed, scope).then_some(DangerousCommandMatch::ForcedDelete)
 }
 
 fn is_dangerous_cmd(command: &[String]) -> bool {
@@ -288,9 +311,17 @@ fn split_embedded_cmd_operators(token: &str) -> Vec<String> {
     parts
 }
 
-fn has_force_delete_cmdlet(tokens: &[String]) -> bool {
-    const DELETE_CMDLETS: &[&str] = &["remove-item", "ri", "rm", "del", "erase", "rd", "rmdir"];
+const DELETE_CMDLETS: &[&str] = &["remove-item", "ri", "rm", "del", "erase", "rd", "rmdir"];
 
+fn is_delete_cmdlet(atom: &str) -> bool {
+    DELETE_CMDLETS
+        .iter()
+        .any(|cmd| atom.eq_ignore_ascii_case(cmd))
+}
+
+/// Whether the tokens contain a delete cmdlet together with `-Force` in the same command segment.
+/// The delete is excused only when `scope` proves every target is a contained literal path.
+fn has_force_delete_cmdlet(tokens: &[String], scope: Option<&DeleteScope>) -> bool {
     // Hard separators that end a command segment (so -Force must be in same segment)
     const SEG_SEPS: &[char] = &[';', '|', '&', '\n', '\r', '\t'];
 
@@ -330,29 +361,154 @@ fn has_force_delete_cmdlet(tokens: &[String]) -> bool {
 
     // Now, inside each segment, normalize tokens by splitting on soft punctuation
     segments.into_iter().any(|seg| {
-        let atoms = seg
+        let atoms: Vec<String> = seg
             .iter()
             .flat_map(|t| t.split(|c| SOFT_SEPS.contains(&c)))
-            .map(str::trim)
-            .filter(|s| !s.is_empty());
+            .map(|atom| atom.trim().trim_matches(['\'', '"']).to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
 
-        let mut has_delete = false;
-        let mut has_force = false;
-
-        for a in atoms {
-            if DELETE_CMDLETS.iter().any(|cmd| a.eq_ignore_ascii_case(cmd)) {
-                has_delete = true;
-            }
-            if a.eq_ignore_ascii_case("-force")
+        let has_delete = atoms.iter().any(|atom| is_delete_cmdlet(atom));
+        let has_force = atoms.iter().any(|a| {
+            a.eq_ignore_ascii_case("-force")
                 || a.get(..7)
                     .is_some_and(|p| p.eq_ignore_ascii_case("-force:"))
-            {
-                has_force = true;
-            }
-        }
+        });
 
-        has_delete && has_force
+        has_delete && has_force && !forced_delete_is_contained(&seg, &atoms, scope)
     })
+}
+
+enum DeleteFlag {
+    /// A switch such as `-Force` or `-Recurse`.
+    Switch,
+    /// `-Path`, `-LiteralPath` or `-PSPath`: the value is a delete target.
+    Target,
+    /// A parameter whose value is not a target (`-Include`, `-ErrorAction` ...).
+    IgnoredValue,
+    Unknown,
+}
+
+fn classify_delete_flag(name: &str) -> DeleteFlag {
+    // Value-taking parameters are matched by exact name only, so an abbreviation can never make
+    // the following token (a real target) look like a parameter value.
+    const IGNORED_VALUE_FLAGS: &[&str] = &[
+        "include",
+        "exclude",
+        "filter",
+        "stream",
+        "credential",
+        "erroraction",
+        "ea",
+        "warningaction",
+        "wa",
+        "informationaction",
+        "ia",
+        "errorvariable",
+        "ev",
+        "warningvariable",
+        "wv",
+        "informationvariable",
+        "iv",
+        "outvariable",
+        "ov",
+        "outbuffer",
+        "ob",
+        "pipelinevariable",
+        "pv",
+    ];
+    const SWITCHES: &[&str] = &[
+        "force",
+        "recurse",
+        "whatif",
+        "confirm",
+        "verbose",
+        "debug",
+        "usetransaction",
+    ];
+    if name.is_empty() {
+        return DeleteFlag::Unknown;
+    }
+    if IGNORED_VALUE_FLAGS.contains(&name) {
+        return DeleteFlag::IgnoredValue;
+    }
+    if name == "lp"
+        || ("literalpath".starts_with(name))
+        || (name.len() >= 2 && ("path".starts_with(name) || "pspath".starts_with(name)))
+    {
+        return DeleteFlag::Target;
+    }
+    if SWITCHES.iter().any(|switch| switch.starts_with(name)) && name != "f" {
+        return DeleteFlag::Switch;
+    }
+    DeleteFlag::Unknown
+}
+
+/// True when the segment is a single delete cmdlet whose every target is a literal path that
+/// `scope` proves to be contained. Anything unexpected keeps the command dangerous.
+fn forced_delete_is_contained(
+    segment: &[String],
+    atoms: &[String],
+    scope: Option<&DeleteScope>,
+) -> bool {
+    let Some(scope) = scope else {
+        return false;
+    };
+    // Sub-expressions, script blocks, variables, splatting and escapes are not plain literals. The
+    // atoms below are split on this punctuation, so they would hide such constructs.
+    if segment
+        .iter()
+        .any(|token| token.contains(['(', ')', '{', '}', '[', ']', '$', '@', '\x60']))
+    {
+        return false;
+    }
+    let Some((first, rest)) = atoms.split_first() else {
+        return false;
+    };
+    if !is_delete_cmdlet(first) || rest.iter().any(|atom| is_delete_cmdlet(atom)) {
+        return false;
+    }
+
+    let mut targets = Vec::new();
+    let mut index = 0;
+    while index < rest.len() {
+        let atom = &rest[index];
+        index += 1;
+        let Some(flag) = atom.strip_prefix('-') else {
+            targets.push(atom.clone());
+            continue;
+        };
+        let (name, inline_value) = match flag.split_once(':') {
+            Some((name, value)) => (name, Some(value)),
+            None => (flag, None),
+        };
+        match classify_delete_flag(&name.to_ascii_lowercase()) {
+            DeleteFlag::Switch => {}
+            DeleteFlag::Target => {
+                let value = match inline_value {
+                    Some(value) => value.to_string(),
+                    None => {
+                        let Some(value) = rest.get(index) else {
+                            return false;
+                        };
+                        index += 1;
+                        value.clone()
+                    }
+                };
+                targets.push(value);
+            }
+            DeleteFlag::IgnoredValue => {
+                if inline_value.is_none() {
+                    if index >= rest.len() {
+                        return false;
+                    }
+                    index += 1;
+                }
+            }
+            DeleteFlag::Unknown => return false,
+        }
+    }
+    scope.contains_all(&targets)
 }
 
 /// Check for /f or /F flag in CMD del/erase arguments.

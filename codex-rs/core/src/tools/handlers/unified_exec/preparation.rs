@@ -29,6 +29,7 @@ use codex_sandboxing::SandboxManager;
 use codex_sandboxing::SandboxType;
 use codex_sandboxing::SandboxablePreference;
 use codex_shell_command::is_dangerous_command::DangerousCommandPlatform;
+use codex_shell_command::is_dangerous_command::DeleteScope;
 use codex_shell_command::shell_detect::detect_shell_type;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathConvention;
@@ -60,6 +61,38 @@ pub(crate) struct PreparedExecCommand {
 }
 
 impl PreparedExecCommand {
+    /// The directories in which a forced delete counts as routine cleanup: the command's working
+    /// directory and the temporary directories. Only built for a local executor on this platform,
+    /// because containment is verified against the real filesystem (links are resolved).
+    fn delete_scope(&self, command_platform: DangerousCommandPlatform) -> Option<DeleteScope> {
+        let environment = &self.turn_environment;
+        if environment.environment().is_remote()
+            || command_platform != DangerousCommandPlatform::host()
+        {
+            return None;
+        }
+        let cwd = self.cwd.to_abs_path().ok()?;
+        let user_home = environment
+            .user_home_dir
+            .as_ref()
+            .and_then(|home| home.to_abs_path().ok());
+        let mut temp_dirs: Vec<std::path::PathBuf> = environment
+            .temporary_directories
+            .iter()
+            .flatten()
+            .filter_map(|dir| dir.to_abs_path().ok())
+            .map(|dir| dir.to_path_buf())
+            .collect();
+        temp_dirs.push(std::env::temp_dir());
+        DeleteScope::new(
+            cwd.as_path(),
+            user_home.as_ref().map(|home| home.as_path()),
+            &temp_dirs,
+            /*case_insensitive*/ cfg!(windows),
+            /*check_filesystem*/ true,
+        )
+    }
+
     pub(crate) async fn approval_requirement(
         &self,
         session: &Session,
@@ -75,6 +108,7 @@ impl PreparedExecCommand {
             Some("windows") | Some(_) => DangerousCommandPlatform::Windows,
             None => DangerousCommandPlatform::host(),
         };
+        let delete_scope = self.delete_scope(command_platform);
         session
             .services
             .exec_policy
@@ -95,6 +129,7 @@ impl PreparedExecCommand {
                     },
                     prefix_rule: self.prefix_rule.clone(),
                     allow_prefix_rules: step.turn.allow_prefix_rules(),
+                    delete_scope: delete_scope.as_ref(),
                 },
                 configured_shell,
                 command_platform,

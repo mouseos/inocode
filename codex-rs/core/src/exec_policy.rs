@@ -29,7 +29,8 @@ use codex_protocol::permissions::FileSystemSandboxKind;
 use codex_protocol::protocol::AskForApproval;
 use codex_shell_command::is_dangerous_command::DangerousCommandMatch;
 use codex_shell_command::is_dangerous_command::DangerousCommandPlatform;
-use codex_shell_command::is_dangerous_command::dangerous_command_match_for_platform;
+use codex_shell_command::is_dangerous_command::DeleteScope;
+use codex_shell_command::is_dangerous_command::dangerous_command_match_for_platform_scoped;
 use thiserror::Error;
 use tokio::fs;
 use tokio::sync::Semaphore;
@@ -181,6 +182,7 @@ pub(crate) struct UnmatchedCommandContext<'a> {
     pub(crate) windows_sandbox_level: WindowsSandboxLevel,
     pub(crate) sandbox_permissions: SandboxPermissions,
     pub(crate) command_origin: ExecPolicyCommandOrigin,
+    pub(crate) delete_scope: Option<&'a DeleteScope>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -299,6 +301,8 @@ pub(crate) struct ExecApprovalRequest<'a> {
     pub(crate) sandbox_permissions: SandboxPermissions,
     pub(crate) prefix_rule: Option<Vec<String>>,
     pub(crate) allow_prefix_rules: AllowPrefixRules,
+    /// Where a forced delete counts as routine cleanup; `None` keeps every forced delete dangerous.
+    pub(crate) delete_scope: Option<&'a DeleteScope>,
 }
 
 impl ExecPolicyManager {
@@ -378,6 +382,7 @@ impl ExecPolicyManager {
             sandbox_permissions,
             prefix_rule,
             allow_prefix_rules,
+            delete_scope,
         } = req;
         let exec_policy = self.current_for_environment(environment_policy, allow_prefix_rules);
         // Avoid reusable approvals when this model does not honor prefix rules.
@@ -391,6 +396,7 @@ impl ExecPolicyManager {
                     windows_sandbox_level,
                     sandbox_permissions,
                     command_origin,
+                    delete_scope,
                 },
                 command_platform,
             )
@@ -427,6 +433,7 @@ impl ExecPolicyManager {
                         Decision::Forbidden,
                         command_origin,
                         command_platform,
+                        delete_scope,
                     ),
                 ),
             },
@@ -439,6 +446,7 @@ impl ExecPolicyManager {
                     Decision::Prompt,
                     command_origin,
                     command_platform,
+                    delete_scope,
                 );
                 // Reviewing a dangerous command does not grant additional permissions.
                 // Keep explicit rules, escalation requests, and unavailable Windows
@@ -809,20 +817,23 @@ fn dangerous_command_match_for_origin(
     command: &[String],
     command_origin: ExecPolicyCommandOrigin,
     command_platform: DangerousCommandPlatform,
+    delete_scope: Option<&DeleteScope>,
 ) -> Option<DangerousCommandMatch> {
     match command_origin {
         ExecPolicyCommandOrigin::Generic => {
-            dangerous_command_match_for_platform(command, command_platform)
+            dangerous_command_match_for_platform_scoped(command, command_platform, delete_scope)
         }
         ExecPolicyCommandOrigin::PowerShell => {
-            codex_shell_command::is_dangerous_command::dangerous_powershell_words_match(
+            codex_shell_command::is_dangerous_command::dangerous_powershell_words_match_scoped(
                 command,
                 command_platform,
+                delete_scope,
             )
         }
         ExecPolicyCommandOrigin::PowerShellLiteral => {
-            codex_shell_command::is_dangerous_command::dangerous_powershell_literal_words_match(
+            codex_shell_command::is_dangerous_command::dangerous_powershell_literal_words_match_scoped(
                 command,
+                delete_scope,
             )
         }
     }
@@ -834,6 +845,7 @@ fn dangerous_command_match_for_heuristics(
     decision: Decision,
     command_origin: ExecPolicyCommandOrigin,
     command_platform: DangerousCommandPlatform,
+    delete_scope: Option<&DeleteScope>,
 ) -> Option<DangerousCommandMatch> {
     evaluation
         .matched_rules
@@ -842,9 +854,12 @@ fn dangerous_command_match_for_heuristics(
             RuleMatch::HeuristicsRuleMatch {
                 command,
                 decision: matched_decision,
-            } if *matched_decision == decision => {
-                dangerous_command_match_for_origin(command, command_origin, command_platform)
-            }
+            } if *matched_decision == decision => dangerous_command_match_for_origin(
+                command,
+                command_origin,
+                command_platform,
+                delete_scope,
+            ),
             _ => None,
         })
 }
@@ -867,14 +882,19 @@ fn render_decision_for_unmatched_command_for_platform(
     context: UnmatchedCommandContext<'_>,
     command_platform: DangerousCommandPlatform,
 ) -> Decision {
-    let dangerous_command_match =
-        dangerous_command_match_for_origin(command, context.command_origin, command_platform);
+    let dangerous_command_match = dangerous_command_match_for_origin(
+        command,
+        context.command_origin,
+        command_platform,
+        context.delete_scope,
+    );
     let UnmatchedCommandContext {
         approval_policy,
         permission_profile,
         windows_sandbox_level,
         sandbox_permissions,
         command_origin: _,
+        delete_scope: _,
     } = context;
     let file_system_sandbox_policy = permission_profile.file_system_sandbox_policy();
     // When the Windows sandbox backend is disabled, managed filesystem
@@ -1214,9 +1234,10 @@ fn derive_rejected_prompt_reason(
     dangerous_command_match: Option<DangerousCommandMatch>,
 ) -> String {
     match dangerous_command_match {
-        Some(dangerous_command_match @ DangerousCommandMatch::ForcedRm) => {
-            dangerous_command_rejection_reason(dangerous_command_match).to_string()
-        }
+        Some(
+            dangerous_command_match @ (DangerousCommandMatch::ForcedRm
+            | DangerousCommandMatch::ForcedDelete),
+        ) => dangerous_command_rejection_reason(dangerous_command_match).to_string(),
         Some(DangerousCommandMatch::Other) | None => fallback_reason.to_string(),
     }
 }
@@ -1227,6 +1248,9 @@ fn dangerous_command_rejection_reason(
     match dangerous_command_match {
         DangerousCommandMatch::ForcedRm => {
             "rm -f style commands are not permitted. Use a safer approach"
+        }
+        DangerousCommandMatch::ForcedDelete => {
+            "forced delete (for example Remove-Item -Force) is only allowed for literal paths inside the working directory or a temporary directory: no variables, wildcards, .. or .git. Use explicit paths there, or run in an approval mode that can ask"
         }
         DangerousCommandMatch::Other => "blocked by policy",
     }
