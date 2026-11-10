@@ -1,0 +1,43 @@
+name: build-cli
+
+# Builds the inocode binary so the GUI can be developed against a real app-server.
+# Run it by hand; it is not part of the test workflow.
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: inocode (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libcap-dev libssl-dev
+
+      - name: Toolchain (pinned by codex-rs/rust-toolchain.toml)
+        working-directory: codex-rs
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: codex-rs
+
+      - name: Build inocode
+        working-directory: codex-rs
+        run: cargo build --profile dev-small -p codex-cli --bin inocode
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: inocode-${{ runner.os }}
+          path: |
+            codex-rs/target/dev-small/inocode
+            codex-rs/target/dev-small/inocode.exe
+          if-no-files-found: error
+          retention-days: 14
