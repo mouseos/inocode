@@ -210,6 +210,7 @@ async fn spawn_process_with_stdin_mode(
         .id()
         .ok_or_else(|| io::Error::other("missing child pid"))?;
 
+    let child_pid = child.id();
     let stdin = child.stdin.take();
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -292,6 +293,7 @@ async fn spawn_process_with_stdin_mode(
         /*pty_handles*/ None,
         /*resizer*/ None,
     );
+    handle.set_process_id(child_pid);
 
     Ok(SpawnedProcess {
         session: handle,

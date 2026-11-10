@@ -9,6 +9,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use regex_lite::Regex;
+use tokio::time::Instant;
 
 /// How often the background monitor re-evaluates a live terminal.
 pub(crate) const MONITOR_INTERVAL: Duration = Duration::from_secs(30);
@@ -22,6 +23,34 @@ pub(crate) const LOOP_MIN_REPEATS: usize = 20;
 pub(crate) const MAX_ANOMALY_NOTIFICATIONS: u32 = 3;
 /// Bytes of output kept for classification and for the status tail.
 pub(crate) const TAIL_BYTES: usize = 16 * 1024;
+/// No CPU time and no change in the process tree for this long counts as "quiet".
+pub(crate) const ACTIVITY_QUIET: Duration = Duration::from_secs(3 * 60);
+/// CPU time gained between two samples that counts as activity.
+pub(crate) const MIN_CPU_DELTA_MS: u64 = 20;
+/// Samples closer together than this are compared against the older baseline.
+pub(crate) const BASELINE_MIN_INTERVAL: Duration = Duration::from_secs(5);
+/// Total output after which a command is treated as runaway.
+pub(crate) const RUNAWAY_OUTPUT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Memory of the whole process tree after which a command is treated as runaway.
+pub(crate) const RUNAWAY_MEMORY_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+
+/// What the operating system reports about a terminal's process tree.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ActivitySample {
+    pub cpu_ms: u64,
+    pub processes: usize,
+    pub rss_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Activity {
+    /// The process ID is unknown (remote execution) or the tree could not be read.
+    Unmeasured,
+    /// CPU time or the process tree changed recently.
+    Active,
+    /// Nothing has changed for this long.
+    Quiet(Duration),
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TerminalKind {
@@ -114,6 +143,7 @@ pub(crate) enum Health {
     WaitingForInput,
     Stalled,
     Looping,
+    Runaway,
     Exited,
 }
 
@@ -124,12 +154,16 @@ impl Health {
             Self::WaitingForInput => "waiting_for_input_suspected",
             Self::Stalled => "stalled_suspected",
             Self::Looping => "loop_suspected",
+            Self::Runaway => "runaway",
             Self::Exited => "exited",
         }
     }
 
     pub(crate) fn is_anomaly(self) -> bool {
-        matches!(self, Self::WaitingForInput | Self::Stalled | Self::Looping)
+        matches!(
+            self,
+            Self::WaitingForInput | Self::Stalled | Self::Looping | Self::Runaway
+        )
     }
 }
 
@@ -142,6 +176,8 @@ pub(crate) struct Observation {
     pub idle: Duration,
     pub total_bytes: u64,
     pub tail: String,
+    pub activity: Activity,
+    pub sample: Option<ActivitySample>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -247,6 +283,21 @@ pub(crate) fn assess(kind: TerminalKind, observation: &Observation, scale: u32) 
     }
 
     let scale = scale.max(1);
+    if observation.total_bytes >= RUNAWAY_OUTPUT_BYTES
+        || observation
+            .sample
+            .is_some_and(|sample| sample.rss_bytes >= RUNAWAY_MEMORY_BYTES)
+    {
+        return Assessment {
+            health: Health::Runaway,
+            reason: format!(
+                "output reached {} MiB or the process tree uses {} MiB of memory",
+                observation.total_bytes / (1024 * 1024),
+                observation.sample.map_or(0, |s| s.rss_bytes / (1024 * 1024))
+            ),
+            fingerprint: "runaway".to_string(),
+        };
+    }
     if observation.idle >= PROMPT_IDLE * scale
         && let Some(line) = pending_prompt_line(&observation.tail)
         && is_prompt(&line)
@@ -262,7 +313,10 @@ pub(crate) fn assess(kind: TerminalKind, observation: &Observation, scale: u32) 
     }
 
     if !kind.tolerates_silence() {
-        if let Some((line, count)) = trailing_identical_lines(&observation.tail)
+        // A repeating line only counts as a loop while the process is working
+        // (or when that cannot be measured); a quiet retry loop is just waiting.
+        if !matches!(observation.activity, Activity::Quiet(_))
+            && let Some((line, count)) = trailing_identical_lines(&observation.tail)
             && count >= LOOP_MIN_REPEATS
         {
             return Assessment {
@@ -272,14 +326,27 @@ pub(crate) fn assess(kind: TerminalKind, observation: &Observation, scale: u32) 
             };
         }
         if observation.idle >= kind.stall_idle() * scale {
-            return Assessment {
-                health: Health::Stalled,
-                reason: format!(
-                    "no output for {}s (CPU and child process activity are not measured)",
+            let evidence = match observation.activity {
+                // Output is silent but the process still computes or spawns children.
+                Activity::Active => None,
+                Activity::Quiet(quiet) if quiet >= ACTIVITY_QUIET => Some(format!(
+                    "no output for {}s and no CPU or child-process activity for {}s",
+                    observation.idle.as_secs(),
+                    quiet.as_secs()
+                )),
+                Activity::Quiet(_) => None,
+                Activity::Unmeasured => Some(format!(
+                    "no output for {}s (CPU and child process activity could not be measured)",
                     observation.idle.as_secs()
-                ),
-                fingerprint: format!("stalled:{}", observation.total_bytes),
+                )),
             };
+            if let Some(reason) = evidence {
+                return Assessment {
+                    health: Health::Stalled,
+                    reason,
+                    fingerprint: format!("stalled:{}", observation.total_bytes),
+                };
+            }
         }
     }
     Assessment {
@@ -298,11 +365,52 @@ pub(crate) struct MonitorState {
     last_notified: Option<String>,
     acknowledged: HashSet<String>,
     scale_shift: u32,
+    baseline: Option<(Instant, ActivitySample)>,
+    latest: Option<ActivitySample>,
+    last_active: Option<Instant>,
     /// The model already received the exit through a tool result.
     pub exit_reported: bool,
 }
 
 impl MonitorState {
+    /// Feed an operating-system sample; returns nothing, the verdict comes from [`Self::activity`].
+    pub(crate) fn record_sample(&mut self, now: Instant, sample: ActivitySample) {
+        self.latest = Some(sample);
+        match self.baseline {
+            None => {
+                self.baseline = Some((now, sample));
+                self.last_active = Some(now);
+            }
+            Some((at, _)) if now.saturating_duration_since(at) < BASELINE_MIN_INTERVAL => {}
+            Some((_, base)) => {
+                if sample.cpu_ms.saturating_sub(base.cpu_ms) >= MIN_CPU_DELTA_MS
+                    || sample.processes != base.processes
+                {
+                    self.last_active = Some(now);
+                }
+                self.baseline = Some((now, sample));
+            }
+        }
+    }
+
+    pub(crate) fn activity(&self, now: Instant) -> Activity {
+        match (self.latest, self.last_active) {
+            (Some(_), Some(last_active)) => {
+                let quiet = now.saturating_duration_since(last_active);
+                if quiet >= ACTIVITY_QUIET {
+                    Activity::Quiet(quiet)
+                } else {
+                    Activity::Active
+                }
+            }
+            _ => Activity::Unmeasured,
+        }
+    }
+
+    pub(crate) fn latest_sample(&self) -> Option<ActivitySample> {
+        self.latest
+    }
+
     pub(crate) fn kind(&self) -> TerminalKind {
         self.kind_override
             .unwrap_or_else(|| TerminalKind::infer(&self.command))

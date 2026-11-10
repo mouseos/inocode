@@ -8,7 +8,14 @@ fn obs(tail: &str, idle_secs: u64) -> Observation {
         idle: Duration::from_secs(idle_secs),
         total_bytes: tail.len() as u64,
         tail: tail.to_string(),
+        activity: Activity::Unmeasured,
+        sample: None,
     }
+}
+
+fn with_activity(mut o: Observation, activity: Activity) -> Observation {
+    o.activity = activity;
+    o
 }
 
 #[test]
@@ -130,4 +137,87 @@ fn running_assessment_never_notifies() {
     let mut state = MonitorState::default();
     let running = assess(TerminalKind::Unknown, &obs("hi\n", 1), 1);
     assert!(!state.should_notify(&running));
+}
+
+#[test]
+fn silent_but_busy_process_is_not_stalled() {
+    let busy = with_activity(obs("compiling\n", 1500), Activity::Active);
+    assert_eq!(assess(TerminalKind::Unknown, &busy, 1).health, Health::Running);
+}
+
+#[test]
+fn silent_and_idle_process_is_stalled_only_after_the_confirmation_window() {
+    let just_quiet = with_activity(obs("x\n", 700), Activity::Quiet(Duration::from_secs(30)));
+    assert_eq!(assess(TerminalKind::Unknown, &just_quiet, 1).health, Health::Running);
+    let long_quiet = with_activity(obs("x\n", 700), Activity::Quiet(ACTIVITY_QUIET));
+    let verdict = assess(TerminalKind::Unknown, &long_quiet, 1);
+    assert_eq!(verdict.health, Health::Stalled);
+    assert!(verdict.reason.contains("no CPU or child-process activity"));
+}
+
+#[test]
+fn repeated_lines_are_a_loop_only_while_the_process_works() {
+    let same = "retrying\n".repeat(LOOP_MIN_REPEATS);
+    let working = with_activity(obs(&same, 1), Activity::Active);
+    assert_eq!(assess(TerminalKind::Unknown, &working, 1).health, Health::Looping);
+    let sleeping = with_activity(obs(&same, 1), Activity::Quiet(ACTIVITY_QUIET));
+    assert_eq!(assess(TerminalKind::Unknown, &sleeping, 1).health, Health::Running);
+}
+
+#[test]
+fn huge_output_or_memory_is_runaway_even_for_servers() {
+    let mut flood = obs("x\n", 1);
+    flood.total_bytes = RUNAWAY_OUTPUT_BYTES;
+    assert_eq!(assess(TerminalKind::Server, &flood, 1).health, Health::Runaway);
+
+    let mut fat = obs("x\n", 1);
+    fat.sample = Some(ActivitySample {
+        cpu_ms: 0,
+        processes: 1,
+        rss_bytes: RUNAWAY_MEMORY_BYTES,
+    });
+    assert_eq!(assess(TerminalKind::Watch, &fat, 1).health, Health::Runaway);
+}
+
+fn sample(cpu_ms: u64, processes: usize) -> ActivitySample {
+    ActivitySample {
+        cpu_ms,
+        processes,
+        rss_bytes: 0,
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn cpu_growth_or_new_children_count_as_activity() {
+    let mut state = MonitorState::default();
+    assert_eq!(state.activity(Instant::now()), Activity::Unmeasured);
+
+    state.record_sample(Instant::now(), sample(100, 1));
+    tokio::time::advance(Duration::from_secs(60)).await;
+    state.record_sample(Instant::now(), sample(100, 1));
+    tokio::time::advance(Duration::from_secs(60)).await;
+    state.record_sample(Instant::now(), sample(100, 1));
+    tokio::time::advance(Duration::from_secs(61)).await;
+    assert!(matches!(state.activity(Instant::now()), Activity::Quiet(_)));
+
+    state.record_sample(Instant::now(), sample(500, 1));
+    assert_eq!(state.activity(Instant::now()), Activity::Active, "CPU time grew");
+
+    tokio::time::advance(Duration::from_secs(200)).await;
+    assert!(matches!(state.activity(Instant::now()), Activity::Quiet(_)));
+    state.record_sample(Instant::now(), sample(500, 3));
+    assert_eq!(state.activity(Instant::now()), Activity::Active, "children appeared");
+}
+
+#[tokio::test(start_paused = true)]
+async fn samples_taken_close_together_are_compared_with_the_older_baseline() {
+    let mut state = MonitorState::default();
+    state.record_sample(Instant::now(), sample(0, 1));
+    tokio::time::advance(Duration::from_secs(200)).await;
+    state.record_sample(Instant::now(), sample(0, 1));
+    tokio::time::advance(Duration::from_secs(1)).await;
+    // One second later the CPU counter moved by less than one tick; the baseline is
+    // still the sample from 1s ago, so this must not erase the quiet period.
+    state.record_sample(Instant::now(), sample(5, 1));
+    assert!(matches!(state.activity(Instant::now()), Activity::Quiet(_)));
 }

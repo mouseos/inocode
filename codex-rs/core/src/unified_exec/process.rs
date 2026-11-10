@@ -35,6 +35,7 @@ use super::UNIFIED_EXEC_OUTPUT_MAX_BYTES;
 use super::UNIFIED_EXEC_OUTPUT_MAX_TOKENS;
 use super::UnifiedExecError;
 use super::process_state::ProcessState;
+use super::activity::sample_process_tree;
 use super::monitor::MonitorState;
 use super::monitor::Observation;
 use super::monitor::TAIL_BYTES;
@@ -181,7 +182,10 @@ impl UnifiedExecProcess {
 
     /// Snapshot what can be observed about this process without touching it.
     pub(super) async fn observe(&self) -> Observation {
+        self.sample_activity().await;
         let now = tokio::time::Instant::now();
+        let (activity, sample) =
+            self.with_monitor(|state| (state.activity(now), state.latest_sample()));
         let guard = self.output.output_buffer.lock().await;
         let idle_since = guard.last_output_at.unwrap_or(self.started_at);
         let bytes = guard.transcript.to_bytes();
@@ -196,6 +200,33 @@ impl UnifiedExecProcess {
             idle: now.saturating_duration_since(idle_since),
             total_bytes: guard.transcript.total_bytes() as u64,
             tail: String::from_utf8_lossy(&bytes[start..]).into_owned(),
+            activity,
+            sample,
+        }
+    }
+
+    fn os_pid(&self) -> Option<u32> {
+        match &self.process_handle {
+            ProcessHandle::Local(process_handle) => process_handle.process_id(),
+            ProcessHandle::ExecServer(_) => None,
+        }
+    }
+
+    /// Read CPU time and memory of the process tree into the monitor state.
+    async fn sample_activity(&self) {
+        let Some(pid) = self.os_pid() else {
+            return;
+        };
+        if self.has_exited() {
+            return;
+        }
+        let sample = tokio::task::spawn_blocking(move || sample_process_tree(pid))
+            .await
+            .ok()
+            .flatten();
+        if let Some(sample) = sample {
+            let now = tokio::time::Instant::now();
+            self.with_monitor(|state| state.record_sample(now, sample));
         }
     }
 

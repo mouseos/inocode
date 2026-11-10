@@ -70,7 +70,10 @@ async fn streaming_output_harness() -> anyhow::Result<StreamingOutputHarness> {
 #[tokio::test(start_paused = true)]
 async fn observe_tracks_idle_time_and_output_tail() -> anyhow::Result<()> {
     let StreamingOutputHarness {
-        process, stdout_tx, ..
+        process,
+        stdout_tx,
+        exit_tx: _exit_tx,
+        ..
     } = streaming_output_harness().await?;
     let collected = process.output_handles().output_notify.notified();
     tokio::pin!(collected);

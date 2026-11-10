@@ -11,6 +11,7 @@ use tokio::time::Sleep;
 use super::SharedPluginMetricsSidecar;
 use super::UnifiedExecContext;
 use super::monitor::MONITOR_INTERVAL;
+use super::monitor::Health;
 use super::monitor::assess;
 use super::monitor::tail_lines;
 use super::process::OutputBuffers;
@@ -317,19 +318,36 @@ fn spawn_anomaly_monitor(
             let (kind, scale, command) =
                 process.with_monitor(|state| (state.kind(), state.scale(), state.command.clone()));
             let assessment = assess(kind, &observation, scale);
-            if !process.with_monitor(|state| state.should_notify(&assessment)) {
+            let runaway = assessment.health == Health::Runaway;
+            if runaway {
+                // Output or memory is out of control; stop it before it fills the disk or RAM.
+                process.terminate();
+            }
+            if !runaway && !process.with_monitor(|state| state.should_notify(&assessment)) {
                 continue;
             }
-            let message = format!(
-                "Background terminal session {process_id} ({command}) looks {}: {}.\n\
-                 Call terminal_status with session_id {process_id} to look closer. If this is \
-                 expected, keep waiting and you will not be told about it again; otherwise use \
-                 write_stdin or terminate it.\nLast output:\n{}",
-                assessment.health.as_str(),
-                assessment.reason,
-                tail_lines(&observation.tail, WAKE_TAIL_LINES)
-            );
+            let message = if runaway {
+                format!(
+                    "Background terminal session {process_id} ({command}) was terminated \
+                     automatically because it ran away: {}.\nLast output:\n{}",
+                    assessment.reason,
+                    tail_lines(&observation.tail, WAKE_TAIL_LINES)
+                )
+            } else {
+                format!(
+                    "Background terminal session {process_id} ({command}) looks {}: {}.\n\
+                     Call terminal_status with session_id {process_id} to look closer. If this \
+                     is expected, keep waiting and you will not be told about it again; \
+                     otherwise use write_stdin or terminate it.\nLast output:\n{}",
+                    assessment.health.as_str(),
+                    assessment.reason,
+                    tail_lines(&observation.tail, WAKE_TAIL_LINES)
+                )
+            };
             session.wake_for_background_terminal(message).await;
+            if runaway {
+                break;
+            }
         }
     });
 }

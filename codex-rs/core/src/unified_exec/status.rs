@@ -1,6 +1,7 @@
 use serde_json::json;
 
 use super::TerminalSession;
+use super::monitor::Activity;
 use super::monitor::Health;
 use super::monitor::TerminalKind;
 use super::monitor::assess;
@@ -60,6 +61,16 @@ pub(crate) async fn terminal_status_report(
         "elapsed_seconds": observation.elapsed.as_secs(),
         "seconds_since_last_output": observation.idle.as_secs(),
         "output_bytes_total": observation.total_bytes,
+        "cpu_activity": match observation.activity {
+            Activity::Unmeasured => "unmeasured".to_string(),
+            Activity::Active => "active_recently".to_string(),
+            Activity::Quiet(quiet) => format!("none_for_{}s", quiet.as_secs()),
+        },
+        "process_tree": observation.sample.map(|sample| json!({
+            "processes": sample.processes,
+            "cpu_seconds": sample.cpu_ms / 1000,
+            "memory_mib": sample.rss_bytes / (1024 * 1024),
+        })),
         "exit_code": process.exit_code(),
         "anomaly_notifications_sent": notifications,
         "note": note,

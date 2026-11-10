@@ -133,9 +133,9 @@ fn env_overlay_for_exec_server_keeps_runtime_changes_only() {
 fn exec_env_policy_excludes_non_inheritable_and_runtime_variables() {
     let policy = ShellEnvironmentPolicy {
         r#set: HashMap::from([
-            ("codex_version".to_string(), "stale-version".to_string()),
+            ("inocode_version".to_string(), "stale-version".to_string()),
             (
-                "codex_permission_profile".to_string(),
+                "inocode_permission_profile".to_string(),
                 "stale-profile".to_string(),
             ),
             (
@@ -143,11 +143,11 @@ fn exec_env_policy_excludes_non_inheritable_and_runtime_variables() {
                 "/run/identity-token".to_string(),
             ),
             (
-                "codex_apply_patch_preserve_line_endings".to_string(),
+                "inocode_apply_patch_preserve_line_endings".to_string(),
                 "1".to_string(),
             ),
             (
-                "codex_plugin_metrics_output".to_string(),
+                "inocode_plugin_metrics_output".to_string(),
                 "/stale/sidecar".to_string(),
             ),
             ("KEEP".to_string(), "value".to_string()),
