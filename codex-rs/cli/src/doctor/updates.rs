@@ -33,17 +33,17 @@ use super::network;
 const MAX_VERSION_RESPONSE_BYTES: usize = 1024 * 1024;
 
 const VERSION_FILE_NAME: &str = "version.json";
-const GITHUB_LATEST_RELEASE_URL: &str = "https://api.github.com/repos/openai/codex/releases/latest";
-const HOMEBREW_CASK_API_URL: &str = "https://formulae.brew.sh/api/cask/codex.json";
+const GITHUB_LATEST_RELEASE_URL: &str = "https://api.github.com/repos/mouseos/inocode/releases/latest";
+const HOMEBREW_CASK_API_URL: &str = "https://formulae.brew.sh/api/cask/inocode.json";
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-const DESKTOP_UPDATE_URL: &str = "https://persistent.oaistatic.com/codex-app-prod/appcast-x64.xml";
+const DESKTOP_UPDATE_URL: &str = "https://github.com/mouseos/inocode/releases/latest/download/appcast-x64.xml";
 #[cfg(all(target_os = "macos", not(target_arch = "x86_64")))]
-const DESKTOP_UPDATE_URL: &str = "https://persistent.oaistatic.com/codex-app-prod/appcast.xml";
+const DESKTOP_UPDATE_URL: &str = "https://github.com/mouseos/inocode/releases/latest/download/appcast.xml";
 #[cfg(target_os = "macos")]
 const BACKEND_DESKTOP_UPDATE_URL: &str = "https://chatgpt.com/backend-api/wham/app/appcast";
 #[cfg(target_os = "windows")]
 const DESKTOP_UPDATE_URL: &str =
-    "https://persistent.oaistatic.com/codex-app-prod/windows-store-update.json";
+    "https://github.com/mouseos/inocode/releases/latest/download/windows-store-update.json";
 
 /// Builds the update-health row for the current installation.
 ///
@@ -389,11 +389,11 @@ fn push_cached_version_details(details: &mut Vec<String>, version_file: &Path) {
 
 fn update_action_label(context: &InstallContext) -> &'static str {
     match &context.method {
-        InstallMethod::Npm => "npm install -g @openai/codex",
-        InstallMethod::Bun => "bun install -g @openai/codex",
-        InstallMethod::VitePlus => "vp install -g @openai/codex",
-        InstallMethod::Pnpm => "pnpm add -g @openai/codex",
-        InstallMethod::Brew => "brew upgrade --cask codex",
+        InstallMethod::Npm => "npm install -g @mouseos/inocode",
+        InstallMethod::Bun => "bun install -g @mouseos/inocode",
+        InstallMethod::VitePlus => "vp install -g @mouseos/inocode",
+        InstallMethod::Pnpm => "pnpm add -g @mouseos/inocode",
+        InstallMethod::Brew => "brew upgrade --cask inocode",
         InstallMethod::Standalone { .. } => "standalone installer",
         InstallMethod::Other => "manual or unknown",
     }
@@ -571,7 +571,7 @@ mod tests {
     fn macos_update_probe_uses_the_persisted_production_appcast_feed() {
         let home = tempfile::tempdir().expect("temporary home should be created");
         let application = InstalledApp {
-            identity: "com.openai.codex",
+            identity: "com.mouseos.inocode",
             version: "26.623.10000".to_string(),
             bundle: PathBuf::new(),
             build: 6139,
@@ -583,7 +583,7 @@ mod tests {
 
         let state_directory = home
             .path()
-            .join("Library/Application Support/com.openai.codex");
+            .join("Library/Application Support/com.mouseos.inocode");
         std::fs::create_dir_all(&state_directory)
             .expect("production appcast state directory should be created");
         std::fs::write(
@@ -614,18 +614,18 @@ mod tests {
                 .expect("unrelated Sparkle cache directory should be created");
         }
         for (name, identity, build) in [
-            ("newest", "com.openai.codex", "6268"),
-            ("newer", "com.openai.codex", "6168"),
-            ("older", "com.openai.codex", "6138"),
+            ("newest", "com.mouseos.inocode", "6268"),
+            ("newer", "com.mouseos.inocode", "6168"),
+            ("older", "com.mouseos.inocode", "6138"),
             ("different", "com.example.other", "9999"),
-            ("invalid", "com.openai.codex", "invalid"),
+            ("invalid", "com.mouseos.inocode", "invalid"),
         ] {
             let bundle = root.path().join(name).join("extracted/ChatGPT.app");
             write_macos_bundle(&bundle, identity, build);
         }
         let outside = tempfile::tempdir().expect("external fixture should be created");
         let linked = outside.path().join("ChatGPT.app");
-        write_macos_bundle(&linked, "com.openai.codex", "9999");
+        write_macos_bundle(&linked, "com.mouseos.inocode", "9999");
         std::os::unix::fs::symlink(&linked, root.path().join("ChatGPT.app"))
             .expect("symlinked staged app fixture should be created");
 
@@ -691,14 +691,14 @@ mod tests {
                 method: InstallMethod::Npm,
                 package_layout: None,
             }),
-            "npm install -g @openai/codex"
+            "npm install -g @mouseos/inocode"
         );
         assert_eq!(
             update_action_label(&InstallContext {
                 method: InstallMethod::Pnpm,
                 package_layout: None,
             }),
-            "pnpm add -g @openai/codex"
+            "pnpm add -g @mouseos/inocode"
         );
         assert_eq!(
             update_action_label(&InstallContext {

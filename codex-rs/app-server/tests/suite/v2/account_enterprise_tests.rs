@@ -1570,7 +1570,7 @@ impl CredentialBuilderApi for TestKeyring {
             .clone();
         Ok(Box::new(TestCredential(
             credential,
-            (service == "Codex Auth").then(|| Arc::clone(&self.account_read)),
+            (service == "InoCode Auth").then(|| Arc::clone(&self.account_read)),
         )))
     }
     fn as_any(&self) -> &dyn Any {

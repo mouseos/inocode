@@ -185,7 +185,7 @@ async fn run_foreground_remote_control(
     print_remote_control_progress(json, "Starting app-server with remote control enabled...")?;
     #[cfg(not(windows))]
     let socket_dir = tempfile::Builder::new()
-        .prefix("codex-rc-")
+        .prefix("inocode-rc-")
         .tempdir_in("/tmp")
         .or_else(|_| tempfile::tempdir())
         .context("failed to create private app-server socket directory")?;
@@ -195,7 +195,7 @@ async fn run_foreground_remote_control(
     // inheriting the broader ACL from a directory created under `%TEMP%`.
     #[cfg(windows)]
     let socket_path = std::env::temp_dir()
-        .join("codex-remote-control")
+        .join("inocode-remote-control")
         .join(format!("rc-{}.sock", std::process::id()));
     let socket_path = AbsolutePathBuf::from_absolute_path(&socket_path)
         .context("private app-server socket path was not absolute")?;

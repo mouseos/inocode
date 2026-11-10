@@ -56,7 +56,7 @@ Desktop App
   ✓ desktop      the desktop application is installed
       version                  1.2.3
       running                  true
-      log directory            $HOME/Library/Logs/com.openai.codex
+      log directory            $HOME/Library/Logs/com.mouseos.inocode
   ✓ desktop      the desktop app-server initialized successfully
 
 Updates

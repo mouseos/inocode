@@ -206,7 +206,7 @@ async fn explicit_update_migrates_running_and_stopped_installations() {
             std::fs::create_dir(&package).unwrap();
             codex_utils_cargo_bin::copy_executable(
                 &legacy.managed_codex_bin,
-                &package.join("codex"),
+                &package.join("inocode"),
             )
             .unwrap();
             std::fs::remove_file(root.join("current")).unwrap();
@@ -426,7 +426,7 @@ fn manual_update_daemon(home: &TempDir) -> (Daemon, String) {
     };
     let release = format!("1.0.0-{target}");
     let standalone = home.path().join("packages/standalone");
-    let bin = standalone.join("releases").join(&release).join("codex");
+    let bin = standalone.join("releases").join(&release).join("inocode");
     std::fs::create_dir_all(bin.parent().expect("binary parent")).expect("release directory");
     codex_utils_cargo_bin::write_executable(
         &bin,
@@ -728,13 +728,13 @@ async fn scheduled_no_op_preserves_daemon_and_hands_off_stale_updater() {
         .join("releases")
         .join(release.replace("1.0.0", "0.8.0"));
     std::fs::create_dir_all(stale.join("bin")).unwrap();
-    std::fs::copy(&daemon.managed_codex_bin, stale.join("bin/codex")).unwrap();
+    std::fs::copy(&daemon.managed_codex_bin, stale.join("bin/inocode")).unwrap();
     std::fs::write(
         stale.join("codex-package.json"),
         serde_json::json!({
             "version": "0.8.0",
             "target": release.strip_prefix("1.0.0-").unwrap(),
-            "entrypoint": "bin/codex"
+            "entrypoint": "bin/inocode"
         })
         .to_string(),
     )

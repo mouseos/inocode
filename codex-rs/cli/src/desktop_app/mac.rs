@@ -5,11 +5,11 @@ use std::path::PathBuf;
 use tempfile::Builder;
 use tokio::process::Command;
 
-const INOCODE_BUNDLE_IDENTIFIER: &str = "com.openai.codex";
+const INOCODE_BUNDLE_IDENTIFIER: &str = "com.mouseos.inocode";
 const OPENAI_APPLE_TEAM_IDENTIFIER: &str = "2DC432GLL2";
-const INOCODE_DMG_URL_ARM64: &str = "https://persistent.oaistatic.com/codex-app-prod/Codex.dmg";
+const INOCODE_DMG_URL_ARM64: &str = "https://github.com/mouseos/inocode/releases/latest/download/InoCode.dmg";
 const INOCODE_DMG_URL_X64: &str =
-    "https://persistent.oaistatic.com/codex-app-prod/Codex-latest-x64.dmg";
+    "https://github.com/mouseos/inocode/releases/latest/download/InoCode-x64.dmg";
 
 pub async fn run_mac_app_open_or_install(
     workspace: PathBuf,
@@ -153,7 +153,7 @@ fn codex_new_thread_url(workspace: &Path) -> String {
     let mut serializer = url::form_urlencoded::Serializer::new(String::new());
     serializer.append_pair("path", workspace.as_ref());
     let query = serializer.finish();
-    format!("codex://threads/new?{query}")
+    format!("inocode://threads/new?{query}")
 }
 
 async fn download_and_install_codex_to_user_applications(dmg_url: &str) -> anyhow::Result<PathBuf> {
@@ -376,7 +376,7 @@ mod tests {
     fn finds_chatgpt_app_with_codex_bundle_identifier() {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
         let app_path = temp_dir.path().join("ChatGPT.app");
-        write_app_bundle(&app_path, "com.openai.codex");
+        write_app_bundle(&app_path, "com.mouseos.inocode");
 
         assert_eq!(
             find_existing_codex_app_path(&[temp_dir.path().to_path_buf()]),
@@ -389,7 +389,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
         write_app_bundle(&temp_dir.path().join("ChatGPT.app"), "com.openai.chat");
         let codex_app_path = temp_dir.path().join("Codex.app");
-        write_app_bundle(&codex_app_path, "com.openai.codex");
+        write_app_bundle(&codex_app_path, "com.mouseos.inocode");
 
         assert_eq!(
             find_existing_codex_app_path(&[temp_dir.path().to_path_buf()]),
@@ -401,7 +401,7 @@ mod tests {
     async fn rejects_unsigned_app_with_codex_bundle_identifier() {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
         let app_path = temp_dir.path().join("Codex.app");
-        write_app_bundle(&app_path, "com.openai.codex");
+        write_app_bundle(&app_path, "com.mouseos.inocode");
 
         let err = verify_codex_app_bundle(&app_path)
             .await
@@ -426,7 +426,7 @@ mod tests {
             .expect("copy executable into app bundle");
         fs::write(
             contents_path.join("Info.plist"),
-            r#"<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.openai.codex</string><key>CFBundleExecutable</key><string>Codex</string></dict></plist>"#,
+            r#"<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.mouseos.inocode</string><key>CFBundleExecutable</key><string>Codex</string></dict></plist>"#,
         )
         .expect("write Info.plist");
 
@@ -459,7 +459,7 @@ mod tests {
     async fn refuses_to_launch_unsigned_existing_codex_app() {
         let temp_dir = tempfile::tempdir().expect("create temp dir");
         let app_path = temp_dir.path().join("Codex.app");
-        write_app_bundle(&app_path, "com.openai.codex");
+        write_app_bundle(&app_path, "com.mouseos.inocode");
 
         let err = open_codex_app(&app_path, temp_dir.path())
             .await

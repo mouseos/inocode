@@ -11,7 +11,7 @@ use std::process::Output;
 #[test]
 fn only_matching_enforced_apple_security_events_are_failures() {
     for (event, expected) in [
-        ("denied com.openai.codex", Evidence::Blocked),
+        ("denied com.mouseos.inocode", Evidence::Blocked),
         (
             "denied /Applications/Codex.app/Contents/MacOS/Codex",
             Evidence::Blocked,

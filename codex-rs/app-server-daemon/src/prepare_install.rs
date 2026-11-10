@@ -160,7 +160,7 @@ async fn prepare_from_package(
     let entrypoint = if cfg!(windows) {
         "bin/codex.exe"
     } else {
-        "bin/codex"
+        "bin/inocode"
     };
     let source_entrypoint = metadata["entrypoint"].as_str().unwrap_or_default();
     let winget = cfg!(windows)
@@ -310,8 +310,8 @@ async fn prepare_from_package(
         );
     } else {
         #[cfg(unix)]
-        if !stage.path().join("codex").exists() {
-            std::os::unix::fs::symlink("bin/codex", stage.path().join("codex"))?;
+        if !stage.path().join("inocode").exists() {
+            std::os::unix::fs::symlink("bin/inocode", stage.path().join("inocode"))?;
         }
         #[cfg(windows)]
         windows::publish_release(stage.path(), &release).await?;
@@ -439,8 +439,8 @@ fn package_tree(
         let relative = path.strip_prefix(root)?;
         // The Unix installer adds this alias outside the package layout.
         if cfg!(unix)
-            && relative == Path::new("codex")
-            && std::fs::read_link(&path).ok().as_deref() == Some(Path::new("bin/codex"))
+            && relative == Path::new("inocode")
+            && std::fs::read_link(&path).ok().as_deref() == Some(Path::new("bin/inocode"))
         {
             continue;
         }

@@ -95,7 +95,7 @@ fn classify_security_events(output: &str) -> Evidence {
     for line in output.lines().map(str::to_ascii_lowercase) {
         let contains = |values: &[&str]| values.iter().any(|value| line.contains(value));
         if !contains(&[
-            "com.openai.codex",
+            "com.mouseos.inocode",
             "codex.app",
             "chatgpt.app",
             ".plugin-appserver",

@@ -1931,7 +1931,7 @@ mod tests {
         );
         assert_eq!(
             super::hook_metadata_for_config_layer_source(&ConfigLayerSource::Mdm {
-                domain: "com.openai.codex".to_string(),
+                domain: "com.mouseos.inocode".to_string(),
                 key: "config".to_string(),
             }),
             (HookSource::Mdm, true),

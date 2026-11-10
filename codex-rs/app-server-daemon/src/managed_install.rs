@@ -240,7 +240,7 @@ pub(crate) fn path_digest(path: &Path) -> [u8; 32] {
 }
 
 fn managed_codex_file_name() -> &'static str {
-    if cfg!(windows) { "codex.exe" } else { "codex" }
+    if cfg!(windows) { "inocode.exe" } else { "inocode" }
 }
 
 fn parse_codex_version(output: &str) -> Result<String> {

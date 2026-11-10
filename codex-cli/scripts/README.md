@@ -15,7 +15,7 @@ This downloads the required native package archive artifacts, hydrates `vendor/`
 each package, and writes tarballs to `dist/npm/`.
 
 When `--package codex` is provided, the staging helper builds the lightweight
-`@openai/codex` meta package plus all platform-native `@openai/codex` variants
+`@mouseos/inocode` meta package plus all platform-native `@mouseos/inocode` variants
 that are later published under platform-specific dist-tags.
 
 The npm variants omit the standalone `codex-exec-server` executable and its

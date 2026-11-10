@@ -51,8 +51,8 @@ fn cleanup_retries_after_scm_stop_but_not_system_shutdown() -> Result<()> {
     assert!(
         SERVICE_STATE
             .set(ServiceState {
-                service_name: "CodexSandboxServiceTests".into(),
-                pipe_name: r"\\.\pipe\CodexSandboxServiceTests".into(),
+                service_name: "InoCodeSandboxServiceTests".into(),
+                pipe_name: r"\\.\pipe\InoCodeSandboxServiceTests".into(),
                 shutdown: Arc::new(AtomicBool::new(true)),
                 uninstalling: Arc::new(AtomicBool::new(false)),
                 status_handle: OnceLock::new(),

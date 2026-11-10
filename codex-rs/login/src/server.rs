@@ -76,9 +76,11 @@ use tracing::info;
 use tracing::warn;
 
 pub(super) const DEFAULT_ISSUER: &str = "https://auth.openai.com";
-const DEFAULT_PORT: u16 = 1455;
-// Keep in sync with the Codex CLI Hydra redirect URI allow-list.
-const FALLBACK_PORT: u16 = 1457;
+// InoCode prefers the second registered callback port so a concurrently running
+// Codex login (which prefers 1455) is never disturbed. Both ports must stay in the
+// Codex CLI Hydra redirect URI allow-list.
+const DEFAULT_PORT: u16 = 1457;
+const FALLBACK_PORT: u16 = 1455;
 static LOGIN_ERROR_PAGE_TEMPLATE: LazyLock<Template> = LazyLock::new(|| {
     Template::parse(include_str!("assets/error.html"))
         .unwrap_or_else(|err| panic!("login error page template must parse: {err}"))
@@ -521,14 +523,22 @@ async fn process_request(
                 result: Ok(()),
             }
         }
-        "/cancel" => HandledRequest::ResponseAndExit {
+        // Only an explicit InoCode cancel request may stop this server; a plain
+        // GET /cancel (as sent by other Codex builds) must not.
+        "/cancel"
+            if parsed_url
+                .query_pairs()
+                .any(|(key, value)| key == "inocode_cancel" && value == "1") =>
+        {
+            HandledRequest::ResponseAndExit {
             headers: Vec::new(),
             body: b"Login cancelled".to_vec(),
             result: Err(io::Error::new(
                 io::ErrorKind::Interrupted,
                 "Login cancelled",
             )),
-        },
+            }
+        }
         _ => HandledRequest::Response(Response::from_string("Not Found").with_status_code(404)),
     }
 }
@@ -621,28 +631,10 @@ fn build_authorize_url(
     .map_err(io::Error::other)
 }
 
-fn send_cancel_request(port: u16) -> io::Result<()> {
-    let addr: SocketAddr = format!("127.0.0.1:{port}")
-        .parse()
-        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
-    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(2))?;
-    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
-
-    stream.write_all(b"GET /cancel HTTP/1.1\r\n")?;
-    stream.write_all(format!("Host: 127.0.0.1:{port}\r\n").as_bytes())?;
-    stream.write_all(b"Connection: close\r\n\r\n")?;
-
-    let mut buf = [0u8; 64];
-    let _ = stream.read(&mut buf);
-    Ok(())
-}
-
 fn bind_server(port: u16) -> io::Result<Server> {
     let preferred_bind_address = format!("127.0.0.1:{port}");
     let fallback_bind_address = format!("127.0.0.1:{FALLBACK_PORT}");
     let mut bind_address = preferred_bind_address.clone();
-    let mut cancel_attempted = false;
     let mut attempts = 0;
     let mut using_fallback_port = false;
     const MAX_ATTEMPTS: u32 = 10;
@@ -661,13 +653,6 @@ fn bind_server(port: u16) -> io::Result<Server> {
                 // If the address is in use, there may be another instance of the login server
                 // running. Attempt to cancel it and retry before falling back.
                 if is_addr_in_use {
-                    if !cancel_attempted && !using_fallback_port {
-                        cancel_attempted = true;
-                        if let Err(cancel_err) = send_cancel_request(port) {
-                            eprintln!("Failed to cancel previous login server: {cancel_err}");
-                        }
-                    }
-
                     thread::sleep(RETRY_DELAY);
 
                     if attempts >= MAX_ATTEMPTS {

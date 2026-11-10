@@ -24,8 +24,8 @@ pub(super) struct FilterSpec {
 
 pub(super) const FILTER_SPECS: &[FilterSpec] = &[
     FilterSpec {
-        key: GUID::from_u128(0x9f5f3812_79f0_4fe9_9615_4c2c92d2f0ff),
-        name: "codex_wfp_icmp_connect_v4",
+        key: GUID::from_u128(0x38c23ff4_5362_46d8_915f_7f429f6c4562),
+        name: "inocode_wfp_icmp_connect_v4",
         description: "Block sandbox-account ICMP connect v4",
         layer_key: FWPM_LAYER_ALE_AUTH_CONNECT_V4,
         conditions: &[
@@ -34,8 +34,8 @@ pub(super) const FILTER_SPECS: &[FilterSpec] = &[
         ],
     },
     FilterSpec {
-        key: GUID::from_u128(0x87498484_45ab_4510_845e_ece8b791b3bc),
-        name: "codex_wfp_icmp_connect_v6",
+        key: GUID::from_u128(0x094d671c_bf87_4837_928a_c16d7feae0ea),
+        name: "inocode_wfp_icmp_connect_v6",
         description: "Block sandbox-account ICMP connect v6",
         layer_key: FWPM_LAYER_ALE_AUTH_CONNECT_V6,
         conditions: &[
@@ -44,8 +44,8 @@ pub(super) const FILTER_SPECS: &[FilterSpec] = &[
         ],
     },
     FilterSpec {
-        key: GUID::from_u128(0xaf4751de_f874_4a7b_a34d_f0d0f22d1d9b),
-        name: "codex_wfp_icmp_assign_v4",
+        key: GUID::from_u128(0x6af16cc8_4b51_4cb5_a741_0c333788468a),
+        name: "inocode_wfp_icmp_assign_v4",
         description: "Block sandbox-account ICMP resource assignment v4",
         layer_key: FWPM_LAYER_ALE_RESOURCE_ASSIGNMENT_V4,
         conditions: &[
@@ -54,8 +54,8 @@ pub(super) const FILTER_SPECS: &[FilterSpec] = &[
         ],
     },
     FilterSpec {
-        key: GUID::from_u128(0xea10db66_a928_4b2e_a82e_a376a54f93ba),
-        name: "codex_wfp_icmp_assign_v6",
+        key: GUID::from_u128(0xcaefb691_4672_4efc_bfdb_218edb21dc17),
+        name: "inocode_wfp_icmp_assign_v6",
         description: "Block sandbox-account ICMP resource assignment v6",
         layer_key: FWPM_LAYER_ALE_RESOURCE_ASSIGNMENT_V6,
         conditions: &[
@@ -66,57 +66,57 @@ pub(super) const FILTER_SPECS: &[FilterSpec] = &[
     // NAME_RESOLUTION_CACHE filters are intentionally omitted because ordinary
     // static filter shapes returned FWP_E_OUT_OF_BOUNDS during validation.
     FilterSpec {
-        key: GUID::from_u128(0x83172805_f6be_4ae1_9dc6_6847aef04e7f),
-        name: "codex_wfp_dns_53_v4",
+        key: GUID::from_u128(0x0ab41ea5_1fe7_49fe_8208_20cae8e4585e),
+        name: "inocode_wfp_dns_53_v4",
         description: "Block sandbox-account DNS TCP or UDP port 53 v4",
         layer_key: FWPM_LAYER_ALE_AUTH_CONNECT_V4,
         conditions: &[ConditionSpec::User, ConditionSpec::RemotePort(53)],
     },
     FilterSpec {
-        key: GUID::from_u128(0xd23b2efb_1efb_46b2_96f3_b0ccda5690c8),
-        name: "codex_wfp_dns_53_v6",
+        key: GUID::from_u128(0xca31dbb8_1bb1_4b7e_aaba_ae2bdbff42b4),
+        name: "inocode_wfp_dns_53_v6",
         description: "Block sandbox-account DNS TCP or UDP port 53 v6",
         layer_key: FWPM_LAYER_ALE_AUTH_CONNECT_V6,
         conditions: &[ConditionSpec::User, ConditionSpec::RemotePort(53)],
     },
     FilterSpec {
-        key: GUID::from_u128(0x420b026f_9dc9_4aea_88f4_0f2b9feab39a),
-        name: "codex_wfp_dns_853_v4",
+        key: GUID::from_u128(0x7ee53248_811a_4ae2_97cb_4ba5eb3b0217),
+        name: "inocode_wfp_dns_853_v4",
         description: "Block sandbox-account DNS-over-TLS port 853 v4",
         layer_key: FWPM_LAYER_ALE_AUTH_CONNECT_V4,
         conditions: &[ConditionSpec::User, ConditionSpec::RemotePort(853)],
     },
     FilterSpec {
-        key: GUID::from_u128(0x8d917c81_99cc_45e7_84d6_824df860cfb8),
-        name: "codex_wfp_dns_853_v6",
+        key: GUID::from_u128(0x3703e41a_e182_4317_a3e0_d8c7dad3d715),
+        name: "inocode_wfp_dns_853_v6",
         description: "Block sandbox-account DNS-over-TLS port 853 v6",
         layer_key: FWPM_LAYER_ALE_AUTH_CONNECT_V6,
         conditions: &[ConditionSpec::User, ConditionSpec::RemotePort(853)],
     },
     FilterSpec {
-        key: GUID::from_u128(0xe1d6e0af_ce5f_471b_b2d3_15ca00e966f3),
-        name: "codex_wfp_smb_445_v4",
+        key: GUID::from_u128(0x0092fa38_ec92_4317_a435_22a551fda2f6),
+        name: "inocode_wfp_smb_445_v4",
         description: "Block sandbox-account SMB port 445 v4",
         layer_key: FWPM_LAYER_ALE_AUTH_CONNECT_V4,
         conditions: &[ConditionSpec::User, ConditionSpec::RemotePort(445)],
     },
     FilterSpec {
-        key: GUID::from_u128(0xc2bceca4_66ef_4a0f_ba80_f4f761b8c6f0),
-        name: "codex_wfp_smb_445_v6",
+        key: GUID::from_u128(0x1cfdf5cc_7b43_4518_abc5_be56954b028d),
+        name: "inocode_wfp_smb_445_v6",
         description: "Block sandbox-account SMB port 445 v6",
         layer_key: FWPM_LAYER_ALE_AUTH_CONNECT_V6,
         conditions: &[ConditionSpec::User, ConditionSpec::RemotePort(445)],
     },
     FilterSpec {
-        key: GUID::from_u128(0xba10c618_84e7_4b83_8f74_36e22b2fa1ff),
-        name: "codex_wfp_smb_139_v4",
+        key: GUID::from_u128(0x5c5aa808_66de_46fa_aa3a_3907204c64c4),
+        name: "inocode_wfp_smb_139_v4",
         description: "Block sandbox-account SMB port 139 v4",
         layer_key: FWPM_LAYER_ALE_AUTH_CONNECT_V4,
         conditions: &[ConditionSpec::User, ConditionSpec::RemotePort(139)],
     },
     FilterSpec {
-        key: GUID::from_u128(0xfe7f22b8_5cf5_4adb_b2aa_71fc0a8f5d44),
-        name: "codex_wfp_smb_139_v6",
+        key: GUID::from_u128(0xe258669b_ca0c_4061_8b62_8da52322eb46),
+        name: "inocode_wfp_smb_139_v6",
         description: "Block sandbox-account SMB port 139 v6",
         layer_key: FWPM_LAYER_ALE_AUTH_CONNECT_V6,
         conditions: &[ConditionSpec::User, ConditionSpec::RemotePort(139)],

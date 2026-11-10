@@ -1109,7 +1109,7 @@ fn display_list<T: AsRef<str>>(items: &[T]) -> String {
 }
 
 fn codex_path_entries() -> Vec<String> {
-    let Ok(candidates) = which::which_all("codex") else {
+    let Ok(candidates) = which::which_all("inocode") else {
         return Vec::new();
     };
     let mut seen = BTreeSet::new();
@@ -3474,7 +3474,7 @@ mod tests {
     #[test]
     fn config_overrides_from_interactive_preserves_global_options() {
         let interactive = TuiCli::parse_from([
-            "codex",
+            "inocode",
             "--oss",
             "--local-provider",
             "ollama",

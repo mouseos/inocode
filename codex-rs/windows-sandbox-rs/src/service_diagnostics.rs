@@ -43,7 +43,7 @@ impl ServiceStopReason {
             }
             registry::RegSetValueExW(
                 handle,
-                windows_sys::w!("CodexLastStop"),
+                windows_sys::w!("InoCodeLastStop"),
                 0,
                 registry::REG_QWORD,
                 ptr::from_ref(&value).cast(),
@@ -69,7 +69,7 @@ pub(crate) fn record_stopped(status: &SERVICE_STATUS_PROCESS, service: services:
             registry::RegGetValueW(
                 registry::HKEY_LOCAL_MACHINE,
                 key.as_ptr(),
-                windows_sys::w!("CodexLastStop"),
+                windows_sys::w!("InoCodeLastStop"),
                 registry::RRF_RT_REG_QWORD | registry::RRF_ZEROONFAILURE,
                 ptr::null_mut(),
                 ptr::from_mut(&mut value).cast(),

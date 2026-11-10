@@ -1464,7 +1464,7 @@ Background Server
             )
             .detail("version: 1.2.3")
             .detail("running: true")
-            .detail("log directory: $HOME/Library/Logs/com.openai.codex"),
+            .detail("log directory: $HOME/Library/Logs/com.mouseos.inocode"),
             DoctorCheck::new(
                 "desktop.app_server.handshake",
                 "desktop",

@@ -260,7 +260,7 @@ pub(in crate::doctor) async fn inspect_macos_bundle(
         return Err(DiscoveryError);
     }
     let metadata: Value = serde_json::from_slice(&output.stdout).map_err(|_| DiscoveryError)?;
-    if metadata.get("CFBundleIdentifier").and_then(Value::as_str) != Some("com.openai.codex") {
+    if metadata.get("CFBundleIdentifier").and_then(Value::as_str) != Some("com.mouseos.inocode") {
         return Ok(None);
     }
     let version = metadata
@@ -275,7 +275,7 @@ pub(in crate::doctor) async fn inspect_macos_bundle(
         .ok_or(DiscoveryError)?;
 
     Ok(Some(InstalledApp {
-        identity: "com.openai.codex",
+        identity: "com.mouseos.inocode",
         version: version.to_string(),
         bundle: bundle.to_path_buf(),
         build,

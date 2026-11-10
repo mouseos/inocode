@@ -97,7 +97,7 @@ pub(super) async fn run(http: &impl InstallerHttp, legacy: &Daemon) -> Result<Up
     let entrypoint = if cfg!(windows) {
         "bin/codex.exe"
     } else {
-        "bin/codex"
+        "bin/inocode"
     };
     let binary = release.join(entrypoint);
     let version = managed_install::managed_codex_version(&binary).await?;

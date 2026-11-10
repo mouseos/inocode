@@ -602,7 +602,7 @@ fn unpackaged_pipe_clients_are_rejected_before_sending_a_request() {
 
     static NEXT_PIPE_INSTANCE: AtomicU64 = AtomicU64::new(0);
     let name = to_wide(format!(
-        r"\\.\pipe\OpenAI.CodexSandbox.Tests.{}.{}",
+        r"\\.\pipe\mouseos.InoCodeSandbox.Tests.{}.{}",
         std::process::id(),
         NEXT_PIPE_INSTANCE.fetch_add(1, Ordering::Relaxed)
     ));
@@ -660,7 +660,7 @@ fn unpackaged_pipe_clients_are_rejected_before_sending_a_request() {
 #[test]
 fn disconnected_pipe_clients_do_not_prevent_subsequent_connections() {
     let pipe_name = format!(
-        r"\\.\pipe\OpenAI.CodexSandbox.DisconnectTests.{}",
+        r"\\.\pipe\mouseos.InoCodeSandbox.DisconnectTests.{}",
         std::process::id()
     );
     let name = to_wide(&pipe_name);

@@ -1247,8 +1247,8 @@ mod tests {
     pub(super) fn payload_json() -> serde_json::Value {
         json!({
             "version": SETUP_VERSION,
-            "offline_username": "CodexSandboxOffline",
-            "online_username": "CodexSandboxOnline",
+            "offline_username": "InoCodeSandboxOffline",
+            "online_username": "InoCodeSandboxOnline",
             "codex_home": "C:\\codex-home",
             "command_cwd": "C:\\workspace",
             "read_roots": [],

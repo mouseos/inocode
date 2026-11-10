@@ -58,7 +58,7 @@ fn authorize_runtime_client_process(process: &AuthorizedClientProcess) -> Result
     let service = std::env::current_exe()?.canonicalize()?;
     let directory = service.parent().context("service image has no directory")?;
     anyhow::ensure!(
-        ["codex.exe", "codex-code-mode-host.exe"]
+        ["inocode.exe", "codex-code-mode-host.exe"]
             .iter()
             .any(|name| {
                 image
