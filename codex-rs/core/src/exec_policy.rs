@@ -1311,3 +1311,7 @@ async fn collect_policy_files(dir: impl AsRef<Path>) -> Result<Vec<PathBuf>, Exe
 #[cfg(test)]
 #[path = "exec_policy_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "exec_policy_delete_scope_tests.rs"]
+mod delete_scope_tests;
