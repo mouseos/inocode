@@ -808,7 +808,7 @@ async fn reused_elicitation_senders_follow_each_servers_latest_permission_author
         &ClientMcpExtensions::default(),
     );
     let hosted = manager.make_sender(
-        crate::CODEX_APPS_MCP_SERVER_NAME.to_string(),
+        crate::INOCODE_APPS_MCP_SERVER_NAME.to_string(),
         /*tx_event*/ None,
         &ClientMcpExtensions::default(),
     );
@@ -871,7 +871,7 @@ fn verification_fixture(
     reviewer: Option<Arc<RecordingReviewer>>,
 ) -> (ElicitationRequestManager, Receiver<Event>, SendElicitation) {
     let mut config = test_elicitation_config(
-        crate::CODEX_APPS_MCP_SERVER_NAME,
+        crate::INOCODE_APPS_MCP_SERVER_NAME,
         approval_policy,
         PermissionProfile::Disabled,
     );
@@ -894,7 +894,7 @@ fn verification_fixture(
     );
     let (tx, events) = async_channel::bounded(1);
     let sender = manager.make_sender(
-        crate::CODEX_APPS_MCP_SERVER_NAME.into(),
+        crate::INOCODE_APPS_MCP_SERVER_NAME.into(),
         Some(tx),
         &ClientMcpExtensions::new([(
             OPENAI_ELICITATION_EXTENSION_ID.to_string(),
@@ -965,7 +965,7 @@ async fn user_verification_requires_the_app_even_when_policy_would_approve_or_de
 async fn user_verification_cancels_when_no_app_can_receive_the_request() {
     let (manager, _, _) = verification_fixture(AskForApproval::OnRequest, /*reviewer*/ None);
     let sender = manager.make_sender(
-        crate::CODEX_APPS_MCP_SERVER_NAME.into(),
+        crate::INOCODE_APPS_MCP_SERVER_NAME.into(),
         /*tx_event*/ None,
         &ClientMcpExtensions::new([(
             OPENAI_ELICITATION_EXTENSION_ID.to_string(),
@@ -997,7 +997,7 @@ async fn user_verification_cancels_for_an_event_receiver_without_host_activation
     let (manager, _, _) = verification_fixture(AskForApproval::OnRequest, /*reviewer*/ None);
     let (tx, events) = async_channel::bounded(1);
     let sender = manager.make_sender(
-        crate::CODEX_APPS_MCP_SERVER_NAME.into(),
+        crate::INOCODE_APPS_MCP_SERVER_NAME.into(),
         Some(tx),
         &ClientMcpExtensions::default(),
     );
@@ -1063,7 +1063,7 @@ async fn user_verification_drops_pending_response_when_the_request_is_cancelled(
 
 #[tokio::test]
 async fn user_verification_rejects_attached_servers_even_if_they_use_the_plugin_service_name() {
-    for name in ["attached", crate::CODEX_APPS_MCP_SERVER_NAME] {
+    for name in ["attached", crate::INOCODE_APPS_MCP_SERVER_NAME] {
         let (manager, _, _) =
             verification_fixture(AskForApproval::OnRequest, /*reviewer*/ None);
         {

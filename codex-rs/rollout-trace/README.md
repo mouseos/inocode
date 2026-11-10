@@ -2,7 +2,7 @@
 
 > **Privacy:** Rollout tracing is not telemetry. Codex does **not** upload or
 > report these traces; it writes local bundles only when
-> `CODEX_ROLLOUT_TRACE_ROOT` is set. Those local bundles can contain prompts,
+> `INOCODE_ROLLOUT_TRACE_ROOT` is set. Those local bundles can contain prompts,
 > responses, tool inputs/outputs, terminal output, and paths, so treat them as
 > sensitive.
 
@@ -92,7 +92,7 @@ flowchart TD
 ```
 
 The thread context is deliberately small and no-op capable. A root session starts
-one from `CODEX_ROLLOUT_TRACE_ROOT`; fresh spawned child threads derive their
+one from `INOCODE_ROLLOUT_TRACE_ROOT`; fresh spawned child threads derive their
 own context from the parent's context so the whole rollout tree shares one
 writer. Disabled contexts accept the same calls and record nothing.
 

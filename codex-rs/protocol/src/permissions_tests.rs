@@ -8,7 +8,7 @@ use std::path::Path;
 use tempfile::TempDir;
 
 #[cfg(unix)]
-const SYMLINKED_TMPDIR_TEST_ENV: &str = "CODEX_PROTOCOL_TEST_SYMLINKED_TMPDIR";
+const SYMLINKED_TMPDIR_TEST_ENV: &str = "INOCODE_PROTOCOL_TEST_SYMLINKED_TMPDIR";
 
 #[cfg(unix)]
 fn symlink_dir(original: &Path, link: &Path) -> std::io::Result<()> {
@@ -362,7 +362,7 @@ fn uri_deny_and_metadata_matcher_use_executor_paths() {
         FileSystemSandboxEntry::new(cwd.clone().into(), FileSystemAccessMode::Write),
         FileSystemSandboxEntry::new(path("file:///C:/").into(), FileSystemAccessMode::Deny),
         FileSystemSandboxEntry::new(
-            path("file:///C:/workspace/.codex").into(),
+            path("file:///C:/workspace/.inocode").into(),
             FileSystemAccessMode::Read,
         ),
         unreadable_glob_entry(r"C:\workspace\**\*.env".to_string()),
@@ -384,10 +384,10 @@ fn uri_deny_and_metadata_matcher_use_executor_paths() {
             &prepared,
         ));
     }
-    assert!(!policy.can_write_path(&path("file:///C:/workspace/.codex/config"), &context));
+    assert!(!policy.can_write_path(&path("file:///C:/workspace/.inocode/config"), &context));
     assert_eq!(
-        policy.metadata_write_denial(&path("file:///C:/workspace/.codex/config"), &context),
-        Some(".codex"),
+        policy.metadata_write_denial(&path("file:///C:/workspace/.inocode/config"), &context),
+        Some(".inocode"),
     );
 }
 
@@ -577,7 +577,7 @@ fn writable_roots_proactively_protect_missing_dot_codex() {
     let expected_root =
         AbsolutePathBuf::from_absolute_path(cwd.path().canonicalize().expect("canonicalize cwd"))
             .expect("absolute canonical root");
-    let expected_dot_codex = expected_root.join(".codex");
+    let expected_dot_codex = expected_root.join(".inocode");
 
     let policy = FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
         path: FileSystemPath::Special {
@@ -728,7 +728,7 @@ fn legacy_workspace_write_projection_preserves_symbolic_project_root() {
             ),
             FileSystemSandboxEntry::skip_missing_path(
                 FileSystemPath::Special {
-                    value: FileSystemSpecialPath::project_roots(Some(".codex".into())),
+                    value: FileSystemSpecialPath::project_roots(Some(".inocode".into())),
                 },
                 FileSystemAccessMode::Read,
             ),
@@ -766,7 +766,7 @@ fn legacy_current_working_directory_special_path_deserializes_as_project_roots()
 #[cfg(unix)]
 #[test]
 fn writable_roots_skip_default_metadata_when_explicit_user_rule_exists() {
-    for name in [".codex", ".aws"] {
+    for name in [".inocode", ".aws"] {
         let cwd = TempDir::new().expect("tempdir");
         let expected_root = AbsolutePathBuf::from_absolute_path(
             cwd.path().canonicalize().expect("canonicalize cwd"),
@@ -821,7 +821,7 @@ fn filesystem_policy_blocks_protected_metadata_path_writes_by_default() {
     let cwd = TempDir::new().expect("tempdir");
     let dot_git_config = cwd.path().join(".git").join("config");
     let dot_agents_config = cwd.path().join(".agents").join("config");
-    let dot_codex_config = cwd.path().join(".codex").join("config.toml");
+    let dot_codex_config = cwd.path().join(".inocode").join("config.toml");
     let dot_aws_config = cwd.path().join(".aws").join("config");
     let root = AbsolutePathBuf::from_absolute_path(cwd.path()).expect("absolute cwd");
     let file_system_policy = FileSystemSandboxPolicy::restricted(vec![FileSystemSandboxEntry {
@@ -842,7 +842,7 @@ fn filesystem_policy_blocks_protected_metadata_path_writes_by_default() {
         vec![
             ".git".to_string(),
             ".agents".to_string(),
-            ".codex".to_string(),
+            ".inocode".to_string(),
             ".aws".to_string(),
         ]
     );
@@ -919,7 +919,7 @@ fn legacy_workspace_write_projection_accepts_relative_cwd() {
     );
     assert!(
         !file_system_policy
-            .can_write_local_path_with_cwd(Path::new(".codex/config.toml"), relative_cwd,)
+            .can_write_local_path_with_cwd(Path::new(".inocode/config.toml"), relative_cwd,)
     );
     assert!(
         !file_system_policy.can_write_local_path_with_cwd(
@@ -936,10 +936,10 @@ fn effective_runtime_roots_preserve_symlinked_paths() {
     let real_root = cwd.path().join("real");
     let link_root = cwd.path().join("link");
     let blocked = real_root.join("blocked");
-    let codex_dir = real_root.join(".codex");
+    let codex_dir = real_root.join(".inocode");
 
     fs::create_dir_all(&blocked).expect("create blocked");
-    fs::create_dir_all(&codex_dir).expect("create .codex");
+    fs::create_dir_all(&codex_dir).expect("create .inocode");
     symlink_dir(&real_root, &link_root).expect("create symlinked root");
 
     let link_root =
@@ -947,7 +947,7 @@ fn effective_runtime_roots_preserve_symlinked_paths() {
     let link_blocked = link_root.join("blocked");
     let expected_root = link_root.clone();
     let expected_blocked = link_blocked.clone();
-    let expected_codex = link_root.join(".codex");
+    let expected_codex = link_root.join(".inocode");
 
     let policy = FileSystemSandboxPolicy::restricted(vec![
         FileSystemSandboxEntry {
@@ -990,11 +990,11 @@ fn project_roots_special_path_preserves_symlinked_root() {
     let link_root = cwd.path().join("link");
     let blocked = real_root.join("blocked");
     let agents_dir = real_root.join(".agents");
-    let codex_dir = real_root.join(".codex");
+    let codex_dir = real_root.join(".inocode");
 
     fs::create_dir_all(&blocked).expect("create blocked");
     fs::create_dir_all(&agents_dir).expect("create .agents");
-    fs::create_dir_all(&codex_dir).expect("create .codex");
+    fs::create_dir_all(&codex_dir).expect("create .inocode");
     symlink_dir(&real_root, &link_root).expect("create symlinked cwd");
 
     let link_blocked =
@@ -1003,7 +1003,7 @@ fn project_roots_special_path_preserves_symlinked_root() {
         AbsolutePathBuf::from_absolute_path(&link_root).expect("absolute symlinked root");
     let expected_blocked = link_blocked.clone();
     let expected_agents = expected_root.join(".agents");
-    let expected_codex = expected_root.join(".codex");
+    let expected_codex = expected_root.join(".inocode");
 
     let policy = FileSystemSandboxPolicy::restricted(vec![
         FileSystemSandboxEntry {
@@ -1062,18 +1062,18 @@ fn writable_roots_preserve_symlinked_protected_subpaths() {
     let cwd = TempDir::new().expect("tempdir");
     let root = cwd.path().join("root");
     let decoy = root.join("decoy-codex");
-    let dot_codex = root.join(".codex");
+    let dot_codex = root.join(".inocode");
     fs::create_dir_all(&decoy).expect("create decoy");
-    symlink_dir(&decoy, &dot_codex).expect("create .codex symlink");
+    symlink_dir(&decoy, &dot_codex).expect("create .inocode symlink");
 
     let root = AbsolutePathBuf::from_absolute_path(&root).expect("absolute root");
     let expected_dot_codex = AbsolutePathBuf::from_absolute_path(
         root.as_path()
             .canonicalize()
             .expect("canonicalize root")
-            .join(".codex"),
+            .join(".inocode"),
     )
-    .expect("absolute .codex symlink");
+    .expect("absolute .inocode symlink");
     let unexpected_decoy =
         AbsolutePathBuf::from_absolute_path(decoy.canonicalize().expect("canonicalize decoy"))
             .expect("absolute canonical decoy");
@@ -1254,10 +1254,10 @@ fn tmpdir_special_path_preserves_symlinked_tmpdir() {
     let real_tmpdir = cwd.path().join("real-tmpdir");
     let link_tmpdir = cwd.path().join("link-tmpdir");
     let blocked = real_tmpdir.join("blocked");
-    let codex_dir = real_tmpdir.join(".codex");
+    let codex_dir = real_tmpdir.join(".inocode");
 
     fs::create_dir_all(&blocked).expect("create blocked");
-    fs::create_dir_all(&codex_dir).expect("create .codex");
+    fs::create_dir_all(&codex_dir).expect("create .inocode");
     symlink_dir(&real_tmpdir, &link_tmpdir).expect("create symlinked tmpdir");
 
     let link_blocked =
@@ -1265,7 +1265,7 @@ fn tmpdir_special_path_preserves_symlinked_tmpdir() {
     let expected_root =
         AbsolutePathBuf::from_absolute_path(&link_tmpdir).expect("absolute symlinked tmpdir");
     let expected_blocked = link_blocked.clone();
-    let expected_codex = expected_root.join(".codex");
+    let expected_codex = expected_root.join(".inocode");
 
     unsafe {
         std::env::set_var("TMPDIR", &link_tmpdir);

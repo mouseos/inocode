@@ -70,7 +70,7 @@ pub(super) fn decisions_api_key(
     context: Option<&ProviderAuthContext>,
     fallback: &Arc<AuthManager>,
 ) -> Result<DecisionsCredential, DecisionsError> {
-    match std::env::var("CODEX_GUARDIAN_DECISIONS_API_KEY") {
+    match std::env::var("INOCODE_GUARDIAN_DECISIONS_API_KEY") {
         Ok(key) => Ok(DecisionsCredential::ApiKey(key)),
         Err(std::env::VarError::NotPresent) if provider_id == "openai" && base_url.is_none() => {
             let manager = context.map_or(fallback, |context| &context.credentials);

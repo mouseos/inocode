@@ -19,7 +19,7 @@ use std::time::Duration;
 
 #[tokio::test]
 async fn concurrent_operations_share_the_workspace_lock() -> Result<()> {
-    const CHILD_ROOT: &str = "CODEX_TEST_BASELINE_LOCK_ROOT";
+    const CHILD_ROOT: &str = "INOCODE_TEST_BASELINE_LOCK_ROOT";
     const READY: &str = "holding workspace lock";
     if let Some(root) = std::env::var_os(CHILD_ROOT) {
         return with_baseline_lock(Path::new(&root), |_| {

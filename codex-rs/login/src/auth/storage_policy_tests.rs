@@ -7,14 +7,14 @@ use pretty_assertions::assert_eq;
 
 #[test]
 fn storage_metrics_distinguish_explicit_file_from_secure_failure_fallback() -> anyhow::Result<()> {
-    if std::env::var_os("CODEX_AUTH_STORAGE_TEST_CHILD").is_none() {
+    if std::env::var_os("INOCODE_AUTH_STORAGE_TEST_CHILD").is_none() {
         let output = std::process::Command::new(std::env::current_exe()?)
             .args([
                 "--exact",
                 std::thread::current().name().unwrap(),
                 "--nocapture",
             ])
-            .env("CODEX_AUTH_STORAGE_TEST_CHILD", "1")
+            .env("INOCODE_AUTH_STORAGE_TEST_CHILD", "1")
             .output()?;
         assert!(
             output.status.success(),
@@ -150,7 +150,7 @@ fn storage_metrics_distinguish_explicit_file_from_secure_failure_fallback() -> a
                         Arc::new(MockKeyringStore::default()),
                         LocalSecretsNamespace::CodexAuth,
                     );
-                    manager.set(&SecretScope::Global, &CODEX_AUTH_SECRET_NAME, "{}")?;
+                    manager.set(&SecretScope::Global, &INOCODE_AUTH_SECRET_NAME, "{}")?;
                 }
             }
             let storage = create_auth_storage_with_store(

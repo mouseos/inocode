@@ -9,7 +9,7 @@ use codex_app_server_protocol::McpServerEventStreamStartParams;
 use codex_app_server_protocol::ServerNotification;
 use codex_core::CodexThread;
 use codex_login::AuthManager;
-use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+use codex_mcp::INOCODE_APPS_MCP_SERVER_NAME;
 use codex_mcp::McpEventStream;
 use codex_protocol::ThreadId;
 use serde_json::Value;
@@ -50,7 +50,7 @@ impl McpEventStreams {
         params: McpServerEventStreamStartParams,
         processor: McpRequestProcessor,
     ) -> Result<McpEventStreamReady, JSONRPCErrorError> {
-        if params.server != CODEX_APPS_MCP_SERVER_NAME {
+        if params.server != INOCODE_APPS_MCP_SERVER_NAME {
             return Err(invalid_request(
                 "MCP event subscriptions are only supported for hosted apps",
             ));

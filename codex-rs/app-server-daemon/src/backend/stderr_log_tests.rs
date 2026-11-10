@@ -9,7 +9,7 @@ use pretty_assertions::assert_eq;
 async fn pruning_resets_the_write_position_of_a_legacy_nonappend_writer() -> anyhow::Result<()> {
     use std::io::Write;
 
-    const CHILD_LOG: &str = "CODEX_TEST_LEGACY_STDERR_LOG";
+    const CHILD_LOG: &str = "INOCODE_TEST_LEGACY_STDERR_LOG";
     if let Some(path) = std::env::var_os(CHILD_LOG) {
         std::io::stderr().write_all(b"before pruning\n")?;
         let mut writer = super::LogFile {
@@ -153,7 +153,7 @@ fn logging_does_not_wait_for_a_stalled_worker() -> anyhow::Result<()> {
     use std::sync::Barrier;
     use std::sync::mpsc;
 
-    const CHILD: &str = "CODEX_TEST_STALLED_LOG_WORKER";
+    const CHILD: &str = "INOCODE_TEST_STALLED_LOG_WORKER";
     if std::env::var_os(CHILD).is_none() {
         let output = std::process::Command::new(std::env::current_exe()?)
             .args([

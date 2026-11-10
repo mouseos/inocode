@@ -317,7 +317,7 @@ pub(crate) async fn handoff_scenario(native_history: bool) -> Result<Vec<Respons
         .await?;
     test.codex.flush_rollout().await?;
     let rollout = test
-        .codex
+        .inocode
         .load_history(/*include_archived*/ false)
         .await?
         .items;

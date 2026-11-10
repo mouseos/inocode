@@ -47,7 +47,7 @@ impl NetworkPolicyMcp {
         };
         let upstream_url = match &executor {
             Some(executor) => executor.websocket_url.clone(),
-            None => std::env::var("CODEX_TEST_REMOTE_EXEC_SERVER_URL")?,
+            None => std::env::var("INOCODE_TEST_REMOTE_EXEC_SERVER_URL")?,
         };
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let executor_url = format!("ws://{}", listener.local_addr()?);

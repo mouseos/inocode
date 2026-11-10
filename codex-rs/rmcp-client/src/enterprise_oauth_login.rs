@@ -45,7 +45,7 @@ use crate::perform_oauth_login::OauthLoginFlow;
 
 /// An exclusive credential mutation guard. Hold it through primary account logout
 /// so a competing process cannot commit between deleting the grant and signing out.
-/// Coordination, like ordinary OAuth refresh, is scoped to the same CODEX_HOME.
+/// Coordination, like ordinary OAuth refresh, is scoped to the same INOCODE_HOME.
 pub struct EnterpriseOAuthCredentialGuard {
     credential_name: String,
     issuer: String,

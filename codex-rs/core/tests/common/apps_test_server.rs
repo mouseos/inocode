@@ -36,8 +36,8 @@ const CONNECTOR_NAME: &str = "Calendar";
 const DISCOVERABLE_CALENDAR_ID: &str = "connector_2128aebfecb84f64a069897515042a44";
 const DISCOVERABLE_GMAIL_ID: &str = "connector_68df038e0ba48191908c8434991bbac2";
 const CONNECTOR_DESCRIPTION: &str = "Plan events and manage your calendar.";
-const CODEX_APPS_META_KEY: &str = "_codex_apps";
-const CODEX_APPS_MCP_PATH_REGEX: &str = "^/(?:api/codex|backend-api)/ps/mcp/?$";
+const INOCODE_APPS_META_KEY: &str = "_codex_apps";
+const INOCODE_APPS_MCP_PATH_REGEX: &str = "^/(?:api/codex|backend-api)/ps/mcp/?$";
 const HOSTED_PLUGIN_RUNTIME_MCP_PATH_REGEX: &str = "^/(?:api/codex|backend-api)/ps/mcp/?$";
 const PROTOCOL_VERSION: &str = "2025-11-25";
 const SERVER_NAME: &str = "codex-apps-test";
@@ -233,7 +233,7 @@ impl AppsTestServer {
         };
         mount_streamable_http_json_rpc_with_startup_control(
             server,
-            CODEX_APPS_MCP_PATH_REGEX,
+            INOCODE_APPS_MCP_PATH_REGEX,
             CONNECTOR_NAME.to_string(),
             CONNECTOR_DESCRIPTION.to_string(),
             /*searchable*/ true,
@@ -357,7 +357,7 @@ pub fn search_capable_apps_builder(apps_base_url: impl Into<String>) -> TestCode
 fn apps_tool_call_id(body: &Value) -> Option<&str> {
     body.get("params")?
         .get("_meta")?
-        .get(CODEX_APPS_META_KEY)?
+        .get(INOCODE_APPS_META_KEY)?
         .get("call_id")?
         .as_str()
 }
@@ -464,7 +464,7 @@ async fn mount_streamable_http_json_rpc(
 ) {
     mount_streamable_http_json_rpc_at_path(
         server,
-        CODEX_APPS_MCP_PATH_REGEX,
+        INOCODE_APPS_MCP_PATH_REGEX,
         connector_name,
         connector_description,
         searchable,

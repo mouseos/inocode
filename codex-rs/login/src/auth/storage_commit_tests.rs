@@ -90,7 +90,7 @@ fn write_lock_coordinates_with_existing_auth_lock() -> anyhow::Result<()> {
 
 #[test]
 fn commits_respect_another_process_lock() -> anyhow::Result<()> {
-    const CHILD_HOME: &str = "CODEX_AUTH_COMMIT_TEST_HOME";
+    const CHILD_HOME: &str = "INOCODE_AUTH_COMMIT_TEST_HOME";
     if let Some(home) = std::env::var_os(CHILD_HOME) {
         let home = PathBuf::from(home);
         let storage = CommittedStorage {
@@ -152,7 +152,7 @@ fn keyring_logout_coordinates_with_refresh_through_chained_symlinks() -> anyhow:
     use codex_keyring_store::tests::MockKeyringStore;
     use std::os::unix::fs::symlink;
 
-    const CHILD_HOME: &str = "CODEX_AUTH_CHAINED_REFRESH_TEST_HOME";
+    const CHILD_HOME: &str = "INOCODE_AUTH_CHAINED_REFRESH_TEST_HOME";
     let old: AuthDotJson = serde_json::from_value(serde_json::json!({"OPENAI_API_KEY": "old"}))?;
     let new: AuthDotJson = serde_json::from_value(serde_json::json!({"OPENAI_API_KEY": "new"}))?;
     if let Some(home) = std::env::var_os(CHILD_HOME) {

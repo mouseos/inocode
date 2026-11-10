@@ -166,7 +166,7 @@ async fn refreshed_cloud_bundle_updates_later_sessions() -> Result<()> {
     );
     assert_eq!(
         initial
-            .codex
+            .inocode
             .config()
             .await
             .developer_instructions
@@ -190,7 +190,7 @@ async fn refreshed_cloud_bundle_updates_later_sessions() -> Result<()> {
     );
     assert_eq!(
         refreshed
-            .codex
+            .inocode
             .config()
             .await
             .developer_instructions
@@ -254,7 +254,7 @@ async fn managed_deny_read_requirements_follow_thread_permission_updates() -> Re
         /*exclude_slash_tmp*/ false,
     );
     let error = test
-        .codex
+        .inocode
         .preview_thread_settings_overrides(CodexThreadSettingsOverrides {
             permission_profile: Some(conflicting_profile),
             ..Default::default()

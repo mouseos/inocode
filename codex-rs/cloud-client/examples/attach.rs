@@ -39,8 +39,8 @@ async fn main() -> anyhow::Result<()> {
         anyhow::bail!("unexpected argument");
     }
     let credentials = Credentials::new(
-        &std::env::var("CODEX_CLOUD_ACCESS_TOKEN")?,
-        &std::env::var("CODEX_CLOUD_ACCOUNT_ID")?,
+        &std::env::var("INOCODE_CLOUD_ACCESS_TOKEN")?,
+        &std::env::var("INOCODE_CLOUD_ACCOUNT_ID")?,
     )?;
     let client = Client::new(
         &HttpClientFactory::new(OutboundProxyPolicy::RespectSystemProxy),

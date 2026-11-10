@@ -8,7 +8,7 @@ Centralizing client construction keeps outbound requests on the same policies an
 short-lived clients that fragment reqwest's connection pool. In particular, this crate owns:
 
 - the request, response, streaming, and transport types used for outbound HTTP calls;
-- custom CA handling through `CODEX_CA_CERTIFICATE` and `SSL_CERT_FILE`;
+- custom CA handling through `INOCODE_CA_CERTIFICATE` and `SSL_CERT_FILE`;
 - explicit outbound proxy policy, including system, PAC/WPAD, environment, and direct routes;
 - route-aware client pooling and redirect handling;
 - tracing-header injection and optional request diagnostics; and

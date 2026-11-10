@@ -230,15 +230,15 @@ class AppServerHarness:
         """Prefer the CI binary, then a local debug build, then the installed runtime."""
         binary_name = "codex.exe" if os.name == "nt" else "codex"
         debug_binary = Path(__file__).resolve().parents[3] / "codex-rs/target/debug" / binary_name
-        codex_bin = os.environ.get("CODEX_EXEC_PATH")
+        codex_bin = os.environ.get("INOCODE_EXEC_PATH")
         if codex_bin is None and debug_binary.is_file():
             codex_bin = str(debug_binary)
         return CodexConfig(
             codex_bin=codex_bin,
             cwd=str(self.workspace),
             env={
-                "CODEX_HOME": str(self.codex_home),
-                "CODEX_APP_SERVER_DISABLE_MANAGED_CONFIG": "1",
+                "INOCODE_HOME": str(self.codex_home),
+                "INOCODE_APP_SERVER_DISABLE_MANAGED_CONFIG": "1",
                 "RUST_LOG": "warn",
             },
         )

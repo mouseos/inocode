@@ -54,7 +54,7 @@ delivery = {{ kind = "header", name = "X-Gateway-Authorization" }}
 async fn gateway_server(home: &std::path::Path) -> Result<TestAppServer> {
     let mut server = TestAppServer::builder()
         .with_codex_home(home)
-        .with_env_overrides(&[("OPENAI_API_KEY", None), ("CODEX_API_KEY", None)])
+        .with_env_overrides(&[("OPENAI_API_KEY", None), ("INOCODE_API_KEY", None)])
         .build()
         .await?;
     server

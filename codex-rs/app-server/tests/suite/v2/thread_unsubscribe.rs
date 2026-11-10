@@ -646,7 +646,7 @@ enabled_tools = []
     write_models_cache(codex_home.path()).await?;
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
-        .with_env_overrides(&[("CODEX_ROLLOUT_TRACE_ROOT", traces.path().to_str())])
+        .with_env_overrides(&[("INOCODE_ROLLOUT_TRACE_ROOT", traces.path().to_str())])
         .build_initialized()
         .await?;
     let parent = mcp.start_thread(ThreadStartParams::default()).await?.thread;

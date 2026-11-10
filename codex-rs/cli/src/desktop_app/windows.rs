@@ -3,9 +3,9 @@ use std::path::Path;
 use std::path::PathBuf;
 use tokio::process::Command;
 
-const CODEX_WINDOWS_INSTALLER_URL: &str =
+const INOCODE_WINDOWS_INSTALLER_URL: &str =
     "https://get.microsoft.com/installer/download/9PLM9XGG6VKS?cid=website_cta_psi";
-const CODEX_MICROSOFT_STORE_WEB_URL: &str = "https://apps.microsoft.com/detail/9plm9xgg6vks";
+const INOCODE_MICROSOFT_STORE_WEB_URL: &str = "https://apps.microsoft.com/detail/9plm9xgg6vks";
 
 pub async fn run_windows_app_open_or_install(
     workspace: PathBuf,
@@ -22,9 +22,9 @@ pub async fn run_windows_app_open_or_install(
     eprintln!("Desktop app not found; opening Windows installer...");
     let download_url = download_url_override
         .as_deref()
-        .unwrap_or(CODEX_WINDOWS_INSTALLER_URL);
+        .unwrap_or(INOCODE_WINDOWS_INSTALLER_URL);
     if open_url(download_url).await.is_err() && download_url_override.is_none() {
-        open_url(CODEX_MICROSOFT_STORE_WEB_URL).await?;
+        open_url(INOCODE_MICROSOFT_STORE_WEB_URL).await?;
     }
     eprintln!("After installing the Desktop app, open workspace {display_workspace}.");
     Ok(())

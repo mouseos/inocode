@@ -458,7 +458,7 @@ fn seed_secrets_backend_and_fallback_auth_file_for_delete(
     );
     manager.set(
         &SecretScope::Global,
-        &CODEX_AUTH_SECRET_NAME,
+        &INOCODE_AUTH_SECRET_NAME,
         &serde_json::to_string(auth)?,
     )?;
     let auth_file = get_auth_file(codex_home);
@@ -479,7 +479,7 @@ fn seed_secrets_backend_with_auth(
     );
     manager.set(
         &SecretScope::Global,
-        &CODEX_AUTH_SECRET_NAME,
+        &INOCODE_AUTH_SECRET_NAME,
         &serde_json::to_string(auth)?,
     )?;
     Ok(())
@@ -497,7 +497,7 @@ fn assert_keyring_saved_auth_and_removed_fallback(
         LocalSecretsNamespace::CodexAuth,
     );
     let saved_value = manager
-        .get(&SecretScope::Global, &CODEX_AUTH_SECRET_NAME)?
+        .get(&SecretScope::Global, &INOCODE_AUTH_SECRET_NAME)?
         .context("encrypted auth entry should exist")?;
     let expected_serialized = serde_json::to_string(expected)?;
     assert_eq!(saved_value, expected_serialized);
@@ -606,7 +606,7 @@ fn secrets_keyring_auth_storage_load_returns_deserialized_auth() -> anyhow::Resu
 
 #[test]
 fn keyring_auth_storage_compute_store_key_for_home_directory() -> anyhow::Result<()> {
-    let codex_home = PathBuf::from("~/.codex");
+    let codex_home = PathBuf::from("~/.inocode");
 
     let key = compute_store_key(codex_home.as_path())?;
 

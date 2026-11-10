@@ -17,10 +17,10 @@ use tokio::time::timeout;
 const DEADLINE: Duration = Duration::from_secs(/*secs*/ 10);
 
 #[tokio::test]
-#[ignore = "requires CODEX_TEST_VOICE_RUNTIME containing real prepared native libraries"]
+#[ignore = "requires INOCODE_TEST_VOICE_RUNTIME containing real prepared native libraries"]
 async fn relocated_runtime_initializes_closes_and_rejects_duplicate_initialization() -> Result<()> {
-    let source = std::env::var_os("CODEX_TEST_VOICE_RUNTIME")
-        .context("set CODEX_TEST_VOICE_RUNTIME to a matching prepared runtime")?;
+    let source = std::env::var_os("INOCODE_TEST_VOICE_RUNTIME")
+        .context("set INOCODE_TEST_VOICE_RUNTIME to a matching prepared runtime")?;
     let source = fs::canonicalize(source)?;
     ensure!(
         source.join("runtime.json").is_file(),

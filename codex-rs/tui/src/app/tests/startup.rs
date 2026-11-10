@@ -809,7 +809,7 @@ async fn unattended_modals_survive_unfinished_terminal_input() -> Result<()> {
 
     // Isolate crossterm's global parser and give its input poll a real terminal, as in
     // tui_startup_tests. No key is delivered to the app before the approval.
-    if std::env::var_os("CODEX_UNATTENDED_MODALS_PTY").is_none() {
+    if std::env::var_os("INOCODE_UNATTENDED_MODALS_PTY").is_none() {
         let mut master = -1;
         let mut slave = -1;
         // Safety: openpty initializes both file descriptors on success.
@@ -834,7 +834,7 @@ async fn unattended_modals_survive_unfinished_terminal_input() -> Result<()> {
                 "app::tests::startup::unattended_modals_survive_unfinished_terminal_input",
                 "--nocapture",
             ])
-            .env("CODEX_UNATTENDED_MODALS_PTY", "1")
+            .env("INOCODE_UNATTENDED_MODALS_PTY", "1")
             .stdin(Stdio::from(slave))
             .output()?;
         assert!(
@@ -1000,7 +1000,7 @@ async fn unattended_modals_survive_unfinished_terminal_input() -> Result<()> {
         &mut app_server,
         &mut app_event_rx,
         connected,
-        CODEX_CLI_VERSION,
+        INOCODE_CLI_VERSION,
     )
     .await?;
 

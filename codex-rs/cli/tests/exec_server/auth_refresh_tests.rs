@@ -45,11 +45,11 @@ async fn executor_startup_rejects_agent_identity_before_cloud_config() -> Result
     let mut command = tokio::process::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?);
     command
         .current_dir(home.path())
-        .env("CODEX_HOME", home.path())
-        .env_remove("CODEX_API_KEY")
+        .env("INOCODE_HOME", home.path())
+        .env_remove("INOCODE_API_KEY")
         .env_remove("OPENAI_API_KEY")
-        .env_remove("CODEX_ACCESS_TOKEN")
-        .env("CODEX_AGENT_IDENTITY_AUTHAPI_BASE_URL", server.uri())
+        .env_remove("INOCODE_ACCESS_TOKEN")
+        .env("INOCODE_AGENT_IDENTITY_AUTHAPI_BASE_URL", server.uri())
         .env("NO_PROXY", "127.0.0.1,localhost")
         .env("no_proxy", "127.0.0.1,localhost")
         .args([
@@ -124,12 +124,12 @@ async fn noise_executor_refreshes_on_401_and_reloads_rotated_credentials() -> Re
         .await;
     let mut child = tokio::process::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?)
         .current_dir(home.path())
-        .env("CODEX_HOME", home.path())
-        .env_remove("CODEX_API_KEY")
+        .env("INOCODE_HOME", home.path())
+        .env_remove("INOCODE_API_KEY")
         .env_remove("OPENAI_API_KEY")
-        .env_remove("CODEX_ACCESS_TOKEN")
+        .env_remove("INOCODE_ACCESS_TOKEN")
         .env(
-            "CODEX_REFRESH_TOKEN_URL_OVERRIDE",
+            "INOCODE_REFRESH_TOKEN_URL_OVERRIDE",
             format!("{}/refresh", registry.uri()),
         )
         .env("NO_PROXY", "127.0.0.1,localhost")

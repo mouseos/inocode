@@ -341,7 +341,7 @@ async fn exec_tools_follow_current_settings_across_history() -> Result<()> {
             ForkSnapshot::Interrupted,
             StartThreadOptions::new(fork_config),
             returned
-                .codex
+                .inocode
                 .rollout_path()
                 .expect("persisted parent rollout"),
         )

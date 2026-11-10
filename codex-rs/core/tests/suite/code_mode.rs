@@ -37,7 +37,7 @@ use codex_features::Feature;
 use codex_http_client::DestinationPolicy;
 use codex_http_client::NetworkPolicyController;
 use codex_login::CodexAuth;
-use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+use codex_mcp::INOCODE_APPS_MCP_SERVER_NAME;
 use codex_mcp::codex_apps_mcp_server_config;
 use codex_models_manager::bundled_models_response;
 use codex_protocol::config_types::ApprovalsReviewer;
@@ -2642,7 +2642,7 @@ async fn result_metadata_follows_call_binding(
         let mut extensions = ExtensionRegistryBuilder::<Config>::new();
         extensions.mcp_server_contributor(Arc::new(ResultMetadataTestControl {
             server: Mutex::new(McpServerContribution::Set {
-                name: CODEX_APPS_MCP_SERVER_NAME.to_string(),
+                name: INOCODE_APPS_MCP_SERVER_NAME.to_string(),
                 config: Box::new(codex_apps_mcp_server_config(
                     &apps_server.chatgpt_base_url,
                     /*apps_mcp_product_sku*/ None,
@@ -2790,13 +2790,13 @@ async fn code_mode_result_metadata_follows_runtime_recording_enablement() -> Res
                 .enable(Feature::ExecutedToolCallMetadata)
                 .unwrap();
             let _ = test
-                .codex
+                .inocode
                 .refresh_runtime_config(current_config, config)
                 .await;
             // Runtime recording changes without updating the session's execution features.
             assert!(
                 !test
-                    .codex
+                    .inocode
                     .config()
                     .await
                     .features
@@ -2948,7 +2948,7 @@ async fn code_mode_result_metadata_keeps_prepared_call_binding_across_runtime_re
     );
     // The next call uses an extension-owned binding, but the held call keeps its host proof.
     *control.server.lock().unwrap() = McpServerContribution::Set {
-        name: CODEX_APPS_MCP_SERVER_NAME.to_string(),
+        name: INOCODE_APPS_MCP_SERVER_NAME.to_string(),
         config: Box::new(codex_apps_mcp_server_config(
             &refreshed_apps.chatgpt_base_url,
             /*apps_mcp_product_sku*/ None,
@@ -2957,7 +2957,7 @@ async fn code_mode_result_metadata_keeps_prepared_call_binding_across_runtime_re
     };
     let current_config = test.codex.config().await;
     let _ = test
-        .codex
+        .inocode
         .refresh_runtime_config(current_config, test.config.clone())
         .await;
     release_tx.send(()).unwrap();
@@ -7225,7 +7225,7 @@ async fn code_mode_node_repl_screenshots_can_be_captured_without_guardian_transc
     let test = builder.build_with_auto_env(&server).await?;
     core_test_support::wait_for_mcp_server(&test.codex, repl_server).await?;
     let evidence = test
-        .codex
+        .inocode
         .thread_extension_data()
         .get_or_init(NodeReplReviewEvidence::default);
     evidence.enable_image_capture();

@@ -153,7 +153,7 @@ impl Entry {
             let fetch_ticket = cache_context.map(|context| (context, context.begin_fetch()));
             let (tools, meta) = list_tools_for_client_uncached(
                 &self.key.server_name,
-                self.key.server_name == crate::CODEX_APPS_MCP_SERVER_NAME,
+                self.key.server_name == crate::INOCODE_APPS_MCP_SERVER_NAME,
                 "shared_connection",
                 &client.client,
                 Some(self.key.startup_timeout),

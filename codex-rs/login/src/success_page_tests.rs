@@ -59,7 +59,7 @@ fn compose_success_url_uses_hosted_page_when_requested() {
             "e30.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnt9fQ.sig",
             /*codex_streamlined_login*/ false,
             &LoginSuccessPage::Hosted {
-                url: Url::parse(CODEX_OPEN_APP_URL).expect("open app URL should parse"),
+                url: Url::parse(INOCODE_OPEN_APP_URL).expect("open app URL should parse"),
                 app_brand: LoginSuccessPageBrand::Chatgpt,
             },
         ),
@@ -101,7 +101,7 @@ fn compose_success_url_keeps_setup_on_local_page() {
         &format!("e30.{access_payload}.sig"),
         /*codex_streamlined_login*/ true,
         &LoginSuccessPage::Hosted {
-            url: Url::parse(CODEX_OPEN_APP_URL).expect("open app URL should parse"),
+            url: Url::parse(INOCODE_OPEN_APP_URL).expect("open app URL should parse"),
             app_brand: LoginSuccessPageBrand::Codex,
         },
     ) else {

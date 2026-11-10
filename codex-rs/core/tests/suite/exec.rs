@@ -4,7 +4,7 @@ use codex_core::exec::ExecCapturePolicy;
 use codex_core::exec::ExecParams;
 use codex_core::exec::process_exec_tool_call;
 use codex_core::sandboxing::SandboxPermissions;
-use codex_core::spawn::CODEX_SANDBOX_ENV_VAR;
+use codex_core::spawn::INOCODE_SANDBOX_ENV_VAR;
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::error::Result;
 use codex_protocol::exec_output::ExecToolCallOutput;
@@ -16,8 +16,8 @@ use std::collections::HashMap;
 use tempfile::TempDir;
 
 fn skip_test() -> bool {
-    if std::env::var(CODEX_SANDBOX_ENV_VAR) == Ok("seatbelt".to_string()) {
-        eprintln!("{CODEX_SANDBOX_ENV_VAR} is set to 'seatbelt', skipping test.");
+    if std::env::var(INOCODE_SANDBOX_ENV_VAR) == Ok("seatbelt".to_string()) {
+        eprintln!("{INOCODE_SANDBOX_ENV_VAR} is set to 'seatbelt', skipping test.");
         return true;
     }
 

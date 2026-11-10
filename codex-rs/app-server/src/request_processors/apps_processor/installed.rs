@@ -4,7 +4,7 @@ use codex_connectors::ConnectorRuntimeTool;
 use codex_connectors::connector_runtime_context_key;
 use codex_connectors::connector_tool_is_synthetic;
 use codex_connectors::installed_connector_runtime;
-use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+use codex_mcp::INOCODE_APPS_MCP_SERVER_NAME;
 use codex_mcp::MCP_TOOL_CODEX_APPS_META_KEY;
 use codex_mcp::McpRuntime;
 use codex_mcp::McpRuntimeInput;
@@ -81,14 +81,14 @@ impl AppsRequestProcessor {
                     }
                     let mcp_config = mcp_manager.runtime_config(&config).await;
                     let mut mcp_servers = effective_mcp_servers(&mcp_config, auth.as_ref());
-                    mcp_servers.retain(|name, _| name == CODEX_APPS_MCP_SERVER_NAME);
+                    mcp_servers.retain(|name, _| name == INOCODE_APPS_MCP_SERVER_NAME);
                     let mcp_config = Arc::new(mcp_config.for_threadless_operations(&mcp_servers));
                     anyhow::ensure!(
                         !mcp_servers.is_empty(),
-                        "host-owned MCP server '{CODEX_APPS_MCP_SERVER_NAME}' is not enabled"
+                        "host-owned MCP server '{INOCODE_APPS_MCP_SERVER_NAME}' is not enabled"
                     );
                     let startup_timeout = mcp_servers
-                        .get(CODEX_APPS_MCP_SERVER_NAME)
+                        .get(INOCODE_APPS_MCP_SERVER_NAME)
                         .and_then(|server| server.config().startup_timeout_sec)
                         .unwrap_or(CONNECTOR_RUNTIME_REFRESH_TIMEOUT);
                     let runtime_context = McpRuntimeContext::new(
@@ -125,7 +125,7 @@ impl AppsRequestProcessor {
 
                     let result = if runtime
                         .latest_wait_for_server_ready(
-                            CODEX_APPS_MCP_SERVER_NAME,
+                            INOCODE_APPS_MCP_SERVER_NAME,
                             startup_timeout,
                         )
                         .await
@@ -140,7 +140,7 @@ impl AppsRequestProcessor {
                             })
                     } else {
                         Err(anyhow::anyhow!(
-                            "failed to refresh tools for MCP server '{CODEX_APPS_MCP_SERVER_NAME}'"
+                            "failed to refresh tools for MCP server '{INOCODE_APPS_MCP_SERVER_NAME}'"
                         ))
                     };
                     cancellation_token.cancel();

@@ -14,7 +14,7 @@ use codex_protocol::mcp_policy::PluginMcpRequirements;
 use codex_utils_path_uri::PathUri;
 use pretty_assertions::assert_eq;
 
-use crate::CODEX_APPS_MCP_SERVER_NAME;
+use crate::INOCODE_APPS_MCP_SERVER_NAME;
 use crate::McpProtocolMode;
 use crate::server::McpCredentialPolicy;
 
@@ -287,7 +287,7 @@ fn rejected_plugin_ema_registration_does_not_veto_hosted_apps() {
     rejected.auth = McpServerAuth::EmaAuth;
     let mut builder = ResolvedMcpCatalog::builder();
     builder.register(McpServerRegistration::from_plugin(
-        CODEX_APPS_MCP_SERVER_NAME.to_string(),
+        INOCODE_APPS_MCP_SERVER_NAME.to_string(),
         plugin("plugin@test"),
         /*plugin_order*/ 0,
         rejected,
@@ -295,7 +295,7 @@ fn rejected_plugin_ema_registration_does_not_veto_hosted_apps() {
     let catalog = builder.build();
     assert!(
         !catalog
-            .server(CODEX_APPS_MCP_SERVER_NAME)
+            .server(INOCODE_APPS_MCP_SERVER_NAME)
             .unwrap()
             .config()
             .enabled
@@ -312,7 +312,7 @@ fn rejected_plugin_ema_registration_does_not_veto_hosted_apps() {
         assert_eq!(
             builder
                 .build()
-                .server(CODEX_APPS_MCP_SERVER_NAME)
+                .server(INOCODE_APPS_MCP_SERVER_NAME)
                 .unwrap()
                 .config(),
             &expected,
@@ -733,7 +733,7 @@ fn environment_policy_exempts_only_explicitly_host_owned_apps() {
     for (registration, expected) in [
         (
             McpServerRegistration::from_extension(
-                CODEX_APPS_MCP_SERVER_NAME.to_string(),
+                INOCODE_APPS_MCP_SERVER_NAME.to_string(),
                 "apps",
                 /*contribution_order*/ 0,
                 server("https://apps.example/mcp"),
@@ -752,7 +752,7 @@ fn environment_policy_exempts_only_explicitly_host_owned_apps() {
         let custom = server("https://custom.example/mcp");
         let mut builder = ResolvedMcpCatalog::builder();
         builder.register(McpServerRegistration::from_config(
-            CODEX_APPS_MCP_SERVER_NAME.to_string(),
+            INOCODE_APPS_MCP_SERVER_NAME.to_string(),
             custom.clone(),
         ));
         let denied = builder
@@ -763,7 +763,7 @@ fn environment_policy_exempts_only_explicitly_host_owned_apps() {
             .build_with_environment_authority(|_| McpEnvironmentAuthority::Restricted(&policy));
         assert_eq!(
             catalog
-                .server(CODEX_APPS_MCP_SERVER_NAME)
+                .server(INOCODE_APPS_MCP_SERVER_NAME)
                 .expect("Apps registration")
                 .config()
                 .enabled,
@@ -773,7 +773,7 @@ fn environment_policy_exempts_only_explicitly_host_owned_apps() {
             .with_materialized_servers(catalog.configured_servers())
             .to_builder();
         builder.register(McpServerRegistration::from_extension(
-            CODEX_APPS_MCP_SERVER_NAME.to_string(),
+            INOCODE_APPS_MCP_SERVER_NAME.to_string(),
             "custom",
             /*contribution_order*/ 1,
             custom,

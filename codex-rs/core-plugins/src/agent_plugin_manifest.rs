@@ -14,7 +14,7 @@ use codex_utils_plugins::SUPPORTED_AGENT_PLUGIN_SCHEMA_URIS;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
-const CODEX_AGENT_PLUGIN_EXTENSION_NAMESPACE: &str = "com.openai";
+const INOCODE_AGENT_PLUGIN_EXTENSION_NAMESPACE: &str = "com.openai";
 const AGENT_PLUGIN_FIELDS: &[&str] = &[
     "$schema",
     "name",
@@ -89,14 +89,14 @@ pub(super) fn parse_agent_plugin_manifest_uri(
     let codex_extension = object
         .get("extensions")
         .and_then(JsonValue::as_object)
-        .and_then(|extensions| extensions.get(CODEX_AGENT_PLUGIN_EXTENSION_NAMESPACE))
+        .and_then(|extensions| extensions.get(INOCODE_AGENT_PLUGIN_EXTENSION_NAMESPACE))
         .and_then(|extension| {
             if extension.is_object() {
                 Some(extension)
             } else {
                 tracing::warn!(
                     path = %manifest_path,
-                    namespace = CODEX_AGENT_PLUGIN_EXTENSION_NAMESPACE,
+                    namespace = INOCODE_AGENT_PLUGIN_EXTENSION_NAMESPACE,
                     "ignoring non-object Agent Plugins extension"
                 );
                 None

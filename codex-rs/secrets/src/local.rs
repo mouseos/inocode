@@ -39,11 +39,11 @@ use super::keyring_service;
 
 const SECRETS_VERSION: u8 = 1;
 const LOCAL_SECRETS_FILENAME: &str = "local.age";
-const CODEX_AUTH_SECRETS_FILENAME: &str = "codex_auth.age";
+const INOCODE_AUTH_SECRETS_FILENAME: &str = "codex_auth.age";
 const MCP_OAUTH_SECRETS_FILENAME: &str = "mcp_oauth.age";
 const GATEWAY_OAUTH_SECRETS_FILENAME: &str = "gateway_oauth.age";
 static MCP_OAUTH_CACHE: Mutex<Option<CachedSecrets>> = Mutex::new(None);
-static CODEX_AUTH_CACHE: Mutex<Option<CachedSecrets>> = Mutex::new(None);
+static INOCODE_AUTH_CACHE: Mutex<Option<CachedSecrets>> = Mutex::new(None);
 static MANAGED_SECRETS_CACHE: Mutex<Option<CachedSecrets>> = Mutex::new(None);
 
 // Tests that access the shared caches must hold this lock so another test's
@@ -176,7 +176,7 @@ impl LocalSecretsBackend {
     fn secrets_path(&self) -> PathBuf {
         let filename = match self.namespace {
             LocalSecretsNamespace::ManagedSecrets => LOCAL_SECRETS_FILENAME,
-            LocalSecretsNamespace::CodexAuth => CODEX_AUTH_SECRETS_FILENAME,
+            LocalSecretsNamespace::CodexAuth => INOCODE_AUTH_SECRETS_FILENAME,
             LocalSecretsNamespace::McpOAuth => MCP_OAUTH_SECRETS_FILENAME,
             LocalSecretsNamespace::GatewayOAuth => GATEWAY_OAUTH_SECRETS_FILENAME,
         };
@@ -188,7 +188,7 @@ impl LocalSecretsBackend {
     fn decrypted_cache(&self) -> &Mutex<Option<CachedSecrets>> {
         match self.namespace {
             LocalSecretsNamespace::ManagedSecrets => &MANAGED_SECRETS_CACHE,
-            LocalSecretsNamespace::CodexAuth => &CODEX_AUTH_CACHE,
+            LocalSecretsNamespace::CodexAuth => &INOCODE_AUTH_CACHE,
             LocalSecretsNamespace::McpOAuth => &MCP_OAUTH_CACHE,
             LocalSecretsNamespace::GatewayOAuth => &self.gateway_cache,
         }

@@ -49,7 +49,7 @@ fn test_get_codex_user_agent() {
 #[test]
 #[cfg(target_os = "linux")]
 fn os_discovery_is_cached_without_freezing_user_agent_overrides() {
-    const PROBE_DIR: &str = "CODEX_TEST_USER_AGENT_PROBE_DIR";
+    const PROBE_DIR: &str = "INOCODE_TEST_USER_AGENT_PROBE_DIR";
     if std::env::var_os(PROBE_DIR).is_some() {
         // Race the first lookup as well as exercising repeated requests.
         std::thread::scope(|scope| {
@@ -97,7 +97,7 @@ fn os_discovery_is_cached_without_freezing_user_agent_overrides() {
         ])
         .env(PROBE_DIR, temp.path())
         .env("PATH", temp.path())
-        .env_remove(CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR)
+        .env_remove(INOCODE_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR)
         .output()
         .expect("run isolated user-agent test");
     assert!(output.status.success(), "{output:?}");
@@ -358,7 +358,7 @@ fn test_macos() {
 
 #[tokio::test]
 async fn signed_reject_routes_preserve_invalid_ca_errors() {
-    const CHILD: &str = "CODEX_TEST_SIGNED_ROUTE_INVALID_CA";
+    const CHILD: &str = "INOCODE_TEST_SIGNED_ROUTE_INVALID_CA";
     if std::env::var_os(CHILD).is_none() {
         let dir = tempfile::tempdir().unwrap();
         let ca = dir.path().join("invalid.pem");
@@ -367,7 +367,7 @@ async fn signed_reject_routes_preserve_invalid_ca_errors() {
             .arg("signed_reject_routes_preserve_invalid_ca_errors")
             .arg("--nocapture")
             .env(CHILD, "1")
-            .env("CODEX_CA_CERTIFICATE", ca)
+            .env("INOCODE_CA_CERTIFICATE", ca)
             .env_remove("SSL_CERT_FILE")
             .output()
             .unwrap();

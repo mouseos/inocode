@@ -2957,7 +2957,7 @@ ZDOTDIR = "{}"
         workdir
     };
     let call_id = "shell-brokered-github-credential";
-    let command = r#"printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$GH_HOST" "$GH_ENTERPRISE_TOKEN" "$CUSTOM_HOST" "$CUSTOM_API_KEY" "$CODEX_NETWORK_PROXY_CREDENTIAL_BROKER_ACTIVE" "$PWD" "$BROKERED_STARTUP_CWD" "${LOGIN_SNAPSHOT_READY-unset}" "$AUTH_HEADER""#;
+    let command = r#"printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$GH_HOST" "$GH_ENTERPRISE_TOKEN" "$CUSTOM_HOST" "$CUSTOM_API_KEY" "$INOCODE_NETWORK_PROXY_CREDENTIAL_BROKER_ACTIVE" "$PWD" "$BROKERED_STARTUP_CWD" "${LOGIN_SNAPSHOT_READY-unset}" "$AUTH_HEADER""#;
     let command = format!(
         "APP_SETTING=production; EXCLUDED_SETTING=denied; [ \"$(/usr/bin/printenv APP_SETTING)\" = production ] || exit 1; if /usr/bin/printenv EXCLUDED_SETTING >/dev/null; then exit 1; fi; {command}"
     );
@@ -3375,7 +3375,7 @@ GH_TOKEN = "{REAL_GITHUB_TOKEN}"
     let command = if snapshot_unavailable {
         let outside_path_arg = shlex::try_join([outside_path.to_string_lossy().as_ref()])?;
         format!(
-            "corp_login && printf '%s\\n' \"${{CODEX_NETWORK_PROXY_CREDENTIAL_BROKER_ACTIVE-}}\" && \
+            "corp_login && printf '%s\\n' \"${{INOCODE_NETWORK_PROXY_CREDENTIAL_BROKER_ACTIVE-}}\" && \
              test -n \"$HTTP_PROXY\" && printf 'proxy-active\\n' && \
              if (printf escaped > {outside_path_arg}) 2>/dev/null; then exit 1; else printf 'sandbox-denied\\n'; fi"
         )
@@ -3641,7 +3641,7 @@ ENV = "{}"
         })
         .build(&server)
         .await?;
-    let script = r#"printf '%s\n%s\n%s\n%s\n' "$GH_TOKEN" "$CODEX_NETWORK_PROXY_CREDENTIAL_BROKER_ACTIVE" "${ENV-unset}" "$CORP_REGION""#;
+    let script = r#"printf '%s\n%s\n%s\n%s\n' "$GH_TOKEN" "$INOCODE_NETWORK_PROXY_CREDENTIAL_BROKER_ACTIVE" "${ENV-unset}" "$CORP_REGION""#;
     let command = format!(
         "{} 2>/dev/null",
         shlex::try_join([shell_path.as_str(), "-i", "-c", script])?
@@ -3724,7 +3724,7 @@ async fn allowed_escalated_exec_command_inherits_active_permission_profile() -> 
         format!(
             r#"#!/bin/sh
 # Print the inherited profile so the test can verify that it reached this script.
-printenv CODEX_PERMISSION_PROFILE
+printenv INOCODE_PERMISSION_PROFILE
 touch {outside_path:?}
 "#
         ),
@@ -3788,7 +3788,7 @@ touch {outside_path:?}
             exit_code: Some(0),
             stdout: format!("{BUILT_IN_PERMISSION_PROFILE_WORKSPACE}\n"),
         },
-        "the unsandboxed script should inherit CODEX_PERMISSION_PROFILE from the shell command"
+        "the unsandboxed script should inherit INOCODE_PERMISSION_PROFILE from the shell command"
     );
     assert!(
         outside_path.exists(),

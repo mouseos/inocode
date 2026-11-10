@@ -535,7 +535,7 @@ pub use winutil::to_wide;
 #[cfg(target_os = "windows")]
 pub use workspace_acl::is_command_cwd_root;
 #[cfg(target_os = "windows")]
-pub use wrapper::CODEX_WINDOWS_SANDBOX_ARG1;
+pub use wrapper::INOCODE_WINDOWS_SANDBOX_ARG1;
 #[cfg(target_os = "windows")]
 pub use wrapper::create_windows_sandbox_command_args_for_permission_profile;
 #[cfg(target_os = "windows")]

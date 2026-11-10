@@ -34,7 +34,7 @@ fn service_package_family() -> Result<Option<String>> {
     if let Some(family) = current_family()? {
         return Ok(Some(family));
     }
-    let Some(hint) = std::env::var_os("CODEX_WINDOWS_SANDBOX_PACKAGE_FAMILY") else {
+    let Some(hint) = std::env::var_os("INOCODE_WINDOWS_SANDBOX_PACKAGE_FAMILY") else {
         return Ok(None);
     };
     let family = hint

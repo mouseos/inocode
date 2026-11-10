@@ -16,7 +16,7 @@ use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
 use codex_protocol::capabilities::CapabilityRootLocation;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
-use codex_protocol::shell_environment::CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR;
+use codex_protocol::shell_environment::INOCODE_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR;
 
 use crate::CapabilityRootsDiscoverParams;
 use crate::CapabilityRootsDiscoverResponse;
@@ -59,13 +59,13 @@ mod accepted;
 
 pub use connect_options::RemoteEnvironmentOptions;
 
-pub const CODEX_EXEC_SERVER_URL_ENV_VAR: &str = "CODEX_EXEC_SERVER_URL";
-pub const CODEX_EXEC_SERVER_NOISE_REGISTRY_URL_ENV_VAR: &str =
-    "CODEX_EXEC_SERVER_NOISE_REGISTRY_URL";
-pub const CODEX_EXEC_SERVER_NOISE_ENVIRONMENT_ID_ENV_VAR: &str =
-    "CODEX_EXEC_SERVER_NOISE_ENVIRONMENT_ID";
-pub const CODEX_EXEC_SERVER_NOISE_CHATGPT_ACCOUNT_ID_ENV_VAR: &str =
-    "CODEX_EXEC_SERVER_NOISE_CHATGPT_ACCOUNT_ID";
+pub const INOCODE_EXEC_SERVER_URL_ENV_VAR: &str = "INOCODE_EXEC_SERVER_URL";
+pub const INOCODE_EXEC_SERVER_NOISE_REGISTRY_URL_ENV_VAR: &str =
+    "INOCODE_EXEC_SERVER_NOISE_REGISTRY_URL";
+pub const INOCODE_EXEC_SERVER_NOISE_ENVIRONMENT_ID_ENV_VAR: &str =
+    "INOCODE_EXEC_SERVER_NOISE_ENVIRONMENT_ID";
+pub const INOCODE_EXEC_SERVER_NOISE_CHATGPT_ACCOUNT_ID_ENV_VAR: &str =
+    "INOCODE_EXEC_SERVER_NOISE_CHATGPT_ACCOUNT_ID";
 
 /// The current connection state for one concrete environment.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -89,10 +89,10 @@ pub enum ConnectionAttemptOutcome {
 /// Owns the execution/filesystem environments available to the Codex runtime.
 ///
 /// `EnvironmentManager` is a shared registry for concrete environments. Its
-/// default constructor preserves the legacy `CODEX_EXEC_SERVER_URL` behavior
+/// default constructor preserves the legacy `INOCODE_EXEC_SERVER_URL` behavior
 /// while configured construction accepts a provider-supplied snapshot.
 ///
-/// Setting `CODEX_EXEC_SERVER_URL=none` disables environment access by leaving
+/// Setting `INOCODE_EXEC_SERVER_URL=none` disables environment access by leaving
 /// the default environment unset and omitting the local environment. Callers
 /// use `default_environment().is_some()` as the signal for model-facing
 /// shell/filesystem tool availability.
@@ -193,9 +193,9 @@ impl EnvironmentManager {
 
     /// Discovers configured environments without starting remote connections.
     ///
-    /// If `CODEX_HOME/environments.toml` is present, it defines the configured
+    /// If `INOCODE_HOME/environments.toml` is present, it defines the configured
     /// environments. Otherwise this preserves the legacy
-    /// `CODEX_EXEC_SERVER_URL` behavior.
+    /// `INOCODE_EXEC_SERVER_URL` behavior.
     pub async fn prepare_from_codex_home(
         codex_home: impl AsRef<std::path::Path>,
     ) -> Result<PreparedEnvironmentManager, ExecServerError> {
@@ -208,7 +208,7 @@ impl EnvironmentManager {
         Ok(PreparedEnvironmentManager { source })
     }
 
-    /// Builds a manager from `CODEX_HOME` with an explicit outbound HTTP policy.
+    /// Builds a manager from `INOCODE_HOME` with an explicit outbound HTTP policy.
     pub async fn from_codex_home(
         codex_home: impl AsRef<std::path::Path>,
         local_runtime_paths: Option<ExecServerRuntimeOptions>,
@@ -652,10 +652,10 @@ fn validate_environment_id(environment_id: &str) -> Result<(), ExecServerError> 
 fn noise_environment_config_from_env()
 -> Result<Option<NoiseRendezvousEnvironmentConfig>, ExecServerError> {
     noise_environment_config_from_values(
-        optional_environment_value(CODEX_EXEC_SERVER_NOISE_REGISTRY_URL_ENV_VAR),
-        optional_environment_value(CODEX_EXEC_SERVER_NOISE_ENVIRONMENT_ID_ENV_VAR),
-        optional_environment_value(CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR),
-        optional_environment_value(CODEX_EXEC_SERVER_NOISE_CHATGPT_ACCOUNT_ID_ENV_VAR),
+        optional_environment_value(INOCODE_EXEC_SERVER_NOISE_REGISTRY_URL_ENV_VAR),
+        optional_environment_value(INOCODE_EXEC_SERVER_NOISE_ENVIRONMENT_ID_ENV_VAR),
+        optional_environment_value(INOCODE_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR),
+        optional_environment_value(INOCODE_EXEC_SERVER_NOISE_CHATGPT_ACCOUNT_ID_ENV_VAR),
     )
 }
 
@@ -673,9 +673,9 @@ fn noise_environment_config_from_values(
             }
             _ => {
                 return Err(ExecServerError::EnvironmentRegistryConfig(format!(
-                    "Noise environment requires {CODEX_EXEC_SERVER_NOISE_REGISTRY_URL_ENV_VAR}, \
-{CODEX_EXEC_SERVER_NOISE_ENVIRONMENT_ID_ENV_VAR}, and \
-{CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR}"
+                    "Noise environment requires {INOCODE_EXEC_SERVER_NOISE_REGISTRY_URL_ENV_VAR}, \
+{INOCODE_EXEC_SERVER_NOISE_ENVIRONMENT_ID_ENV_VAR}, and \
+{INOCODE_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR}"
                 )));
             }
         };
@@ -765,7 +765,7 @@ impl Environment {
         )
     }
 
-    /// Builds an environment from the raw `CODEX_EXEC_SERVER_URL` value and
+    /// Builds an environment from the raw `INOCODE_EXEC_SERVER_URL` value and
     /// local runtime paths used when creating local filesystem helpers.
     fn create_inner(
         exec_server_url: Option<String>,

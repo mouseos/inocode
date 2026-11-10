@@ -10,7 +10,7 @@ use codex_analytics::GuardianReviewFailureReason;
 use codex_analytics::GuardianReviewSessionKind;
 use codex_analytics::GuardianReviewTerminalStatus;
 use codex_analytics::GuardianReviewedAction;
-use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+use codex_mcp::INOCODE_APPS_MCP_SERVER_NAME;
 use codex_otel::GUARDIAN_REVIEW_COUNT_METRIC;
 use codex_otel::GUARDIAN_REVIEW_DURATION_METRIC;
 use codex_otel::GUARDIAN_REVIEW_TOKEN_USAGE_METRIC;
@@ -53,7 +53,7 @@ pub(crate) fn emit_guardian_review_metrics(
     let mcp_tags = if let GuardianReviewedAction::McpToolCall {
         server, tool_name, ..
     } = reviewed_action
-        && server == CODEX_APPS_MCP_SERVER_NAME
+        && server == INOCODE_APPS_MCP_SERVER_NAME
     {
         vec![("tool", sanitize_metric_tag_value(tool_name))]
     } else {
@@ -441,7 +441,7 @@ mod tests {
     )]
     #[test_case(
         GuardianReviewedAction::McpToolCall {
-            server: CODEX_APPS_MCP_SERVER_NAME.to_string(),
+            server: INOCODE_APPS_MCP_SERVER_NAME.to_string(),
             tool_name: "search docs".to_string(),
             connector_id: None,
             connector_name: None,

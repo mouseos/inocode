@@ -273,11 +273,11 @@ describe("CodexExec", () => {
       child.emit("exit", 0, null);
     });
 
-    process.env.CODEX_ENV_SHOULD_NOT_LEAK = "leak";
+    process.env.INOCODE_ENV_SHOULD_NOT_LEAK = "leak";
 
     try {
       const exec = new CodexExec("codex", {
-        CODEX_HOME: "/tmp/codex-home",
+        INOCODE_HOME: "/tmp/codex-home",
         CUSTOM_ENV: "custom",
       });
 
@@ -298,15 +298,15 @@ describe("CodexExec", () => {
         throw new Error("Spawn args missing");
       }
 
-      expect(spawnEnv.CODEX_HOME).toBe("/tmp/codex-home");
+      expect(spawnEnv.INOCODE_HOME).toBe("/tmp/codex-home");
       expect(spawnEnv.CUSTOM_ENV).toBe("custom");
-      expect(spawnEnv.CODEX_ENV_SHOULD_NOT_LEAK).toBeUndefined();
-      expect(spawnEnv.CODEX_API_KEY).toBe("test");
-      expect(spawnEnv.CODEX_INTERNAL_ORIGINATOR_OVERRIDE).toBeDefined();
+      expect(spawnEnv.INOCODE_ENV_SHOULD_NOT_LEAK).toBeUndefined();
+      expect(spawnEnv.INOCODE_API_KEY).toBe("test");
+      expect(spawnEnv.INOCODE_INTERNAL_ORIGINATOR_OVERRIDE).toBeDefined();
       expect(commandArgs).toContain("--config");
       expect(commandArgs).toContain(`openai_base_url=${JSON.stringify("https://example.test")}`);
     } finally {
-      delete process.env.CODEX_ENV_SHOULD_NOT_LEAK;
+      delete process.env.INOCODE_ENV_SHOULD_NOT_LEAK;
     }
   });
 

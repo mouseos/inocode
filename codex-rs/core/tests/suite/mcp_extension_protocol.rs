@@ -15,7 +15,7 @@ use codex_extension_api::McpServerContribution;
 use codex_extension_api::McpServerContributionContext;
 use codex_extension_api::McpServerContributor;
 use codex_features::Feature;
-use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+use codex_mcp::INOCODE_APPS_MCP_SERVER_NAME;
 use codex_mcp::McpServerSource;
 use codex_mcp::McpToolRequestMetaHook;
 use codex_mcp::McpToolRequestMetaProvider;
@@ -230,7 +230,7 @@ async fn request_metadata_is_scoped_to_the_selected_tool_and_registration(
         .build_with_auto_env(&model)
         .await?;
     fixture
-        .codex
+        .inocode
         .thread_extension_data()
         .insert(McpToolRequestMetaHook {
             server_name: "selected".into(),
@@ -414,7 +414,7 @@ async fn hosted_apps_protocol_override_preserves_native_verification() -> anyhow
     let call = AbortOnDropHandle::new(tokio::spawn(async move {
         caller
             .call_mcp_tool(
-                CODEX_APPS_MCP_SERVER_NAME,
+                INOCODE_APPS_MCP_SERVER_NAME,
                 "verify_action",
                 /*arguments*/ None,
                 /*meta*/ None,
@@ -428,7 +428,7 @@ async fn hosted_apps_protocol_override_preserves_native_verification() -> anyhow
     else {
         unreachable!()
     };
-    assert_eq!(request.server_name, CODEX_APPS_MCP_SERVER_NAME);
+    assert_eq!(request.server_name, INOCODE_APPS_MCP_SERVER_NAME);
     assert_eq!(
         request.request,
         ElicitationRequest::UserVerification {

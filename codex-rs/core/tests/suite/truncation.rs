@@ -546,7 +546,7 @@ async fn mcp_image_output_preserves_image_and_no_text_summary() -> Result<()> {
     let sandbox_policy = permission_profile.to_legacy_sandbox_policy(fixture.cwd.path())?;
 
     fixture
-        .codex
+        .inocode
         .start_or_steer_turn(
             TurnInputRequest::user_input(vec![UserInput::Text {
                 text: "call the rmcp image tool".into(),

@@ -15,7 +15,7 @@ use codex_extension_api::ToolLifecycleContributor;
 use codex_extension_api::ToolLifecycleFuture;
 use codex_features::Feature;
 use codex_login::CodexAuth;
-use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+use codex_mcp::INOCODE_APPS_MCP_SERVER_NAME;
 use codex_protocol::SessionId;
 use codex_protocol::approvals::ElicitationRequest;
 use codex_protocol::config_types::ApprovalsReviewer;
@@ -311,7 +311,7 @@ approvals_reviewer = "user"
                         assert_eq!(event_turn_id, turn_id);
                         assert_eq!(item_thread_id, &session.thread_id);
                         assert_eq!(item_turn_id, &turn_id);
-                        assert_eq!(item.server, CODEX_APPS_MCP_SERVER_NAME);
+                        assert_eq!(item.server, INOCODE_APPS_MCP_SERVER_NAME);
                         assert_eq!(item.connector_id.as_deref(), Some("calendar"));
                         target_lifecycle[usize::from(completed)] += 1;
                     }
@@ -338,7 +338,7 @@ approvals_reviewer = "user"
                         .await?;
                 }
                 EventMsg::ElicitationRequest(request) => {
-                    assert_eq!(request.server_name, CODEX_APPS_MCP_SERVER_NAME);
+                    assert_eq!(request.server_name, INOCODE_APPS_MCP_SERVER_NAME);
                     let action = match &request.request {
                         ElicitationRequest::UserVerification { .. } => {
                             unreachable!("unexpected verification")
@@ -621,7 +621,7 @@ approvals_reviewer = "user"
         );
     }
     let child = child.thread;
-    wait_for_mcp_server(&child, CODEX_APPS_MCP_SERVER_NAME).await?;
+    wait_for_mcp_server(&child, INOCODE_APPS_MCP_SERVER_NAME).await?;
     responses::mount_sse_once(
         &server,
         responses::sse(vec![
@@ -676,7 +676,7 @@ approvals_reviewer = "user"
         };
         assert_eq!(prompts, 0, "one tool call must not prompt twice");
         prompts += 1;
-        assert_eq!(request.server_name, CODEX_APPS_MCP_SERVER_NAME);
+        assert_eq!(request.server_name, INOCODE_APPS_MCP_SERVER_NAME);
         assert!(
             follow_up.requests().is_empty(),
             "the tool must wait for input"

@@ -14,7 +14,7 @@ use super::run_setup_refresh_payload;
 
 const DETACHED_TEST: &str = "setup::refresh_tests::refresh_helper_has_no_console";
 const HELPER_TEST: &str = "setup::refresh_tests::refresh_console_probe";
-const HOME_ENV: &str = "CODEX_TEST_REFRESH_CONSOLE_HOME";
+const HOME_ENV: &str = "INOCODE_TEST_REFRESH_CONSOLE_HOME";
 
 #[test]
 fn refresh_helper_has_no_console() -> Result<()> {

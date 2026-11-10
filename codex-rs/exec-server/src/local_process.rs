@@ -19,7 +19,7 @@ use codex_protocol::config_types::ShellEnvironmentPolicy;
 use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_protocol::exec_output::StreamOutput;
 use codex_protocol::shell_environment;
-use codex_protocol::shell_environment::CODEX_THREAD_ID_ENV_VAR;
+use codex_protocol::shell_environment::INOCODE_THREAD_ID_ENV_VAR;
 use codex_sandboxing::SandboxType;
 use codex_sandboxing::is_likely_sandbox_denied;
 use codex_utils_pty::ExecCommandSession;
@@ -765,7 +765,7 @@ fn child_env(params: &ExecParams) -> HashMap<String, String> {
         }
         None => params.env.clone(),
     };
-    env.remove(crate::CODEX_EXEC_SERVER_EXIT_ON_STDIN_CLOSE_ENV_VAR);
+    env.remove(crate::INOCODE_EXEC_SERVER_EXIT_ON_STDIN_CLOSE_ENV_VAR);
     env.retain(|name, _| !shell_environment::is_non_inheritable_env_var(name));
     apply_exec_metadata(&mut env, params.metadata.as_ref());
     env
@@ -777,13 +777,13 @@ pub(crate) fn apply_exec_metadata(
 ) {
     if let Some(metadata) = metadata {
         #[cfg(windows)]
-        env.retain(|name, _| !name.eq_ignore_ascii_case(CODEX_THREAD_ID_ENV_VAR));
+        env.retain(|name, _| !name.eq_ignore_ascii_case(INOCODE_THREAD_ID_ENV_VAR));
         match metadata.thread_id {
             Some(thread_id) => {
-                env.insert(CODEX_THREAD_ID_ENV_VAR.to_string(), thread_id.to_string());
+                env.insert(INOCODE_THREAD_ID_ENV_VAR.to_string(), thread_id.to_string());
             }
             None => {
-                env.remove(CODEX_THREAD_ID_ENV_VAR);
+                env.remove(INOCODE_THREAD_ID_ENV_VAR);
             }
         }
     }
@@ -1595,8 +1595,8 @@ mod tests {
         let mut params = test_exec_params(HashMap::from([
             ("OVERLAY".to_string(), "overlay".to_string()),
             ("POLICY_SET".to_string(), "overlay-wins".to_string()),
-            ("CODEX_THREAD_ID".into(), "overlay-thread".into()),
-            ("CODEX_TOOL_CALL_ID".into(), "overlay-call".into()),
+            ("INOCODE_THREAD_ID".into(), "overlay-thread".into()),
+            ("INOCODE_TOOL_CALL_ID".into(), "overlay-call".into()),
             (
                 "openai_identity_token_file".to_string(),
                 "/run/identity-token".to_string(),
@@ -1609,8 +1609,8 @@ mod tests {
             r#set: HashMap::from([
                 ("POLICY_SET".to_string(), "policy".to_string()),
                 ("OpenAI_Federation_Rule_Id".to_string(), "rule".to_string()),
-                ("CODEX_THREAD_ID".into(), "policy-thread".into()),
-                ("CODEX_TOOL_CALL_ID".into(), "policy-call".into()),
+                ("INOCODE_THREAD_ID".into(), "policy-thread".into()),
+                ("INOCODE_TOOL_CALL_ID".into(), "policy-call".into()),
             ]),
             include_only: Vec::new(),
         });
@@ -1622,8 +1622,8 @@ mod tests {
         let mut expected = HashMap::from([
             ("OVERLAY".to_string(), "overlay".to_string()),
             ("POLICY_SET".to_string(), "overlay-wins".to_string()),
-            ("CODEX_THREAD_ID".into(), thread_id.to_string()),
-            ("CODEX_TOOL_CALL_ID".into(), "current-call".into()),
+            ("INOCODE_THREAD_ID".into(), thread_id.to_string()),
+            ("INOCODE_TOOL_CALL_ID".into(), "current-call".into()),
         ]);
         if cfg!(target_os = "windows") {
             expected.insert("PATHEXT".to_string(), ".COM;.EXE;.BAT;.CMD".to_string());
@@ -1643,10 +1643,10 @@ mod tests {
             (None, None),
         ] {
             let mut params = test_exec_params(HashMap::from([
-                ("CODEX_THREAD_ID".into(), "stale-thread".into()),
+                ("INOCODE_THREAD_ID".into(), "stale-thread".into()),
                 ("Codex_Thread_Id".into(), "mixed-case-thread".into()),
                 ("codex_thread_id".into(), "lowercase-thread".into()),
-                ("CODEX_TOOL_CALL_ID".into(), "stale-call".into()),
+                ("INOCODE_TOOL_CALL_ID".into(), "stale-call".into()),
                 ("OTHER".into(), "unchanged".into()),
             ]));
             params.metadata = Some(crate::protocol::ExecMetadata {
@@ -1660,10 +1660,10 @@ mod tests {
             #[cfg(not(windows))]
             expected.insert("codex_thread_id".into(), "lowercase-thread".into());
             if let Some(thread_id) = thread_id {
-                expected.insert("CODEX_THREAD_ID".into(), thread_id.to_string());
+                expected.insert("INOCODE_THREAD_ID".into(), thread_id.to_string());
             }
             if let Some(call_id) = call_id {
-                expected.insert("CODEX_TOOL_CALL_ID".into(), call_id.to_string());
+                expected.insert("INOCODE_TOOL_CALL_ID".into(), call_id.to_string());
             }
             assert_eq!(
                 child_env(&params),
@@ -1677,16 +1677,16 @@ mod tests {
     #[test]
     fn child_env_without_metadata_preserves_thread_only_context() {
         let params = test_exec_params(HashMap::from([
-            ("CODEX_THREAD_ID".into(), "prewarm-thread".into()),
+            ("INOCODE_THREAD_ID".into(), "prewarm-thread".into()),
             ("Codex_Thread_Id".into(), "mixed-case-thread".into()),
-            ("CODEX_TOOL_CALL_ID".into(), "stale-call".into()),
+            ("INOCODE_TOOL_CALL_ID".into(), "stale-call".into()),
             ("Codex_Tool_Call_Id".into(), "mixed-case-call".into()),
         ]));
 
         assert_eq!(
             child_env(&params),
             HashMap::from([
-                ("CODEX_THREAD_ID".into(), "prewarm-thread".into()),
+                ("INOCODE_THREAD_ID".into(), "prewarm-thread".into()),
                 ("Codex_Thread_Id".into(), "mixed-case-thread".into()),
                 #[cfg(not(windows))]
                 ("Codex_Tool_Call_Id".into(), "mixed-case-call".into()),

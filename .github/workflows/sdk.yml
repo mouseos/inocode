@@ -32,7 +32,7 @@ jobs:
               /tmp/build/bin/uv build --wheel --out-dir /tmp/dist
               python -m venv /tmp/installed
               /tmp/build/bin/uv pip install --python /tmp/installed/bin/python /tmp/dist/*.whl
-              env -u PYTHONPATH -u CODEX_EXEC_PATH /tmp/installed/bin/python tests/installed_sdk_smoke.py
+              env -u PYTHONPATH -u INOCODE_EXEC_PATH /tmp/installed/bin/python tests/installed_sdk_smoke.py
             '
 
   sdks:
@@ -116,13 +116,13 @@ jobs:
           install_dir="${GITHUB_WORKSPACE}/.tmp/sdk-ci"
           mkdir -p "${install_dir}"
           install -m 755 "${bazel_output_paths[@]}" "${install_dir}"
-          echo "CODEX_EXEC_PATH=${install_dir}/codex" >> "$GITHUB_ENV"
+          echo "INOCODE_EXEC_PATH=${install_dir}/codex" >> "$GITHUB_ENV"
 
       - name: Warm up Bazel-built codex
         shell: bash
         run: |
           set -euo pipefail
-          "${CODEX_EXEC_PATH}" --version
+          "${INOCODE_EXEC_PATH}" --version
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

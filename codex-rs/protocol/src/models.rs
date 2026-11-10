@@ -2555,8 +2555,8 @@ impl CallToolResult {
 fn convert_mcp_content_to_items(
     contents: &[serde_json::Value],
 ) -> Vec<FunctionCallOutputContentItem> {
-    const CODEX_ENCRYPTED_CONTENT_META_KEY: &str = "codex/encryptedContent";
-    const CODEX_IMAGE_DETAIL_META_KEY: &str = "codex/imageDetail";
+    const INOCODE_ENCRYPTED_CONTENT_META_KEY: &str = "codex/encryptedContent";
+    const INOCODE_IMAGE_DETAIL_META_KEY: &str = "codex/imageDetail";
 
     #[derive(serde::Deserialize)]
     #[serde(tag = "type")]
@@ -2594,7 +2594,7 @@ fn convert_mcp_content_to_items(
             Ok(McpContent::Text { text, meta }) => {
                 if meta
                     .as_ref()
-                    .and_then(|meta| meta.get(CODEX_ENCRYPTED_CONTENT_META_KEY))
+                    .and_then(|meta| meta.get(INOCODE_ENCRYPTED_CONTENT_META_KEY))
                     .and_then(serde_json::Value::as_bool)
                     == Some(true)
                 {
@@ -2621,7 +2621,7 @@ fn convert_mcp_content_to_items(
                     detail: meta
                         .as_ref()
                         .and_then(serde_json::Value::as_object)
-                        .and_then(|meta| meta.get(CODEX_IMAGE_DETAIL_META_KEY))
+                        .and_then(|meta| meta.get(INOCODE_IMAGE_DETAIL_META_KEY))
                         .and_then(serde_json::Value::as_str)
                         .and_then(|detail| match detail {
                             "auto" => Some(ImageDetail::Auto),

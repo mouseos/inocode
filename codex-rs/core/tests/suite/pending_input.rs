@@ -97,7 +97,7 @@ async fn idle_response_items_include_pending_mailbox_in_first_request() -> anyho
 
     submit_queue_only_agent_mail(test.codex.as_ref(), "pending mailbox input").await;
     let submission = test
-        .codex
+        .inocode
         .start_turn_if_idle(TurnInputRequest::new(TurnInput::ResponseItem(
             responses::user_message_item("automatic response item"),
         )))
@@ -154,7 +154,7 @@ async fn standalone_tool_output_starts_instruction_turn() -> anyhow::Result<()> 
     let output = serde_json::from_value(expected_output.clone())?;
 
     let submission = test
-        .codex
+        .inocode
         .start_or_steer_turn(TurnInputRequest::new(TurnInput::ResponseItem(output)))
         .await?;
     let TurnInputSubmission::Started { turn_id, .. } = submission else {
@@ -210,7 +210,7 @@ async fn assert_idle_user_input_reaches_the_first_model_request(
         text_elements: Vec::new(),
     }];
     let submission = test
-        .codex
+        .inocode
         .start_turn_if_idle(TurnInputRequest::new(TurnInput::UserInput {
             content: expected_input.clone(),
             client_id: Some("queued-user-message".to_string()),
@@ -338,7 +338,7 @@ async fn build_codex(server: &StreamingSseServer) -> Arc<CodexThread> {
         .build_with_streaming_server(server)
         .await
         .expect("build streaming Codex test session")
-        .codex
+        .inocode
 }
 
 async fn submit_user_input(codex: &CodexThread, text: &str) {
@@ -563,7 +563,7 @@ async fn queue_only_agent_mail_wakes_sleeping_root_with_previous_turn_context(
     wait_for_turn_complete(&test.codex).await;
     // Automatic turns need not replace the model-context baseline on replay.
     let TurnInputSubmission::Started { turn_id, .. } = test
-        .codex
+        .inocode
         .start_or_steer_turn(
             TurnInputRequest::user_input(Vec::new()).on_start(TurnStartOptions {
                 turn_trigger: trigger.map(str::to_owned),
@@ -633,7 +633,7 @@ async fn queue_only_agent_mail_wakes_sleeping_root_with_previous_turn_context(
         );
     }
     let history = test
-        .codex
+        .inocode
         .load_history(/*include_archived*/ true)
         .await
         .expect("load persisted thread history");
@@ -739,7 +739,7 @@ async fn input_interrupts_wait_agent_and_is_sent_in_follow_up_request(input: Wai
         .build_with_streaming_server(&server)
         .await
         .expect("build Codex test session")
-        .codex;
+        .inocode;
 
     submit_user_input(&codex, INITIAL_PROMPT).await;
     server.wait_for_request_count(/*count*/ 1).await;
@@ -1007,7 +1007,7 @@ async fn host_input_wait_observes_activity_after_original_turn_ends(
         .build_with_streaming_server(&server)
         .await?;
     let TurnInputSubmission::Started { turn_id, .. } = test
-        .codex
+        .inocode
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "first task".to_string(),
             text_elements: Vec::new(),
@@ -1018,7 +1018,7 @@ async fn host_input_wait_observes_activity_after_original_turn_ends(
     };
     server.wait_for_request_count(/*count*/ 1).await;
     let wait = test
-        .codex
+        .inocode
         .wait_for_input_activity(&turn_id, Duration::from_secs(10));
     tokio::pin!(wait);
     let end_original_turn = async {
@@ -1270,7 +1270,7 @@ async fn injected_user_input_triggers_follow_up_request_with_deltas() {
         .build_with_streaming_server(&server)
         .await
         .unwrap()
-        .codex;
+        .inocode;
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -2457,7 +2457,7 @@ async fn user_input_does_not_preempt_after_reasoning_item() {
         .build_with_streaming_server(&server)
         .await
         .expect("build streaming Codex test session")
-        .codex;
+        .inocode;
 
     submit_user_input(&codex, "first prompt").await;
 
@@ -2891,7 +2891,7 @@ async fn steered_user_input_waits_for_model_continuation_after_mid_turn_compact(
         .build_with_streaming_server(&server)
         .await
         .expect("build streaming Codex test session")
-        .codex;
+        .inocode;
 
     submit_user_input(&codex, "first prompt").await;
     submit_user_input(&codex, "second prompt").await;
@@ -2977,7 +2977,7 @@ async fn steered_user_input_follows_compact_when_only_the_steer_needs_follow_up(
         .build_with_streaming_server(&server)
         .await
         .expect("build streaming Codex test session")
-        .codex;
+        .inocode;
 
     submit_user_input(&codex, "first prompt").await;
     wait_for_agent_message(&codex, "first answer").await;

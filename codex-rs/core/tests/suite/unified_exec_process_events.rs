@@ -1866,7 +1866,7 @@ timeout = 900
         }
         assert!(
             !test
-                .codex
+                .inocode
                 .terminate_background_terminal(/*process_id*/ 1000)
                 .await
         );

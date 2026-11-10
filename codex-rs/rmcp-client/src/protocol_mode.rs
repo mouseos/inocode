@@ -45,7 +45,7 @@ impl McpProtocolMode {
             (_, Some(version)) => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
-                    "unsupported CODEX_MCP_PROTOCOL_VERSION `{}` for stdio MCP server; expected `2026-07-28`",
+                    "unsupported INOCODE_MCP_PROTOCOL_VERSION `{}` for stdio MCP server; expected `2026-07-28`",
                     version.to_string_lossy()
                 ),
             )),

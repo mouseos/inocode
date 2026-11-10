@@ -262,7 +262,7 @@ target_cxx_var="${target_cxx_var//-/_}"
 echo "${target_cxx_var}=${cxx}" >> "$GITHUB_ENV"
 
 # Fold identical code and pack relocations for x86-64 musl release packages.
-if [[ "${TARGET}" == "x86_64-unknown-linux-musl" && "${CODEX_MUSL_RELEASE_LINK_FLAGS:-}" == "1" ]]; then
+if [[ "${TARGET}" == "x86_64-unknown-linux-musl" && "${INOCODE_MUSL_RELEASE_LINK_FLAGS:-}" == "1" ]]; then
   link_flags=(-Cllvm-args=--addrsig -Clink-arg=-fuse-ld=lld -Clink-arg=-Wl,--icf=safe,-z,pack-relative-relocs)
   echo "RUSTFLAGS=${RUSTFLAGS:+$RUSTFLAGS }${link_flags[*]}" >> "$GITHUB_ENV"
 fi

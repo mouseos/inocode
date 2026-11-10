@@ -4,7 +4,7 @@ import { Codex } from "../src/codex";
 import type { CodexConfigObject } from "../src/codexOptions";
 
 export const codexExecPath =
-  process.env.CODEX_EXEC_PATH ??
+  process.env.INOCODE_EXEC_PATH ??
   path.join(process.cwd(), "..", "..", "codex-rs", "target", "debug", "codex");
 
 type CreateTestClientOptions = {
@@ -80,7 +80,7 @@ function mergeTestConfig(
   return {
     ...mergedConfig,
     // Disable plugins in SDK integration tests so background curated-plugin
-    // sync does not race temp CODEX_HOME cleanup.
+    // sync does not race temp INOCODE_HOME cleanup.
     features:
       featureOverrides && typeof featureOverrides === "object" && !Array.isArray(featureOverrides)
         ? { ...featureOverrides, plugins: false }
@@ -96,7 +96,7 @@ function getCurrentEnv(): Record<string, string> {
   const env: Record<string, string> = {};
 
   for (const [key, value] of Object.entries(process.env)) {
-    if (key === "CODEX_INTERNAL_ORIGINATOR_OVERRIDE") {
+    if (key === "INOCODE_INTERNAL_ORIGINATOR_OVERRIDE") {
       continue;
     }
     if (value !== undefined) {

@@ -17,8 +17,8 @@ use codex_network_proxy::RemoteCredentialBrokerCache;
 use codex_network_proxy::strip_managed_proxy_env;
 use codex_protocol::config_types::ShellEnvironmentPolicyInherit;
 use codex_protocol::shell_environment;
-use codex_protocol::shell_environment::CODEX_THREAD_ID_ENV_VAR;
-use codex_protocol::shell_environment::CODEX_TOOL_CALL_ID_ENV_VAR;
+use codex_protocol::shell_environment::INOCODE_THREAD_ID_ENV_VAR;
+use codex_protocol::shell_environment::INOCODE_TOOL_CALL_ID_ENV_VAR;
 use codex_shell_command::shell_detect::ShellType;
 use codex_shell_command::shell_snapshot::CapturedSnapshot;
 use codex_shell_command::shell_snapshot::SnapshotCaptureOptions;
@@ -427,7 +427,7 @@ done
     } else {
         MAX_SNAPSHOT_CAPTURE_BYTES
     };
-    const SOURCE_MARKER: &str = "CODEX_SNAPSHOT_SOURCE";
+    const SOURCE_MARKER: &str = "INOCODE_SNAPSHOT_SOURCE";
     script = if let Some(probe) = &probe {
         let fd = probe.as_raw_fd();
         // Automatic startup has already run: do not call exec/unset here,
@@ -454,7 +454,7 @@ done
         .current_dir(prepared.cwd.as_path())
         .env_clear()
         .envs(&prepared.env)
-        .env_remove(CODEX_TOOL_CALL_ID_ENV_VAR)
+        .env_remove(INOCODE_TOOL_CALL_ID_ENV_VAR)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -621,8 +621,8 @@ fn parse_snapshot(
         }
         None => environment,
     };
-    environment.remove(CODEX_THREAD_ID_ENV_VAR);
-    environment.remove(CODEX_TOOL_CALL_ID_ENV_VAR);
+    environment.remove(INOCODE_THREAD_ID_ENV_VAR);
+    environment.remove(INOCODE_TOOL_CALL_ID_ENV_VAR);
     environment.remove("PWD");
     environment.remove("OLDPWD");
     environment.retain(|name, _| !shell_environment::is_non_inheritable_env_var(name));

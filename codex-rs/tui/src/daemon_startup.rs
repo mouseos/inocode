@@ -15,12 +15,12 @@ use codex_app_server_protocol::RequestId;
 use std::collections::BTreeMap;
 
 pub(super) const FAILURE_HINT: &str = "To work without the background server, rerun the same command with --no-daemon (including resume or fork and its arguments).";
-pub(super) const WSL_DRVFS_EXCLUSION: &str = "a Windows-mounted WSL CODEX_HOME (DrvFS/9p)";
+pub(super) const WSL_DRVFS_EXCLUSION: &str = "a Windows-mounted WSL INOCODE_HOME (DrvFS/9p)";
 pub(super) const GATEWAY_SIGN_IN_EXCLUSION: &str = "custom provider or gateway sign-in";
 
 /// Returns whether `codex_home` is on a Windows-mounted WSL filesystem.
 pub fn uses_wsl_drvfs(codex_home: &std::path::Path) -> bool {
-    // The managed daemon writes an executable and Unix-style state beneath CODEX_HOME.
+    // The managed daemon writes an executable and Unix-style state beneath INOCODE_HOME.
     // DrvFS does not reliably support the required permission semantics, so starting it
     // there can fail before the TUI opens.
     #[cfg(target_os = "linux")]
@@ -73,7 +73,7 @@ pub(super) fn exclusion(
     } else if workload_identity_selected {
         Some("workload identity")
     } else if exec_server_url.is_some() {
-        Some("executor selection (CODEX_EXEC_SERVER_URL)")
+        Some("executor selection (INOCODE_EXEC_SERVER_URL)")
     } else if cli.config_profile_v2.is_some() {
         Some("--profile")
     } else {

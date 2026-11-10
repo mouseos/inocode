@@ -110,7 +110,7 @@ pub(super) fn check(config: Option<&Config>) -> DoctorCheck {
 
     let mut status = CheckStatus::Ok;
     let mut summary = "network-related environment looks readable".to_string();
-    for name in ["CODEX_CA_CERTIFICATE", "SSL_CERT_FILE"] {
+    for name in ["INOCODE_CA_CERTIFICATE", "SSL_CERT_FILE"] {
         if let Some(raw) = env::var_os(name) {
             let path = PathBuf::from(raw);
             match std::fs::metadata(&path) {
@@ -177,7 +177,7 @@ pub(super) async fn probe_status(
     method: Method,
     headers: HeaderMap,
 ) -> Result<u16, String> {
-    let response = if env::var("CODEX_SANDBOX").as_deref() == Ok("seatbelt") {
+    let response = if env::var("INOCODE_SANDBOX").as_deref() == Ok("seatbelt") {
         create_client_without_request_logging()
             .request(method, url)
             .headers(headers)

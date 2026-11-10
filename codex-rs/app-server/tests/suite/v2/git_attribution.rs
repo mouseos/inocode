@@ -119,7 +119,7 @@ async fn git_attribution_runtime_auth_uses_request_destination(
         )?;
         let mut app = TestAppServer::builder()
             .with_codex_home(home.path())
-            .with_env_overrides(&[("OPENAI_API_KEY", None), ("CODEX_ACCESS_TOKEN", None)])
+            .with_env_overrides(&[("OPENAI_API_KEY", None), ("INOCODE_ACCESS_TOKEN", None)])
             .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
             .await?;
         let id = app
@@ -283,7 +283,7 @@ async fn git_attribution_follows_authenticated_workspace_policy() -> Result<()> 
 
     let mut app_server = TestAppServer::builder()
         .with_codex_home(codex_home.path())
-        .with_env_overrides(&[("OPENAI_API_KEY", None), ("CODEX_ACCESS_TOKEN", None)])
+        .with_env_overrides(&[("OPENAI_API_KEY", None), ("INOCODE_ACCESS_TOKEN", None)])
         .build()
         .await?;
     timeout(DEFAULT_READ_TIMEOUT, app_server.initialize()).await??;
@@ -408,7 +408,7 @@ async fn cold_resume_replaces_legacy_attribution_without_duplication(
 
     let mut app_server = TestAppServer::builder()
         .with_codex_home(codex_home.path())
-        .with_env_overrides(&[("OPENAI_API_KEY", None), ("CODEX_ACCESS_TOKEN", None)])
+        .with_env_overrides(&[("OPENAI_API_KEY", None), ("INOCODE_ACCESS_TOKEN", None)])
         .without_auto_env()
         .build()
         .await?;
@@ -430,7 +430,7 @@ async fn cold_resume_replaces_legacy_attribution_without_duplication(
 
     let mut app_server = TestAppServer::builder()
         .with_codex_home(codex_home.path())
-        .with_env_overrides(&[("OPENAI_API_KEY", None), ("CODEX_ACCESS_TOKEN", None)])
+        .with_env_overrides(&[("OPENAI_API_KEY", None), ("INOCODE_ACCESS_TOKEN", None)])
         .without_auto_env()
         .build()
         .await?;

@@ -9,7 +9,7 @@ use codex_exec_server::FileSystemSandboxContext;
 use codex_extension_api::CatalogRefreshBackoff;
 use codex_extension_api::ExtensionMetrics;
 use codex_extension_api::SelectedPluginContribution;
-use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+use codex_mcp::INOCODE_APPS_MCP_SERVER_NAME;
 use codex_mcp::McpResourceClient;
 use codex_mcp::McpResourceClientAuthKey;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
@@ -65,7 +65,7 @@ impl CloudPluginGeneration {
             == self
                 .mcp_resources
                 .as_ref()
-                .map(|client| client.auth_cache_key_for_server(CODEX_APPS_MCP_SERVER_NAME))
+                .map(|client| client.auth_cache_key_for_server(INOCODE_APPS_MCP_SERVER_NAME))
     }
 }
 
@@ -119,7 +119,7 @@ impl PluginContributorState {
     ) -> Option<McpResourceClientAuthKey> {
         let auth_cache_key = mcp_resources
             .as_ref()
-            .map(|client| client.auth_cache_key_for_server(CODEX_APPS_MCP_SERVER_NAME));
+            .map(|client| client.auth_cache_key_for_server(INOCODE_APPS_MCP_SERVER_NAME));
         if self
             .cloud_generation
             .as_ref()

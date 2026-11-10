@@ -4,21 +4,21 @@ Module: runtimes
 Concrete ToolRuntime implementations for specific tools. Each runtime stays
 small and focused and reuses the orchestrator for approvals + sandbox + retry.
 */
-use crate::exec_env::CODEX_PERMISSION_PROFILE_ENV_VAR;
-use crate::exec_env::CODEX_SESSION_ID_ENV_VAR;
-use crate::exec_env::CODEX_THREAD_ID_ENV_VAR;
-use crate::exec_env::CODEX_TOOL_CALL_ID_ENV_VAR;
-use crate::exec_env::CODEX_VERSION_ENV_VAR;
+use crate::exec_env::INOCODE_PERMISSION_PROFILE_ENV_VAR;
+use crate::exec_env::INOCODE_SESSION_ID_ENV_VAR;
+use crate::exec_env::INOCODE_THREAD_ID_ENV_VAR;
+use crate::exec_env::INOCODE_TOOL_CALL_ID_ENV_VAR;
+use crate::exec_env::INOCODE_VERSION_ENV_VAR;
 use crate::sandboxing::SandboxPermissions;
 use crate::shell::Shell;
 use crate::shell::ShellType;
-use codex_apply_patch::CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR;
+use codex_apply_patch::INOCODE_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR;
 use codex_core_plugins::PLUGIN_METRICS_OUTPUT_ENV_VAR;
 use codex_file_system::WindowsSandboxSelection;
 #[cfg(unix)]
 use codex_install_context::InstallContext;
 #[cfg(target_os = "macos")]
-use codex_network_proxy::CODEX_PROXY_GIT_SSH_COMMAND_MARKER;
+use codex_network_proxy::INOCODE_PROXY_GIT_SSH_COMMAND_MARKER;
 use codex_network_proxy::CREDENTIAL_BROKER_ACTIVE_ENV_KEY;
 use codex_network_proxy::CUSTOM_CA_ENV_KEYS;
 use codex_network_proxy::PROXY_ACTIVE_ENV_KEY;
@@ -39,9 +39,9 @@ use std::path::Path;
 pub(crate) mod apply_patch;
 pub(crate) mod unified_exec;
 
-const SNAPSHOT_ORIGINAL_BASH_ENV_ENV_KEY: &str = "CODEX_NETWORK_PROXY_SNAPSHOT_ORIGINAL_BASH_ENV";
-const SNAPSHOT_ORIGINAL_POSIX_ENV_ENV_KEY: &str = "CODEX_NETWORK_PROXY_SNAPSHOT_ORIGINAL_POSIX_ENV";
-const SNAPSHOT_ORIGINAL_ZDOTDIR_ENV_KEY: &str = "CODEX_NETWORK_PROXY_SNAPSHOT_ORIGINAL_ZDOTDIR";
+const SNAPSHOT_ORIGINAL_BASH_ENV_ENV_KEY: &str = "INOCODE_NETWORK_PROXY_SNAPSHOT_ORIGINAL_BASH_ENV";
+const SNAPSHOT_ORIGINAL_POSIX_ENV_ENV_KEY: &str = "INOCODE_NETWORK_PROXY_SNAPSHOT_ORIGINAL_POSIX_ENV";
+const SNAPSHOT_ORIGINAL_ZDOTDIR_ENV_KEY: &str = "INOCODE_NETWORK_PROXY_SNAPSHOT_ORIGINAL_ZDOTDIR";
 
 pub(crate) fn exec_env_for_sandbox_permissions(
     env: &HashMap<String, String>,
@@ -277,7 +277,7 @@ pub(crate) fn prepare_brokered_shell_snapshot_env(
 /// `explicit_env_overrides` contains policy-driven shell env overrides that
 /// should win after the snapshot is sourced, while `env` is the full live exec
 /// environment. We need access to both so snapshot restore logic can preserve
-/// runtime-only vars like `CODEX_THREAD_ID` without pretending they came from
+/// runtime-only vars like `INOCODE_THREAD_ID` without pretending they came from
 /// the explicit override policy.
 ///
 /// `runtime_path_prepends` contains Codex-owned PATH entries already applied to
@@ -339,12 +339,12 @@ pub(crate) fn maybe_wrap_shell_lc_with_snapshot(
         .collect::<String>();
     let mut override_env = explicit_env_overrides.clone();
     for key in [
-        CODEX_SESSION_ID_ENV_VAR,
-        CODEX_THREAD_ID_ENV_VAR,
-        CODEX_TOOL_CALL_ID_ENV_VAR,
-        CODEX_VERSION_ENV_VAR,
-        CODEX_PERMISSION_PROFILE_ENV_VAR,
-        CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR,
+        INOCODE_SESSION_ID_ENV_VAR,
+        INOCODE_THREAD_ID_ENV_VAR,
+        INOCODE_TOOL_CALL_ID_ENV_VAR,
+        INOCODE_VERSION_ENV_VAR,
+        INOCODE_PERMISSION_PROFILE_ENV_VAR,
+        INOCODE_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR,
         PLUGIN_METRICS_OUTPUT_ENV_VAR,
     ] {
         if let Some(value) = env.get(key) {
@@ -355,10 +355,10 @@ pub(crate) fn maybe_wrap_shell_lc_with_snapshot(
     let (override_captures, override_exports) = build_override_exports(
         &override_env,
         &[
-            CODEX_PERMISSION_PROFILE_ENV_VAR,
-            CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR,
+            INOCODE_PERMISSION_PROFILE_ENV_VAR,
+            INOCODE_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR,
             PLUGIN_METRICS_OUTPUT_ENV_VAR,
-            CODEX_TOOL_CALL_ID_ENV_VAR,
+            INOCODE_TOOL_CALL_ID_ENV_VAR,
         ],
     );
     let (proxy_captures, proxy_exports) = build_proxy_env_exports(env);
@@ -570,7 +570,7 @@ fn build_proxy_env_exports(env: &HashMap<String, String>) -> (String, String) {
 #[cfg(target_os = "macos")]
 fn build_codex_proxy_git_ssh_command_exports() -> (String, String) {
     let key = PROXY_GIT_SSH_COMMAND_ENV_KEY;
-    let marker_pattern = format!("{}\\ *", CODEX_PROXY_GIT_SSH_COMMAND_MARKER.trim_end());
+    let marker_pattern = format!("{}\\ *", INOCODE_PROXY_GIT_SSH_COMMAND_MARKER.trim_end());
     (
         format!(
             "__CODEX_SNAPSHOT_PROXY_GIT_SSH_COMMAND_SET=\"${{{key}+x}}\"\n__CODEX_SNAPSHOT_PROXY_GIT_SSH_COMMAND=\"${{{key}-}}\"\ncase \"$__CODEX_SNAPSHOT_PROXY_GIT_SSH_COMMAND\" in\n  {marker_pattern}) __CODEX_SNAPSHOT_PROXY_GIT_SSH_COMMAND_LIVE_MARKED=1 ;;\n  *) __CODEX_SNAPSHOT_PROXY_GIT_SSH_COMMAND_LIVE_MARKED= ;;\nesac"

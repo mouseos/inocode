@@ -373,7 +373,7 @@ enabled = false
         let current_config = thread.config().await;
         let refresh_config = load_refresh_config(&current_config, &config_manager).await?;
         let mut actual = refresh_config.mcp_servers.get().clone();
-        actual.remove(codex_mcp::CODEX_APPS_MCP_SERVER_NAME);
+        actual.remove(codex_mcp::INOCODE_APPS_MCP_SERVER_NAME);
         let expected = serde_json::from_value::<HashMap<String, McpServerConfig>>(json!({
             "global": {
                 "command": "global-mcp",

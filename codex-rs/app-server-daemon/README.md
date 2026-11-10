@@ -17,12 +17,12 @@ whose host permits detached child processes.
 Windows automatic attachment requires the canonical socket address to fit the
 108-byte AF_UNIX limit (including its terminator). A short junction alias whose
 resolved address exceeds that limit falls back to the embedded server. Use a
-shorter `CODEX_HOME` to share the daemon; discovery does not trust a mutable alias.
+shorter `INOCODE_HOME` to share the daemon; discovery does not trust a mutable alias.
 
 Shared clients use the environment inherited when the daemon started. Opening a
 new terminal or clearing variables there does not clear the running daemon's
 environment; per-client environment isolation is not provided.
-An invocation that sets `CODEX_EXEC_SERVER_URL` skips implicit daemon attachment
+An invocation that sets `INOCODE_EXEC_SERVER_URL` skips implicit daemon attachment
 so its executor selection is preserved. If an implicitly discovered daemon cannot
 initialize the connection, the TUI starts an embedded server instead. Explicit
 `--remote` endpoints remain authoritative and report connection failures.
@@ -46,7 +46,7 @@ responses report the resolved backend, socket path, local CLI version, and
 running app-server version when applicable.
 
 Eligible managed daemons check for updates after five minutes, then hourly by
-default. Edit `CODEX_HOME/app-server-daemon/settings.json` to change this:
+default. Edit `INOCODE_HOME/app-server-daemon/settings.json` to change this:
 
 ```json
 {
@@ -81,35 +81,35 @@ For a new Linux or macOS machine:
 
 ```sh
 curl -fsSL https://chatgpt.com/codex/install.sh | sh
-$HOME/.codex/packages/standalone/current/codex app-server daemon bootstrap --remote-control
+$HOME/.inocode/packages/standalone/current/codex app-server daemon bootstrap --remote-control
 ```
 
 On Windows, use a non-elevated PowerShell terminal whose host allows breakaway:
 
 ```powershell
 irm https://chatgpt.com/codex/install.ps1 | iex
-$codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME '.codex' }
+$codexHome = if ($env:INOCODE_HOME) { $env:INOCODE_HOME } else { Join-Path $HOME '.inocode' }
 & "$codexHome\packages\standalone\current\bin\codex.exe" app-server daemon bootstrap --remote-control
 ```
 
 `bootstrap` can use any complete CLI package. If no daemon package is installed,
-it copies the invoking package into `CODEX_HOME/packages/app-server-daemon` and
+it copies the invoking package into `INOCODE_HOME/packages/app-server-daemon` and
 prints an installation message without asking for confirmation. Existing daemon
 packages are reused, including legacy installations; a broken selection is not
 silently replaced. A bare executable cannot supply a new installation.
 
-It records the daemon settings under `CODEX_HOME/app-server-daemon/`, starts app-server as a
+It records the daemon settings under `INOCODE_HOME/app-server-daemon/`, starts app-server as a
 pidfile-backed detached process. It launches a detached updater loop when
 automatic updates are enabled, the installer selected the stable `latest`
 channel, and the managed binary supports the updater command.
 
 ## Installation and update cases
 
-New daemons use `CODEX_HOME/packages/app-server-daemon/current/bin/codex`
+New daemons use `INOCODE_HOME/packages/app-server-daemon/current/bin/codex`
 (`codex.exe` on Windows). The package contains the executable and its helpers.
 Daemon-only installer updates leave the user's CLI command and shell setup alone.
 
-Previously launched legacy daemons retain `CODEX_HOME/packages/standalone/current`,
+Previously launched legacy daemons retain `INOCODE_HOME/packages/standalone/current`,
 including its flat binary layout when present. Starts and scheduled updates keep
 using that location. An explicit production update prepares and validates a
 compatible dedicated package before stopping the legacy updater and daemon,
@@ -181,13 +181,13 @@ sets it according to `--remote-control` (disabled when omitted).
 `stop` sends a graceful termination request first, then force-terminates the
 process after the configured grace window if it is still alive.
 
-All mutating lifecycle commands are serialized per `CODEX_HOME`, so a concurrent
+All mutating lifecycle commands are serialized per `INOCODE_HOME`, so a concurrent
 `start`, `restart`, `enable-remote-control`, `disable-remote-control`, `stop`,
 or `bootstrap` does not race another in-flight lifecycle operation.
 
 ## State
 
-The daemon stores its local state under `CODEX_HOME/app-server-daemon/`:
+The daemon stores its local state under `INOCODE_HOME/app-server-daemon/`:
 
 - `settings.json` for remote-control launch settings and updater preferences
 - `app-server.pid` for the app-server process record

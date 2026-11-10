@@ -8,7 +8,7 @@ use codex_core::StartThreadOptions;
 use codex_core::TurnInputRequest;
 use codex_features::Feature;
 use codex_login::CodexAuth;
-use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+use codex_mcp::INOCODE_APPS_MCP_SERVER_NAME;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
@@ -68,7 +68,7 @@ async fn standalone_codex_apps_respects_protocol_setting(
         .build_with_auto_env(&server)
         .await?;
 
-    wait_for_mcp_server(&fixture.codex, CODEX_APPS_MCP_SERVER_NAME).await?;
+    wait_for_mcp_server(&fixture.codex, INOCODE_APPS_MCP_SERVER_NAME).await?;
     let methods = server
         .received_requests()
         .await
@@ -112,7 +112,7 @@ async fn apps_call_survives_catalog_restoration_while_awaiting_approval() -> any
         })
         .build_with_auto_env(&server)
         .await?;
-    wait_for_mcp_server(&fixture.codex, CODEX_APPS_MCP_SERVER_NAME).await?;
+    wait_for_mcp_server(&fixture.codex, INOCODE_APPS_MCP_SERVER_NAME).await?;
     let call = responses::mount_sse_once(
         &server,
         responses::sse(vec![
@@ -129,7 +129,7 @@ async fn apps_call_survives_catalog_restoration_while_awaiting_approval() -> any
     .await;
     let completion = responses::mount_sse_once(&server, responses::sse_completed("done")).await;
     fixture
-        .codex
+        .inocode
         .start_or_steer_turn(
             TurnInputRequest::user_input(vec![UserInput::Text {
                 text: "Use [$calendar](app://calendar) to create a calendar event.".into(),
@@ -168,12 +168,12 @@ async fn apps_call_survives_catalog_restoration_while_awaiting_approval() -> any
         .start_thread(StartThreadOptions::new(fixture.config.clone()))
         .await?
         .thread;
-    wait_for_mcp_server(&peer, CODEX_APPS_MCP_SERVER_NAME).await?;
+    wait_for_mcp_server(&peer, INOCODE_APPS_MCP_SERVER_NAME).await?;
     tools_available.store(true, Ordering::SeqCst);
     assert!(!peer.refresh_codex_apps_tools().await?.tools.is_empty());
 
     fixture
-        .codex
+        .inocode
         .submit(Op::ResolveElicitation {
             server_name: approval.server_name,
             request_id: approval.id,

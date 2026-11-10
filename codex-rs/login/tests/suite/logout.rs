@@ -7,7 +7,7 @@ use codex_login::AuthKeyringBackendKind;
 use codex_login::AuthManager;
 use codex_login::CLIENT_ID;
 use codex_login::CLIENT_ID_OVERRIDE_ENV_VAR;
-use codex_login::CODEX_ACCESS_TOKEN_ENV_VAR;
+use codex_login::INOCODE_ACCESS_TOKEN_ENV_VAR;
 use codex_login::REVOKE_TOKEN_URL_OVERRIDE_ENV_VAR;
 use codex_login::logout_with_revoke;
 use codex_login::save_auth;
@@ -104,7 +104,7 @@ async fn logout_with_revoke_uses_stored_auth_when_access_token_env_is_set() -> R
         format!("{}/oauth/revoke", server.uri()),
     );
     let _access_token_env_guard = EnvGuard::set(
-        CODEX_ACCESS_TOKEN_ENV_VAR,
+        INOCODE_ACCESS_TOKEN_ENV_VAR,
         "at-environment-token".to_string(),
     );
 

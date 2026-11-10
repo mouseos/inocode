@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::auth::McpAuthProvider;
-use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
+use crate::mcp::INOCODE_APPS_MCP_SERVER_NAME;
 use crate::runtime::McpRuntimeContext;
 use codex_config::AppToolApproval;
 use codex_config::McpServerAuth;
@@ -94,7 +94,7 @@ impl EffectiveMcpServer {
         server_name: &str,
         runtime_auth_provider: Option<&McpAuthProvider>,
     ) -> bool {
-        server_name != CODEX_APPS_MCP_SERVER_NAME
+        server_name != INOCODE_APPS_MCP_SERVER_NAME
             && self.config.is_local_environment()
             && runtime_auth_provider.is_none()
             && !matches!(self.config.auth, McpServerAuth::EmaAuth)
@@ -110,7 +110,7 @@ impl EffectiveMcpServer {
         };
         let version = env
             .as_ref()
-            .and_then(|env| env.get("CODEX_MCP_PROTOCOL_VERSION"));
+            .and_then(|env| env.get("INOCODE_MCP_PROTOCOL_VERSION"));
         mode.stdio_mode(version.map(OsStr::new)).ok()
     }
 

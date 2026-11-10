@@ -189,7 +189,7 @@ fn wrapper_preserves_exact_argv_and_separate_command_cwd() -> Result<()> {
         managed_network: None,
         env: &mut env,
     })?;
-    assert_eq!(wrapped, vec![crate::CODEX_WINDOWS_MXC_ARG1]);
+    assert_eq!(wrapped, vec![crate::INOCODE_WINDOWS_MXC_ARG1]);
     let parsed = crate::transport::decode(&mut env)?;
     assert!(parsed.default_child_env);
     assert!(env.is_empty());
@@ -252,12 +252,12 @@ fn native_grants_preserve_denies_and_read_only_carveouts() -> Result<()> {
     let mut expected_read = [
         root.join(".agents"),
         root.join(".aws"),
-        root.join(".codex"),
+        root.join(".inocode"),
         root.join(".git"),
         readonly,
         writable_child.join(".agents"),
         writable_child.join(".aws"),
-        writable_child.join(".codex"),
+        writable_child.join(".inocode"),
         writable_child.join(".git"),
     ];
     expected_read.sort();
@@ -327,7 +327,7 @@ fn volume_expansion_does_not_turn_read_only_child_writable() -> Result<()> {
         vec![
             root.join(".agents").to_str().unwrap(),
             root.join(".aws").to_str().unwrap(),
-            root.join(".codex").to_str().unwrap(),
+            root.join(".inocode").to_str().unwrap(),
             root.join(".git").to_str().unwrap(),
             readonly.to_str().unwrap()
         ]
@@ -658,7 +658,7 @@ fn root_deny_keeps_only_narrow_explicit_grants() -> Result<()> {
             FileSystemAccessMode::Read => (Vec::new(), allowed),
             FileSystemAccessMode::Write => (
                 allowed,
-                [".agents", ".aws", ".codex", ".git"]
+                [".agents", ".aws", ".inocode", ".git"]
                     .map(|name| child.join(name).to_str().unwrap().to_owned())
                     .to_vec(),
             ),
@@ -832,7 +832,7 @@ fn symbolic_root_preserves_equal_path_precedence_and_denies() -> Result<()> {
         volumes[..2]
             .iter()
             .flat_map(
-                |volume| [".agents", ".aws", ".codex", ".git"].map(|name| volume
+                |volume| [".agents", ".aws", ".inocode", ".git"].map(|name| volume
                     .join(name)
                     .to_str()
                     .unwrap()

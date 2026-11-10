@@ -7,8 +7,8 @@ use codex_protocol::models::PermissionProfile;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
 
-use super::CODEX_HOME_FLAG;
-use super::CODEX_WINDOWS_SANDBOX_ARG1;
+use super::INOCODE_HOME_FLAG;
+use super::INOCODE_WINDOWS_SANDBOX_ARG1;
 use super::COMMAND_CWD_FLAG;
 use super::DENY_READ_PATHS_JSON_FLAG;
 use super::DENY_WRITE_PATHS_JSON_FLAG;
@@ -64,7 +64,7 @@ fn large_deny_list_uses_environment_without_changing_the_request() {
     .unwrap();
     assert_eq!(
         args,
-        vec![CODEX_WINDOWS_SANDBOX_ARG1, crate::launch_environment::ARG]
+        vec![INOCODE_WINDOWS_SANDBOX_ARG1, crate::launch_environment::ARG]
     );
     let decoded = crate::environment_transport::decode(env).unwrap();
     let parsed =
@@ -136,8 +136,8 @@ fn windows_wrapper_args_round_trip() {
     )
     .expect("build wrapper args");
 
-    assert_eq!(args[0], CODEX_WINDOWS_SANDBOX_ARG1);
-    assert!(args.contains(&CODEX_HOME_FLAG.to_string()));
+    assert_eq!(args[0], INOCODE_WINDOWS_SANDBOX_ARG1);
+    assert!(args.contains(&INOCODE_HOME_FLAG.to_string()));
     assert!(args.contains(&COMMAND_CWD_FLAG.to_string()));
     assert!(args.contains(&WORKSPACE_ROOT_FLAG.to_string()));
     assert!(args.contains(&PERMISSION_PROFILE_FLAG.to_string()));

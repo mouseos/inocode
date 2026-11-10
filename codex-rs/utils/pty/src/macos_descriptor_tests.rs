@@ -134,14 +134,14 @@ async fn inherited_descriptors_survive_native_and_executable_text_spawns() -> an
 
 #[tokio::test]
 async fn high_stdio_descriptors_use_compatible_fallback() -> anyhow::Result<()> {
-    if std::env::var_os("CODEX_TEST_HIGH_STDIO_FDS").is_none() {
+    if std::env::var_os("INOCODE_TEST_HIGH_STDIO_FDS").is_none() {
         let output = std::process::Command::new(std::env::current_exe()?)
             .args([
                 "--exact",
                 "child_command::descriptor_tests::high_stdio_descriptors_use_compatible_fallback",
                 "--nocapture",
             ])
-            .env("CODEX_TEST_HIGH_STDIO_FDS", "1")
+            .env("INOCODE_TEST_HIGH_STDIO_FDS", "1")
             .output()?;
         assert!(output.status.success(), "{output:?}");
         return Ok(());

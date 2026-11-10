@@ -27,8 +27,8 @@ use crate::binding_clients::McpBindingClients;
 use crate::client_tool_catalog::ClientToolCatalogRevision;
 use crate::client_tool_catalog::CodexAppsToolSnapshot;
 use crate::client_tool_catalog::ToolCatalogSnapshot;
-use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
-use crate::rmcp_client::CODEX_APPS_REFRESH_DURATION_METRIC;
+use crate::mcp::INOCODE_APPS_MCP_SERVER_NAME;
+use crate::rmcp_client::INOCODE_APPS_REFRESH_DURATION_METRIC;
 use crate::rmcp_client::MCP_TOOLS_LIST_DURATION_METRIC;
 use crate::rmcp_client::ManagedClient;
 use crate::rmcp_client::list_tools_for_client_uncached;
@@ -335,7 +335,7 @@ impl McpConnectionSet {
                         && self
                             .plugin_id_for_mcp_server_name(server_name)
                             .is_some_and(|plugin_id| required_plugins.contains(plugin_id)))
-                    || (server_name == CODEX_APPS_MCP_SERVER_NAME && !has_cached_tools);
+                    || (server_name == INOCODE_APPS_MCP_SERVER_NAME && !has_cached_tools);
                 if !must_wait_for_startup && has_cached_tools {
                     trace!(server_name = %server_name, "using cached MCP catalog without waiting for startup");
                     return (server_name, view, cached_tools);
@@ -436,7 +436,7 @@ impl McpConnectionSet {
                 let plugin_id = self.plugin_id_for_mcp_server_name(server_name);
                 emit_binding_catalog(
                     product_sku,
-                    if server_name == CODEX_APPS_MCP_SERVER_NAME {
+                    if server_name == INOCODE_APPS_MCP_SERVER_NAME {
                         "codex_apps"
                     } else if plugin_id.is_some() {
                         "plugin"
@@ -450,7 +450,7 @@ impl McpConnectionSet {
                 );
             }
             let server_tools = filter_tools(server_tools, &view.tool_filter);
-            let server_tools = if server_name == CODEX_APPS_MCP_SERVER_NAME {
+            let server_tools = if server_name == INOCODE_APPS_MCP_SERVER_NAME {
                 prepare_codex_apps_tools_for_model(server_tools, &self.tool_plugin_context)
             } else {
                 crate::rmcp_client::prepare_regular_mcp_tools_for_model(
@@ -602,7 +602,7 @@ impl McpConnectionSet {
                     && tool.connector_id == advertised_tool.connector_id
             })
             .ok_or_else(unavailable)?;
-        let mut tool_info = if server_name == CODEX_APPS_MCP_SERVER_NAME {
+        let mut tool_info = if server_name == INOCODE_APPS_MCP_SERVER_NAME {
             prepare_codex_apps_tools_for_model(
                 vec![current_tool.clone()],
                 &self.tool_plugin_context,
@@ -667,11 +667,11 @@ impl McpConnectionSet {
         let refresh_start = Instant::now();
         let view = self
             .servers
-            .get(CODEX_APPS_MCP_SERVER_NAME)
-            .ok_or_else(|| anyhow!("unknown MCP server '{CODEX_APPS_MCP_SERVER_NAME}'"))?;
+            .get(INOCODE_APPS_MCP_SERVER_NAME)
+            .ok_or_else(|| anyhow!("unknown MCP server '{INOCODE_APPS_MCP_SERVER_NAME}'"))?;
         let (tools, _) = self.refresh_codex_apps_tool_catalog().await?;
         let server_has_permission = config
-            .permission_profile_for_server(CODEX_APPS_MCP_SERVER_NAME)
+            .permission_profile_for_server(INOCODE_APPS_MCP_SERVER_NAME)
             .is_some();
         let model_visible_tool_names = tools
             .iter()
@@ -686,7 +686,7 @@ impl McpConnectionSet {
             .map(|tool| tool.tool.name.to_string())
             .collect();
         emit_duration(
-            CODEX_APPS_REFRESH_DURATION_METRIC,
+            INOCODE_APPS_REFRESH_DURATION_METRIC,
             refresh_start.elapsed(),
             &[("path", "legacy"), ("trigger", "explicit")],
         );
@@ -701,8 +701,8 @@ impl McpConnectionSet {
         let refresh_start = Instant::now();
         let view = self
             .servers
-            .get(CODEX_APPS_MCP_SERVER_NAME)
-            .ok_or_else(|| anyhow!("unknown MCP server '{CODEX_APPS_MCP_SERVER_NAME}'"))?;
+            .get(INOCODE_APPS_MCP_SERVER_NAME)
+            .ok_or_else(|| anyhow!("unknown MCP server '{INOCODE_APPS_MCP_SERVER_NAME}'"))?;
         let (_, tools) = self.refresh_codex_apps_tool_catalog().await?;
         let tools = prepare_codex_apps_tools_for_model(
             filter_tools(tools, &view.tool_filter),
@@ -716,7 +716,7 @@ impl McpConnectionSet {
             &self.non_prefixed_mcp_tool_servers,
         );
         emit_duration(
-            CODEX_APPS_REFRESH_DURATION_METRIC,
+            INOCODE_APPS_REFRESH_DURATION_METRIC,
             refresh_start.elapsed(),
             &[("path", "legacy"), ("trigger", "explicit")],
         );
@@ -726,7 +726,7 @@ impl McpConnectionSet {
     pub(crate) async fn apps_tools_from_mcp_client(&self) -> Vec<ToolInfo> {
         let Some(client) = self
             .servers
-            .get(crate::CODEX_APPS_MCP_SERVER_NAME)
+            .get(crate::INOCODE_APPS_MCP_SERVER_NAME)
             .filter(|view| {
                 view.connection
                     .client
@@ -747,8 +747,8 @@ impl McpConnectionSet {
     async fn refresh_codex_apps_tool_catalog(&self) -> Result<(Vec<ToolInfo>, Vec<ToolInfo>)> {
         let view = self
             .servers
-            .get(CODEX_APPS_MCP_SERVER_NAME)
-            .ok_or_else(|| anyhow!("unknown MCP server '{CODEX_APPS_MCP_SERVER_NAME}'"))?;
+            .get(INOCODE_APPS_MCP_SERVER_NAME)
+            .ok_or_else(|| anyhow!("unknown MCP server '{INOCODE_APPS_MCP_SERVER_NAME}'"))?;
         let managed_client = view
             .connection
             .client()
@@ -765,7 +765,7 @@ impl McpConnectionSet {
                         },
                     );
                     let (client_tools, meta) = list_tools_for_client_uncached(
-                        CODEX_APPS_MCP_SERVER_NAME,
+                        INOCODE_APPS_MCP_SERVER_NAME,
                         /*is_codex_apps_mcp_server*/ true,
                         /*codex_apps_refresh_trigger*/ "explicit",
                         &managed_client.client,
@@ -776,7 +776,7 @@ impl McpConnectionSet {
                     .await
                     .with_context(|| {
                         format!(
-                            "failed to refresh tools for MCP server '{CODEX_APPS_MCP_SERVER_NAME}'"
+                            "failed to refresh tools for MCP server '{INOCODE_APPS_MCP_SERVER_NAME}'"
                         )
                     })?;
                     Ok((client_tools, meta, (fetch_ticket, list_start)))

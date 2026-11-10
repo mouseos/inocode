@@ -780,11 +780,11 @@ pub(crate) const PROXY_ENV_KEYS: &[&str] = &[
     "ws_proxy",
     "wss_proxy",
 ];
-const ALLOW_LOCAL_BINDING_ENV_KEY: &str = "CODEX_NETWORK_ALLOW_LOCAL_BINDING";
+const ALLOW_LOCAL_BINDING_ENV_KEY: &str = "INOCODE_NETWORK_ALLOW_LOCAL_BINDING";
 // Internal wire format shared with network-proxy/src/proxy.rs. The value is a comma-separated,
 // sorted list of non-zero loopback proxy ports used only when computing the Windows offline
 // sandbox setup marker.
-const WINDOWS_SANDBOX_PROXY_PORTS_ENV_KEY: &str = "CODEX_WINDOWS_SANDBOX_PROXY_PORTS";
+const WINDOWS_SANDBOX_PROXY_PORTS_ENV_KEY: &str = "INOCODE_WINDOWS_SANDBOX_PROXY_PORTS";
 
 pub(crate) fn offline_proxy_settings_from_env(
     env_map: &HashMap<String, String>,
@@ -1216,7 +1216,7 @@ pub fn run_elevated_provisioning_setup_with_retained_handles(
         return Err(failure(
             SetupErrorCode::OrchestratorSandboxDirCreateFailed,
             format!(
-                "sandbox provisioning CODEX_HOME must be an absolute local disk path: {}",
+                "sandbox provisioning INOCODE_HOME must be an absolute local disk path: {}",
                 codex_home.display()
             ),
         ));
@@ -1452,8 +1452,8 @@ fn user_profile_child_name(path: &Path, user_profile: &Path) -> Option<String> {
 }
 
 fn filter_sensitive_write_roots(mut roots: Vec<PathBuf>, codex_home: &Path) -> Vec<PathBuf> {
-    // Never grant capability write access to CODEX_HOME or anything under CODEX_HOME/.sandbox,
-    // CODEX_HOME/.sandbox-bin, or CODEX_HOME/.sandbox-secrets. These locations contain sandbox
+    // Never grant capability write access to INOCODE_HOME or anything under INOCODE_HOME/.sandbox,
+    // INOCODE_HOME/.sandbox-bin, or INOCODE_HOME/.sandbox-secrets. These locations contain sandbox
     // control/state and helper binaries and must remain tamper-resistant.
     let codex_home_key = canonical_path_key(codex_home);
     let sbx_dir_key = canonical_path_key(&sandbox_dir(codex_home));
@@ -2038,7 +2038,7 @@ mod tests {
             "http://127.0.0.1:8080".to_string(),
         );
         env.insert(
-            "CODEX_NETWORK_ALLOW_LOCAL_BINDING".to_string(),
+            "INOCODE_NETWORK_ALLOW_LOCAL_BINDING".to_string(),
             "1".to_string(),
         );
 
@@ -2077,7 +2077,7 @@ mod tests {
             "socks5h://127.0.0.1:1081".to_string(),
         );
         env.insert(
-            "CODEX_NETWORK_ALLOW_LOCAL_BINDING".to_string(),
+            "INOCODE_NETWORK_ALLOW_LOCAL_BINDING".to_string(),
             "1".to_string(),
         );
 
@@ -2680,10 +2680,10 @@ mod tests {
         let command_cwd = tmp.path().join("workspace");
         let extra_write_root = tmp.path().join("extra-write-root");
         let command_git = command_cwd.join(".git");
-        let extra_codex = extra_write_root.join(".codex");
+        let extra_codex = extra_write_root.join(".inocode");
         let explicit_deny = tmp.path().join("explicit-deny");
         fs::create_dir_all(&command_git).expect("create command .git");
-        fs::create_dir_all(&extra_codex).expect("create extra .codex");
+        fs::create_dir_all(&extra_codex).expect("create extra .inocode");
         let writable_roots = vec![
             AbsolutePathBuf::from_absolute_path(&extra_write_root).expect("absolute writable root"),
         ];
@@ -2708,7 +2708,7 @@ mod tests {
         assert_eq!(
             [
                 dunce::canonicalize(&command_git).expect("canonical command .git"),
-                dunce::canonicalize(&extra_codex).expect("canonical extra .codex"),
+                dunce::canonicalize(&extra_codex).expect("canonical extra .inocode"),
                 explicit_deny,
             ]
             .into_iter()

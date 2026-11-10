@@ -150,7 +150,7 @@ async fn prepare_from_package(
     )?;
     anyhow::ensure!(
         !root.canonicalize()?.starts_with(source.canonicalize()?),
-        "CODEX_HOME must be outside the source CLI package"
+        "INOCODE_HOME must be outside the source CLI package"
     );
     let manifest_bytes = std::fs::read(source.join("codex-package.json"))?;
     let manifest: CodexPackageManifest = serde_json::from_slice(&manifest_bytes)?;

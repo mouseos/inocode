@@ -33,7 +33,7 @@ unsafe extern "system" {
 pub fn registered_core_requested() -> bool {
     static REQUESTED: OnceLock<bool> = OnceLock::new();
     *REQUESTED.get_or_init(|| {
-        requested_value(std::env::var_os("CODEX_WINDOWS_REGISTERED_CORE").as_deref())
+        requested_value(std::env::var_os("INOCODE_WINDOWS_REGISTERED_CORE").as_deref())
     })
 }
 

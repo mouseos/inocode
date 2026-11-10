@@ -51,7 +51,7 @@ exits with a failure instead of hanging. After a forced exit, stop any remaining
 test process and remove the reserved key with the same signed bundle:
 
 ```bash
-CODEX_HARDWARE_TEST_CLEANUP=1 "$app/Contents/MacOS/hardware" --ignored --exact \
+INOCODE_HARDWARE_TEST_CLEANUP=1 "$app/Contents/MacOS/hardware" --ignored --exact \
   persisted_key_signing_cancellation_and_retry --nocapture --test-threads=1
 ```
 

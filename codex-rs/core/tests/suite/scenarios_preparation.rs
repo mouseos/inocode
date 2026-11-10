@@ -23,12 +23,12 @@ async fn raw_injection_rejects_uploaded_audio_before_modifying_history() -> Resu
     ];
 
     let history_error = test
-        .codex
+        .inocode
         .inject_response_items(batch.clone())
         .await
         .unwrap_err();
     let preparation_error = test
-        .codex
+        .inocode
         .inject_response_items_for_turn(batch)
         .await
         .unwrap_err();
@@ -46,7 +46,7 @@ async fn raw_injection_rejects_uploaded_audio_before_modifying_history() -> Resu
         }),
     ] {
         let error = test
-            .codex
+            .inocode
             .start_or_steer_turn(TurnInputRequest::new(input))
             .await
             .unwrap_err();

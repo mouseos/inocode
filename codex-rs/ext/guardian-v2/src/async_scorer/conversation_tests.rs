@@ -287,7 +287,7 @@ async fn delayed_preparation_does_not_block_newer_requests_and_capacity_is_bound
     let sampler = Arc::new(LunaSampler::new(sampler_config(server.uri())));
     fixture
         .test
-        .codex
+        .inocode
         .thread_extension_data()
         .insert(ConversationBackend::new(sampler));
     let events = ["C", "B", "A", "D"].map(|label| {
@@ -299,7 +299,7 @@ async fn delayed_preparation_does_not_block_newer_requests_and_capacity_is_bound
     let mock = responses::mount_sse_sequence(&server, events.to_vec()).await;
     let backend = fixture
         .test
-        .codex
+        .inocode
         .thread_extension_data()
         .get::<ConversationBackend>()
         .unwrap();
@@ -403,7 +403,7 @@ async fn stale_authorization_expiry_and_stopped_generations_reject_preparation()
     let sampler = Arc::new(LunaSampler::new(config));
     fixture
         .test
-        .codex
+        .inocode
         .thread_extension_data()
         .insert(ConversationBackend::new(sampler));
     let thread_store = fixture.test.codex.thread_extension_data();
@@ -424,7 +424,7 @@ async fn stale_authorization_expiry_and_stopped_generations_reject_preparation()
     request.pending_score.index = current_index;
     fixture
         .test
-        .codex
+        .inocode
         .inject_response_items(vec![user_instruction(
             "Stop. Do not inspect any more files.",
         )])
@@ -468,7 +468,7 @@ async fn prepared_reviews_recheck_expiry_authorization_and_stopped_generations()
     let sampler = Arc::new(LunaSampler::new(config));
     fixture
         .test
-        .codex
+        .inocode
         .thread_extension_data()
         .insert(ConversationBackend::new(sampler));
     let thread_store = fixture.test.codex.thread_extension_data();
@@ -491,7 +491,7 @@ async fn prepared_reviews_recheck_expiry_authorization_and_stopped_generations()
     let prepared = stale.prepare(request).await.unwrap();
     fixture
         .test
-        .codex
+        .inocode
         .inject_response_items(vec![user_instruction(
             "Stop. Do not inspect any more files.",
         )])
@@ -805,7 +805,7 @@ async fn concurrent_requests_retain_only_the_newest_completed_history() -> Resul
         for (index, label) in [(1, "older"), (2, "newer")] {
             fixture
                 .test
-                .codex
+                .inocode
                 .inject_response_items(vec![ResponseItem::Message {
                     status: None,
                     encrypted_content: None,
@@ -994,7 +994,7 @@ async fn expiry_preserves_the_completed_checkpoint_and_transcript_cursor() -> Re
     // advance that cursor or cause its evidence to disappear from the next delta.
     fixture
         .test
-        .codex
+        .inocode
         .inject_response_items(vec![serde_json::from_value(
             responses::ev_function_call(
                 "observed-after-checkpoint",

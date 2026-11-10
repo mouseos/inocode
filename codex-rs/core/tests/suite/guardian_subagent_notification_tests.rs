@@ -239,7 +239,7 @@ async fn guardian_circuit_breaker_notifies_parent(action: CircuitBreakAction) ->
         .mount(&server)
         .await;
     let TurnInputSubmission::Started { turn_id, .. } = test
-        .codex
+        .inocode
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "Report the worker's status.".into(),
             text_elements: Vec::new(),

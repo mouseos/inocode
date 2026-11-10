@@ -212,7 +212,7 @@ def ensure_source_prerequisites(env: MutableMapping[str, str]) -> None:
 
 
 def prefer_rustup_shims(env: MutableMapping[str, str]) -> None:
-    if env.get("CODEX_ARGUMENT_COMMENT_LINT_SKIP_RUSTUP_SHIMS") == "1":
+    if env.get("INOCODE_ARGUMENT_COMMENT_LINT_SKIP_RUSTUP_SHIMS") == "1":
         return
 
     rustup = shutil.which("rustup", path=env.get("PATH"))

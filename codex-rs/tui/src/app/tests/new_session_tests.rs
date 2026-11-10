@@ -591,9 +591,9 @@ async fn replacement_failure_keeps_current_task_and_restores_input() -> Result<(
             let destination = server.backend_id();
             let mut backends = BackendSessions::from_initial(source, vec![server]);
             let destination_cwd = tempdir()?;
-            std::fs::create_dir(destination_cwd.path().join(".codex"))?;
+            std::fs::create_dir(destination_cwd.path().join(".inocode"))?;
             std::fs::write(
-                destination_cwd.path().join(".codex/hooks.json"),
+                destination_cwd.path().join(".inocode/hooks.json"),
                 r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"x"}]}]}}"#,
             )?;
             // Model a destination whose trust was saved before thread/start failed.

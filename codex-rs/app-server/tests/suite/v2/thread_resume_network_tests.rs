@@ -170,7 +170,7 @@ allow_local_binding = true
         }));
         // Reuse the existing probe: it checks the HTTP response body and proves
         // the command cannot reach the origin directly outside the proxy.
-        let target_env = format!("CODEX_TEST_MANAGED_NETWORK_TARGET={target}");
+        let target_env = format!("INOCODE_TEST_MANAGED_NETWORK_TARGET={target}");
         let command = shlex::try_join([
             "env",
             &target_env,
@@ -184,7 +184,7 @@ allow_local_binding = true
         let mut probes = Vec::new();
         if call_id == "new-domain" {
             let signal = format!(
-                "CODEX_TEST_DISCONNECT_NETWORK_PROBE={}",
+                "INOCODE_TEST_DISCONNECT_NETWORK_PROBE={}",
                 disconnect_signal.path().display()
             );
             probes.push((

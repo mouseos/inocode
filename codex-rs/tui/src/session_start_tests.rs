@@ -173,7 +173,7 @@ fn session_start_error_surfaces_archived_guidance_without_rollout_path() {
     let target_session = SessionTarget {
         backend_id: crate::backend_id::BackendId::new(),
         path: Some(std::path::PathBuf::from(
-            "/Users/me/.codex/archived_sessions/rollout.jsonl",
+            "/Users/me/.inocode/archived_sessions/rollout.jsonl",
         )),
         thread_id,
         cwd: None,

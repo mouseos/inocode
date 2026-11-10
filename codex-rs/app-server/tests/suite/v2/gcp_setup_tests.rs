@@ -23,7 +23,7 @@ use tokio::time::timeout;
 
 const CLEARED_AUTH_ENV: &[(&str, Option<&str>)] = &[
     ("OPENAI_API_KEY", None),
-    ("CODEX_API_KEY", None),
+    ("INOCODE_API_KEY", None),
     ("OPENAI_FEDERATION_RULE_ID", None),
     ("OPENAI_IDENTITY_TOKEN_FILE", None),
     ("OPENAI_WORKLOAD_IDENTITY_CONTEXT", None),
@@ -243,14 +243,14 @@ async fn setup_gcp_validates_the_auth_override_relative_to_the_startup_directory
     let auth = toml::Value::try_from(json!({"command": script, "cwd": "."}))?;
     let config_path = home.path().join("config.toml");
     std::fs::write(&config_path, "")?;
-    // The same command succeeds in CODEX_HOME but fails in the catalog's startup context.
+    // The same command succeeds in INOCODE_HOME but fails in the catalog's startup context.
     std::fs::write(startup.path().join("fail"), "")?;
     let mut server = TestAppServer::builder()
         .with_codex_home(startup.path())
         .with_env_overrides(CLEARED_AUTH_ENV)
         .with_env_overrides(&[(
-            "CODEX_HOME",
-            Some(home.path().to_str().context("non-UTF-8 CODEX_HOME")?),
+            "INOCODE_HOME",
+            Some(home.path().to_str().context("non-UTF-8 INOCODE_HOME")?),
         )])
         .with_args(&["-c", &format!("model_providers.gcp.auth={auth}")])
         .build_initialized_with_timeout(READ_TIMEOUT)

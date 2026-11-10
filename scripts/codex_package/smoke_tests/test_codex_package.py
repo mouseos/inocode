@@ -88,7 +88,7 @@ def test_packaged_executor_initializes_and_enforces_sandbox(
     home.mkdir()
     blocked = directory / "blocked.txt"
     blocked.write_text("unchanged")
-    environment = {**package.environment, "CODEX_HOME": str(home)}
+    environment = {**package.environment, "INOCODE_HOME": str(home)}
     if windows:
         # Elevated mode must discover the setup/runner in this package's resources.
         # Exclude build outputs and host Codex installations from helper fallback.
@@ -309,7 +309,7 @@ def test_packaged_executor_matches_subcommand_startup(
     # Release builds require the helper directory to live outside their temp root.
     environment = {
         **package.environment,
-        "CODEX_HOME": str(home),
+        "INOCODE_HOME": str(home),
         "TMPDIR": str(temporary),
         "TEMP": str(temporary),
         "TMP": str(temporary),

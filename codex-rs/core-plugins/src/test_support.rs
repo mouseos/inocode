@@ -388,7 +388,7 @@ pub(crate) fn recording_remote_plugin_service_config(
         RemotePluginServiceConfig {
             runtime_auth: None,
             chatgpt_base_url,
-            product_sku: crate::remote::CODEX_PRODUCT_SKU.to_string(),
+            product_sku: crate::remote::INOCODE_PRODUCT_SKU.to_string(),
             http_clients,
         },
         selected_urls,

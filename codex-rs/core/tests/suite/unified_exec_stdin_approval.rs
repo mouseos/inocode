@@ -230,7 +230,7 @@ async fn stdin_reviews_escalated_terminal_with_denied_reads_before_delivering_in
             .unwrap();
     }))
     .await?;
-    let codex = &harness.test().codex;
+    let codex = &harness.test().inocode;
     harness.write_file("secret.env", "secret").await?;
     let _open = mount_function_call_agent_response(
         harness.server(),

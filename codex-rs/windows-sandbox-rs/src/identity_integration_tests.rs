@@ -207,9 +207,9 @@ fn credential_setup_reconciles_policy_and_repairs_accounts() -> Result<()> {
             fs::write(path, bytes)?;
         }
         let env = HashMap::from([
-            ("CODEX_WINDOWS_SANDBOX_PROXY_PORTS".into(), ports.into()),
+            ("INOCODE_WINDOWS_SANDBOX_PROXY_PORTS".into(), ports.into()),
             (
-                "CODEX_NETWORK_ALLOW_LOCAL_BINDING".into(),
+                "INOCODE_NETWORK_ALLOW_LOCAL_BINDING".into(),
                 u8::from(desired_binding).to_string(),
             ),
         ]);

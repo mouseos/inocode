@@ -11,7 +11,7 @@ use codex_login::CodexAuth;
 use codex_login::ExternalAuth;
 use codex_login::ExternalAuthFuture;
 use codex_login::ExternalAuthRefreshContext;
-use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+use codex_mcp::INOCODE_APPS_MCP_SERVER_NAME;
 use codex_mcp::CodexAppsToolsCache;
 use codex_mcp::EffectiveMcpServer;
 use codex_mcp::McpRuntime;
@@ -80,7 +80,7 @@ async fn hosted_plugin_runtime_ps_mcp_tool_calls_use_current_auth_manager_token(
     // debug bearer override in their environment.
     *bearer_token_env_var = None;
     let mcp_servers = HashMap::from([(
-        CODEX_APPS_MCP_SERVER_NAME.to_string(),
+        INOCODE_APPS_MCP_SERVER_NAME.to_string(),
         EffectiveMcpServer::from_host_config(hosted_plugin_runtime_config),
     )]);
     let mut config = ConfigBuilder::default()
@@ -133,7 +133,7 @@ async fn hosted_plugin_runtime_ps_mcp_tool_calls_use_current_auth_manager_token(
     // reads the shared AuthManager at request time.
     let tool_result = runtime
         .latest_call_tool(
-            CODEX_APPS_MCP_SERVER_NAME,
+            INOCODE_APPS_MCP_SERVER_NAME,
             "calendar_create_event",
             /*environment_id*/ None,
             Some(json!({

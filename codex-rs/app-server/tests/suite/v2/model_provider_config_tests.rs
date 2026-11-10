@@ -12,8 +12,8 @@ use tempfile::TempDir;
 
 const CLEARED_AUTH_ENV: &[(&str, Option<&str>)] = &[
     ("OPENAI_API_KEY", None),
-    ("CODEX_API_KEY", None),
-    ("CODEX_ACCESS_TOKEN", None),
+    ("INOCODE_API_KEY", None),
+    ("INOCODE_ACCESS_TOKEN", None),
     ("OPENAI_FEDERATION_RULE_ID", None),
     ("OPENAI_IDENTITY_TOKEN_FILE", None),
     ("OPENAI_WORKLOAD_IDENTITY_CONTEXT", None),

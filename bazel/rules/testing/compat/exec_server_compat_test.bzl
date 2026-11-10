@@ -34,8 +34,8 @@ def exec_server_compat_test(
         data = data,
         runfile_env = {
             "//codex-rs/bwrap:bwrap": "CARGO_BIN_EXE_bwrap",
-            current_binary: "CODEX_TEST_CURRENT_CODEX",
-            ":" + comparison_alias: "CODEX_TEST_RELEASED_CODEX",
+            current_binary: "INOCODE_TEST_CURRENT_CODEX",
+            ":" + comparison_alias: "INOCODE_TEST_RELEASED_CODEX",
         },
         tags = ["no-sandbox"],
         target_compatible_with = [

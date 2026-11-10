@@ -239,7 +239,7 @@ async fn changed_sections_and_entries_append_without_repeating_the_catalog(
         })?;
         let _ = test.codex.refresh_mcp_config(current, updated).await;
         let result = test
-            .codex
+            .inocode
             .call_mcp_tool("echo_service", "echo", ready.clone(), /*meta*/ None)
             .await;
         if tools.is_empty() {

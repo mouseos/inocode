@@ -21,7 +21,7 @@ jobs:
       - id: codex
         uses: openai/codex-action@5c3f4ccdb2b8790f73d6b21751ac00e602aa0c02 # v1.7
         with:
-          openai-api-key: ${{ secrets.CODEX_OPENAI_API_KEY }}
+          openai-api-key: ${{ secrets.INOCODE_OPENAI_API_KEY }}
           allow-users: "*"
           safety-strategy: drop-sudo
           sandbox: read-only
@@ -119,11 +119,11 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       ISSUE_NUMBER: ${{ github.event.issue.number }}
-      CODEX_OUTPUT: ${{ needs.gather-labels.outputs.codex_output }}
+      INOCODE_OUTPUT: ${{ needs.gather-labels.outputs.codex_output }}
     steps:
       - name: Apply labels
         run: |
-          json=${CODEX_OUTPUT//$'\r'/}
+          json=${INOCODE_OUTPUT//$'\r'/}
           if [ -z "$json" ]; then
             echo "Codex produced no output. Skipping label application."
             exit 0

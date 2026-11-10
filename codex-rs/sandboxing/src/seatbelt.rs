@@ -430,10 +430,10 @@ fn normalize_writable_root_for_sandbox(
     if !allow_symlinks && let Some(symlink) = nested_symlink_component(root.as_path()) {
         return Err(SeatbeltPreparationError::FileSystem(format!(
             "writable root {} contains symlink component {}; symlinked writable roots are not supported.\n\
-             If this writable root is at or beneath CODEX_HOME and you trust its symlink targets, \
-             set `allow_symlinked_codex_home = true` at the top level of `$CODEX_HOME/config.toml` \
-             (normally `~/.codex/config.toml`) on the execution host, then restart Codex or its executor. \
-             This opt-out trusts targets outside CODEX_HOME and targets changed between commands. \
+             If this writable root is at or beneath INOCODE_HOME and you trust its symlink targets, \
+             set `allow_symlinked_codex_home = true` at the top level of `$INOCODE_HOME/config.toml` \
+             (normally `~/.inocode/config.toml`) on the execution host, then restart Codex or its executor. \
+             This opt-out trusts targets outside INOCODE_HOME and targets changed between commands. \
              It does not apply to other writable roots.",
             root.display(),
             symlink.display()
@@ -442,7 +442,7 @@ fn normalize_writable_root_for_sandbox(
 
     let normalized = if allow_symlinks {
         // This explicit opt-out trusts the current target, including targets
-        // outside CODEX_HOME and links changed by an earlier command.
+        // outside INOCODE_HOME and links changed by an earlier command.
         normalize_path_for_sandbox(root.as_path()).unwrap_or(root)
     } else {
         // Otherwise preserve mutable components instead of granting their targets.
@@ -545,7 +545,7 @@ fn build_seatbelt_access_policy(
                 params.push((excluded_param.clone(), excluded_subpath.into_path_buf()));
                 // Exclude both the exact protected path and anything beneath it.
                 // `subpath` alone leaves a gap for first-time creation of the
-                // protected directory itself, such as `mkdir .codex`.
+                // protected directory itself, such as `mkdir .inocode`.
                 require_parts.push(format!(
                     "(require-not (literal (param \"{excluded_param}\")))"
                 ));

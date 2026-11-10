@@ -41,7 +41,7 @@ async fn enabled_recording_cannot_silently_fail_to_start() -> Result<()> {
         .with_plugin_startup_tasks()
         .with_args(&["app-server"])
         .with_codex_home(home.path())
-        .with_env_overrides(&[("CODEX_ROLLOUT_TRACE_ROOT", trace_root.to_str())])
+        .with_env_overrides(&[("INOCODE_ROLLOUT_TRACE_ROOT", trace_root.to_str())])
         .build_initialized()
         .await?;
     let request_id = app
@@ -112,7 +112,7 @@ async fn accepted_output_survives_success_and_stream_failure() -> Result<()> {
             .with_plugin_startup_tasks()
             .with_args(&["app-server"])
             .with_codex_home(home.path())
-            .with_env_overrides(&[("CODEX_ROLLOUT_TRACE_ROOT", traces.path().to_str())])
+            .with_env_overrides(&[("INOCODE_ROLLOUT_TRACE_ROOT", traces.path().to_str())])
             .build_initialized()
             .await?;
         let ThreadStartResponse { thread, .. } =
@@ -145,7 +145,7 @@ async fn accepted_output_survives_success_and_stream_failure() -> Result<()> {
         // There is no following request to prove acceptance of this final item.
         let bundle = std::fs::read_dir(traces.path())?.next().unwrap()?.path();
         let reduced = tokio::process::Command::new(&codex)
-            .env("CODEX_HOME", home.path())
+            .env("INOCODE_HOME", home.path())
             .args(["debug", "trace-reduce"])
             .arg(&bundle)
             .output()
@@ -223,7 +223,7 @@ async fn accepted_output_survives_interruption_and_shutdown() -> Result<()> {
         .with_plugin_startup_tasks()
         .with_args(&["app-server"])
         .with_codex_home(home.path())
-        .with_env_overrides(&[("CODEX_ROLLOUT_TRACE_ROOT", traces.path().to_str())])
+        .with_env_overrides(&[("INOCODE_ROLLOUT_TRACE_ROOT", traces.path().to_str())])
         .build_initialized()
         .await?;
     let ThreadStartResponse { thread, .. } = app.start_thread(ThreadStartParams::default()).await?;
@@ -264,7 +264,7 @@ async fn accepted_output_survives_interruption_and_shutdown() -> Result<()> {
     // have preserved the accepted output even without response.completed.
     let bundle = std::fs::read_dir(traces.path())?.next().unwrap()?.path();
     let reduced = tokio::process::Command::new(&codex)
-        .env("CODEX_HOME", home.path())
+        .env("INOCODE_HOME", home.path())
         .args(["debug", "trace-reduce"])
         .arg(&bundle)
         .output()

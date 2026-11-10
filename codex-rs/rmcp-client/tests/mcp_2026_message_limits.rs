@@ -243,7 +243,7 @@ async fn modern_local_and_executor_stdio_reject_oversized_lines() -> anyhow::Res
     ] {
         let env = (mode == McpProtocolMode::V20260728).then(|| {
             HashMap::from([(
-                OsString::from("CODEX_MCP_PROTOCOL_VERSION"),
+                OsString::from("INOCODE_MCP_PROTOCOL_VERSION"),
                 OsString::from("2026-07-28"),
             )])
         });

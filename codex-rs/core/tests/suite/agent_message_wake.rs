@@ -154,7 +154,7 @@ async fn pending_agent_message_wake_respects_control_changes(
         turn_id: initial_turn_id,
         ..
     } = test
-        .codex
+        .inocode
         .start_or_steer_turn(input("Finish the initial work."))
         .await?
     else {
@@ -244,7 +244,7 @@ async fn pending_agent_message_wake_respects_control_changes(
         let user_turn_id = timeout(Duration::from_secs(10), async {
             loop {
                 match test
-                    .codex
+                    .inocode
                     .start_turn_if_idle(input("Read the deferred worker updates now."))
                     .await?
                 {
@@ -283,7 +283,7 @@ async fn pending_agent_message_wake_respects_control_changes(
             turn_id: next_user_turn_id,
             ..
         } = test
-            .codex
+            .inocode
             .start_or_steer_turn(input("Summarize the recorded worker updates."))
             .await?
         else {
@@ -369,7 +369,7 @@ async fn interrupt_during_completion_preserves_running_status(
         .build_with_auto_env(&server)
         .await?;
     let TurnInputSubmission::Started { turn_id, .. } = test
-        .codex
+        .inocode
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "Finish the work.".to_owned(),
             text_elements: Vec::new(),

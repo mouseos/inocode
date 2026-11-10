@@ -473,7 +473,7 @@ async fn stop_reaps_untracked_app_server_child() {
 #[cfg(any(unix, windows))]
 #[tokio::test]
 async fn shutdown_grace_child() {
-    let Some(ready) = std::env::var_os("CODEX_TEST_SHUTDOWN_GRACE_READY") else {
+    let Some(ready) = std::env::var_os("INOCODE_TEST_SHUTDOWN_GRACE_READY") else {
         return;
     };
     let ready = std::path::PathBuf::from(ready);
@@ -492,7 +492,7 @@ async fn shutdown_grace_child() {
             }
             sleep(Duration::from_millis(10)).await;
         }
-        if std::env::var_os("CODEX_TEST_SHUTDOWN_GRACE_EXIT").is_some() {
+        if std::env::var_os("INOCODE_TEST_SHUTDOWN_GRACE_EXIT").is_some() {
             sleep(Duration::from_millis(150)).await;
             tokio::fs::write(ready.with_extension("exited"), "")
                 .await
@@ -516,8 +516,8 @@ async fn shutdown_grace_handles_process_exit() {
         let ready = temp.path().join(format!("{name}.ready"));
         let mut child = std::process::Command::new(std::env::current_exe().expect("test binary"))
             .args(["--exact", "backend::pid::tests::shutdown_grace_child"])
-            .env("CODEX_TEST_SHUTDOWN_GRACE_READY", &ready)
-            .envs(exits.then_some(("CODEX_TEST_SHUTDOWN_GRACE_EXIT", "1")))
+            .env("INOCODE_TEST_SHUTDOWN_GRACE_READY", &ready)
+            .envs(exits.then_some(("INOCODE_TEST_SHUTDOWN_GRACE_EXIT", "1")))
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -838,7 +838,7 @@ async fn managed_children_launch_in_workdir_without_changing_private_state_direc
         "@echo off\r\n\
          if \"%3\"==\"--help\" exit /b 1\r\n\
          echo ready > launched.cwd\r\n\
-         if defined CODEX_DAEMON_SHUTDOWN_FILE (for %%F in (\"%CODEX_DAEMON_SHUTDOWN_FILE%\") do type nul > \"%%~dpnF.ready\")\r\n\
+         if defined INOCODE_DAEMON_SHUTDOWN_FILE (for %%F in (\"%INOCODE_DAEMON_SHUTDOWN_FILE%\") do type nul > \"%%~dpnF.ready\")\r\n\
          for /l %%i in (1,1,10000000) do @rem\r\n",
     )
     .await
@@ -958,9 +958,9 @@ async fn updater_readiness_and_post_publication_failure_preserve_ownership() {
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            "[Console]::Error.WriteLine('successor startup'); [IO.File]::WriteAllText($env:CODEX_TEST_UPDATER_READY, ''); Start-Sleep 60",
+            "[Console]::Error.WriteLine('successor startup'); [IO.File]::WriteAllText($env:INOCODE_TEST_UPDATER_READY, ''); Start-Sleep 60",
         ])
-        .env("CODEX_TEST_UPDATER_READY", &ready)
+        .env("INOCODE_TEST_UPDATER_READY", &ready)
         .stderr(Stdio::from(successor_stderr.into_std().await))
         .creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW)
         .kill_on_drop(true)

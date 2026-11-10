@@ -363,12 +363,12 @@ async fn update_once(
             );
             (
                 InstallerMode::RestoreProduction(&previous_release),
-                "CODEX_INSTALL_IF_CURRENT",
+                "INOCODE_INSTALL_IF_CURRENT",
             )
         } else {
             (
                 InstallerMode::Update(&previous_release),
-                "CODEX_INSTALL_IF_LATEST",
+                "INOCODE_INSTALL_IF_LATEST",
             )
         };
     let started = std::time::Instant::now();
@@ -385,8 +385,8 @@ async fn update_once(
     if package_root.ends_with("app-server-daemon") {
         anyhow::ensure!(
             script
-                .windows(b"CODEX_INSTALL_DAEMON_ONLY".len())
-                .any(|window| window == b"CODEX_INSTALL_DAEMON_ONLY"),
+                .windows(b"INOCODE_INSTALL_DAEMON_ONLY".len())
+                .any(|window| window == b"INOCODE_INSTALL_DAEMON_ONLY"),
             "installer does not support daemon-owned packages"
         );
     }
@@ -601,26 +601,26 @@ async fn run_installer_script(
     };
     let mut child = command
         .env(
-            "CODEX_HOME",
+            "INOCODE_HOME",
             package_root
                 .parent()
                 .and_then(Path::parent)
                 .context("package root has no Codex home")?,
         )
-        .env("CODEX_INSTALL_DEFER_SELECTION", defer_selection)
+        .env("INOCODE_INSTALL_DEFER_SELECTION", defer_selection)
         .env(
-            "CODEX_INSTALL_DAEMON_ONLY",
+            "INOCODE_INSTALL_DAEMON_ONLY",
             if package_root.ends_with("app-server-daemon") {
                 "1"
             } else {
                 "0"
             },
         )
-        .env("CODEX_RELEASE", "latest")
-        .env("CODEX_NON_INTERACTIVE", "1")
-        .env("CODEX_INSTALL_IF_LATEST", latest_guard)
-        .env("CODEX_INSTALL_IF_CURRENT", current_guard)
-        .env("CODEX_UPDATE_FROM_RELEASE", previous_release)
+        .env("INOCODE_RELEASE", "latest")
+        .env("INOCODE_NON_INTERACTIVE", "1")
+        .env("INOCODE_INSTALL_IF_LATEST", latest_guard)
+        .env("INOCODE_INSTALL_IF_CURRENT", current_guard)
+        .env("INOCODE_UPDATE_FROM_RELEASE", previous_release)
         .kill_on_drop(true)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())

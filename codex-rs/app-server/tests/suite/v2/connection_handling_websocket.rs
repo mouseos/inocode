@@ -122,7 +122,7 @@ async fn thread_start_routes_project_exec_policy_warning_to_requester() -> Resul
 
     let project = TempDir::new()?;
     std::fs::create_dir(project.path().join(".git"))?;
-    let rules_dir = project.path().join(".codex/rules");
+    let rules_dir = project.path().join(".inocode/rules");
     std::fs::create_dir_all(&rules_dir)?;
     let rules_path = rules_dir.join("broken.rules");
     std::fs::write(&rules_path, "prefix_rule(")?;
@@ -578,7 +578,7 @@ pub(super) async fn spawn_websocket_server_with_args(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .env("CODEX_HOME", codex_home)
+        .env("INOCODE_HOME", codex_home)
         .env("RUST_LOG", "warn")
         .env("OTEL_METRIC_EXPORT_INTERVAL", "200");
 
@@ -716,7 +716,7 @@ async fn run_websocket_server_to_completion_with_args(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
-        .env("CODEX_HOME", codex_home)
+        .env("INOCODE_HOME", codex_home)
         .env("RUST_LOG", "warn");
     timeout(DEFAULT_READ_TIMEOUT, cmd.output())
         .await

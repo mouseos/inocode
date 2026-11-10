@@ -55,7 +55,7 @@ fn main() -> Result<()> {
             | "oversized-stdout"
             | "oversized-stdout-legacy"
     ));
-    assert!(std::env::var_os("CODEX_MCP_PROTOCOL_VERSION").is_none());
+    assert!(std::env::var_os("INOCODE_MCP_PROTOCOL_VERSION").is_none());
     let is_legacy = mode.starts_with("legacy") || mode.ends_with("-legacy");
     let oversized = mode.starts_with("oversized-stdout");
     let mut stdout = io::stdout().lock();

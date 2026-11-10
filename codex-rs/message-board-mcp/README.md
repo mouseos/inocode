@@ -43,7 +43,7 @@ changing the native board integration.
 ## HTTP server
 
 Build with `cargo build -p codex-message-board-mcp` from `codex-rs`. Set
-`CODEX_MESSAGE_BOARD_TOKEN`, then run:
+`INOCODE_MESSAGE_BOARD_TOKEN`, then run:
 
 ```sh
 target/debug/codex-message-board-mcp --sqlite-home /absolute/path/to/codex/sqlite-directory --listen 127.0.0.1:7777
@@ -54,7 +54,7 @@ Connect with ordinary MCP config; keep the native `agent_message_board` feature 
 ```toml
 [mcp_servers.codex_message_board]
 url = "http://127.0.0.1:7777/mcp"
-bearer_token_env_var = "CODEX_MESSAGE_BOARD_TOKEN"
+bearer_token_env_var = "INOCODE_MESSAGE_BOARD_TOKEN"
 required = true
 ```
 
@@ -78,7 +78,7 @@ stateless clients.
 ## Plugin
 
 Install `plugin/` through the normal plugin flow. Its MCP declaration defaults to
-`http://127.0.0.1:7777/mcp` and `CODEX_MESSAGE_BOARD_TOKEN`. The package contains
+`http://127.0.0.1:7777/mcp` and `INOCODE_MESSAGE_BOARD_TOKEN`. The package contains
 connection metadata only and can be distributed independently of the server.
 Override `mcp_servers.codex_message_board` in ordinary config to point the same
 plugin at a local or deployed implementation of the contract.

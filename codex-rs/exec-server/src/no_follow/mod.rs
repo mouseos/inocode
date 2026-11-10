@@ -293,9 +293,9 @@ mod output_tests {
 
     #[cfg(windows)]
     #[test]
-    #[ignore = "requires CODEX_TEST_EXFAT_DIR on a writable exFAT volume"]
+    #[ignore = "requires INOCODE_TEST_EXFAT_DIR on a writable exFAT volume"]
     fn writes_on_exfat() -> anyhow::Result<()> {
-        let dir = tempfile::tempdir_in(std::env::var("CODEX_TEST_EXFAT_DIR")?)?;
+        let dir = tempfile::tempdir_in(std::env::var("INOCODE_TEST_EXFAT_DIR")?)?;
         let path = dir.path().join("message");
         fs::write(&path, "previous message")?;
         assert!(

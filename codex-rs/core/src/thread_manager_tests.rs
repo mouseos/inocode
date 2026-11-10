@@ -2415,7 +2415,7 @@ async fn start_thread_seeds_extension_data_for_mcp_and_lifecycle_contributors() 
         assert_eq!(Some(server), expected.build().server(name));
     }
     let codex_apps_server = codex_mcp::configured_mcp_servers(&first_resolved.config)
-        .remove(codex_mcp::CODEX_APPS_MCP_SERVER_NAME)
+        .remove(codex_mcp::INOCODE_APPS_MCP_SERVER_NAME)
         .expect("Codex Apps server should be configured");
     let codex_apps_headers = match codex_apps_server.transport {
         codex_config::McpServerTransportConfig::StreamableHttp { http_headers, .. } => http_headers,

@@ -91,9 +91,9 @@ pub(super) async fn prepare(
     configured.retain(|key, _| {
         !shell_environment::is_non_inheritable_env_var(key)
             && ![
-                crate::CODEX_EXEC_SERVER_EXIT_ON_STDIN_CLOSE_ENV_VAR,
-                shell_environment::CODEX_THREAD_ID_ENV_VAR,
-                shell_environment::CODEX_TOOL_CALL_ID_ENV_VAR,
+                crate::INOCODE_EXEC_SERVER_EXIT_ON_STDIN_CLOSE_ENV_VAR,
+                shell_environment::INOCODE_THREAD_ID_ENV_VAR,
+                shell_environment::INOCODE_TOOL_CALL_ID_ENV_VAR,
             ]
             .contains(&key.as_str())
             && !key.starts_with(SNAPSHOT_BROKERED_VALUE_ENV_PREFIX)

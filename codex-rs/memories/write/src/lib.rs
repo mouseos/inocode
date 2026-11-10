@@ -48,7 +48,7 @@ mod extension_resources {
 }
 
 mod guard_limits {
-    pub(super) const CODEX_LIMIT_ID: &str = "codex";
+    pub(super) const INOCODE_LIMIT_ID: &str = "codex";
 }
 
 mod prompt_blocks {

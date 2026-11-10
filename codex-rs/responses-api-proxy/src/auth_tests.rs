@@ -170,7 +170,7 @@ fn oversized_serialized_exchange_request_is_rejected_before_sending() {
 fn shared_oidc_transport_honors_custom_ca_in_cli_blocking_context() {
     // Use a subprocess so certificate settings cannot affect parallel tests.
     // run_main also runs under spawn_blocking when invoked via the Codex CLI.
-    const CHILD_ENV: &str = "CODEX_TEST_PROXY_OIDC_CUSTOM_CA";
+    const CHILD_ENV: &str = "INOCODE_TEST_PROXY_OIDC_CUSTOM_CA";
     if std::env::var_os(CHILD_ENV).is_some() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -213,7 +213,7 @@ fn shared_oidc_transport_honors_custom_ca_in_cli_blocking_context() {
         ])
         .env(CHILD_ENV, "1")
         .env(
-            "CODEX_CA_CERTIFICATE",
+            "INOCODE_CA_CERTIFICATE",
             "/invalid-oidc-test-ca/credential.pem",
         )
         .output()

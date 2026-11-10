@@ -683,7 +683,7 @@ def codex_rust_crate(
             wine_test_binaries["wine-windows-exec-server"] = ":" + wine_exec_server
             wine_runtime = wine_test_runtime(wine_test_binaries)
             wine_runfile_env = dict(wine_runtime.runfile_env)
-            wine_runfile_env[native_test_binary] = "CODEX_WINE_EXEC_TEST_BINARY"
+            wine_runfile_env[native_test_binary] = "INOCODE_WINE_EXEC_TEST_BINARY"
 
             wine_test_kwargs = {}
             wine_test_kwargs.update(integration_test_kwargs)

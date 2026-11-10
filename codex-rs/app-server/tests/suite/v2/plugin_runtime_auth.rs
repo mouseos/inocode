@@ -58,7 +58,7 @@ async fn direct_mutation_initializes_runtime_after_config_reload(
             .without_auto_env()
             .with_env_overrides(&[
                 ("OPENAI_API_KEY", None),
-                ("CODEX_ACCESS_TOKEN", None),
+                ("INOCODE_ACCESS_TOKEN", None),
                 (TEST_ALLOW_HTTP_REMOTE_PLUGIN_BUNDLE_DOWNLOADS, Some("1")),
             ])
             .build_initialized_with_timeout(DEFAULT_TIMEOUT)

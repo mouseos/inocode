@@ -18,7 +18,7 @@ use codex_extension_api::TurnLifecycleContributor;
 use codex_extension_api::TurnStartInput;
 use codex_extension_api::TurnStartPhase;
 use codex_features::Feature;
-use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+use codex_mcp::INOCODE_APPS_MCP_SERVER_NAME;
 use codex_mcp::McpResourceClient;
 use codex_mcp::McpResourceClientAuthKey;
 use std::collections::HashSet;
@@ -62,11 +62,11 @@ impl PluginContributor {
                 let auth = query
                     .mcp_resources
                     .as_ref()
-                    .map(|client| client.auth_cache_key_for_server(CODEX_APPS_MCP_SERVER_NAME));
+                    .map(|client| client.auth_cache_key_for_server(INOCODE_APPS_MCP_SERVER_NAME));
                 let resource_cache_key = query
                     .mcp_resources
                     .as_ref()
-                    .and_then(|client| client.server_cache_key(CODEX_APPS_MCP_SERVER_NAME));
+                    .and_then(|client| client.server_cache_key(INOCODE_APPS_MCP_SERVER_NAME));
                 if ((waited && *refresh_succeeded)
                     || input
                         .turn_store

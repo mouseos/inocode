@@ -84,7 +84,7 @@ async fn initial_settings_include_plugin_ids_without_duplicate_checkpoints(
     .await?;
     let response = responses::mount_sse_once(&server, responses::sse_completed("first turn")).await;
     let submission = test
-        .codex
+        .inocode
         .start_turn_if_idle(TurnInputRequest::user_input(Vec::new()))
         .await?;
     let StartIfIdleSubmission::Started { turn_id, .. } = submission else {

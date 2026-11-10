@@ -46,7 +46,7 @@ pub struct ExecServerCommand {
     /// Loopback stays local. This flag does not require upstream routing.
     #[arg(
         long,
-        env = "CODEX_EXEC_SERVER_PROXY_PRIVATE_IPS_VIA_UPSTREAM",
+        env = "INOCODE_EXEC_SERVER_PROXY_PRIVATE_IPS_VIA_UPSTREAM",
         global = true
     )]
     proxy_private_ips_via_upstream: bool,
@@ -99,7 +99,7 @@ pub struct ExecServerCommand {
     #[arg(long = "name", value_name = "NAME", global = true)]
     name: Option<String>,
 
-    /// Use Agent Identity auth from CODEX_ACCESS_TOKEN for remote registration.
+    /// Use Agent Identity auth from INOCODE_ACCESS_TOKEN for remote registration.
     #[arg(
         long = "use-agent-identity-auth",
         requires = "exec_server_remote",
@@ -173,7 +173,7 @@ pub struct ExecServerCommand {
     /// Exit when the parent-owned standard-input pipe closes.
     #[arg(
         long = "exit-on-stdin-close",
-        env = codex_exec_server::CODEX_EXEC_SERVER_EXIT_ON_STDIN_CLOSE_ENV_VAR,
+        env = codex_exec_server::INOCODE_EXEC_SERVER_EXIT_ON_STDIN_CLOSE_ENV_VAR,
         requires_if("true", "exec_server_remote"),
         global = true
     )]

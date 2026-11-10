@@ -70,7 +70,7 @@ pub enum ConfigLayerSource {
         name: String,
     },
 
-    /// User config layer from $CODEX_HOME/config.toml. This layer is special
+    /// User config layer from $INOCODE_HOME/config.toml. This layer is special
     /// in that it is expected to be:
     /// - writable by the user
     /// - generally outside the workspace directory
@@ -86,7 +86,7 @@ pub enum ConfigLayerSource {
         profile: Option<String>,
     },
 
-    /// Path to a .codex/ folder within a project. There could be multiple of
+    /// Path to a .inocode/ folder within a project. There could be multiple of
     /// these between `cwd` and the project/repo root.
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]

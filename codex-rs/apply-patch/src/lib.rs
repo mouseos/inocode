@@ -49,12 +49,12 @@ use crate::invocation::ExtractHeredocError;
 /// `codex-arg0` to depend on `codex-core`), it remains part of the "codex core"
 /// process-invocation contract for the standalone `apply_patch` command
 /// surface.
-pub const CODEX_CORE_APPLY_PATCH_ARG1: &str = "--codex-run-as-apply-patch";
+pub const INOCODE_CORE_APPLY_PATCH_ARG1: &str = "--codex-run-as-apply-patch";
 
 /// Compatibility opt-in for older standalone `apply_patch` executables.
 /// Current executables always preserve line endings.
-pub const CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR: &str =
-    "CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS";
+pub const INOCODE_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR: &str =
+    "INOCODE_APPLY_PATCH_PRESERVE_LINE_ENDINGS";
 
 /// Policy for one patch application. Standalone callers follow symlinks by default.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -134,11 +134,11 @@ impl CloudManagedConfigFixture {
         command
             .kill_on_drop(true)
             .current_dir(self.codex_home.path())
-            .env("CODEX_HOME", self.codex_home.path())
+            .env("INOCODE_HOME", self.codex_home.path())
             .env("NO_PROXY", "127.0.0.1,localhost")
             .env("no_proxy", "127.0.0.1,localhost")
-            .env_remove("CODEX_ACCESS_TOKEN")
-            .env_remove("CODEX_API_KEY")
+            .env_remove("INOCODE_ACCESS_TOKEN")
+            .env_remove("INOCODE_API_KEY")
             .env_remove("OPENAI_API_KEY")
             .env_remove("OPENAI_FEDERATION_RULE_ID")
             .env_remove("OPENAI_IDENTITY_TOKEN_FILE")
@@ -504,9 +504,9 @@ async fn startup_config_loads_managed_policy_or_reports_cloud_failure() -> Resul
         std::fs::write(&history_path, b"history must not be repaired")?;
         let output = fixture
             .command(&["app-server", "--print-startup-config"])?
-            .env("CODEX_SQLITE_HOME", sqlite_home.path())
+            .env("INOCODE_SQLITE_HOME", sqlite_home.path())
             .env(
-                "CODEX_REFRESH_TOKEN_URL_OVERRIDE",
+                "INOCODE_REFRESH_TOKEN_URL_OVERRIDE",
                 format!("{}/refresh", fixture.server.uri()),
             )
             .output()
@@ -570,16 +570,16 @@ async fn startup_config_sign_out_reloads_policy_without_starting_runtime() -> Re
         let baseline = successful_json(
             fixture
                 .command(&["app-server", "--print-startup-config"])?
-                .env("CODEX_HOME", signed_out_home.path()),
+                .env("INOCODE_HOME", signed_out_home.path()),
         )
         .await?;
         let sqlite_home = TempDir::new()?;
         let value = successful_json(
             fixture
                 .command(&["app-server", "--print-startup-config", "--startup-sign-out"])?
-                .env("CODEX_SQLITE_HOME", sqlite_home.path())
+                .env("INOCODE_SQLITE_HOME", sqlite_home.path())
                 .env(
-                    "CODEX_REVOKE_TOKEN_URL_OVERRIDE",
+                    "INOCODE_REVOKE_TOKEN_URL_OVERRIDE",
                     format!("{}/revoke", fixture.server.uri()),
                 ),
         )
@@ -671,7 +671,7 @@ async fn check_registration(
         "--environment-id",
         "test",
     ])?;
-    command.env("CODEX_API_KEY", "test-api-key");
+    command.env("INOCODE_API_KEY", "test-api-key");
     let output = timeout(Duration::from_secs(30), command.output()).await??;
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(

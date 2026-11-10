@@ -35,7 +35,7 @@ fn github_write_hook() -> crate::mitm_hook::MitmHookConfig {
             inject_request_headers: vec![crate::mitm_hook::InjectedHeaderConfig {
                 placeholder: None,
                 name: "authorization".to_string(),
-                secret_env_var: Some("CODEX_GITHUB_TOKEN".to_string()),
+                secret_env_var: Some("INOCODE_GITHUB_TOKEN".to_string()),
                 secret_file: None,
                 prefix: Some("Bearer ".to_string()),
             }],

@@ -19,7 +19,7 @@ use codex_extension_api::McpServerContribution;
 use codex_extension_api::McpServerContributionContext;
 use codex_extension_api::McpServerContributor;
 use codex_features::Feature;
-use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+use codex_mcp::INOCODE_APPS_MCP_SERVER_NAME;
 use codex_protocol::mcp::McpServerConnectionStatus;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
@@ -360,7 +360,7 @@ pub(super) async fn apps_requests_during_peer_discovery(
                 .into_iter()
                 .collect::<std::collections::BTreeSet<_>>(),
             std::collections::BTreeSet::from([
-                CODEX_APPS_MCP_SERVER_NAME.to_string(),
+                INOCODE_APPS_MCP_SERVER_NAME.to_string(),
                 SERVER_NAME.to_string(),
             ])
         );
@@ -412,7 +412,7 @@ pub(super) async fn apps_requests_during_peer_discovery(
             .thread_manager
             .start_thread(StartThreadOptions::new(peer_config))
             .await?;
-        wait_for_mcp_server(&peer, CODEX_APPS_MCP_SERVER_NAME).await?;
+        wait_for_mcp_server(&peer, INOCODE_APPS_MCP_SERVER_NAME).await?;
         // The non-refreshing client-local API never exposes a shared provider.
         assert_eq!(peer.apps_tools_from_mcp_client().await.is_empty(), share);
         release_waiting.send(())?;
@@ -664,7 +664,7 @@ pub(super) async fn cached_stdio_first_use_scenario() -> anyhow::Result<Vec<Valu
     )
     .await;
     fixture
-        .codex
+        .inocode
         .start_or_steer_turn(user_turn("use the echo tool"))
         .await?;
     let first_pid = wait_for_new_pid(fs.as_ref(), &pid_file, /*previous_pid*/ None).await?;

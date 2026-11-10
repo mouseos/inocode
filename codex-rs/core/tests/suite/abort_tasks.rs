@@ -239,7 +239,7 @@ async fn root_turn_suspension_preserves_unfinished_turn_history(fail_child_write
 
     assert_eq!(
         resumed
-            .codex
+            .inocode
             .recover_turn_if_idle(codex_core::RecoverTurnRequest {
                 turn_id: turn_id.clone(),
                 thread_settings: Default::default(),

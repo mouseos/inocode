@@ -6,7 +6,7 @@ use crate::shell::ShellType;
 use crate::tools::sandboxing::SandboxAttempt;
 use crate::tools::sandboxing::managed_network_for_sandbox_permissions;
 #[cfg(target_os = "macos")]
-use codex_network_proxy::CODEX_PROXY_GIT_SSH_COMMAND_MARKER;
+use codex_network_proxy::INOCODE_PROXY_GIT_SSH_COMMAND_MARKER;
 use codex_network_proxy::CUSTOM_CA_ENV_KEYS;
 use codex_network_proxy::ConfigReloader;
 use codex_network_proxy::ConfigReloaderFuture;
@@ -502,7 +502,7 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_codex_metadata_from_env() {
     let snapshot_path = dir.path().join("snapshot.sh");
     std::fs::write(
         &snapshot_path,
-        "# Snapshot file\nexport CODEX_THREAD_ID='parent-thread'\nexport CODEX_TOOL_CALL_ID='parent-call'\nexport CODEX_VERSION='old-version'\n",
+        "# Snapshot file\nexport INOCODE_THREAD_ID='parent-thread'\nexport INOCODE_TOOL_CALL_ID='parent-call'\nexport INOCODE_VERSION='old-version'\n",
     )
     .expect("write snapshot");
     let (session_shell, shell_snapshot) =
@@ -510,14 +510,14 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_codex_metadata_from_env() {
     let command = vec![
         "/bin/bash".to_string(),
         "-lc".to_string(),
-        "printf '%s|%s|%s' \"$CODEX_THREAD_ID\" \"$CODEX_TOOL_CALL_ID\" \"$CODEX_VERSION\""
+        "printf '%s|%s|%s' \"$INOCODE_THREAD_ID\" \"$INOCODE_TOOL_CALL_ID\" \"$INOCODE_VERSION\""
             .to_string(),
     ];
     let env = HashMap::from([
-        ("CODEX_THREAD_ID".to_string(), "nested-thread".to_string()),
-        ("CODEX_TOOL_CALL_ID".to_string(), "nested-call".to_string()),
+        ("INOCODE_THREAD_ID".to_string(), "nested-thread".to_string()),
+        ("INOCODE_TOOL_CALL_ID".to_string(), "nested-call".to_string()),
         (
-            "CODEX_VERSION".to_string(),
+            "INOCODE_VERSION".to_string(),
             env!("CARGO_PKG_VERSION").to_string(),
         ),
     ]);
@@ -548,7 +548,7 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_permission_profile_from_env() {
     let snapshot_path = dir.path().join("snapshot.sh");
     std::fs::write(
         &snapshot_path,
-        "# Snapshot file\nexport CODEX_PERMISSION_PROFILE='parent-profile'\n",
+        "# Snapshot file\nexport INOCODE_PERMISSION_PROFILE='parent-profile'\n",
     )
     .expect("write snapshot");
     let (session_shell, shell_snapshot) =
@@ -556,10 +556,10 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_permission_profile_from_env() {
     let command = vec![
         "/bin/bash".to_string(),
         "-lc".to_string(),
-        "printenv CODEX_PERMISSION_PROFILE".to_string(),
+        "printenv INOCODE_PERMISSION_PROFILE".to_string(),
     ];
     let env = HashMap::from([(
-        CODEX_PERMISSION_PROFILE_ENV_VAR.to_string(),
+        INOCODE_PERMISSION_PROFILE_ENV_VAR.to_string(),
         "current-profile".to_string(),
     )]);
     let rewritten = maybe_wrap_shell_lc_with_snapshot(
@@ -572,7 +572,7 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_permission_profile_from_env() {
     );
     let output = Command::new(&rewritten[0])
         .args(&rewritten[1..])
-        .env(CODEX_PERMISSION_PROFILE_ENV_VAR, "current-profile")
+        .env(INOCODE_PERMISSION_PROFILE_ENV_VAR, "current-profile")
         .output()
         .expect("run rewritten command");
 
@@ -580,8 +580,8 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_permission_profile_from_env() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "current-profile\n");
 }
 
-#[test_case::test_case(CODEX_PERMISSION_PROFILE_ENV_VAR; "permission profile")]
-#[test_case::test_case(CODEX_TOOL_CALL_ID_ENV_VAR; "tool call ID")]
+#[test_case::test_case(INOCODE_PERMISSION_PROFILE_ENV_VAR; "permission profile")]
+#[test_case::test_case(INOCODE_TOOL_CALL_ID_ENV_VAR; "tool call ID")]
 fn maybe_wrap_shell_lc_with_snapshot_unsets_absent_metadata(key: &str) -> anyhow::Result<()> {
     let dir = tempdir()?;
     let snapshot_path = dir.path().join("snapshot.sh");
@@ -620,7 +620,7 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_apply_patch_rollout_state() {
     let snapshot_path = dir.path().join("snapshot.sh");
     std::fs::write(
         &snapshot_path,
-        "# Snapshot file\nexport CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS='stale'\n",
+        "# Snapshot file\nexport INOCODE_APPLY_PATCH_PRESERVE_LINE_ENDINGS='stale'\n",
     )
     .expect("write snapshot");
     let (session_shell, shell_snapshot) =
@@ -628,10 +628,10 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_apply_patch_rollout_state() {
     let command = vec![
         "/bin/bash".to_string(),
         "-lc".to_string(),
-        "printenv CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS".to_string(),
+        "printenv INOCODE_APPLY_PATCH_PRESERVE_LINE_ENDINGS".to_string(),
     ];
     let env = HashMap::from([(
-        CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR.to_string(),
+        INOCODE_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR.to_string(),
         "1".to_string(),
     )]);
     let rewritten = maybe_wrap_shell_lc_with_snapshot(
@@ -644,7 +644,7 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_apply_patch_rollout_state() {
     );
     let output = Command::new(&rewritten[0])
         .args(&rewritten[1..])
-        .env(CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR, "1")
+        .env(INOCODE_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR, "1")
         .output()
         .expect("run rewritten command");
 
@@ -661,7 +661,7 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_apply_patch_rollout_state() {
     );
     let output = Command::new(&rewritten[0])
         .args(&rewritten[1..])
-        .env_remove(CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR)
+        .env_remove(INOCODE_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR)
         .output()
         .expect("run rewritten command");
 
@@ -675,7 +675,7 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_reserved_metrics_output_env() {
     let snapshot_path = dir.path().join("snapshot.sh");
     std::fs::write(
         &snapshot_path,
-        "# Snapshot file\nexport CODEX_PLUGIN_METRICS_OUTPUT='/stale/path'\n",
+        "# Snapshot file\nexport INOCODE_PLUGIN_METRICS_OUTPUT='/stale/path'\n",
     )
     .expect("write snapshot");
     let (session_shell, shell_snapshot) =
@@ -683,7 +683,7 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_reserved_metrics_output_env() {
     let command = vec![
         "/bin/bash".to_string(),
         "-lc".to_string(),
-        "printf '%s' \"${CODEX_PLUGIN_METRICS_OUTPUT-unset}\"".to_string(),
+        "printf '%s' \"${INOCODE_PLUGIN_METRICS_OUTPUT-unset}\"".to_string(),
     ];
 
     for (live_value, expected) in [(None, "unset"), (Some("/private/path"), "/private/path")] {
@@ -1081,7 +1081,7 @@ async fn snapshot_wrapper_replays_dummy_and_preserves_unbrokered_credentials() -
         format!("{dummy}|unset")
     );
 
-    let injection = "\"; printf CODEX_ENV_INJECTED; __codex_env_file=\"";
+    let injection = "\"; printf INOCODE_ENV_INJECTED; __codex_env_file=\"";
     expanded_env.insert("ENV".to_string(), injection.to_string());
     let startup_value_snapshot = dir.path().join("startup-value-snapshot.sh").abs();
     std::fs::write(
@@ -1360,10 +1360,10 @@ fn maybe_wrap_shell_lc_with_snapshot_refreshes_codex_proxy_git_ssh_command() {
     let dir = tempdir().expect("create temp dir");
     let snapshot_path = dir.path().join("snapshot.sh");
     let stale_command = format!(
-        "{CODEX_PROXY_GIT_SSH_COMMAND_MARKER}ssh -o ProxyCommand='nc -X 5 -x 127.0.0.1:8081 %h %p'"
+        "{INOCODE_PROXY_GIT_SSH_COMMAND_MARKER}ssh -o ProxyCommand='nc -X 5 -x 127.0.0.1:8081 %h %p'"
     );
     let fresh_command = format!(
-        "{CODEX_PROXY_GIT_SSH_COMMAND_MARKER}ssh -o ProxyCommand='nc -X 5 -x 127.0.0.1:48081 %h %p'"
+        "{INOCODE_PROXY_GIT_SSH_COMMAND_MARKER}ssh -o ProxyCommand='nc -X 5 -x 127.0.0.1:48081 %h %p'"
     );
     std::fs::write(
         &snapshot_path,
@@ -1404,7 +1404,7 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_custom_git_ssh_command() {
     let dir = tempdir().expect("create temp dir");
     let snapshot_path = dir.path().join("snapshot.sh");
     let stale_command = format!(
-        "{CODEX_PROXY_GIT_SSH_COMMAND_MARKER}ssh -o ProxyCommand='nc -X 5 -x 127.0.0.1:8081 %h %p'"
+        "{INOCODE_PROXY_GIT_SSH_COMMAND_MARKER}ssh -o ProxyCommand='nc -X 5 -x 127.0.0.1:8081 %h %p'"
     );
     let custom_command = "ssh -o ProxyCommand='tsh proxy ssh --cluster=dev %r@%h:%p'";
     std::fs::write(
@@ -1446,7 +1446,7 @@ fn maybe_wrap_shell_lc_with_snapshot_clears_stale_codex_git_ssh_command_without_
     let dir = tempdir().expect("create temp dir");
     let snapshot_path = dir.path().join("snapshot.sh");
     let stale_command = format!(
-        "{CODEX_PROXY_GIT_SSH_COMMAND_MARKER}ssh -o ProxyCommand='nc -X 5 -x 127.0.0.1:8081 %h %p'"
+        "{INOCODE_PROXY_GIT_SSH_COMMAND_MARKER}ssh -o ProxyCommand='nc -X 5 -x 127.0.0.1:8081 %h %p'"
     );
     std::fs::write(
         &snapshot_path,
@@ -1772,7 +1772,7 @@ fn maybe_wrap_shell_lc_with_snapshot_preserves_unset_override_variables() {
     let snapshot_path = dir.path().join("snapshot.sh");
     std::fs::write(
         &snapshot_path,
-        "# Snapshot file\nexport CODEX_TEST_UNSET_OVERRIDE='snapshot-value'\n",
+        "# Snapshot file\nexport INOCODE_TEST_UNSET_OVERRIDE='snapshot-value'\n",
     )
     .expect("write snapshot");
     let (session_shell, shell_snapshot) =
@@ -1780,10 +1780,10 @@ fn maybe_wrap_shell_lc_with_snapshot_preserves_unset_override_variables() {
     let command = vec![
             "/bin/bash".to_string(),
             "-lc".to_string(),
-            "if [ \"${CODEX_TEST_UNSET_OVERRIDE+x}\" = x ]; then printf 'set:%s' \"$CODEX_TEST_UNSET_OVERRIDE\"; else printf 'unset'; fi".to_string(),
+            "if [ \"${INOCODE_TEST_UNSET_OVERRIDE+x}\" = x ]; then printf 'set:%s' \"$INOCODE_TEST_UNSET_OVERRIDE\"; else printf 'unset'; fi".to_string(),
         ];
     let explicit_env_overrides = HashMap::from([(
-        "CODEX_TEST_UNSET_OVERRIDE".to_string(),
+        "INOCODE_TEST_UNSET_OVERRIDE".to_string(),
         "worktree-value".to_string(),
     )]);
     let rewritten = maybe_wrap_shell_lc_with_snapshot(
@@ -1797,7 +1797,7 @@ fn maybe_wrap_shell_lc_with_snapshot_preserves_unset_override_variables() {
 
     let output = Command::new(&rewritten[0])
         .args(&rewritten[1..])
-        .env_remove("CODEX_TEST_UNSET_OVERRIDE")
+        .env_remove("INOCODE_TEST_UNSET_OVERRIDE")
         .output()
         .expect("run rewritten command");
     assert!(output.status.success(), "command failed: {output:?}");

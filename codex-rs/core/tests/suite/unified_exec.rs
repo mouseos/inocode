@@ -32,7 +32,7 @@ use codex_protocol::protocol::ExecCommandSource;
 use codex_protocol::protocol::ExecCommandStatus;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::ThreadSettingsOverrides;
-use codex_protocol::shell_environment::CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR;
+use codex_protocol::shell_environment::INOCODE_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR;
 use codex_protocol::user_input::UserInput;
 use codex_utils_output_truncation::approx_tokens_from_byte_count;
 use codex_utils_path_uri::PathUri;
@@ -398,21 +398,21 @@ async fn exec_command_does_not_expose_configured_noise_auth_token() -> Result<()
 
     let builder = test_codex().with_model("gpt-5.4").with_config(|config| {
         config.permissions.shell_environment_policy.r#set.insert(
-            CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR.to_string(),
+            INOCODE_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR.to_string(),
             "configured-noise-token".to_string(),
         );
         config.permissions.shell_environment_policy.r#set.insert(
-            CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR.to_ascii_lowercase(),
+            INOCODE_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR.to_ascii_lowercase(),
             "case-variant-noise-token".to_string(),
         );
     });
     let harness = TestCodexHarness::with_auto_env_builder(builder).await?;
     let command = match core_test_support::test_target_os() {
         core_test_support::TestTargetOs::Linux | core_test_support::TestTargetOs::MacOs => {
-            "if [ -n \"${CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN:-}\" ] || [ -n \"${codex_exec_server_noise_auth_token:-}\" ]; then echo leaked; else echo unset; fi"
+            "if [ -n \"${INOCODE_EXEC_SERVER_NOISE_AUTH_TOKEN:-}\" ] || [ -n \"${codex_exec_server_noise_auth_token:-}\" ]; then echo leaked; else echo unset; fi"
         }
         core_test_support::TestTargetOs::Windows => {
-            "if ($env:CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN) { Write-Output leaked } else { Write-Output unset }"
+            "if ($env:INOCODE_EXEC_SERVER_NOISE_AUTH_TOKEN) { Write-Output leaked } else { Write-Output unset }"
         }
     };
     let call_id = "exec-command-noise-auth-token";
@@ -453,11 +453,11 @@ async fn exec_command_exports_originating_call_metadata_across_later_input() -> 
     let second_call_id = "exec-second-metadata";
     let input_call_id = "exec-later-input";
     let first_args = json!({
-        "cmd": "printf '%s|%s' \"$CODEX_THREAD_ID\" \"$CODEX_TOOL_CALL_ID\" > first-metadata",
+        "cmd": "printf '%s|%s' \"$INOCODE_THREAD_ID\" \"$INOCODE_TOOL_CALL_ID\" > first-metadata",
         "yield_time_ms": 5_000,
     });
     let second_args = json!({
-        "cmd": "printf '%s|%s' \"$CODEX_THREAD_ID\" \"$CODEX_TOOL_CALL_ID\" > second-before; IFS= read -r _; printf '%s|%s' \"$CODEX_THREAD_ID\" \"$CODEX_TOOL_CALL_ID\" > second-after",
+        "cmd": "printf '%s|%s' \"$INOCODE_THREAD_ID\" \"$INOCODE_TOOL_CALL_ID\" > second-before; IFS= read -r _; printf '%s|%s' \"$INOCODE_THREAD_ID\" \"$INOCODE_TOOL_CALL_ID\" > second-after",
         "yield_time_ms": 100,
         "tty": true,
     });
@@ -533,7 +533,7 @@ async fn exec_command_uses_installed_environment_shell_policy_with_explicit_over
                 ("KEEP".to_string(), "preserved".to_string()),
                 ("DROP".to_string(), "filtered".to_string()),
                 (
-                    "CODEX_VERSION".to_string(),
+                    "INOCODE_VERSION".to_string(),
                     "configured-version".to_string(),
                 ),
             ]),
@@ -543,7 +543,7 @@ async fn exec_command_uses_installed_environment_shell_policy_with_explicit_over
     let harness = TestCodexHarness::with_auto_env_builder(builder).await?;
     let selection = harness
         .test()
-        .codex
+        .inocode
         .environment_selections()
         .await
         .into_iter()
@@ -551,7 +551,7 @@ async fn exec_command_uses_installed_environment_shell_policy_with_explicit_over
         .context("thread should select its executor environment")?;
     harness
         .test()
-        .codex
+        .inocode
         .environment_ready(
             &selection,
             EnvironmentConfig {
@@ -585,10 +585,10 @@ async fn exec_command_uses_installed_environment_shell_policy_with_explicit_over
     let call_id = "exec-command-environment-shell-policy";
     let command = match core_test_support::test_target_os() {
         core_test_support::TestTargetOs::Linux | core_test_support::TestTargetOs::MacOs => {
-            r#"printf '%s:%s:%s:%s' "$KEEP" "${DROP:-missing}" "${OWNER_ONLY:-missing}" "$CODEX_VERSION""#
+            r#"printf '%s:%s:%s:%s' "$KEEP" "${DROP:-missing}" "${OWNER_ONLY:-missing}" "$INOCODE_VERSION""#
         }
         core_test_support::TestTargetOs::Windows => {
-            r#"if (Test-Path Env:DROP) { $drop = $env:DROP } else { $drop = 'missing' }; if (Test-Path Env:OWNER_ONLY) { $owner = $env:OWNER_ONLY } else { $owner = 'missing' }; Write-Output "${env:KEEP}:${drop}:${owner}:${env:CODEX_VERSION}""#
+            r#"if (Test-Path Env:DROP) { $drop = $env:DROP } else { $drop = 'missing' }; if (Test-Path Env:OWNER_ONLY) { $owner = $env:OWNER_ONLY } else { $owner = 'missing' }; Write-Output "${env:KEEP}:${drop}:${owner}:${env:INOCODE_VERSION}""#
         }
     };
     let arguments = json!({

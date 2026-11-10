@@ -7,7 +7,7 @@ use codex_core_plugins::executor_plugin_hook_sources_v2;
 use codex_exec_server::ExecutorCapabilityDiscoverySnapshot;
 use codex_exec_server::ExecutorCapabilityDiscoveryV2Snapshot;
 use codex_extension_api::SelectedPluginSnapshot;
-use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+use codex_mcp::INOCODE_APPS_MCP_SERVER_NAME;
 use codex_mcp::McpBinding;
 use codex_plugin::ExecutorPluginHookSource;
 
@@ -21,7 +21,7 @@ pub(crate) fn prepare_executor_hook_sources(
     let app_tool_policy = AppToolPolicyEvaluator::new(&config.config_layer_stack);
     let lookup_enabled_tool = |server: &str, tool: &str| {
         mcp.tool_info(server, tool).filter(|tool_info| {
-            if server != CODEX_APPS_MCP_SERVER_NAME {
+            if server != INOCODE_APPS_MCP_SERVER_NAME {
                 return true;
             }
             let annotations = tool_info.tool.annotations.as_ref();

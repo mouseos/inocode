@@ -1010,7 +1010,7 @@ async fn guardian_v2_routes_scoped_tool_approvals(
         .with_codex_home(codex_home.path())
         .with_env_overrides(&[
             ("OTEL_METRIC_EXPORT_INTERVAL", Some("25")),
-            ("CODEX_ROLLOUT_TRACE_ROOT", trace_root),
+            ("INOCODE_ROLLOUT_TRACE_ROOT", trace_root),
         ])
         .build_initialized_with_timeout(TIMEOUT)
         .await?;

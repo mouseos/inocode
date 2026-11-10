@@ -520,7 +520,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         .bind_bootstrap_auth(bootstrap_auth_config(&codex_home, &bootstrap_config)?);
     // API keys cannot fetch workspace-managed configuration. Preserve the
     // existing ChatGPT bootstrap identity even when model requests allow
-    // CODEX_API_KEY.
+    // INOCODE_API_KEY.
     let cloud_config_bundle = managed_config_bundle_loader_for_storage(
         bootstrap_auth_config,
         bootstrap_config.config_layer_stack.requirements_toml(),

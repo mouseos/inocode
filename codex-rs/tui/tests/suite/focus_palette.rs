@@ -389,7 +389,7 @@ impl PtyCodex {
             .env_remove(codex_protocol::shell_environment::OPENAI_FEDERATION_RULE_ID_ENV_VAR)
             .env_remove(codex_protocol::shell_environment::OPENAI_IDENTITY_TOKEN_FILE_ENV_VAR)
             .env("OPENAI_API_KEY", "focus-palette-test")
-            .env("CODEX_HOME", codex_home.path())
+            .env("INOCODE_HOME", codex_home.path())
             .stdin(stdin)
             .stdout(stdout)
             .stderr(slave.try_clone()?)
@@ -675,11 +675,11 @@ fn auto_daemon_start_failure_exits_with_manual_fallback_hint() -> Result<()> {
                         .canonicalize()?
                         .to_string_lossy()
                         .as_ref(),
-                    "[CODEX_HOME]",
+                    "[INOCODE_HOME]",
                 )
                 .replace(
                     terminal._codex_home.path().to_string_lossy().as_ref(),
-                    "[CODEX_HOME]",
+                    "[INOCODE_HOME]",
                 )
                 .replace('\r', "");
             insta::assert_snapshot!("daemon_auto_start_failure", failure.trim());

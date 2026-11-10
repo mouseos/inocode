@@ -13,7 +13,7 @@ fn make_vars(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
 #[test]
 fn inject_permission_profile_env_overrides_policy_value() {
     let mut env = HashMap::from([(
-        CODEX_PERMISSION_PROFILE_ENV_VAR.to_string(),
+        INOCODE_PERMISSION_PROFILE_ENV_VAR.to_string(),
         "stale-profile".to_string(),
     )]);
 
@@ -23,7 +23,7 @@ fn inject_permission_profile_env_overrides_policy_value() {
     );
 
     assert_eq!(
-        env.get(CODEX_PERMISSION_PROFILE_ENV_VAR)
+        env.get(INOCODE_PERMISSION_PROFILE_ENV_VAR)
             .map(String::as_str),
         Some("current-profile")
     );
@@ -32,26 +32,26 @@ fn inject_permission_profile_env_overrides_policy_value() {
 #[test]
 fn inject_permission_profile_env_removes_stale_value_without_active_profile() {
     let mut env = HashMap::from([(
-        CODEX_PERMISSION_PROFILE_ENV_VAR.to_string(),
+        INOCODE_PERMISSION_PROFILE_ENV_VAR.to_string(),
         "stale-profile".to_string(),
     )]);
 
     inject_permission_profile_env(&mut env, /*active_permission_profile*/ None);
 
-    assert_eq!(env.get(CODEX_PERMISSION_PROFILE_ENV_VAR), None);
+    assert_eq!(env.get(INOCODE_PERMISSION_PROFILE_ENV_VAR), None);
 }
 
 #[test]
 fn inject_apply_patch_env_enables_older_executables_despite_stale_values() {
     let mut env = HashMap::from([(
-        CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR.to_ascii_lowercase(),
+        INOCODE_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR.to_ascii_lowercase(),
         "stale".to_string(),
     )]);
     inject_apply_patch_env(&mut env);
     assert_eq!(
         env,
         HashMap::from([(
-            CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR.to_string(),
+            INOCODE_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR.to_string(),
             "1".to_string(),
         )])
     );
@@ -73,7 +73,7 @@ fn inject_permission_profile_env_replaces_differently_cased_windows_key() {
     assert_eq!(
         env,
         HashMap::from([(
-            CODEX_PERMISSION_PROFILE_ENV_VAR.to_string(),
+            INOCODE_PERMISSION_PROFILE_ENV_VAR.to_string(),
             "current-profile".to_string(),
         )])
     );
@@ -98,7 +98,7 @@ fn test_core_inherit_defaults_keep_sensitive_vars() {
         "API_KEY".to_string() => "secret".to_string(),
         "SECRET_TOKEN".to_string() => "t".to_string(),
     };
-    expected.insert(CODEX_THREAD_ID_ENV_VAR.to_string(), thread_id.to_string());
+    expected.insert(INOCODE_THREAD_ID_ENV_VAR.to_string(), thread_id.to_string());
 
     assert_eq!(result, expected);
 }
@@ -123,7 +123,7 @@ fn test_core_inherit_with_default_excludes_enabled() {
         "PATH".to_string() => "/usr/bin".to_string(),
         "HOME".to_string() => "/home/user".to_string(),
     };
-    expected.insert(CODEX_THREAD_ID_ENV_VAR.to_string(), thread_id.to_string());
+    expected.insert(INOCODE_THREAD_ID_ENV_VAR.to_string(), thread_id.to_string());
 
     assert_eq!(result, expected);
 }
@@ -145,7 +145,7 @@ fn test_include_only() {
     let mut expected: HashMap<String, String> = hashmap! {
         "PATH".to_string() => "/usr/bin".to_string(),
     };
-    expected.insert(CODEX_THREAD_ID_ENV_VAR.to_string(), thread_id.to_string());
+    expected.insert(INOCODE_THREAD_ID_ENV_VAR.to_string(), thread_id.to_string());
 
     assert_eq!(result, expected);
 }
@@ -167,7 +167,7 @@ fn test_set_overrides() {
         "PATH".to_string() => "/usr/bin".to_string(),
         "NEW_VAR".to_string() => "42".to_string(),
     };
-    expected.insert(CODEX_THREAD_ID_ENV_VAR.to_string(), thread_id.to_string());
+    expected.insert(INOCODE_THREAD_ID_ENV_VAR.to_string(), thread_id.to_string());
 
     assert_eq!(result, expected);
 }
@@ -182,7 +182,7 @@ fn populate_env_inserts_thread_id() {
     let mut expected: HashMap<String, String> = hashmap! {
         "PATH".to_string() => "/usr/bin".to_string(),
     };
-    expected.insert(CODEX_THREAD_ID_ENV_VAR.to_string(), thread_id.to_string());
+    expected.insert(INOCODE_THREAD_ID_ENV_VAR.to_string(), thread_id.to_string());
 
     assert_eq!(result, expected);
 }
@@ -213,7 +213,7 @@ fn test_inherit_all() {
     let thread_id = ThreadId::new();
     let result = populate_env(vars.clone(), &policy, Some(thread_id));
     let mut expected: HashMap<String, String> = vars.into_iter().collect();
-    expected.insert(CODEX_THREAD_ID_ENV_VAR.to_string(), thread_id.to_string());
+    expected.insert(INOCODE_THREAD_ID_ENV_VAR.to_string(), thread_id.to_string());
     assert_eq!(result, expected);
 }
 
@@ -232,7 +232,7 @@ fn test_inherit_all_with_default_excludes() {
     let mut expected: HashMap<String, String> = hashmap! {
         "PATH".to_string() => "/usr/bin".to_string(),
     };
-    expected.insert(CODEX_THREAD_ID_ENV_VAR.to_string(), thread_id.to_string());
+    expected.insert(INOCODE_THREAD_ID_ENV_VAR.to_string(), thread_id.to_string());
     assert_eq!(result, expected);
 }
 
@@ -259,7 +259,7 @@ fn test_core_inherit_respects_case_insensitive_names_on_windows() {
         "PathExt".to_string() => ".COM;.EXE;.BAT;.CMD".to_string(),
         "TEMP".to_string() => "C:\\Temp".to_string(),
     };
-    expected.insert(CODEX_THREAD_ID_ENV_VAR.to_string(), thread_id.to_string());
+    expected.insert(INOCODE_THREAD_ID_ENV_VAR.to_string(), thread_id.to_string());
 
     assert_eq!(result, expected);
 }
@@ -323,6 +323,6 @@ fn test_inherit_none() {
     let mut expected: HashMap<String, String> = hashmap! {
         "ONLY_VAR".to_string() => "yes".to_string(),
     };
-    expected.insert(CODEX_THREAD_ID_ENV_VAR.to_string(), thread_id.to_string());
+    expected.insert(INOCODE_THREAD_ID_ENV_VAR.to_string(), thread_id.to_string());
     assert_eq!(result, expected);
 }

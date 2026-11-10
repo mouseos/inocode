@@ -6,7 +6,7 @@ use codex_config::types::PluginsConfigToml;
 use codex_exec_server::DiscoveredPluginFiles;
 use codex_exec_server::ExecutorCapabilityDiscoverySnapshot;
 use codex_exec_server::ExecutorCapabilityDiscoveryV2Snapshot;
-use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+use codex_mcp::INOCODE_APPS_MCP_SERVER_NAME;
 use codex_mcp::MCP_TOOL_CODEX_APPS_META_KEY;
 use codex_mcp::ToolInfo;
 use codex_plugin::ExecutorPluginHookSource;
@@ -128,7 +128,7 @@ fn admitted_hook_sources<'a, 'b>(
                     group.hooks.retain(|handler| {
                         let app_connector_id = match handler {
                             HookHandlerConfig::McpTool { server, tool, .. }
-                                if server == CODEX_APPS_MCP_SERVER_NAME =>
+                                if server == INOCODE_APPS_MCP_SERVER_NAME =>
                             {
                                 lookup_enabled_tool(server, tool)
                                     .and_then(|info| info.connector_id.as_deref())
@@ -167,7 +167,7 @@ fn resolve_mcp_routing<'a>(
     else {
         return None;
     };
-    if server != CODEX_APPS_MCP_SERVER_NAME {
+    if server != INOCODE_APPS_MCP_SERVER_NAME {
         return Some(source);
     }
 

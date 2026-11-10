@@ -2,7 +2,7 @@
 
 use anyhow::Context;
 use assert_cmd::prelude::*;
-use codex_apply_patch::CODEX_CORE_APPLY_PATCH_ARG1;
+use codex_apply_patch::INOCODE_CORE_APPLY_PATCH_ARG1;
 use core_test_support::responses::ev_apply_patch_custom_tool_call;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
@@ -26,7 +26,7 @@ fn test_standalone_exec_cli_can_use_apply_patch() -> anyhow::Result<()> {
     fs::write(&absolute_path, "original content\n")?;
 
     Command::new(codex_utils_cargo_bin::cargo_bin("codex-exec")?)
-        .arg(CODEX_CORE_APPLY_PATCH_ARG1)
+        .arg(INOCODE_CORE_APPLY_PATCH_ARG1)
         .arg(
             r#"*** Begin Patch
 *** Update File: source.txt
@@ -264,7 +264,7 @@ shell_snapshot_v2 = false
     .await;
     let run = test.cmd_with_server(&server)
         .env("HOME", test.home_path())
-        .env_remove("CODEX_API_KEY")
+        .env_remove("INOCODE_API_KEY")
         .env_remove("OPENAI_API_KEY")
         .arg("--skip-git-repo-check")
         .arg("-c")
@@ -450,8 +450,8 @@ async fn shutdown_flushes_completed_turn_and_file_diff() -> anyhow::Result<()> {
     .await;
 
     test.cmd_with_server(&server)
-        .env_remove("CODEX_API_KEY")
-        .env_remove("CODEX_ANALYTICS_EVENTS_CAPTURE_FILE")
+        .env_remove("INOCODE_API_KEY")
+        .env_remove("INOCODE_ANALYTICS_EVENTS_CAPTURE_FILE")
         .arg("--skip-git-repo-check")
         .arg("-s")
         .arg("danger-full-access")

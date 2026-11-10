@@ -39,7 +39,7 @@ use tokio::io::AsyncWriteExt;
 
 use crate::ExecServerRuntimeOptions;
 use crate::FileSystemSandboxContext;
-use crate::fs_helper::CODEX_FS_HELPER_ARG1;
+use crate::fs_helper::INOCODE_FS_HELPER_ARG1;
 use crate::fs_helper::FsHelperPayload;
 use crate::fs_helper::FsHelperRequest;
 use crate::fs_helper::FsHelperResponse;
@@ -177,7 +177,7 @@ impl FileSystemSandboxRunner {
             .ok_or_else(|| invalid_request("filesystem sandbox cwd has no root".to_string()))?;
         let command = SandboxCommand {
             program: helper.as_path().as_os_str().to_owned(),
-            args: vec![CODEX_FS_HELPER_ARG1.to_string()],
+            args: vec![INOCODE_FS_HELPER_ARG1.to_string()],
             cwd: PathUri::from_abs_path(&helper_cwd),
             env: self.helper_env.clone(),
             managed_network: None,

@@ -297,10 +297,10 @@ mod tests {
     // Happy-path tests using a mock HTTP server; skip if sandbox network is disabled.
     #[tokio::test]
     async fn test_fetch_models_happy_path() {
-        if std::env::var(codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
+        if std::env::var(codex_core::spawn::INOCODE_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
             tracing::info!(
                 "{} is set; skipping test_fetch_models_happy_path",
-                codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
+                codex_core::spawn::INOCODE_SANDBOX_NETWORK_DISABLED_ENV_VAR
             );
             return;
         }
@@ -328,10 +328,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_fetch_version() {
-        if std::env::var(codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
+        if std::env::var(codex_core::spawn::INOCODE_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
             tracing::info!(
                 "{} is set; skipping test_fetch_version",
-                codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
+                codex_core::spawn::INOCODE_SANDBOX_NETWORK_DISABLED_ENV_VAR
             );
             return;
         }
@@ -364,10 +364,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_pull_model_stream_parses_large_json_lines() {
-        if std::env::var(codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
+        if std::env::var(codex_core::spawn::INOCODE_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
             tracing::info!(
                 "{} set; skipping test_pull_model_stream_parses_large_json_lines",
-                codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
+                codex_core::spawn::INOCODE_SANDBOX_NETWORK_DISABLED_ENV_VAR
             );
             return;
         }
@@ -408,10 +408,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_probe_server_happy_path_openai_compat_and_native() {
-        if std::env::var(codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
+        if std::env::var(codex_core::spawn::INOCODE_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
             tracing::info!(
                 "{} set; skipping test_probe_server_happy_path_openai_compat_and_native",
-                codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
+                codex_core::spawn::INOCODE_SANDBOX_NETWORK_DISABLED_ENV_VAR
             );
             return;
         }
@@ -445,10 +445,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_try_from_oss_provider_ok_when_server_running() {
-        if std::env::var(codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
+        if std::env::var(codex_core::spawn::INOCODE_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
             tracing::info!(
                 "{} set; skipping test_try_from_oss_provider_ok_when_server_running",
-                codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
+                codex_core::spawn::INOCODE_SANDBOX_NETWORK_DISABLED_ENV_VAR
             );
             return;
         }
@@ -469,10 +469,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_try_from_provider_preserves_outbound_proxy_policy() {
-        if std::env::var(codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
+        if std::env::var(codex_core::spawn::INOCODE_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
             tracing::info!(
                 "{} set; skipping test_try_from_provider_preserves_outbound_proxy_policy",
-                codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
+                codex_core::spawn::INOCODE_SANDBOX_NETWORK_DISABLED_ENV_VAR
             );
             return;
         }
@@ -505,12 +505,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_try_from_provider_handles_invalid_custom_ca_by_proxy_policy() {
-        const CHILD_POLICY_ENV: &str = "CODEX_OLLAMA_INVALID_CA_TEST_POLICY";
+        const CHILD_POLICY_ENV: &str = "INOCODE_OLLAMA_INVALID_CA_TEST_POLICY";
 
-        if std::env::var(codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
+        if std::env::var(codex_core::spawn::INOCODE_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
             tracing::info!(
                 "{} set; skipping test_try_from_provider_handles_invalid_custom_ca_by_proxy_policy",
-                codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
+                codex_core::spawn::INOCODE_SANDBOX_NETWORK_DISABLED_ENV_VAR
             );
             return;
         }
@@ -523,7 +523,7 @@ mod tests {
             std::fs::write(&invalid_ca_path, "not a PEM certificate")
                 .expect("invalid CA fixture should be written");
 
-            for ca_env in ["CODEX_CA_CERTIFICATE", "SSL_CERT_FILE"] {
+            for ca_env in ["INOCODE_CA_CERTIFICATE", "SSL_CERT_FILE"] {
                 for policy_name in ["reqwest-default", "respect-system-proxy"] {
                     let output = std::process::Command::new(
                         std::env::current_exe().expect("test executable should be available"),
@@ -531,7 +531,7 @@ mod tests {
                     .arg("--exact")
                     .arg("client::tests::test_try_from_provider_handles_invalid_custom_ca_by_proxy_policy")
                     .arg("--nocapture")
-                    .env_remove("CODEX_CA_CERTIFICATE")
+                    .env_remove("INOCODE_CA_CERTIFICATE")
                     .env_remove("SSL_CERT_FILE")
                     .env(ca_env, &invalid_ca_path)
                     .env(CHILD_POLICY_ENV, policy_name)
@@ -586,8 +586,8 @@ mod tests {
                 let error = result
                     .err()
                     .expect("system-proxy Ollama should reject invalid custom CAs");
-                let ca_env = if std::env::var_os("CODEX_CA_CERTIFICATE").is_some() {
-                    "CODEX_CA_CERTIFICATE"
+                let ca_env = if std::env::var_os("INOCODE_CA_CERTIFICATE").is_some() {
+                    "INOCODE_CA_CERTIFICATE"
                 } else {
                     "SSL_CERT_FILE"
                 };
@@ -609,10 +609,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_try_from_oss_provider_err_when_server_missing() {
-        if std::env::var(codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
+        if std::env::var(codex_core::spawn::INOCODE_SANDBOX_NETWORK_DISABLED_ENV_VAR).is_ok() {
             tracing::info!(
                 "{} set; skipping test_try_from_oss_provider_err_when_server_missing",
-                codex_core::spawn::CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
+                codex_core::spawn::INOCODE_SANDBOX_NETWORK_DISABLED_ENV_VAR
             );
             return;
         }

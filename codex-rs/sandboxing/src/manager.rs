@@ -4,7 +4,7 @@ use crate::LinuxSandboxPidNamespace;
 use crate::WindowsSandboxFilesystemOverrides;
 #[cfg(target_os = "linux")]
 use crate::bwrap::WSL1_BWRAP_WARNING;
-use crate::landlock::CODEX_LINUX_SANDBOX_ARG0;
+use crate::landlock::INOCODE_LINUX_SANDBOX_ARG0;
 use crate::policy_transforms::effective_permission_profile;
 use crate::policy_transforms::should_require_platform_sandbox;
 #[cfg(target_os = "macos")]
@@ -568,10 +568,10 @@ impl SandboxManager {
             args.insert(0, "--inherit-pid-namespace".to_owned());
         }
         exec.command = std::iter::once(program.clone()).chain(args).collect();
-        let arg0 = if exe.file_name() == Some(OsStr::new(CODEX_LINUX_SANDBOX_ARG0)) {
+        let arg0 = if exe.file_name() == Some(OsStr::new(INOCODE_LINUX_SANDBOX_ARG0)) {
             &program
         } else {
-            CODEX_LINUX_SANDBOX_ARG0
+            INOCODE_LINUX_SANDBOX_ARG0
         };
         exec.arg0 = Some(arg0.to_owned());
         Ok(())
@@ -756,9 +756,9 @@ fn add_windows_sandbox_wrapper_setup_env_from_vars(
     registered_core: bool,
 ) {
     // This outer helper must use the parent's runtime selection, not shell-policy overrides.
-    env.retain(|key, _| !key.eq_ignore_ascii_case("CODEX_WINDOWS_REGISTERED_CORE"));
+    env.retain(|key, _| !key.eq_ignore_ascii_case("INOCODE_WINDOWS_REGISTERED_CORE"));
     if registered_core {
-        env.insert("CODEX_WINDOWS_REGISTERED_CORE".into(), "1".into());
+        env.insert("INOCODE_WINDOWS_REGISTERED_CORE".into(), "1".into());
     }
     for (key, value) in vars {
         let key = key.to_string_lossy().into_owned();

@@ -26,7 +26,7 @@ impl SkillProvider for FakeCloudSkillProvider {
         Box::pin(async move {
             assert_eq!(
                 request.authority,
-                SkillAuthority::new(SkillSourceKind::Cloud, CODEX_APPS_MCP_SERVER_NAME)
+                SkillAuthority::new(SkillSourceKind::Cloud, INOCODE_APPS_MCP_SERVER_NAME)
             );
             assert!(
                 self.catalog
@@ -135,7 +135,7 @@ text({ names: result.skills.map(skill => skill.name), warnings: result.warnings,
                     let package = format!("skill://demo/{name}");
                     let entry = SkillCatalogEntry::new(
                         SkillPackageId(package.clone()),
-                        SkillAuthority::new(SkillSourceKind::Cloud, CODEX_APPS_MCP_SERVER_NAME),
+                        SkillAuthority::new(SkillSourceKind::Cloud, INOCODE_APPS_MCP_SERVER_NAME),
                         format!("demo:{name}"),
                         "",
                         SkillResourceId::new(format!("{package}/SKILL.md")),
@@ -489,7 +489,7 @@ async fn production_turn_aliases_discovered_singleton_cloud_locator() -> Result<
                 entries: vec![
                     SkillCatalogEntry::new(
                         SkillPackageId(format!("{SKILL_ROOT}/search")),
-                        SkillAuthority::new(SkillSourceKind::Cloud, CODEX_APPS_MCP_SERVER_NAME),
+                        SkillAuthority::new(SkillSourceKind::Cloud, INOCODE_APPS_MCP_SERVER_NAME),
                         "demo:search",
                         "Search company knowledge.",
                         SkillResourceId::new(format!("{SKILL_ROOT}/search/SKILL.md")),
@@ -582,7 +582,7 @@ async fn cloud_skill_reads_run_in_parallel() -> Result<()> {
                 is_partial: false,
                 entries: vec![SkillCatalogEntry::new(
                     SkillPackageId(PACKAGE.to_string()),
-                    SkillAuthority::new(SkillSourceKind::Cloud, CODEX_APPS_MCP_SERVER_NAME),
+                    SkillAuthority::new(SkillSourceKind::Cloud, INOCODE_APPS_MCP_SERVER_NAME),
                     "demo:parallel",
                     "Instructions and a reference.",
                     SkillResourceId::new(READS[0].1),
@@ -695,7 +695,7 @@ async fn cloud_skill_can_read_referenced_resource_without_an_executor() -> Resul
             entries: vec![
                 SkillCatalogEntry::new(
                     SkillPackageId(SKILL_RESOURCE_URI.to_string()),
-                    SkillAuthority::new(SkillSourceKind::Cloud, CODEX_APPS_MCP_SERVER_NAME),
+                    SkillAuthority::new(SkillSourceKind::Cloud, INOCODE_APPS_MCP_SERVER_NAME),
                     SKILL_NAME,
                     SKILL_DESCRIPTION,
                     SkillResourceId::new(SKILL_MAIN_PROMPT_URI),

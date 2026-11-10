@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
 
-use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+use codex_mcp::INOCODE_APPS_MCP_SERVER_NAME;
 use serde::Deserialize;
 
 use super::MAX_SKILL_RESOURCE_CONTENT_BYTES;
@@ -94,7 +94,7 @@ impl FrozenCloudSkillProvider {
             }
             let mut entry = SkillCatalogEntry::new(
                 package.clone(),
-                SkillAuthority::new(SkillSourceKind::Cloud, CODEX_APPS_MCP_SERVER_NAME),
+                SkillAuthority::new(SkillSourceKind::Cloud, INOCODE_APPS_MCP_SERVER_NAME),
                 skill.name,
                 skill.description,
                 SkillResourceId::new(skill.main_resource),
@@ -134,7 +134,7 @@ impl SkillProvider for FrozenCloudSkillProvider {
     ) -> SkillProviderFuture<'a, SkillReadResult> {
         Box::pin(async move {
             if request.authority
-                != SkillAuthority::new(SkillSourceKind::Cloud, CODEX_APPS_MCP_SERVER_NAME)
+                != SkillAuthority::new(SkillSourceKind::Cloud, INOCODE_APPS_MCP_SERVER_NAME)
             {
                 return Err(SkillProviderError::new("invalid frozen skill authority"));
             }

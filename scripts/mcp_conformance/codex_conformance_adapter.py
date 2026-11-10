@@ -43,7 +43,7 @@ class AdapterFailure(RuntimeError):
 
 CIMD_CLIENT_METADATA_URL = "https://conformance-test.local/client-metadata.json"
 PRE_REGISTERED_CLIENT_SECRET_ENV_VAR = "MCP_CONFORMANCE_CLIENT_SECRET"
-CLIENT_REGISTRATION_OVERRIDE_ENV_VAR = "CODEX_CONFORMANCE_CLIENT_REGISTRATION"
+CLIENT_REGISTRATION_OVERRIDE_ENV_VAR = "INOCODE_CONFORMANCE_CLIENT_REGISTRATION"
 AUTH_COMPLETION_METHOD = "mcpServer/oauthLogin/completed"
 EXPECTED_AUTH_REJECTION_SCENARIOS = frozenset(
     {
@@ -700,16 +700,16 @@ def _exercise_scenario(
 
 
 def run_adapter(server_url: str) -> dict[str, object]:
-    codex_binary = _required_path("CODEX_CONFORMANCE_BINARY")
-    codex_home = _required_path("CODEX_CONFORMANCE_HOME")
+    codex_binary = _required_path("INOCODE_CONFORMANCE_BINARY")
+    codex_home = _required_path("INOCODE_CONFORMANCE_HOME")
     scenario = _required_env("MCP_CONFORMANCE_SCENARIO")
     protocol_version = _required_env("MCP_CONFORMANCE_PROTOCOL_VERSION")
-    timeout_seconds = float(os.environ.get("CODEX_CONFORMANCE_TIMEOUT", "30"))
+    timeout_seconds = float(os.environ.get("INOCODE_CONFORMANCE_TIMEOUT", "30"))
     enable_modern_feature = (
-        os.environ.get("CODEX_CONFORMANCE_ENABLE_MODERN_FEATURE", "1") != "0"
+        os.environ.get("INOCODE_CONFORMANCE_ENABLE_MODERN_FEATURE", "1") != "0"
     )
     require_automatic_auth = (
-        os.environ.get("CODEX_CONFORMANCE_REQUIRE_AUTOMATIC_AUTH", "0") == "1"
+        os.environ.get("INOCODE_CONFORMANCE_REQUIRE_AUTOMATIC_AUTH", "0") == "1"
     )
     context = _conformance_context()
 
@@ -971,7 +971,7 @@ def run_adapter(server_url: str) -> dict[str, object]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     values = list(sys.argv[1:] if argv is None else argv)
-    report_path_value = os.environ.get("CODEX_CONFORMANCE_ADAPTER_REPORT")
+    report_path_value = os.environ.get("INOCODE_CONFORMANCE_ADAPTER_REPORT")
     report: dict[str, object]
     try:
         if len(values) != 1:

@@ -45,7 +45,7 @@ async fn rate_limits_check(auth_context: &ProviderAuthContext, config: &Config) 
 
     let snapshot = snapshots
         .iter()
-        .find(|s| s.limit_id.as_deref() == Some(crate::guard_limits::CODEX_LIMIT_ID))
+        .find(|s| s.limit_id.as_deref() == Some(crate::guard_limits::INOCODE_LIMIT_ID))
         .or_else(|| snapshots.first())?;
 
     let min_remaining_percent = config.memories.min_rate_limit_remaining_percent;

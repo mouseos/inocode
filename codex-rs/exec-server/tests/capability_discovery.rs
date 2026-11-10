@@ -996,7 +996,7 @@ async fn v2_helper_batches_roots_and_bounds_its_response() -> anyhow::Result<()>
     });
     let (helper_binary, _) = common::current_test_binary_helper_paths()?;
     let mut child = tokio::process::Command::new(helper_binary)
-        .arg(codex_exec_server::CODEX_FS_HELPER_ARG1)
+        .arg(codex_exec_server::INOCODE_FS_HELPER_ARG1)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

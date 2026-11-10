@@ -157,7 +157,7 @@ wire_api = 'responses'
     async fn start_app(&self) -> Result<TestAppServer> {
         let ca_path = self.ca_path.to_string_lossy();
         let env = [
-            ("CODEX_CA_CERTIFICATE", Some(ca_path.as_ref())),
+            ("INOCODE_CA_CERTIFICATE", Some(ca_path.as_ref())),
             ("CONFIG_SERVER_TEST_KEY", Some("test-key")),
             ("NO_PROXY", Some("127.0.0.1,localhost")),
         ];
@@ -269,8 +269,8 @@ async fn stdin_token_startup(
         .await;
     let mut child = tokio::process::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?)
         .current_dir(home.path())
-        .env("CODEX_HOME", home.path())
-        .env("CODEX_CA_CERTIFICATE", ca)
+        .env("INOCODE_HOME", home.path())
+        .env("INOCODE_CA_CERTIFICATE", ca)
         .env("NO_PROXY", "127.0.0.1")
         .args(["-c", &format!("chatgpt_base_url={origin:?}")])
         .arg("exec-server")

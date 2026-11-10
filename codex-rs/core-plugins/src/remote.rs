@@ -110,7 +110,7 @@ pub const REMOTE_WORKSPACE_SHARED_WITH_ME_UNLISTED_MARKETPLACE_DISPLAY_NAME: &st
 
 const OPENAI_CURATED_REMOTE_COLLECTION_KEY: &str = "vertical";
 const OAI_PRODUCT_SKU_HEADER: &str = "OAI-Product-Sku";
-pub(crate) const CODEX_PRODUCT_SKU: &str = "codex";
+pub(crate) const INOCODE_PRODUCT_SKU: &str = "codex";
 const REMOTE_PLUGIN_CATALOG_TIMEOUT: Duration = Duration::from_secs(30);
 // Leave room within the 120-second mutation-gate wait even when successful pages keep arriving.
 const REMOTE_INSTALLED_PLUGINS_FETCH_TIMEOUT: Duration = Duration::from_secs(60);
@@ -183,7 +183,7 @@ impl RemotePluginServiceConfig {
         let http_clients: Arc<dyn HttpClientSelector> = Arc::new(http_clients);
         Self {
             chatgpt_base_url,
-            product_sku: product_sku.unwrap_or_else(|| CODEX_PRODUCT_SKU.to_string()),
+            product_sku: product_sku.unwrap_or_else(|| INOCODE_PRODUCT_SKU.to_string()),
             http_clients,
             runtime_auth: None,
         }

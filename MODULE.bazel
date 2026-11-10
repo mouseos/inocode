@@ -660,7 +660,7 @@ crate.annotation(
         "CMAKE": "$${pwd}/$(CMAKE)",
         "CMAKE_GENERATOR": "Ninja",
         "CMAKE_TOOLCHAIN_FILE": "$(execpath @@//third_party/voice:opus-toolchain.cmake)",
-        "CODEX_VOICE_NINJA": "$${pwd}/$(NINJA)",
+        "INOCODE_VOICE_NINJA": "$${pwd}/$(NINJA)",
     },
     build_script_toolchains = [
         "@rules_foreign_cc//toolchains:current_cmake_toolchain",

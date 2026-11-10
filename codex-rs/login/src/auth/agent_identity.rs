@@ -26,8 +26,8 @@ use crate::outbound_proxy::AuthRouteConfig;
 use super::storage::AgentIdentityAuthRecord;
 
 pub(super) const MAX_AGENT_IDENTITY_BOOTSTRAP_ATTEMPTS: usize = 3;
-const CODEX_AGENT_IDENTITY_AUTHAPI_BASE_URL_ENV_VAR: &str = "CODEX_AGENT_IDENTITY_AUTHAPI_BASE_URL";
-const CODEX_AGENT_IDENTITY_JWKS_BASE_URL_ENV_VAR: &str = "CODEX_AGENT_IDENTITY_JWKS_BASE_URL";
+const INOCODE_AGENT_IDENTITY_AUTHAPI_BASE_URL_ENV_VAR: &str = "INOCODE_AGENT_IDENTITY_AUTHAPI_BASE_URL";
+const INOCODE_AGENT_IDENTITY_JWKS_BASE_URL_ENV_VAR: &str = "INOCODE_AGENT_IDENTITY_JWKS_BASE_URL";
 
 fn agent_identity_endpoint_override(environment_variable: &str) -> Option<String> {
     env::var(environment_variable)
@@ -48,9 +48,9 @@ pub(super) fn agent_identity_authapi_base_url(
         None => Ok(ChatGptEnvironment::default()),
     };
     let authapi_base_url =
-        agent_identity_endpoint_override(CODEX_AGENT_IDENTITY_AUTHAPI_BASE_URL_ENV_VAR);
+        agent_identity_endpoint_override(INOCODE_AGENT_IDENTITY_AUTHAPI_BASE_URL_ENV_VAR);
     let jwks_base_url =
-        agent_identity_endpoint_override(CODEX_AGENT_IDENTITY_JWKS_BASE_URL_ENV_VAR);
+        agent_identity_endpoint_override(INOCODE_AGENT_IDENTITY_JWKS_BASE_URL_ENV_VAR);
 
     match (environment, authapi_base_url) {
         (Ok(_), Some(base_url)) => Ok(base_url),
@@ -257,7 +257,7 @@ pub(super) async fn verified_record_from_jwt(
 ) -> std::io::Result<AgentIdentityAuthRecord> {
     AgentIdentityAuthRecord::from_agent_identity_jwt(jwt)?;
     let jwks_base_url =
-        match agent_identity_endpoint_override(CODEX_AGENT_IDENTITY_JWKS_BASE_URL_ENV_VAR) {
+        match agent_identity_endpoint_override(INOCODE_AGENT_IDENTITY_JWKS_BASE_URL_ENV_VAR) {
             Some(base_url) => {
                 if !agent_identity_jwks_base_url_matches(chatgpt_base_url, &base_url) {
                     ChatGptEnvironment::from_chatgpt_base_url(chatgpt_base_url)

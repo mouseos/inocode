@@ -15,7 +15,7 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
             run_bazel_with_buildbuddy.bazel_command(
                 "info",
                 "execution_root",
-                env={"CODEX_BAZEL_BIN": "fake-bazel"},
+                env={"INOCODE_BAZEL_BIN": "fake-bazel"},
             ),
             ["fake-bazel", "info", "execution_root"],
         )
@@ -102,7 +102,7 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
             f"import sys; sys.exit(37 if sys.argv[1] == {spaced_arg!r} else 91)"
         )
         env = os.environ.copy()
-        env["CODEX_BAZEL_BIN"] = sys.executable
+        env["INOCODE_BAZEL_BIN"] = sys.executable
         env.pop("BAZEL_OUTPUT_USER_ROOT", None)
         env.pop("GITHUB_ACTIONS", None)
 

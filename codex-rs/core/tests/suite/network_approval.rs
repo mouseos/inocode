@@ -1858,7 +1858,7 @@ async fn unattributed_network_request_uses_active_turn_environment_fallback(
             .await?;
         tokio::time::timeout(Duration::from_secs(/*secs*/ 5), async {
             while !test
-                .codex
+                .inocode
                 .inspect_selected_capability_roots()
                 .ready_roots
                 .contains(&root)
@@ -3282,7 +3282,7 @@ async fn agent_started_proxy_denies_brokered_provider_alias() -> Result<()> {
         .network_proxy
         .as_ref()
         .context("agent did not start its managed network proxy")?;
-    let command = r#"printf 'BROKERED:%s\nACTIVE:%s\n' "$ALIAS_TEST_TOKEN" "$CODEX_NETWORK_PROXY_CREDENTIAL_BROKER_ACTIVE""#;
+    let command = r#"printf 'BROKERED:%s\nACTIVE:%s\n' "$ALIAS_TEST_TOKEN" "$INOCODE_NETWORK_PROXY_CREDENTIAL_BROKER_ACTIVE""#;
     let call_id = "exec-brokered-provider-alias";
     let mut args = network_exec_args(command);
     args["yield_time_ms"] = json!(30_000);

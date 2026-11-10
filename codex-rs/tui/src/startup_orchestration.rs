@@ -149,7 +149,7 @@ pub(super) async fn run_main_inner(
             explicit_local_daemon_socket.clone(),
             /*can_reuse_implicit_local_daemon*/ false,
             workload_identity_selected,
-            std::env::var_os(codex_exec_server::CODEX_EXEC_SERVER_URL_ENV_VAR).as_deref(),
+            std::env::var_os(codex_exec_server::INOCODE_EXEC_SERVER_URL_ENV_VAR).as_deref(),
         )?;
         let validation_environment_manager =
             if should_load_configured_environments(&loader_overrides, &validation_target) {
@@ -218,7 +218,7 @@ pub(super) async fn run_main_inner(
         &cli_kv_overrides,
         &launch_loader_overrides,
         workload_identity_selected,
-        std::env::var_os(codex_exec_server::CODEX_EXEC_SERVER_URL_ENV_VAR).as_deref(),
+        std::env::var_os(codex_exec_server::INOCODE_EXEC_SERVER_URL_ENV_VAR).as_deref(),
     );
     let reuse_implicit_local_daemon = daemon_exclusion.is_none();
     let search_forces_embedded = cli.web_search
@@ -266,7 +266,7 @@ pub(super) async fn run_main_inner(
         explicit_local_daemon_socket.clone(),
         reuse_implicit_local_daemon,
         workload_identity_selected,
-        std::env::var_os(codex_exec_server::CODEX_EXEC_SERVER_URL_ENV_VAR).as_deref(),
+        std::env::var_os(codex_exec_server::INOCODE_EXEC_SERVER_URL_ENV_VAR).as_deref(),
     )?;
     let prepared_environment_manager =
         if should_load_configured_environments(&launch_loader_overrides, &presentation_target) {
@@ -372,7 +372,7 @@ pub(super) async fn run_main_inner(
         default_daemon,
         reuse_implicit_local_daemon,
         workload_identity_selected,
-        std::env::var_os(codex_exec_server::CODEX_EXEC_SERVER_URL_ENV_VAR).as_deref(),
+        std::env::var_os(codex_exec_server::INOCODE_EXEC_SERVER_URL_ENV_VAR).as_deref(),
     )?;
     let cloud_preview_available = app_server_target.uses_embedded_network_policy();
     let remote_cwd_override = cli
@@ -810,7 +810,7 @@ pub(super) async fn run_main_inner(
                 Some("--strict-config") => "strict_config",
                 Some("--dangerously-bypass-hook-trust") => "bypass_hook_trust",
                 Some("workload identity") => "workload_identity",
-                Some("executor selection (CODEX_EXEC_SERVER_URL)") => "exec_server_url",
+                Some("executor selection (INOCODE_EXEC_SERVER_URL)") => "exec_server_url",
                 Some("custom configuration loader") => "custom_config_loader",
                 Some(
                     "command-line configuration overrides (-c, --enable, --disable, or --search)",

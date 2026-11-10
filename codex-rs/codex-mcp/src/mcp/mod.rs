@@ -63,11 +63,11 @@ use crate::runtime::McpStartupPolicy;
 use crate::server::EffectiveMcpServer;
 use crate::tools::ToolInfo;
 
-pub const CODEX_APPS_MCP_SERVER_NAME: &str = "codex_apps";
+pub const INOCODE_APPS_MCP_SERVER_NAME: &str = "codex_apps";
 pub(crate) const DEFAULT_CODEX_APPS_MCP_PRODUCT_SKU: &str = "codex";
 const MCP_TOOL_NAME_PREFIX: &str = "mcp";
 const MCP_TOOL_NAME_DELIMITER: &str = "__";
-const CODEX_CONNECTORS_TOKEN_ENV_VAR: &str = "CODEX_CONNECTORS_TOKEN";
+const INOCODE_CONNECTORS_TOKEN_ENV_VAR: &str = "INOCODE_CONNECTORS_TOKEN";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum McpSnapshotDetail {
@@ -460,7 +460,7 @@ pub fn effective_mcp_servers_from_configured(
         })
         .collect::<HashMap<_, _>>();
     if !host_owned_codex_apps_enabled(config, auth) {
-        servers.remove(CODEX_APPS_MCP_SERVER_NAME);
+        servers.remove(INOCODE_APPS_MCP_SERVER_NAME);
     }
     servers
 }
@@ -645,11 +645,11 @@ pub(crate) fn sanitize_responses_api_tool_name(name: &str) -> String {
 }
 
 fn codex_apps_mcp_bearer_token_env_var() -> Option<String> {
-    match env::var(CODEX_CONNECTORS_TOKEN_ENV_VAR) {
-        Ok(value) if !value.trim().is_empty() => Some(CODEX_CONNECTORS_TOKEN_ENV_VAR.to_string()),
+    match env::var(INOCODE_CONNECTORS_TOKEN_ENV_VAR) {
+        Ok(value) if !value.trim().is_empty() => Some(INOCODE_CONNECTORS_TOKEN_ENV_VAR.to_string()),
         Ok(_) => None,
         Err(env::VarError::NotPresent) => None,
-        Err(env::VarError::NotUnicode(_)) => Some(CODEX_CONNECTORS_TOKEN_ENV_VAR.to_string()),
+        Err(env::VarError::NotUnicode(_)) => Some(INOCODE_CONNECTORS_TOKEN_ENV_VAR.to_string()),
     }
 }
 

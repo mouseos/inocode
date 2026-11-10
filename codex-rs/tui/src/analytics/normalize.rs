@@ -197,13 +197,13 @@ pub(super) fn history(
                             return Err(String::from("Analytics returned an invalid amount."));
                         }
                         let key = match client.client_id.as_str() {
-                            "CODEX_CLI" => "cli",
-                            "CODEX_IDE_VSCODE" => "vscode",
-                            "CODEX_WEB" => "web",
-                            "CODEX_DESKTOP_APP" | "CODEX_WORK_DESKTOP" => "desktop_app",
-                            "CODEX_WORK_WEB" => "work_web",
-                            "CODEX_WORK_MOBILE" => "mobile",
-                            "CODEX_GITHUB" => "github_code_review",
+                            "INOCODE_CLI" => "cli",
+                            "INOCODE_IDE_VSCODE" => "vscode",
+                            "INOCODE_WEB" => "web",
+                            "INOCODE_DESKTOP_APP" | "INOCODE_WORK_DESKTOP" => "desktop_app",
+                            "INOCODE_WORK_WEB" => "work_web",
+                            "INOCODE_WORK_MOBILE" => "mobile",
+                            "INOCODE_GITHUB" => "github_code_review",
                             _ => "other",
                         };
                         *record_values.entry(key.to_string()).or_default() += client.turns;

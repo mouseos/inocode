@@ -625,13 +625,13 @@ pub const PROXY_URL_ENV_KEYS: &[&str] = &[
 ];
 
 pub const ALL_PROXY_ENV_KEYS: &[&str] = &["ALL_PROXY", "all_proxy"];
-pub const PROXY_ACTIVE_ENV_KEY: &str = "CODEX_NETWORK_PROXY_ACTIVE";
-pub const ALLOW_LOCAL_BINDING_ENV_KEY: &str = "CODEX_NETWORK_ALLOW_LOCAL_BINDING";
+pub const PROXY_ACTIVE_ENV_KEY: &str = "INOCODE_NETWORK_PROXY_ACTIVE";
+pub const ALLOW_LOCAL_BINDING_ENV_KEY: &str = "INOCODE_NETWORK_ALLOW_LOCAL_BINDING";
 // Internal wire format shared with windows-sandbox-rs/src/setup.rs. The value is a
 // comma-separated, sorted list of non-zero loopback proxy ports used only when computing the
 // Windows offline sandbox setup marker.
 #[cfg(target_os = "windows")]
-const WINDOWS_SANDBOX_PROXY_PORTS_ENV_KEY: &str = "CODEX_WINDOWS_SANDBOX_PROXY_PORTS";
+const WINDOWS_SANDBOX_PROXY_PORTS_ENV_KEY: &str = "INOCODE_WINDOWS_SANDBOX_PROXY_PORTS";
 const ELECTRON_GET_USE_PROXY_ENV_KEY: &str = "ELECTRON_GET_USE_PROXY";
 const NODE_USE_ENV_PROXY_ENV_KEY: &str = "NODE_USE_ENV_PROXY";
 #[cfg(any(target_os = "macos", test))]
@@ -689,7 +689,7 @@ pub fn is_managed_proxy_env_var(key: &str, value: &str) -> bool {
     #[cfg(target_os = "macos")]
     {
         key == PROXY_GIT_SSH_COMMAND_ENV_KEY
-            && value.starts_with(CODEX_PROXY_GIT_SSH_COMMAND_MARKER)
+            && value.starts_with(INOCODE_PROXY_GIT_SSH_COMMAND_MARKER)
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -727,12 +727,12 @@ pub const DEFAULT_NO_PROXY_VALUE: &str = concat!(
 );
 
 #[cfg(target_os = "macos")]
-pub const CODEX_PROXY_GIT_SSH_COMMAND_MARKER: &str = "CODEX_PROXY_GIT_SSH_COMMAND=1 ";
+pub const INOCODE_PROXY_GIT_SSH_COMMAND_MARKER: &str = "INOCODE_PROXY_GIT_SSH_COMMAND=1 ";
 #[cfg(target_os = "macos")]
-const CODEX_PROXY_GIT_SSH_COMMAND_PREFIX: &str =
-    "CODEX_PROXY_GIT_SSH_COMMAND=1 ssh -o ProxyCommand='nc -X 5 -x ";
+const INOCODE_PROXY_GIT_SSH_COMMAND_PREFIX: &str =
+    "INOCODE_PROXY_GIT_SSH_COMMAND=1 ssh -o ProxyCommand='nc -X 5 -x ";
 #[cfg(target_os = "macos")]
-const CODEX_PROXY_GIT_SSH_COMMAND_SUFFIX: &str = " %h %p'";
+const INOCODE_PROXY_GIT_SSH_COMMAND_SUFFIX: &str = " %h %p'";
 
 pub fn proxy_url_env_value<'a>(
     env: &'a HashMap<String, String>,
@@ -759,13 +759,13 @@ fn set_env_keys(env: &mut HashMap<String, String>, keys: &[&str], value: &str) {
 
 #[cfg(target_os = "macos")]
 fn codex_proxy_git_ssh_command(socks_addr: SocketAddr) -> String {
-    format!("{CODEX_PROXY_GIT_SSH_COMMAND_PREFIX}{socks_addr}{CODEX_PROXY_GIT_SSH_COMMAND_SUFFIX}")
+    format!("{INOCODE_PROXY_GIT_SSH_COMMAND_PREFIX}{socks_addr}{INOCODE_PROXY_GIT_SSH_COMMAND_SUFFIX}")
 }
 
 #[cfg(target_os = "macos")]
 fn is_codex_proxy_git_ssh_command(command: &str) -> bool {
-    command.starts_with(CODEX_PROXY_GIT_SSH_COMMAND_PREFIX)
-        && command.ends_with(CODEX_PROXY_GIT_SSH_COMMAND_SUFFIX)
+    command.starts_with(INOCODE_PROXY_GIT_SSH_COMMAND_PREFIX)
+        && command.ends_with(INOCODE_PROXY_GIT_SSH_COMMAND_SUFFIX)
 }
 
 fn apply_proxy_env_overrides(
@@ -3010,7 +3010,7 @@ mod tests {
         assert_eq!(
             env.get(GIT_SSH_COMMAND_ENV_KEY),
             Some(
-                &"CODEX_PROXY_GIT_SSH_COMMAND=1 ssh -o ProxyCommand='nc -X 5 -x 127.0.0.1:8081 %h %p'"
+                &"INOCODE_PROXY_GIT_SSH_COMMAND=1 ssh -o ProxyCommand='nc -X 5 -x 127.0.0.1:8081 %h %p'"
                     .to_string()
             )
         );
@@ -3167,7 +3167,7 @@ mod tests {
         assert_eq!(
             env.get(GIT_SSH_COMMAND_ENV_KEY),
             Some(
-                &"CODEX_PROXY_GIT_SSH_COMMAND=1 ssh -o ProxyCommand='nc -X 5 -x 127.0.0.1:8081 %h %p'"
+                &"INOCODE_PROXY_GIT_SSH_COMMAND=1 ssh -o ProxyCommand='nc -X 5 -x 127.0.0.1:8081 %h %p'"
                     .to_string()
             )
         );

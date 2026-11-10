@@ -54,9 +54,9 @@ async fn stdio_sigterm_times_out_with_blocked_stderr() -> Result<()> {
     let codex_home = TempDir::new()?;
     let mut process = tokio::process::Command::new(cargo_bin("codex-app-server")?)
         .arg(DISABLE_PLUGIN_STARTUP_TASKS_ARG)
-        .env("CODEX_HOME", codex_home.path())
+        .env("INOCODE_HOME", codex_home.path())
         .env(
-            "CODEX_APP_SERVER_MANAGED_CONFIG_PATH",
+            "INOCODE_APP_SERVER_MANAGED_CONFIG_PATH",
             codex_home.path().join("managed_config.toml"),
         )
         .env("RUST_LOG", "codex_app_server_transport=error")

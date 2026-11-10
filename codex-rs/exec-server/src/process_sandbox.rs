@@ -33,7 +33,7 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 
 #[cfg(unix)]
-use crate::CODEX_ARG0_EXEC_HELPER_ARG1;
+use crate::INOCODE_ARG0_EXEC_HELPER_ARG1;
 use crate::ExecServerRuntimeOptions;
 use crate::process_telemetry::trace_process_id;
 use crate::protocol::ExecParams;
@@ -238,7 +238,7 @@ pub(crate) async fn prepare_exec_request_with_telemetry(
         || (program.into(), args.to_vec()),
         |arg0| {
             let mut helper_args = Vec::with_capacity(params.argv.len() + 2);
-            helper_args.push(CODEX_ARG0_EXEC_HELPER_ARG1.to_string());
+            helper_args.push(INOCODE_ARG0_EXEC_HELPER_ARG1.to_string());
             helper_args.push(arg0.clone());
             helper_args.extend(params.argv.iter().cloned());
             (

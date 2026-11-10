@@ -10,7 +10,7 @@ use app_test_support::write_chatgpt_auth;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_login::AuthKeyringBackendKind;
 use codex_login::CLIENT_ID;
-use codex_login::CODEX_ACCESS_TOKEN_ENV_VAR;
+use codex_login::INOCODE_ACCESS_TOKEN_ENV_VAR;
 use codex_login::REVOKE_TOKEN_URL_OVERRIDE_ENV_VAR;
 use codex_login::login_with_bedrock_access_keys;
 use codex_protocol::shell_environment::OPENAI_FEDERATION_RULE_ID_ENV_VAR;
@@ -29,7 +29,7 @@ use wiremock::matchers::path;
 
 fn codex_command(codex_home: &Path) -> Result<assert_cmd::Command> {
     let mut cmd = assert_cmd::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?);
-    cmd.env("CODEX_HOME", codex_home);
+    cmd.env("INOCODE_HOME", codex_home);
     Ok(cmd)
 }
 
@@ -73,7 +73,7 @@ fn login_with_api_key_reads_stdin_and_writes_auth_json() -> Result<()> {
     assert!(auth.get("agent_identity").is_none());
 
     let status = codex_command(codex_home.path())?
-        .env_remove(CODEX_ACCESS_TOKEN_ENV_VAR)
+        .env_remove(INOCODE_ACCESS_TOKEN_ENV_VAR)
         .env_remove(OPENAI_FEDERATION_RULE_ID_ENV_VAR)
         .env_remove(OPENAI_IDENTITY_TOKEN_FILE_ENV_VAR)
         .args(["login", "status"])
@@ -158,7 +158,7 @@ fn login_status_validates_configured_workload_identity() -> Result<()> {
     for login_method in ["chatgpt", "api"] {
         let mut command = codex_command(codex_home.path())?;
         command
-            .env_remove(CODEX_ACCESS_TOKEN_ENV_VAR)
+            .env_remove(INOCODE_ACCESS_TOKEN_ENV_VAR)
             .env(OPENAI_IDENTITY_TOKEN_FILE_ENV_VAR, &missing_assertion)
             .env(OPENAI_FEDERATION_RULE_ID_ENV_VAR, "rule-test")
             .args([
@@ -239,7 +239,7 @@ fn logout_clears_only_the_selected_bedrock_provider() -> Result<()> {
         };
 
         codex_command(codex_home.path())?
-            .env_remove(CODEX_ACCESS_TOKEN_ENV_VAR)
+            .env_remove(INOCODE_ACCESS_TOKEN_ENV_VAR)
             .env("AWS_ACCESS_KEY_ID", "environment-access-key-id")
             .env("AWS_SECRET_ACCESS_KEY", "environment-secret-access-key")
             .args(["logout"])
@@ -293,9 +293,9 @@ async fn logout_survives_enterprise_cleanup_failure_with_xaa_disabled() -> Resul
             .current_dir(home.path())
             .env("NO_PROXY", "127.0.0.1,localhost")
             .env("no_proxy", "127.0.0.1,localhost")
-            .env_remove("CODEX_API_KEY")
+            .env_remove("INOCODE_API_KEY")
             .env_remove("OPENAI_API_KEY")
-            .env_remove(CODEX_ACCESS_TOKEN_ENV_VAR)
+            .env_remove(INOCODE_ACCESS_TOKEN_ENV_VAR)
             .args([
                 "-c",
                 &format!("features.use_xaa={enabled}"),
@@ -316,9 +316,9 @@ async fn logout_survives_enterprise_cleanup_failure_with_xaa_disabled() -> Resul
             REVOKE_TOKEN_URL_OVERRIDE_ENV_VAR,
             format!("{}/oauth/revoke", server.uri()),
         )
-        .env_remove("CODEX_API_KEY")
+        .env_remove("INOCODE_API_KEY")
         .env_remove("OPENAI_API_KEY")
-        .env_remove(CODEX_ACCESS_TOKEN_ENV_VAR)
+        .env_remove(INOCODE_ACCESS_TOKEN_ENV_VAR)
         .args(["logout"])
         .assert()
         .success()
@@ -377,7 +377,7 @@ async fn debug_prompt_input_follows_authenticated_attribution_setting() -> Resul
         let output = codex_command(codex_home.path())?
             .env("NO_PROXY", "127.0.0.1,localhost")
             .env("no_proxy", "127.0.0.1,localhost")
-            .env_remove("CODEX_ACCESS_TOKEN")
+            .env_remove("INOCODE_ACCESS_TOKEN")
             .env_remove("OPENAI_API_KEY")
             .args(["debug", "prompt-input"])
             .output()?;
@@ -457,7 +457,7 @@ async fn device_login_revokes_existing_auth_before_requesting_new_tokens() -> Re
     )
     .env("NO_PROXY", "127.0.0.1,localhost")
     .env("no_proxy", "127.0.0.1,localhost")
-    .env_remove("CODEX_ACCESS_TOKEN")
+    .env_remove("INOCODE_ACCESS_TOKEN")
     .env_remove("OPENAI_API_KEY")
     .args(["login", "--device-auth", "--experimental_issuer", &issuer])
     .assert()

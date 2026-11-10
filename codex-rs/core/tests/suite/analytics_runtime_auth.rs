@@ -102,7 +102,7 @@ async fn analytics_does_not_follow_runtime_redirects() -> Result<()> {
         /*realtime_target*/ None,
         &[
             ("OPENAI_API_KEY", None),
-            ("CODEX_API_KEY", None),
+            ("INOCODE_API_KEY", None),
             ("OPENAI_FEDERATION_RULE_ID", None),
             ("OPENAI_IDENTITY_TOKEN_FILE", None),
         ],

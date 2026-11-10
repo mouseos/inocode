@@ -729,7 +729,7 @@ async fn board_unsubscribe_survives_post_and_resume_until_resubscribed(
         .restart(&server, &root)
         .await?;
     resumed
-        .codex
+        .inocode
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "Spawn a worker and finish your turn.".into(),
             text_elements: vec![],
@@ -762,7 +762,7 @@ async fn board_unsubscribe_survives_post_and_resume_until_resubscribed(
 
     for (phase_index, (phase, subscribed, release)) in phases.into_iter().enumerate() {
         resumed
-            .codex
+            .inocode
             .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
                 text: format!("Observe the discussion while {phase}."),
                 text_elements: vec![],

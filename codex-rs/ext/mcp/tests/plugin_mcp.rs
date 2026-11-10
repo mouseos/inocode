@@ -803,7 +803,7 @@ async fn run_cloud_plugin_projection_scenarios() -> anyhow::Result<()> {
         let test = builder.build(&server).await?;
         if installed {
             let selection = test
-                .codex
+                .inocode
                 .environment_selections()
                 .await
                 .into_iter()
@@ -916,7 +916,7 @@ async fn run_cloud_plugin_projection_scenarios() -> anyhow::Result<()> {
             "{case}"
         );
         let state = test
-            .codex
+            .inocode
             .thread_extension_data()
             .get::<PluginsThreadState>()
             .context("plugin state missing")?;

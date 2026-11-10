@@ -629,7 +629,7 @@ impl McpRequestProcessor {
         } = params;
         let mut resource_params = ReadResourceRequestParams::new(uri);
         let mut meta = meta.unwrap_or_default();
-        let is_codex_apps = server == codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+        let is_codex_apps = server == codex_mcp::INOCODE_APPS_MCP_SERVER_NAME;
         let reserved_key = meta.iter().find_map(|(key, value)| match key.as_str() {
             "x-codex-turn-metadata"
             | MCP_THREAD_ID_META_KEY

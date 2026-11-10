@@ -1907,8 +1907,8 @@ mod tests {
 
     #[test]
     fn hook_metadata_for_config_layer_source_discards_source_details() {
-        let config_file = test_path_buf("/tmp/.codex/config.toml").abs();
-        let dot_codex_folder = test_path_buf("/tmp/worktree/.codex").abs();
+        let config_file = test_path_buf("/tmp/.inocode/config.toml").abs();
+        let dot_codex_folder = test_path_buf("/tmp/worktree/.inocode").abs();
 
         assert_eq!(
             super::hook_metadata_for_config_layer_source(&ConfigLayerSource::System {

@@ -315,7 +315,7 @@ async fn run_gateway_turn(test: &TestCodex) -> Result<Option<String>> {
 
 #[tokio::test]
 async fn configured_gateway_http_initialization_fails_closed() -> Result<()> {
-    const CHILD_ENV: &str = "CODEX_TEST_GATEWAY_INVALID_CA_CHILD";
+    const CHILD_ENV: &str = "INOCODE_TEST_GATEWAY_INVALID_CA_CHILD";
     if std::env::var_os(CHILD_ENV).is_none() {
         let home = TempDir::new()?;
         let invalid_ca = home.path().join("invalid-ca.pem");
@@ -325,7 +325,7 @@ async fn configured_gateway_http_initialization_fails_closed() -> Result<()> {
             .arg("suite::gateway_auth::configured_gateway_http_initialization_fails_closed")
             .arg("--nocapture")
             .env(CHILD_ENV, "1")
-            .env("CODEX_CA_CERTIFICATE", invalid_ca)
+            .env("INOCODE_CA_CERTIFICATE", invalid_ca)
             .output()?;
         assert!(
             output.status.success(),

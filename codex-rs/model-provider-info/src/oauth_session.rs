@@ -29,7 +29,7 @@ pub enum OAuthCredentialsStore {
     /// Encrypt credentials using a passphrase kept in the OS keyring.
     #[default]
     Keyring,
-    /// Store credentials in plaintext in `$CODEX_HOME/secrets/gateway_oauth.json`.
+    /// Store credentials in plaintext in `$INOCODE_HOME/secrets/gateway_oauth.json`.
     File,
 }
 

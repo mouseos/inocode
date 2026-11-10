@@ -68,7 +68,7 @@ use crate::marketplace_upgrade::ConfigLayerReload;
 use crate::marketplace_upgrade::ConfiguredMarketplaceUpgradeError;
 use crate::marketplace_upgrade::ConfiguredMarketplaceUpgradeOutcome;
 use crate::marketplace_upgrade::upgrade_configured_git_marketplaces_with_mode;
-use crate::remote::CODEX_PRODUCT_SKU;
+use crate::remote::INOCODE_PRODUCT_SKU;
 use crate::remote::InstalledPluginDisplayAssets;
 use crate::remote::REMOTE_GLOBAL_MARKETPLACE_NAME;
 use crate::remote::RecommendedPluginsMode;
@@ -247,7 +247,7 @@ impl PluginsConfigInput {
             product_sku: self
                 .product_sku
                 .clone()
-                .unwrap_or_else(|| CODEX_PRODUCT_SKU.to_string()),
+                .unwrap_or_else(|| INOCODE_PRODUCT_SKU.to_string()),
             http_clients: Arc::clone(http_clients),
             runtime_auth,
         }
@@ -768,13 +768,13 @@ impl PluginsManager {
         runtime_auth: RuntimeAuthSlot,
         skill_root_loader: Arc<dyn SkillRootLoader<PluginSkillRoot>>,
     ) -> Self {
-        // Product restrictions are enforced at marketplace admission time for a given CODEX_HOME:
+        // Product restrictions are enforced at marketplace admission time for a given INOCODE_HOME:
         // listing, install, and curated refresh all consult this restriction context before new
         // plugins enter local config or cache. After admission, runtime plugin loading trusts the
-        // contents of that CODEX_HOME and does not re-filter configured plugins by product, so
+        // contents of that INOCODE_HOME and does not re-filter configured plugins by product, so
         // already-admitted plugins may continue exposing MCP servers/tools from shared local state.
         //
-        // This assumes a single CODEX_HOME is only used by one product.
+        // This assumes a single INOCODE_HOME is only used by one product.
         let remote_installed_plugin_bundle_sync_gate =
             crate::remote::remote_installed_plugin_bundle_sync_gate(&codex_home);
         let store = PluginStore::new(codex_home.clone());

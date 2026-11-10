@@ -36,10 +36,10 @@ async fn cloud_list_respects_the_credential_store_and_trusted_destinations() -> 
         let mut command = assert_cmd::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?);
         command
             .current_dir(codex_home.path())
-            .env("CODEX_HOME", codex_home.path())
-            .env_remove("CODEX_ACCESS_TOKEN")
+            .env("INOCODE_HOME", codex_home.path())
+            .env_remove("INOCODE_ACCESS_TOKEN")
             .env_remove("OPENAI_API_KEY")
-            .env_remove("CODEX_CLOUD_TASKS_MODE")
+            .env_remove("INOCODE_CLOUD_TASKS_MODE")
             .env("NO_PROXY", "127.0.0.1,localhost")
             .env("no_proxy", "127.0.0.1,localhost")
             .timeout(std::time::Duration::from_secs(15));
@@ -54,7 +54,7 @@ async fn cloud_list_respects_the_credential_store_and_trusted_destinations() -> 
 
     let output = command()?
         .env(
-            "CODEX_CLOUD_TASKS_BASE_URL",
+            "INOCODE_CLOUD_TASKS_BASE_URL",
             format!("{}/backend-api", server.uri()),
         )
         .args(["cloud", "list", "--limit", "1", "--json"])
@@ -63,13 +63,13 @@ async fn cloud_list_respects_the_credential_store_and_trusted_destinations() -> 
         .get_output()
         .stderr
         .clone();
-    insta::assert_snapshot!(String::from_utf8(output)?, @"Error: CODEX_CLOUD_TASKS_BASE_URL must use a trusted HTTPS origin on port 443, without user information, a query, or a fragment; custom backends cannot use saved ChatGPT credentials");
+    insta::assert_snapshot!(String::from_utf8(output)?, @"Error: INOCODE_CLOUD_TASKS_BASE_URL must use a trusted HTTPS origin on port 443, without user information, a query, or a fragment; custom backends cannot use saved ChatGPT credentials");
     assert!(server.received_requests().await.unwrap().is_empty());
 
     // An explicit ephemeral store must exclude the saved login for Cloud itself.
     command()?
         .env(
-            "CODEX_CLOUD_TASKS_BASE_URL",
+            "INOCODE_CLOUD_TASKS_BASE_URL",
             "https://chatgpt-staging.com/backend-api",
         )
         .env("HTTPS_PROXY", server.uri())
@@ -99,11 +99,11 @@ async fn cloud_list_respects_the_credential_store_and_trusted_destinations() -> 
         .await;
     command()?
         .env(
-            "CODEX_CLOUD_TASKS_BASE_URL",
+            "INOCODE_CLOUD_TASKS_BASE_URL",
             "https://chatgpt-staging.com/backend-api",
         )
-        .env("CODEX_ACCESS_TOKEN", "at-synthetic-cloud")
-        .env("CODEX_AUTHAPI_BASE_URL", auth_server.uri())
+        .env("INOCODE_ACCESS_TOKEN", "at-synthetic-cloud")
+        .env("INOCODE_AUTHAPI_BASE_URL", auth_server.uri())
         .args(["cloud", "list", "--limit", "1", "--json"])
         .assert()
         .failure()

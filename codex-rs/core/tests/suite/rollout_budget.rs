@@ -713,7 +713,7 @@ async fn host_accounting_reports_raw_usage_and_preserves_error_semantics(
             .await?
             .expect("accounting report");
         let submission = test
-            .codex
+            .inocode
             .start_or_steer_turn(user_input("continue"))
             .await?;
         assert!(matches!(submission, TurnInputSubmission::Steered { .. }));

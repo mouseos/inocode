@@ -579,7 +579,7 @@ async fn serving_assessment_replaces_async_scoring(
         test.codex = test.thread_manager.start_thread(options).await?.thread;
         assert!(
             !test
-                .codex
+                .inocode
                 .conversation_history_snapshot()
                 .await
                 .retained_context()

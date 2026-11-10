@@ -1770,13 +1770,13 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn local_environment_info_resolves_relative_temporary_directory() {
-        if std::env::var_os("CODEX_TEST_RELATIVE_TMPDIR").is_none() {
+        if std::env::var_os("INOCODE_TEST_RELATIVE_TMPDIR").is_none() {
             let status = std::process::Command::new(std::env::current_exe().expect("test binary"))
                 .arg("--exact")
                 .arg(
                     "protocol::tests::local_environment_info_resolves_relative_temporary_directory",
                 )
-                .env("CODEX_TEST_RELATIVE_TMPDIR", "1")
+                .env("INOCODE_TEST_RELATIVE_TMPDIR", "1")
                 .env("TMPDIR", "relative-temp")
                 .status()
                 .expect("run relative TMPDIR subprocess");
@@ -1846,7 +1846,7 @@ mod tests {
                 FileSystemSandboxEntry::skip_missing_path(
                     FileSystemPath::Special {
                         value: FileSystemSpecialPath::ProjectRoots {
-                            subpath: Some(".codex".into()),
+                            subpath: Some(".inocode".into()),
                         },
                     },
                     FileSystemAccessMode::Read,

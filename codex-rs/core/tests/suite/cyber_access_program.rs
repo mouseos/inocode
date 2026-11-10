@@ -79,7 +79,7 @@ async fn recover_turn_restores_start_options_without_making_them_sticky(
         }])
     };
     let TurnInputSubmission::Started { turn_id, .. } = initial
-        .codex
+        .inocode
         .start_or_steer_turn(request.on_start(TurnStartOptions {
             direct_only_tool_namespaces: Some(Vec::new()),
             cyber_access_program: Some(CyberAccessProgram::DaybreakBlue),
@@ -102,7 +102,7 @@ async fn recover_turn_restores_start_options_without_making_them_sticky(
     let test = builder().restart(&server, &initial).await?;
     let (rollout, _, _) = RolloutRecorder::load_rollout_items(
         &test
-            .codex
+            .inocode
             .rollout_path()
             .expect("recovered turn rollout path"),
     )
@@ -132,7 +132,7 @@ async fn recover_turn_restores_start_options_without_making_them_sticky(
     let response_mock =
         responses::mount_sse_once(&server, responses::sse_completed("resp-1")).await;
     let submission = test
-        .codex
+        .inocode
         .recover_turn_if_idle(RecoverTurnRequest {
             turn_id: turn_id.clone(),
             thread_settings: Default::default(),
@@ -193,7 +193,7 @@ async fn recover_turn_restores_start_options_without_making_them_sticky(
         turn_id: next_turn_id,
         ..
     } = test
-        .codex
+        .inocode
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "start a new turn".to_owned(),
             text_elements: Vec::new(),

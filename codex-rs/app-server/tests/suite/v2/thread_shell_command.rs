@@ -37,7 +37,7 @@ use codex_app_server_protocol::TurnStartedNotification;
 use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::UserInput as V2UserInput;
 use codex_core::shell::default_user_shell;
-use codex_exec_server::CODEX_EXEC_SERVER_URL_ENV_VAR;
+use codex_exec_server::INOCODE_EXEC_SERVER_URL_ENV_VAR;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use tempfile::TempDir;
@@ -180,7 +180,7 @@ async fn thread_shell_command_returns_error_when_local_environment_is_disabled()
         .with_codex_home(codex_home.as_path())
         // This test intentionally exercises thread/shellCommand without a local host environment.
         .without_auto_env()
-        .with_env_overrides(&[(CODEX_EXEC_SERVER_URL_ENV_VAR, Some("none"))])
+        .with_env_overrides(&[(INOCODE_EXEC_SERVER_URL_ENV_VAR, Some("none"))])
         .build_initialized()
         .await?;
     let ThreadStartResponse { thread, .. } = mcp

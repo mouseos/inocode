@@ -1,6 +1,6 @@
-"""Print CODEX_COMPAT_RELEASES JSON for the existing Bazel compatibility tests.
+"""Print INOCODE_COMPAT_RELEASES JSON for the existing Bazel compatibility tests.
 
-For local runs, export CODEX_COMPAT_RELEASES="$(python3 <path-to-this-script>)"
+For local runs, export INOCODE_COMPAT_RELEASES="$(python3 <path-to-this-script>)"
 before invoking Bazel. CI resolves it once before building the test targets.
 """
 

@@ -94,10 +94,10 @@ async fn luna_reserve_usage_capability(
         .with_env_overrides(&[
             ("OPENAI_API_KEY", None),
             (
-                "CODEX_ACCESS_TOKEN",
+                "INOCODE_ACCESS_TOKEN",
                 (auth_kind == AuthKind::Pat).then_some("at-test-token"),
             ),
-            ("CODEX_AUTHAPI_BASE_URL", Some(backend_url.as_str())),
+            ("INOCODE_AUTHAPI_BASE_URL", Some(backend_url.as_str())),
         ])
         .build_initialized()
         .await?;

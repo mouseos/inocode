@@ -2308,7 +2308,7 @@ allow_upstream_proxy = false
         .split_once("::")
         .context("network sandbox test must be in an integration test module")?;
     let child_test = format!("{test_module}::managed_network_sandbox_probe");
-    let target_env = format!("CODEX_TEST_MANAGED_NETWORK_TARGET={target}");
+    let target_env = format!("INOCODE_TEST_MANAGED_NETWORK_TARGET={target}");
     let command = shlex::try_join([
         "env",
         &target_env,
@@ -2415,7 +2415,7 @@ fn managed_network_sandbox_probe() -> Result<()> {
     use std::net::TcpStream;
     use std::time::Duration;
 
-    let target: SocketAddr = std::env::var("CODEX_TEST_MANAGED_NETWORK_TARGET")?.parse()?;
+    let target: SocketAddr = std::env::var("INOCODE_TEST_MANAGED_NETWORK_TARGET")?.parse()?;
     let proxy = url::Url::parse(&std::env::var("HTTP_PROXY")?)?;
     let proxy_address = SocketAddr::new(
         proxy.host_str().context("missing proxy host")?.parse()?,
@@ -2432,7 +2432,7 @@ fn managed_network_sandbox_probe() -> Result<()> {
         connection,
         "GET http://{target}/sandbox HTTP/1.0\r\nHost: {target}\r\nConnection: close\r\n\r\n"
     )?;
-    if let Some(signal) = std::env::var_os("CODEX_TEST_DISCONNECT_NETWORK_PROBE") {
+    if let Some(signal) = std::env::var_os("INOCODE_TEST_DISCONNECT_NETWORK_PROBE") {
         // The parent releases its lock after receiving the approval, or when the test exits.
         std::fs::File::open(signal)?.lock_shared()?;
         return Ok(());

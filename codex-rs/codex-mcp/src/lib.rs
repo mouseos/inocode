@@ -63,7 +63,7 @@ pub use catalog::McpServerSource;
 pub use catalog::ResolvedMcpCatalog;
 pub use catalog::ResolvedMcpServer;
 
-pub use mcp::CODEX_APPS_MCP_SERVER_NAME;
+pub use mcp::INOCODE_APPS_MCP_SERVER_NAME;
 pub use mcp::DEFAULT_OPTIONAL_MCP_STARTUP_GRACE;
 pub use mcp::McpConfig;
 pub use mcp::McpServerPermissions;

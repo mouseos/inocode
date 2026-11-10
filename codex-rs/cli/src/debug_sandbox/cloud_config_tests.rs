@@ -177,7 +177,7 @@ async fn sandbox_state_skips_cloud_bootstrap() -> Result<()> {
     bootstrap_cloud_config_bundle(
         &[],
         &options,
-        || panic!("supplied state must skip CODEX_HOME resolution"),
+        || panic!("supplied state must skip INOCODE_HOME resolution"),
         /*strict_config*/ false,
     )
     .await?;

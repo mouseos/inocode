@@ -1625,7 +1625,7 @@ async fn run_remote_plugin_install_refresh_case(refreshed_tools: RefreshedAppsTo
     drop(requests);
     let current_config = test.codex.config().await;
     let _ = test
-        .codex
+        .inocode
         .refresh_runtime_config(current_config, test.config.clone())
         .await;
     test.submit_turn("check whether Calendar is still installed")

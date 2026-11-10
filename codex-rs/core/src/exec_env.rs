@@ -1,4 +1,4 @@
-pub use codex_apply_patch::CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR;
+pub use codex_apply_patch::INOCODE_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 #[cfg(test)]
@@ -8,16 +8,16 @@ use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::shell_environment;
 use std::collections::HashMap;
 
-pub use codex_protocol::shell_environment::CODEX_SESSION_ID_ENV_VAR;
-pub use codex_protocol::shell_environment::CODEX_THREAD_ID_ENV_VAR;
-pub use codex_protocol::shell_environment::CODEX_TOOL_CALL_ID_ENV_VAR;
+pub use codex_protocol::shell_environment::INOCODE_SESSION_ID_ENV_VAR;
+pub use codex_protocol::shell_environment::INOCODE_THREAD_ID_ENV_VAR;
+pub use codex_protocol::shell_environment::INOCODE_TOOL_CALL_ID_ENV_VAR;
 pub(crate) use codex_protocol::shell_environment::set_tool_call_id_env_var;
 
-pub(crate) const CODEX_VERSION_ENV_VAR: &str = "CODEX_VERSION";
+pub(crate) const INOCODE_VERSION_ENV_VAR: &str = "INOCODE_VERSION";
 
 /// Informational name of the active permission profile. Child processes can
 /// overwrite this value, so it must not be treated as proof of enforcement.
-pub const CODEX_PERMISSION_PROFILE_ENV_VAR: &str = "CODEX_PERMISSION_PROFILE";
+pub const INOCODE_PERMISSION_PROFILE_ENV_VAR: &str = "INOCODE_PERMISSION_PROFILE";
 
 /// Construct an environment map based on the rules in the specified policy. The
 /// resulting map can be passed directly to `Command::envs()` after calling
@@ -27,7 +27,7 @@ pub const CODEX_PERMISSION_PROFILE_ENV_VAR: &str = "CODEX_PERMISSION_PROFILE";
 /// The derivation follows the algorithm documented in the struct-level comment
 /// for [`ShellEnvironmentPolicy`].
 ///
-/// `CODEX_THREAD_ID` is injected when a thread id is provided, even when
+/// `INOCODE_THREAD_ID` is injected when a thread id is provided, even when
 /// `include_only` is set.
 pub fn create_env(
     policy: &ShellEnvironmentPolicy,
@@ -39,12 +39,12 @@ pub fn create_env(
 
 /// Exposes the shared root-session identity and harness version to shell commands.
 pub(crate) fn inject_session_env(env: &mut HashMap<String, String>, session_id: SessionId) {
-    env.insert(CODEX_SESSION_ID_ENV_VAR.to_string(), session_id.to_string());
+    env.insert(INOCODE_SESSION_ID_ENV_VAR.to_string(), session_id.to_string());
     if cfg!(windows) {
-        env.retain(|key, _| !key.eq_ignore_ascii_case(CODEX_VERSION_ENV_VAR));
+        env.retain(|key, _| !key.eq_ignore_ascii_case(INOCODE_VERSION_ENV_VAR));
     }
     env.insert(
-        CODEX_VERSION_ENV_VAR.to_string(),
+        INOCODE_VERSION_ENV_VAR.to_string(),
         env!("CARGO_PKG_VERSION").to_string(),
     );
 }
@@ -58,13 +58,13 @@ pub(crate) fn inject_permission_profile_env(
     active_permission_profile: Option<&ActivePermissionProfile>,
 ) {
     if cfg!(windows) {
-        env.retain(|key, _| !key.eq_ignore_ascii_case(CODEX_PERMISSION_PROFILE_ENV_VAR));
+        env.retain(|key, _| !key.eq_ignore_ascii_case(INOCODE_PERMISSION_PROFILE_ENV_VAR));
     } else {
-        env.remove(CODEX_PERMISSION_PROFILE_ENV_VAR);
+        env.remove(INOCODE_PERMISSION_PROFILE_ENV_VAR);
     }
     if let Some(active_permission_profile) = active_permission_profile {
         env.insert(
-            CODEX_PERMISSION_PROFILE_ENV_VAR.to_string(),
+            INOCODE_PERMISSION_PROFILE_ENV_VAR.to_string(),
             active_permission_profile.id.clone(),
         );
     }
@@ -74,9 +74,9 @@ pub(crate) fn inject_permission_profile_env(
 /// including those provided by remote executors. Override inherited values so
 /// they cannot restore the legacy normalization behavior.
 pub fn inject_apply_patch_env(env: &mut HashMap<String, String>) {
-    env.retain(|key, _| !key.eq_ignore_ascii_case(CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR));
+    env.retain(|key, _| !key.eq_ignore_ascii_case(INOCODE_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR));
     env.insert(
-        CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR.to_string(),
+        INOCODE_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR.to_string(),
         "1".to_string(),
     );
 }

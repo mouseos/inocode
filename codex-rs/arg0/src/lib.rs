@@ -4,16 +4,16 @@ use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
 
-use codex_apply_patch::CODEX_CORE_APPLY_PATCH_ARG1;
+use codex_apply_patch::INOCODE_CORE_APPLY_PATCH_ARG1;
 use codex_async_utils::THREAD_STACK_SIZE_BYTES;
 #[cfg(unix)]
-use codex_exec_server::CODEX_ARG0_EXEC_HELPER_ARG1;
-use codex_exec_server::CODEX_FS_HELPER_ARG1;
+use codex_exec_server::INOCODE_ARG0_EXEC_HELPER_ARG1;
+use codex_exec_server::INOCODE_FS_HELPER_ARG1;
 use codex_install_context::InstallContext;
-use codex_sandboxing::landlock::CODEX_LINUX_SANDBOX_ARG0;
+use codex_sandboxing::landlock::INOCODE_LINUX_SANDBOX_ARG0;
 use codex_utils_home_dir::find_codex_home;
 #[cfg(target_os = "windows")]
-use codex_windows_sandbox::CODEX_WINDOWS_SANDBOX_ARG1;
+use codex_windows_sandbox::INOCODE_WINDOWS_SANDBOX_ARG1;
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
 use tempfile::TempDir;
@@ -69,7 +69,7 @@ pub fn arg0_dispatch() -> Option<Arg0PathEntryGuard> {
         .and_then(|s| s.to_str())
         .unwrap_or("");
 
-    if exe_name == CODEX_LINUX_SANDBOX_ARG0 {
+    if exe_name == INOCODE_LINUX_SANDBOX_ARG0 {
         // Safety: [`run_main`] never returns.
         codex_linux_sandbox::run_main();
     } else if exe_name == APPLY_PATCH_ARG0 || exe_name == MISSPELLED_APPLY_PATCH_ARG0 {
@@ -77,21 +77,21 @@ pub fn arg0_dispatch() -> Option<Arg0PathEntryGuard> {
     }
 
     let argv1 = args.next().unwrap_or_default();
-    if argv1 == codex_sandboxing::CODEX_WINDOWS_MXC_ARG1 {
+    if argv1 == codex_sandboxing::INOCODE_WINDOWS_MXC_ARG1 {
         codex_sandboxing::run_windows_mxc_main();
     }
     #[cfg(unix)]
-    if argv1 == CODEX_ARG0_EXEC_HELPER_ARG1 {
+    if argv1 == INOCODE_ARG0_EXEC_HELPER_ARG1 {
         codex_exec_server::run_arg0_exec_helper_main();
     }
-    if argv1 == CODEX_FS_HELPER_ARG1 {
+    if argv1 == INOCODE_FS_HELPER_ARG1 {
         codex_exec_server::run_fs_helper_main();
     }
     #[cfg(target_os = "windows")]
-    if argv1 == CODEX_WINDOWS_SANDBOX_ARG1 {
+    if argv1 == INOCODE_WINDOWS_SANDBOX_ARG1 {
         codex_windows_sandbox::run_windows_sandbox_wrapper_main();
     }
-    if argv1 == CODEX_CORE_APPLY_PATCH_ARG1 {
+    if argv1 == INOCODE_CORE_APPLY_PATCH_ARG1 {
         let patch_arg = args.next().and_then(|s| s.to_str().map(str::to_owned));
         let exit_code = match patch_arg {
             Some(patch_arg) => {
@@ -122,7 +122,7 @@ pub fn arg0_dispatch() -> Option<Arg0PathEntryGuard> {
                 }
             }
             None => {
-                eprintln!("Error: {CODEX_CORE_APPLY_PATCH_ARG1} requires a UTF-8 PATCH argument.");
+                eprintln!("Error: {INOCODE_CORE_APPLY_PATCH_ARG1} requires a UTF-8 PATCH argument.");
                 1
             }
         };
@@ -177,7 +177,7 @@ fn prepare_path_env_var_with_aliases(
 /// `codex-linux-sandbox` we *directly* execute
 /// [`codex_linux_sandbox::run_main`] (which never returns). Otherwise we:
 ///
-/// 1.  Load `.env` values from `~/.codex/.env` before creating any threads.
+/// 1.  Load `.env` values from `~/.inocode/.env` before creating any threads.
 /// 2.  Spawn a main runtime thread with a controlled stack size.
 /// 3.  Construct a Tokio multi-thread runtime.
 /// 4.  Capture the current executable path and derive the
@@ -269,7 +269,7 @@ fn build_runtime() -> anyhow::Result<tokio::runtime::Runtime> {
 
 const ILLEGAL_ENV_VAR_PREFIX: &str = "CODEX_";
 
-/// Load env vars from ~/.codex/.env.
+/// Load env vars from ~/.inocode/.env.
 ///
 /// Security: Do not allow `.env` files to create or modify any variables
 /// with names starting with `CODEX_`.
@@ -343,7 +343,7 @@ fn prepare_aliases_in_home(
     existing_path: Option<OsString>,
 ) -> std::io::Result<(Arg0PathEntryGuard, OsString)> {
     std::fs::create_dir_all(codex_home)?;
-    // Windows and WSL can share CODEX_HOME without sharing a lock namespace.
+    // Windows and WSL can share INOCODE_HOME without sharing a lock namespace.
     // Keep each OS outside the legacy `tmp/arg0` root so older clients cannot
     // delete these helpers while their owning process is still running.
     let temp_root = codex_home
@@ -381,7 +381,7 @@ fn prepare_aliases_in_home(
         APPLY_PATCH_ARG0,
         MISSPELLED_APPLY_PATCH_ARG0,
         #[cfg(target_os = "linux")]
-        CODEX_LINUX_SANDBOX_ARG0,
+        INOCODE_LINUX_SANDBOX_ARG0,
     ] {
         let exe = std::env::current_exe()?;
 
@@ -399,7 +399,7 @@ fn prepare_aliases_in_home(
                 &batch_script,
                 format!(
                     r#"@echo off
-"{exe}" {CODEX_CORE_APPLY_PATCH_ARG1} %*
+"{exe}" {INOCODE_CORE_APPLY_PATCH_ARG1} %*
 "#,
                 ),
             )?;
@@ -414,7 +414,7 @@ fn prepare_aliases_in_home(
         codex_linux_sandbox_exe: {
             #[cfg(target_os = "linux")]
             {
-                Some(path.join(CODEX_LINUX_SANDBOX_ARG0))
+                Some(path.join(INOCODE_LINUX_SANDBOX_ARG0))
             }
             #[cfg(not(target_os = "linux"))]
             {
@@ -604,7 +604,7 @@ mod tests {
     fn windows_batch_alias_preserves_unicode_executable_paths() -> anyhow::Result<()> {
         let root = TempDir::new()?;
         let profile = root.path().join("用户");
-        let alias_directory = profile.join(".codex").join("tmp").join("arg0");
+        let alias_directory = profile.join(".inocode").join("tmp").join("arg0");
         let executable_directory = profile.join("bin");
         fs::create_dir_all(&alias_directory)?;
         fs::create_dir_all(&executable_directory)?;
@@ -637,7 +637,7 @@ mod tests {
         assert_eq!(
             super::windows_batch_executable_path(
                 Path::new(r"D:\Tools\codex.exe"),
-                Path::new(r"C:\Users\person\.codex\tmp\arg0"),
+                Path::new(r"C:\Users\person\.inocode\tmp\arg0"),
             ),
             r"D:\Tools\codex.exe",
         );

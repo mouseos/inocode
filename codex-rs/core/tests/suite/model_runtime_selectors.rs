@@ -426,7 +426,7 @@ async fn migrating_only_the_project_agent_setting_preserves_v1_tools() -> Result
             "[features]\nmulti_agent = false\n[projects.{project_key}]\ntrust_level = 'trusted'"
         ),
     )?;
-    let project_dir = project.path().join(".codex");
+    let project_dir = project.path().join(".inocode");
     std::fs::create_dir(&project_dir)?;
     let config = || {
         ConfigBuilder::default()

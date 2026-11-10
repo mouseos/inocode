@@ -53,9 +53,9 @@ async fn ignored_config_fields_emit_startup_and_project_warnings() -> Result<()>
 
     let project = TempDir::new()?;
     std::fs::create_dir(project.path().join(".git"))?;
-    std::fs::create_dir(project.path().join(".codex"))?;
+    std::fs::create_dir(project.path().join(".inocode"))?;
     std::fs::write(
-        project.path().join(".codex/config.toml"),
+        project.path().join(".inocode/config.toml"),
         "project_setting = 'private_value'",
     )?;
     set_project_trust_level(home.path(), project.path(), TrustLevel::Trusted)?;
@@ -83,9 +83,9 @@ foo = "bar"
     )?;
 
     let output = Command::new(codex_utils_cargo_bin::cargo_bin("codex-app-server")?)
-        .env("CODEX_HOME", codex_home.path())
+        .env("INOCODE_HOME", codex_home.path())
         .env(
-            "CODEX_APP_SERVER_MANAGED_CONFIG_PATH",
+            "INOCODE_APP_SERVER_MANAGED_CONFIG_PATH",
             codex_home.path().join("managed_config.toml"),
         )
         .args(["--strict-config", "--listen", "off"])
@@ -123,9 +123,9 @@ fn managed_auth_requirements_fail_closed_for_standalone_app_server() -> Result<(
         std::fs::write(codex_home.path().join("config.toml"), config)?;
 
         let output = Command::new(codex_utils_cargo_bin::cargo_bin("codex-app-server")?)
-            .env("CODEX_HOME", codex_home.path())
+            .env("INOCODE_HOME", codex_home.path())
             .env(
-                "CODEX_APP_SERVER_MANAGED_CONFIG_PATH",
+                "INOCODE_APP_SERVER_MANAGED_CONFIG_PATH",
                 codex_home.path().join("managed_config.toml"),
             )
             .args(["--listen", "off"])

@@ -105,7 +105,7 @@ async fn thread_creator_survives_resume_and_forks_use_current_auth() -> Result<(
             .await?
             .meta;
         let stored = test
-            .codex
+            .inocode
             .state_db()
             .expect("SQLite")
             .get_thread(thread_id)
@@ -137,7 +137,7 @@ async fn thread_creator_survives_resume_and_forks_use_current_auth() -> Result<(
             .await?
             .meta;
         let stored = resumed
-            .codex
+            .inocode
             .state_db()
             .expect("SQLite")
             .get_thread(thread_id)

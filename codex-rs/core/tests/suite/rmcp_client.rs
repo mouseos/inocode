@@ -40,7 +40,7 @@ use codex_exec_server::HttpRequestParams;
 use codex_features::Feature;
 use codex_http_client::HttpClientBuilder;
 use codex_login::CodexAuth;
-use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+use codex_mcp::INOCODE_APPS_MCP_SERVER_NAME;
 use codex_mcp::MCP_SANDBOX_LAUNCHER_META_KEY;
 use codex_mcp::MCP_SANDBOX_STATE_CAPABILITY;
 use codex_mcp::MCP_SANDBOX_STATE_META_CAPABILITY;
@@ -678,7 +678,7 @@ async fn mcp_namespace_instructions_are_preserved_without_hiding_tools() -> anyh
     wait_for_mcp_server(&fixture.codex, "bounded").await?;
 
     fixture
-        .codex
+        .inocode
         .start_or_steer_turn(read_only_user_turn(&fixture, "show the bounded MCP tools"))
         .await?;
     wait_for_event(&fixture.codex, |event| {
@@ -761,7 +761,7 @@ async fn text_only_mcp_content_uses_content_items() -> anyhow::Result<()> {
     wait_for_mcp_server(&fixture.codex, server_name).await?;
 
     fixture
-        .codex
+        .inocode
         .start_or_steer_turn(read_only_user_turn(&fixture, "return content items"))
         .await?;
     wait_for_event(&fixture.codex, |event| {
@@ -894,7 +894,7 @@ async fn environment_mcp_policy_filters_runtime_config_and_model_tools(
         .await?;
 
     let selection = fixture
-        .codex
+        .inocode
         .environment_selections()
         .await
         .into_iter()
@@ -948,7 +948,7 @@ async fn environment_mcp_policy_filters_runtime_config_and_model_tools(
     };
 
     fixture
-        .codex
+        .inocode
         .environment_ready(
             &selection,
             EnvironmentConfig {
@@ -975,7 +975,7 @@ async fn environment_mcp_policy_filters_runtime_config_and_model_tools(
     assert!(!runtime_servers["blocked"].enabled);
     assert!(!runtime_servers["unselected"].enabled);
     fixture
-        .codex
+        .inocode
         .call_mcp_tool(
             "allowed",
             "echo",
@@ -1001,7 +1001,7 @@ async fn environment_mcp_policy_filters_runtime_config_and_model_tools(
     assert!(responses::namespace_child_tool(&body, "mcp__blocked", "echo").is_none());
 
     fixture
-        .codex
+        .inocode
         .environment_failed(&selection, "environment policy unavailable".to_string())
         .await?;
     let (failed_config, _) = fixture.codex.current_mcp_config_and_runtime_context().await;
@@ -1107,7 +1107,7 @@ async fn future_environment_mcp_policy_applies_on_the_next_turn() -> anyhow::Res
     };
     submit_thread_settings(&fixture.codex, settings(config.clone())).await?;
     fixture
-        .codex
+        .inocode
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "pause before continuing".into(),
             text_elements: Vec::new(),
@@ -1124,7 +1124,7 @@ async fn future_environment_mcp_policy_applies_on_the_next_turn() -> anyhow::Res
     config.mcp_policy.as_mut().unwrap().servers = Some(BTreeMap::new());
     submit_thread_settings(&fixture.codex, settings(config)).await?;
     fixture
-        .codex
+        .inocode
         .submit(Op::UserInputAnswer {
             id: request.turn_id,
             response: RequestUserInputResponse {
@@ -1375,7 +1375,7 @@ async fn stdio_server_round_trip(server_name: &'static str, namespace: &str) -> 
     wait_for_mcp_server(&fixture.codex, server_name).await?;
 
     fixture
-        .codex
+        .inocode
         .start_or_steer_turn(read_only_user_turn(&fixture, "call the rmcp echo tool"))
         .await?;
 
@@ -1636,7 +1636,7 @@ async fn mcp_pagination_preserves_valid_tools_and_rejects_oversized_cursors(
                 )]);
                 if protocol_mode == McpProtocolMode::V20260728 {
                     env.insert(
-                        "CODEX_MCP_PROTOCOL_VERSION".to_string(),
+                        "INOCODE_MCP_PROTOCOL_VERSION".to_string(),
                         "2026-07-28".to_string(),
                     );
                 }
@@ -1690,7 +1690,7 @@ async fn mcp_pagination_preserves_valid_tools_and_rejects_oversized_cursors(
     );
 
     fixture
-        .codex
+        .inocode
         .start_or_steer_turn(auto_approved_user_turn(
             &fixture,
             "call the paginated sync tool",
@@ -1771,12 +1771,12 @@ async fn apps_enabled_turn_skips_pending_optional_mcp_without_cached_tools() -> 
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let event = fixture
-                .codex
+                .inocode
                 .next_event()
                 .await
                 .context("event stream ended before Codex Apps became ready")?;
             if let EventMsg::McpStartupUpdate(update) = event.msg
-                && update.server == CODEX_APPS_MCP_SERVER_NAME
+                && update.server == INOCODE_APPS_MCP_SERVER_NAME
                 && matches!(update.status, McpStartupStatus::Ready)
             {
                 break Ok::<(), anyhow::Error>(());
@@ -2154,7 +2154,7 @@ async fn interrupt_during_mcp_startup_preserves_user_input_in_history(
     .await;
     let (reply, outcome) = tokio::sync::oneshot::channel();
     fixture
-        .codex
+        .inocode
         .submit(Op::TurnSettings {
             turn_id,
             update: TurnSettingsUpdate {
@@ -2176,7 +2176,7 @@ async fn interrupt_during_mcp_startup_preserves_user_input_in_history(
     .await;
 
     let history = fixture
-        .codex
+        .inocode
         .load_history(/*include_archived*/ false)
         .await?;
     let user_prompt_index = history
@@ -2493,7 +2493,7 @@ async fn local_stdio_server_uses_runtime_fallback_cwd_when_config_omits_cwd() ->
             )
             .await;
             fixture
-                .codex
+                .inocode
                 .start_or_steer_turn(
                     TurnInputRequest::user_input(vec![UserInput::Text {
                         text: "inspect host MCP permissions".into(),
@@ -2685,7 +2685,7 @@ async fn stdio_mcp_tool_call_includes_sandbox_state_meta(
     };
     let owner_workspace_roots = if attachment_owned_permissions {
         let selection = fixture
-            .codex
+            .inocode
             .environment_selections()
             .await
             .into_iter()
@@ -2711,7 +2711,7 @@ async fn stdio_mcp_tool_call_includes_sandbox_state_meta(
         )
         .await?;
         fixture
-            .codex
+            .inocode
             .environment_ready(
                 &selection,
                 EnvironmentConfig {
@@ -2931,7 +2931,7 @@ async fn stdio_mcp_parallel_tool_calls_default_false_runs_serially() -> anyhow::
     wait_for_mcp_server(&fixture.codex, server_name).await?;
 
     fixture
-        .codex
+        .inocode
         // Keep this baseline on the mutable sync tool so read-only hints do not
         // make the call parallel-safe. Bypass read-only turn permissions so
         // approval behavior does not block the scheduling assertion.
@@ -3072,7 +3072,7 @@ async fn stdio_mcp_read_only_tool_calls_run_concurrently_without_server_opt_in()
     wait_for_mcp_server(&fixture.codex, server_name).await?;
 
     fixture
-        .codex
+        .inocode
         .start_or_steer_turn(read_only_user_turn(
             &fixture,
             "call the rmcp sync_readonly tool twice",
@@ -3162,7 +3162,7 @@ async fn stdio_mcp_parallel_tool_calls_opt_in_runs_concurrently() -> anyhow::Res
     wait_for_mcp_server(&fixture.codex, server_name).await?;
 
     fixture
-        .codex
+        .inocode
         // Exercise the server opt-in with the mutable sync tool rather than the
         // read-only sync_readonly tool. Bypass read-only turn permissions so
         // approval behavior does not block the scheduling assertion.
@@ -3245,7 +3245,7 @@ async fn stdio_encrypted_content_responses_round_trip() -> anyhow::Result<()> {
     wait_for_mcp_server(&fixture.codex, server_name).await?;
 
     fixture
-        .codex
+        .inocode
         .start_or_steer_turn(read_only_user_turn(
             &fixture,
             "call the rmcp encrypted output tool",
@@ -3344,7 +3344,7 @@ async fn stdio_image_responses_round_trip() -> anyhow::Result<()> {
     wait_for_mcp_server(&fixture.codex, server_name).await?;
 
     fixture
-        .codex
+        .inocode
         .start_or_steer_turn(read_only_user_turn(&fixture, "call the rmcp image tool"))
         .await?;
 
@@ -3510,7 +3510,7 @@ async fn stdio_image_responses_resize_large_image() -> anyhow::Result<()> {
     wait_for_mcp_server(&fixture.codex, server_name).await?;
 
     fixture
-        .codex
+        .inocode
         .start_or_steer_turn(read_only_user_turn(
             &fixture,
             "call the rmcp image_scenario tool",
@@ -3598,7 +3598,7 @@ async fn stdio_image_responses_preserve_original_detail_metadata() -> anyhow::Re
     wait_for_mcp_server(&fixture.codex, server_name).await?;
 
     fixture
-        .codex
+        .inocode
         .start_or_steer_turn(read_only_user_turn(
             &fixture,
             "call the rmcp image_scenario tool",
@@ -3763,7 +3763,7 @@ async fn stdio_image_responses_are_sanitized_for_text_only_model() -> anyhow::Re
     assert_eq!(models_mock.requests().len(), 1);
 
     fixture
-        .codex
+        .inocode
         .start_or_steer_turn(read_only_user_turn_with_model(
             &fixture,
             "call the rmcp image tool",
@@ -3864,7 +3864,7 @@ async fn stdio_server_propagates_whitelisted_env_vars() -> anyhow::Result<()> {
     wait_for_mcp_server(&fixture.codex, server_name).await?;
 
     fixture
-        .codex
+        .inocode
         .start_or_steer_turn(read_only_user_turn(&fixture, "call the rmcp echo tool"))
         .await?;
 
@@ -3989,7 +3989,7 @@ async fn stdio_server_propagates_explicit_local_env_var_source() -> anyhow::Resu
     wait_for_mcp_server(&fixture.codex, server_name).await?;
 
     fixture
-        .codex
+        .inocode
         .start_or_steer_turn(read_only_user_turn(&fixture, "call the rmcp echo tool"))
         .await?;
 
@@ -4085,7 +4085,7 @@ async fn remote_stdio_env_var_source_does_not_copy_local_env() -> anyhow::Result
     wait_for_mcp_server(&fixture.codex, server_name).await?;
 
     fixture
-        .codex
+        .inocode
         .start_or_steer_turn(read_only_user_turn(&fixture, "call the rmcp echo tool"))
         .await?;
 
@@ -4115,7 +4115,7 @@ async fn remote_stdio_env_var_source_does_not_copy_local_env() -> anyhow::Result
 }
 
 /// Remote runtime websocket URL used by remote-aware MCP integration tests.
-const REMOTE_EXEC_SERVER_URL_ENV_VAR: &str = "CODEX_TEST_REMOTE_EXEC_SERVER_URL";
+const REMOTE_EXEC_SERVER_URL_ENV_VAR: &str = "INOCODE_TEST_REMOTE_EXEC_SERVER_URL";
 /// OAuth metadata path served by the Streamable HTTP MCP test server.
 const STREAMABLE_HTTP_METADATA_PATH: &str = "/.well-known/oauth-authorization-server/mcp";
 
@@ -4331,7 +4331,7 @@ async fn streamable_http_tool_call_round_trip(mode: HeadersHelperMode) -> anyhow
 
     // Phase 4: submit the user turn that should trigger the MCP tool call.
     fixture
-        .codex
+        .inocode
         .start_or_steer_turn(read_only_user_turn(
             &fixture,
             "call the rmcp streamable http echo tool",
@@ -4575,8 +4575,8 @@ auth = "chatgpt"
     Ok(())
 }
 
-/// This test writes to a fallback credentials file in CODEX_HOME.
-/// Ideally, we wouldn't need to serialize the test but it's much more cumbersome to wire CODEX_HOME through the code.
+/// This test writes to a fallback credentials file in INOCODE_HOME.
+/// Ideally, we wouldn't need to serialize the test but it's much more cumbersome to wire INOCODE_HOME through the code.
 #[test]
 #[serial(codex_home)]
 fn streamable_http_with_oauth_round_trip() -> anyhow::Result<()> {
@@ -4675,12 +4675,12 @@ async fn streamable_http_with_oauth_round_trip_impl() -> anyhow::Result<()> {
     };
     let server_url = http_server.url().to_string();
 
-    // Phase 3: seed an isolated CODEX_HOME with fallback OAuth tokens for this
+    // Phase 3: seed an isolated INOCODE_HOME with fallback OAuth tokens for this
     // server so the test does not share credentials with other suite cases.
     let temp_home = Arc::new(tempdir()?);
-    let _codex_home_guard = EnvVarGuard::set("CODEX_HOME", temp_home.path().as_os_str());
+    let _codex_home_guard = EnvVarGuard::set("INOCODE_HOME", temp_home.path().as_os_str());
     let unset_authorization_env_var = format!(
-        "CODEX_TEST_UNSET_MCP_OAUTH_AUTHORIZATION_{}",
+        "INOCODE_TEST_UNSET_MCP_OAUTH_AUTHORIZATION_{}",
         std::process::id()
     );
     assert!(std::env::var_os(&unset_authorization_env_var).is_none());
@@ -4777,7 +4777,7 @@ async fn streamable_http_with_oauth_round_trip_impl() -> anyhow::Result<()> {
         .open(temp_home.path().join("mcp-oauth-locks/file-store.lock"))?;
     store_lock.try_lock()?;
     fixture
-        .codex
+        .inocode
         .start_or_steer_turn(read_only_user_turn(
             &fixture,
             "continue while OAuth credentials are locked",
@@ -4851,11 +4851,11 @@ async fn streamable_http_with_oauth_round_trip_impl() -> anyhow::Result<()> {
         .expect("test MCP servers should accept the discovered OAuth server");
     let discovered_turn = tokio::time::timeout(Duration::from_secs(5), async {
         let _ = fixture
-            .codex
+            .inocode
             .refresh_runtime_config(current_config, refreshed_config.clone())
             .await;
         fixture
-            .codex
+            .inocode
             .start_or_steer_turn(read_only_user_turn(
                 &fixture,
                 "continue while a newly discovered OAuth server is starting",
@@ -4898,7 +4898,7 @@ async fn streamable_http_with_oauth_round_trip_impl() -> anyhow::Result<()> {
     );
     let current_config = fixture.codex.config().await;
     let _ = fixture
-        .codex
+        .inocode
         .refresh_runtime_config(current_config, refreshed_config)
         .await;
     let logged_out_startup = tokio::time::timeout(
@@ -4932,7 +4932,7 @@ async fn streamable_http_with_oauth_round_trip_impl() -> anyhow::Result<()> {
 
     // Phase 6: submit the user turn that should invoke the OAuth-backed tool.
     fixture
-        .codex
+        .inocode
         .start_or_steer_turn(read_only_user_turn(
             &fixture,
             "call the rmcp streamable http oauth echo tool",

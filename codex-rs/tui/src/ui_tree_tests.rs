@@ -335,7 +335,7 @@ fn semantic_colors_follow_the_theme_and_terminal() {
     use crate::terminal_palette::with_test_default_colors;
     use crate::terminal_probe::DefaultColors;
 
-    const CHILD: &str = "CODEX_STATUSLINE_SEMANTIC_PALETTE_TEST";
+    const CHILD: &str = "INOCODE_STATUSLINE_SEMANTIC_PALETTE_TEST";
     if std::env::var_os(CHILD).is_some() {
         insta::assert_snapshot!("semantic_statusline_ansi16", paint_semantic_samples());
         return;

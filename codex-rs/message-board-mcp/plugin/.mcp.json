@@ -2,7 +2,7 @@
   "mcpServers": {
     "codex_message_board": {
       "url": "http://127.0.0.1:7777/mcp",
-      "bearer_token_env_var": "CODEX_MESSAGE_BOARD_TOKEN",
+      "bearer_token_env_var": "INOCODE_MESSAGE_BOARD_TOKEN",
       "required": true
     }
   }

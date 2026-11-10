@@ -30,17 +30,17 @@ pub struct SchemaFixtureOptions {
 }
 
 pub(crate) fn write_schema_fixtures_from_env() -> Result<()> {
-    let schema_root = std::env::var_os("CODEX_APP_SERVER_SCHEMA_ROOT")
+    let schema_root = std::env::var_os("INOCODE_APP_SERVER_SCHEMA_ROOT")
         .map(PathBuf::from)
-        .context("CODEX_APP_SERVER_SCHEMA_ROOT must be set")?;
-    let prettier = std::env::var_os("CODEX_APP_SERVER_SCHEMA_PRETTIER").map(PathBuf::from);
-    let experimental = std::env::var("CODEX_APP_SERVER_SCHEMA_EXPERIMENTAL")
-        .context("CODEX_APP_SERVER_SCHEMA_EXPERIMENTAL must be set")?;
+        .context("INOCODE_APP_SERVER_SCHEMA_ROOT must be set")?;
+    let prettier = std::env::var_os("INOCODE_APP_SERVER_SCHEMA_PRETTIER").map(PathBuf::from);
+    let experimental = std::env::var("INOCODE_APP_SERVER_SCHEMA_EXPERIMENTAL")
+        .context("INOCODE_APP_SERVER_SCHEMA_EXPERIMENTAL must be set")?;
     let experimental_api = match experimental.as_str() {
         "0" => false,
         "1" => true,
         value => {
-            anyhow::bail!("CODEX_APP_SERVER_SCHEMA_EXPERIMENTAL must be 0 or 1, got {value:?}")
+            anyhow::bail!("INOCODE_APP_SERVER_SCHEMA_EXPERIMENTAL must be 0 or 1, got {value:?}")
         }
     };
 

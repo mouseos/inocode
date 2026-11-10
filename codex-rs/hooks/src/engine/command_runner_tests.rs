@@ -16,7 +16,7 @@ use codex_protocol::protocol::HookOutputEntry;
 use codex_protocol::protocol::HookOutputEntryKind;
 use codex_protocol::protocol::HookRunStatus;
 use codex_protocol::protocol::HookSource;
-use codex_protocol::shell_environment::CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR;
+use codex_protocol::shell_environment::INOCODE_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
@@ -39,7 +39,7 @@ use crate::events::user_prompt_submit::UserPromptSubmitRequest;
 #[cfg(unix)]
 #[tokio::test]
 async fn hook_shell_startup_does_not_stop_on_controlling_terminal() {
-    const CHILD_ENV: &str = "CODEX_HOOK_TERMINAL_TEST_CHILD";
+    const CHILD_ENV: &str = "INOCODE_HOOK_TERMINAL_TEST_CHILD";
     const TEST_NAME: &str =
         "engine::command_runner::tests::hook_shell_startup_does_not_stop_on_controlling_terminal";
 
@@ -350,10 +350,10 @@ async fn command_hook_does_not_expose_configured_noise_auth_token() {
     let command = if cfg!(windows) { "set" } else { "env" };
     let env = HashMap::from([
         (
-            CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR.to_ascii_lowercase(),
+            INOCODE_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR.to_ascii_lowercase(),
             "configured-noise-token".to_string(),
         ),
-        ("CODEX_HOOK_SAFE_ENV".to_string(), "visible".to_string()),
+        ("INOCODE_HOOK_SAFE_ENV".to_string(), "visible".to_string()),
     ]);
     let handler = ConfiguredHandler {
         builtin: false,
@@ -377,10 +377,10 @@ async fn command_hook_does_not_expose_configured_noise_auth_token() {
     let result = run_command(&runtime, &handler, command, &env, "{}", temp.path()).await;
 
     assert_eq!(result.exit_code, Some(0), "stderr: {}", result.stderr);
-    assert!(result.stdout.contains("CODEX_HOOK_SAFE_ENV=visible"));
+    assert!(result.stdout.contains("INOCODE_HOOK_SAFE_ENV=visible"));
     assert!(!result.stdout.lines().any(|line| {
         line.split_once('=').is_some_and(|(name, _)| {
-            name.eq_ignore_ascii_case(CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR)
+            name.eq_ignore_ascii_case(INOCODE_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR)
         })
     }));
     assert_eq!(result.error, None);
@@ -392,25 +392,25 @@ async fn build_command_replays_snapshot_before_hook_overrides_and_scrubbing() {
     let non_unicode_value = OsString::from_vec(vec![b'v', 0xff]);
     let environment = vec![
         (
-            OsString::from("CODEX_HOOK_SNAPSHOT"),
+            OsString::from("INOCODE_HOOK_SNAPSHOT"),
             OsString::from("captured"),
         ),
         (
-            OsString::from("CODEX_HOOK_OVERRIDE"),
+            OsString::from("INOCODE_HOOK_OVERRIDE"),
             OsString::from("captured"),
         ),
         (
-            OsString::from(CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR),
+            OsString::from(INOCODE_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR),
             OsString::from("captured-noise-token"),
         ),
         #[cfg(unix)]
-        (OsString::from("CODEX_HOOK_NON_UNICODE"), non_unicode_value),
+        (OsString::from("INOCODE_HOOK_NON_UNICODE"), non_unicode_value),
     ];
     let env = HashMap::from([
-        ("CODEX_HOOK_OVERRIDE".to_string(), "configured".to_string()),
-        ("CODEX_HOOK_SAFE_ENV".to_string(), "visible".to_string()),
+        ("INOCODE_HOOK_OVERRIDE".to_string(), "configured".to_string()),
+        ("INOCODE_HOOK_SAFE_ENV".to_string(), "visible".to_string()),
         (
-            CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR.to_string(),
+            INOCODE_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR.to_string(),
             "configured-noise-token".to_string(),
         ),
     ]);
@@ -418,13 +418,13 @@ async fn build_command_replays_snapshot_before_hook_overrides_and_scrubbing() {
     let (program, args, command_line) = (
         "/bin/sh",
         vec!["-c".to_string()],
-        "printf '%s\\n' \"$CODEX_HOOK_SNAPSHOT\" \"$CODEX_HOOK_OVERRIDE\" \"$CODEX_HOOK_SAFE_ENV\" \"${CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN-absent}\" \"$CODEX_HOOK_NON_UNICODE\"",
+        "printf '%s\\n' \"$INOCODE_HOOK_SNAPSHOT\" \"$INOCODE_HOOK_OVERRIDE\" \"$INOCODE_HOOK_SAFE_ENV\" \"${INOCODE_EXEC_SERVER_NOISE_AUTH_TOKEN-absent}\" \"$INOCODE_HOOK_NON_UNICODE\"",
     );
     #[cfg(windows)]
     let (program, args, command_line) = (
         "cmd.exe",
         vec!["/D".to_string(), "/C".to_string()],
-        "echo %CODEX_HOOK_SNAPSHOT%&echo %CODEX_HOOK_OVERRIDE%&echo %CODEX_HOOK_SAFE_ENV%&if defined CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN (echo leaked) else (echo absent)",
+        "echo %INOCODE_HOOK_SNAPSHOT%&echo %INOCODE_HOOK_OVERRIDE%&echo %INOCODE_HOOK_SAFE_ENV%&if defined INOCODE_EXEC_SERVER_NOISE_AUTH_TOKEN (echo leaked) else (echo absent)",
     );
     let command = build_command(
         &CommandShell {
@@ -575,7 +575,7 @@ async fn async_hook_result_survives_runtime_reconfiguration() {
     let temp = TempDir::new().expect("async test directory");
     let mut environment = std::env::vars_os().collect::<Vec<_>>();
     environment.push((
-        OsString::from("CODEX_HOOK_CAPTURED_ENV"),
+        OsString::from("INOCODE_HOOK_CAPTURED_ENV"),
         OsString::from("captured"),
     ));
     let (previous, results) = runtime_with_environment(Arc::new(environment));
@@ -592,7 +592,7 @@ import time
 json.load(sys.stdin)
 while not Path(r"{}").exists():
     time.sleep(0.01)
-print(os.environ["CODEX_HOOK_CAPTURED_ENV"])
+print(os.environ["INOCODE_HOOK_CAPTURED_ENV"])
 "#,
             release_path.display()
         ),

@@ -69,7 +69,7 @@ impl BackendPreferenceContext {
         {
             return None;
         } else {
-            // A local profile without an account is already private to its CODEX_HOME.
+            // A local profile without an account is already private to its INOCODE_HOME.
             "local".to_string()
         };
         Some((

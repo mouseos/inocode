@@ -187,7 +187,7 @@ async fn uploaded_audio_survives_compaction_and_cold_resume(
         });
     }
     resumed
-        .codex
+        .inocode
         .start_or_steer_turn(TurnInputRequest::user_input(input))
         .await?;
     wait_for_event(&resumed.codex, |event| {
@@ -953,7 +953,7 @@ async fn paginated_resume_filters_audio_rejected_before_and_after_compaction() -
     fs::write(&path, page)?;
     let resumed = builder().resume(&server, test.home.clone(), path).await?;
     resumed
-        .codex
+        .inocode
         .start_or_steer_turn(TurnInputRequest::user_input(vec![
             text("Check these recordings again."),
             recording("file_A"),
@@ -1440,7 +1440,7 @@ async fn interrupt_during_audio_lookup_preserves_steered_batch_on_follow_up_and_
     };
     let test = builder().build_with_auto_env(&config_server).await?;
     let TurnInputSubmission::Started { turn_id, .. } = test
-        .codex
+        .inocode
         .start_or_steer_turn(TurnInputRequest::user_input(vec![text("Start working.")]))
         .await?
     else {

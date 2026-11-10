@@ -1032,7 +1032,7 @@ async fn mcp_tool_call_completion_notification_contains_truncated_large_result()
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
-        .with_env_overrides(&[("CODEX_ROLLOUT_TRACE_ROOT", traces.path().to_str())])
+        .with_env_overrides(&[("INOCODE_ROLLOUT_TRACE_ROOT", traces.path().to_str())])
         .build_initialized()
         .await?;
     let ThreadStartResponse { thread, .. } = mcp

@@ -445,7 +445,7 @@ mod tests {
         use ratatui::layout::Rect;
         use ratatui::widgets::Widget;
 
-        const CHILD: &str = "CODEX_STATUS_LINE_COLOR_TEST_CHILD";
+        const CHILD: &str = "INOCODE_STATUS_LINE_COLOR_TEST_CHILD";
         let Ok(level) = std::env::var(CHILD) else {
             for level in ["0", "1"] {
                 let output = std::process::Command::new(std::env::current_exe().unwrap())

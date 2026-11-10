@@ -42,7 +42,7 @@ async fn exercise_stdio_server(
     let mut env = HashMap::new();
     if opt_in {
         env.insert(
-            OsString::from("CODEX_MCP_PROTOCOL_VERSION"),
+            OsString::from("INOCODE_MCP_PROTOCOL_VERSION"),
             OsString::from("2026-07-28"),
         );
     }

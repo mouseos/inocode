@@ -35,10 +35,10 @@ jobs:
       - name: Publish release assets and metadata to R2
         # R2 exposes an S3-compatible API, so the AWS CLI reads AWS-named variables.
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.CODEX_R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.CODEX_R2_SECRET_ACCESS_KEY }}
-          AWS_ENDPOINT_URL: ${{ vars.CODEX_R2_ENDPOINT_URL }}
-          AWS_REGION: ${{ vars.CODEX_R2_REGION }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.INOCODE_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.INOCODE_R2_SECRET_ACCESS_KEY }}
+          AWS_ENDPOINT_URL: ${{ vars.INOCODE_R2_ENDPOINT_URL }}
+          AWS_REGION: ${{ vars.INOCODE_R2_REGION }}
           AWS_RETRY_MODE: standard
           AWS_MAX_ATTEMPTS: "6"
           GH_TOKEN: ${{ github.token }}

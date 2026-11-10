@@ -79,7 +79,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           releases="$(python3 .github/scripts/resolve_exec_server_releases.py)"
-          echo "CODEX_COMPAT_RELEASES=$releases" >> "$GITHUB_ENV"
+          echo "INOCODE_COMPAT_RELEASES=$releases" >> "$GITHUB_ENV"
 
       - name: bazel test //...
         shell: bash
@@ -389,7 +389,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           releases="$(python3 .github/scripts/resolve_exec_server_releases.py)"
-          echo "CODEX_COMPAT_RELEASES=$releases" >> "$GITHUB_ENV"
+          echo "INOCODE_COMPAT_RELEASES=$releases" >> "$GITHUB_ENV"
 
       - name: bazel build --config=clippy lint targets
         shell: bash
@@ -490,7 +490,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           releases="$(python3 .github/scripts/resolve_exec_server_releases.py)"
-          echo "CODEX_COMPAT_RELEASES=$releases" >> "$GITHUB_ENV"
+          echo "INOCODE_COMPAT_RELEASES=$releases" >> "$GITHUB_ENV"
 
       - name: bazel build verify-release-build targets
         shell: bash

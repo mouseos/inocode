@@ -391,7 +391,7 @@ async fn guardian_filters_additional_context_after_restart(
     });
     let original = builder.build_with_auto_env(&server).await?;
     original
-        .codex
+        .inocode
         .start_or_steer_turn(browser_context_turn())
         .await?;
     wait_for_event_match(&original.codex, |event| {
@@ -413,7 +413,7 @@ async fn guardian_filters_additional_context_after_restart(
         .restart_with_auto_env(&server, &original)
         .await?;
     resumed
-        .codex
+        .inocode
         .start_or_steer_turn(TurnInputRequest::new(TurnInput::ResponseItem(
             ordinary_browser_output(),
         )))
@@ -1242,7 +1242,7 @@ async fn additional_context_rejects_invalid_names_before_admitting_input() -> Re
         (AdditionalContextKind::Application, "browser".to_owned()),
     ] {
         let result = test
-            .codex
+            .inocode
             .start_or_steer_turn(
                 TurnInputRequest::user_input(vec![UserInput::Text {
                     text: "rejected input".to_owned(),

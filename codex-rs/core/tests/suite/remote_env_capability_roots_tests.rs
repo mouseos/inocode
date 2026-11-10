@@ -91,7 +91,7 @@ async fn selected_capability_roots_survive_environment_reselection(
         .build_with_auto_env(&server)
         .await?;
     let selection = test
-        .codex
+        .inocode
         .environment_selections()
         .await
         .into_iter()
@@ -189,7 +189,7 @@ async fn stale_roots_do_not_connect_unselected_executors(
         .build_with_auto_env(&server)
         .await?;
     let mut selection = test
-        .codex
+        .inocode
         .environment_selections()
         .await
         .into_iter()

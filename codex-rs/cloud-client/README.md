@@ -33,11 +33,11 @@ Approval replies and reconnect are subsequent slices.
 The minimal envelopes in `wire.rs` and `ResumeRequest` mirror ThreadService field
 numbers; no monorepo checkout or protobuf compiler is required to build this crate.
 
-Provide `CODEX_CLOUD_ACCESS_TOKEN` and `CODEX_CLOUD_ACCOUNT_ID` through your environment, then run
+Provide `INOCODE_CLOUD_ACCESS_TOKEN` and `INOCODE_CLOUD_ACCOUNT_ID` through your environment, then run
 this standalone consumer from `codex-rs`:
 
 ```sh
-cargo run -p codex-cloud-client --example attach -- "$CODEX_CLOUD_GRPC_ENDPOINT" "$CODEX_CLOUD_THREAD_ID"
+cargo run -p codex-cloud-client --example attach -- "$INOCODE_CLOUD_GRPC_ENDPOINT" "$INOCODE_CLOUD_THREAD_ID"
 ```
 
 Use an existing authorized thread and native gRPC origin. No production URL is
@@ -95,7 +95,7 @@ one message after attaching: a persisted client message ID and the text. It uses
 `StartIfIdle`, drains events during admission, and prints only redacted event kinds:
 
 ```sh
-cargo run -p codex-cloud-client --example attach -- "$CODEX_CLOUD_GRPC_ENDPOINT" "$CODEX_CLOUD_THREAD_ID" "$CODEX_CLOUD_MESSAGE_ID" 'Explain this project'
+cargo run -p codex-cloud-client --example attach -- "$INOCODE_CLOUD_GRPC_ENDPOINT" "$INOCODE_CLOUD_THREAD_ID" "$INOCODE_CLOUD_MESSAGE_ID" 'Explain this project'
 ```
 
 `prewarm_default_thread` prepares an ordinary coding thread in the default managed

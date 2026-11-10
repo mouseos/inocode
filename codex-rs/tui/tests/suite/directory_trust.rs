@@ -101,7 +101,7 @@ async fn connected_trust_cancellation_and_acceptance_control_task_creation() -> 
                                     "key": "project:test", "eventName": "sessionStart", "handlerType": "command",
                                     "command": "echo hook", "async": false, "matcher": null, "timeoutSec": 30,
                                     "statusMessage": null, "additionalContextLimit": null,
-                                    "sourcePath": cwd.join(".codex/hooks.json"), "source": "project", "pluginId": null,
+                                    "sourcePath": cwd.join(".inocode/hooks.json"), "source": "project", "pluginId": null,
                                     "displayOrder": 0, "enabled": false, "isManaged": false,
                                     "currentHash": "sha256:test", "trustStatus": "untrusted"
                                 }], "warnings": [], "errors": []})]

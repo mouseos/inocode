@@ -407,7 +407,7 @@ mod tests {
 
     #[test]
     fn theme_accents_respect_terminal_color_depth() {
-        const CHILD: &str = "CODEX_ACCENT_COLOR_TEST_CHILD";
+        const CHILD: &str = "INOCODE_ACCENT_COLOR_TEST_CHILD";
         let Ok(level) = std::env::var(CHILD) else {
             for level in ["0", "1", "2", "3"] {
                 let output = std::process::Command::new(std::env::current_exe().unwrap())

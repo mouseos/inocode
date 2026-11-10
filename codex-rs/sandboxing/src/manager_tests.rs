@@ -694,13 +694,13 @@ fn wrapper_runtime_selection_uses_the_parent_not_environment_overrides() {
         let mut env = HashMap::from([("codex_windows_registered_core".into(), "1".into())]);
         super::add_windows_sandbox_wrapper_setup_env_from_vars(
             &mut env,
-            [("CODEX_WINDOWS_REGISTERED_CORE".into(), "0".into())],
+            [("INOCODE_WINDOWS_REGISTERED_CORE".into(), "0".into())],
             registered_core,
         );
         assert_eq!(
             env,
             if registered_core {
-                HashMap::from([("CODEX_WINDOWS_REGISTERED_CORE".into(), "1".into())])
+                HashMap::from([("INOCODE_WINDOWS_REGISTERED_CORE".into(), "1".into())])
             } else {
                 HashMap::new()
             }

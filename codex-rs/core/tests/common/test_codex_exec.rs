@@ -1,4 +1,4 @@
-use codex_login::CODEX_API_KEY_ENV_VAR;
+use codex_login::INOCODE_API_KEY_ENV_VAR;
 use std::path::Path;
 use tempfile::TempDir;
 use wiremock::MockServer;
@@ -15,9 +15,9 @@ impl TestCodexExecBuilder {
                 .expect("should find binary for codex-exec"),
         );
         cmd.current_dir(self.cwd.path())
-            .env("CODEX_HOME", self.home.path())
-            .env("CODEX_SQLITE_HOME", self.home.path())
-            .env(CODEX_API_KEY_ENV_VAR, "dummy");
+            .env("INOCODE_HOME", self.home.path())
+            .env("INOCODE_SQLITE_HOME", self.home.path())
+            .env(INOCODE_API_KEY_ENV_VAR, "dummy");
         cmd
     }
     pub fn cmd_with_server(&self, server: &MockServer) -> assert_cmd::Command {

@@ -97,7 +97,7 @@ async fn elevated_local_tui_uses_embedded_without_starting_daemon() -> Result<()
     let home = tempfile::tempdir()?;
     for operation in ["start", "restart"] {
         let output = Command::new(&codex)
-            .env("CODEX_HOME", home.path())
+            .env("INOCODE_HOME", home.path())
             .args(["app-server", "daemon", operation])
             .output()?;
         ensure!(
@@ -117,7 +117,7 @@ async fn elevated_local_tui_uses_embedded_without_starting_daemon() -> Result<()
 #[tokio::test]
 #[cfg(windows)]
 async fn restrictive_launcher_uses_embedded_if_daemon_cannot_start() -> Result<()> {
-    const CHILD: &str = "CODEX_TEST_RESTRICTIVE_DAEMON_START";
+    const CHILD: &str = "INOCODE_TEST_RESTRICTIVE_DAEMON_START";
     if std::env::var_os(CHILD).is_some() {
         // The PTY creates its own breakaway-permitted job. Add Cargo's
         // restriction *inside* the PTY so it is the CLI's innermost job.
@@ -169,7 +169,7 @@ async fn daemon_startup(command: &str) -> Result<()> {
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
     anyhow::ensure!(
         Command::new(&codex)
-            .env("CODEX_HOME", home.path())
+            .env("INOCODE_HOME", home.path())
             .arg("--version")
             .output()?
             .status
@@ -215,10 +215,10 @@ async fn daemon_startup(command: &str) -> Result<()> {
     }
     let mut env = std::env::vars().collect::<std::collections::HashMap<_, _>>();
     for key in [
-        "CODEX_EXEC_SERVER_URL",
-        "CODEX_ACCESS_TOKEN",
-        "CODEX_API_KEY",
-        "CODEX_CLOUD_TASKS_MODE",
+        "INOCODE_EXEC_SERVER_URL",
+        "INOCODE_ACCESS_TOKEN",
+        "INOCODE_API_KEY",
+        "INOCODE_CLOUD_TASKS_MODE",
         "OPENAI_API_KEY",
         "OPENAI_FEDERATION_RULE_ID",
         "OPENAI_IDENTITY_TOKEN_FILE",
@@ -226,9 +226,9 @@ async fn daemon_startup(command: &str) -> Result<()> {
     ] {
         env.remove(key);
     }
-    env.insert("CODEX_HOME".into(), home.path().display().to_string());
+    env.insert("INOCODE_HOME".into(), home.path().display().to_string());
     env.insert(
-        "CODEX_SQLITE_HOME".into(),
+        "INOCODE_SQLITE_HOME".into(),
         home.path().display().to_string(),
     );
     env.insert("TERM".into(), "xterm-256color".into());
@@ -405,7 +405,7 @@ async fn daemon_startup(command: &str) -> Result<()> {
             }
         };
         let program = if cfg!(windows) && command == "restrictive-job" {
-            env.insert("CODEX_TEST_RESTRICTIVE_DAEMON_START".into(), "1".into());
+            env.insert("INOCODE_TEST_RESTRICTIVE_DAEMON_START".into(), "1".into());
             args = vec![
                 "--exact".into(),
                 "restrictive_launcher_uses_embedded_if_daemon_cannot_start".into(),
@@ -537,7 +537,7 @@ async fn daemon_startup(command: &str) -> Result<()> {
                             screen.screen().contents()
                         )
                         .replace(&*workspace_path.to_string_lossy(), "[WORKSPACE]")
-                        .replace(&*home.path().to_string_lossy(), "[CODEX_HOME]")
+                        .replace(&*home.path().to_string_lossy(), "[INOCODE_HOME]")
                         .replace("     tab/⇧tab filter", "tab/shift+tab filter");
                         let transition = transition.lines().map(str::trim_end).collect::<Vec<_>>().join("\n");
                         let snapshot = codex_utils_cargo_bin::find_resource!(

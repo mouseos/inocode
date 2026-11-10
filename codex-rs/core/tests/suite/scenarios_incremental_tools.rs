@@ -563,7 +563,7 @@ async fn tool_removal_appends_a_standalone_notice_without_rewriting_history(
             reduced_server,
         )]))?;
     let _ = test
-        .codex
+        .inocode
         .refresh_mcp_config(current_config, reduced_config)
         .await;
     // Reconcile the refreshed runtime through a public call before the next model request.
@@ -585,11 +585,11 @@ async fn tool_removal_appends_a_standalone_notice_without_rewriting_history(
     let mut removed_config = current_config.as_ref().clone();
     removed_config.mcp_servers.set(Default::default())?;
     let _ = test
-        .codex
+        .inocode
         .refresh_mcp_config(current_config, removed_config)
         .await;
     let _ = test
-        .codex
+        .inocode
         .call_mcp_tool(
             "echo_service",
             "echo",
@@ -612,7 +612,7 @@ async fn tool_removal_appends_a_standalone_notice_without_rewriting_history(
             restored_server,
         )]))?;
     let _ = test
-        .codex
+        .inocode
         .refresh_mcp_config(current_config, restored_config)
         .await;
     for (tool, arguments) in [
@@ -651,7 +651,7 @@ async fn tool_removal_appends_a_standalone_notice_without_rewriting_history(
                     server_config(&["echo", "cwd"], instructions)?,
                 )]))?;
             let _ = test
-                .codex
+                .inocode
                 .refresh_mcp_config(current_config, updated_config)
                 .await;
             test.codex

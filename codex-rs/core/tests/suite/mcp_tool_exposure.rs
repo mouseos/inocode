@@ -14,7 +14,7 @@ use codex_extension_api::ThreadLifecycleContributor;
 use codex_extension_api::ThreadStartInput;
 use codex_features::Feature;
 use codex_history::RolloutItem;
-use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+use codex_mcp::INOCODE_APPS_MCP_SERVER_NAME;
 use codex_mcp::CodexAppsResourceListParams;
 use codex_mcp::McpResourceClient;
 use codex_protocol::capabilities::CapabilityRootLocation;
@@ -198,7 +198,7 @@ impl McpServerContributor<Config> for AppsMcpServerContributor {
                 }
             } else {
                 McpServerContribution::Set {
-                    name: CODEX_APPS_MCP_SERVER_NAME.to_string(),
+                    name: INOCODE_APPS_MCP_SERVER_NAME.to_string(),
                     config,
                 }
             };
@@ -414,7 +414,7 @@ async fn rapid_mcp_refreshes_coalesce_to_the_latest_config() -> Result<()> {
     contributor.block_next.store(true, Ordering::SeqCst);
     let current_config = test.codex.config().await;
     let _ = test
-        .codex
+        .inocode
         .refresh_runtime_config(
             current_config,
             config_with_mcp_marker(&test.config, "config-a"),
@@ -428,7 +428,7 @@ async fn rapid_mcp_refreshes_coalesce_to_the_latest_config() -> Result<()> {
 
     let current_config = test.codex.config().await;
     let _ = test
-        .codex
+        .inocode
         .refresh_runtime_config(
             current_config,
             config_with_mcp_marker(&test.config, "config-b"),
@@ -436,7 +436,7 @@ async fn rapid_mcp_refreshes_coalesce_to_the_latest_config() -> Result<()> {
         .await;
     let current_config = test.codex.config().await;
     let _ = test
-        .codex
+        .inocode
         .refresh_runtime_config(
             current_config,
             config_with_mcp_marker(&test.config, "config-c"),
@@ -522,7 +522,7 @@ async fn root_reconciliation_reuses_pending_apps_startup() -> Result<()> {
     .expect("initial Apps startup should begin before root reconciliation");
 
     let selection = test
-        .codex
+        .inocode
         .environment_selections()
         .await
         .into_iter()
@@ -652,7 +652,7 @@ async fn timeout_refresh_replaces_pending_startup_and_reuses_ready_connection() 
     .await
     .expect("pending startup should begin before refresh");
     let ready_result = test
-        .codex
+        .inocode
         .call_mcp_tool(
             "ready",
             "calendar_list_events",
@@ -669,12 +669,12 @@ async fn timeout_refresh_replaces_pending_startup_and_reuses_ready_connection() 
     }
     refresh_config.mcp_servers.set(servers)?;
     let _ = test
-        .codex
+        .inocode
         .refresh_mcp_config(current_config, refresh_config)
         .await;
     // Publish without waiting for the held initialize to finish.
     let error = test
-        .codex
+        .inocode
         .read_mcp_resource("unknown", ReadResourceRequestParams::new("test://resource"))
         .await
         .expect_err("the unknown server should not exist");
@@ -685,7 +685,7 @@ async fn timeout_refresh_replaces_pending_startup_and_reuses_ready_connection() 
 
     for name in ["pending", "ready"] {
         let result = test
-            .codex
+            .inocode
             .call_mcp_tool(
                 name,
                 "calendar_list_events",
@@ -755,7 +755,7 @@ async fn codex_apps_resource_filter_sends_mime_type_on_each_page() -> Result<()>
         .with_extensions(Arc::new(extensions.build()))
         .build_with_auto_env(&server)
         .await?;
-    wait_for_mcp_server(&test.codex, CODEX_APPS_MCP_SERVER_NAME).await?;
+    wait_for_mcp_server(&test.codex, INOCODE_APPS_MCP_SERVER_NAME).await?;
     let client = captured_client
         .lock()
         .expect("capture lock should not be poisoned")
@@ -828,13 +828,13 @@ async fn codex_apps_resource_filter_rejects_extension_name_collision() -> Result
         .with_extensions(Arc::new(extensions.build()))
         .build_with_auto_env(&server)
         .await?;
-    wait_for_mcp_server(&test.codex, CODEX_APPS_MCP_SERVER_NAME).await?;
+    wait_for_mcp_server(&test.codex, INOCODE_APPS_MCP_SERVER_NAME).await?;
     let client = captured_client
         .lock()
         .expect("capture lock should not be poisoned")
         .clone()
         .expect("thread start should capture the MCP resource client");
-    assert!(client.has_server(CODEX_APPS_MCP_SERVER_NAME).await);
+    assert!(client.has_server(INOCODE_APPS_MCP_SERVER_NAME).await);
 
     let error = client
         .list_codex_apps_resources(CodexAppsResourceListParams {
@@ -904,13 +904,13 @@ startup_timeout_sec = 0.1
         .config_layer_stack
         .with_user_config(&user_config_path, user_config)?;
     let _ = test
-        .codex
+        .inocode
         .refresh_runtime_config(current_config, refresh_config)
         .await;
     test.codex.submit(Op::RefreshMcpServers).await?;
 
     let _ = test
-        .codex
+        .inocode
         .read_mcp_resource(
             "refreshed",
             ReadResourceRequestParams::new("test://resource"),
@@ -978,7 +978,7 @@ async fn elevated_apps_catalog_limit_requires_host_owned_registration() -> Resul
             builder = builder.with_extensions(Arc::new(extensions.build()));
         }
         let test = builder.build_with_auto_env(&server).await?;
-        let startup = wait_for_mcp_server(&test.codex, CODEX_APPS_MCP_SERVER_NAME).await;
+        let startup = wait_for_mcp_server(&test.codex, INOCODE_APPS_MCP_SERVER_NAME).await;
 
         if extension_id == Some("test-extension") {
             let error = startup.expect_err("an extension must retain the standard catalog limit");
@@ -1205,7 +1205,7 @@ async fn deferred_tool_world_state_tracks_initial_unchanged_and_removed_namespac
     let mut builder = search_capable_apps_builder(apps_server.chatgpt_base_url.clone())
         .with_config(configure_deferred_tool_world_state_without_agents);
     let test = builder.build_with_auto_env(&server).await?;
-    wait_for_mcp_server(&test.codex, CODEX_APPS_MCP_SERVER_NAME).await?;
+    wait_for_mcp_server(&test.codex, INOCODE_APPS_MCP_SERVER_NAME).await?;
 
     test.submit_turn("inspect initially available deferred tools")
         .await?;
@@ -1246,7 +1246,7 @@ enabled = false
         .config_layer_stack
         .with_user_config(&user_config_path, user_config)?;
     let _ = test
-        .codex
+        .inocode
         .refresh_runtime_config(current_config, refresh_config)
         .await;
     test.codex.submit(Op::RefreshMcpServers).await?;
@@ -1333,7 +1333,7 @@ async fn deferred_tool_world_state_survives_resume_without_duplicate_updates() -
     let mut builder = search_capable_apps_builder(apps_server.chatgpt_base_url.clone())
         .with_config(configure_deferred_tool_world_state_without_agents);
     let initial = builder.build_with_auto_env(&server).await?;
-    wait_for_mcp_server(&initial.codex, CODEX_APPS_MCP_SERVER_NAME).await?;
+    wait_for_mcp_server(&initial.codex, INOCODE_APPS_MCP_SERVER_NAME).await?;
     initial
         .submit_turn("inspect deferred tools before resume")
         .await?;
@@ -1367,7 +1367,7 @@ async fn deferred_tool_world_state_survives_resume_without_duplicate_updates() -
         .with_config(configure_deferred_tool_world_state_without_agents);
     let resumed = resume_builder.restart(&server, &initial).await?;
     drop(initial);
-    wait_for_mcp_server(&resumed.codex, CODEX_APPS_MCP_SERVER_NAME).await?;
+    wait_for_mcp_server(&resumed.codex, INOCODE_APPS_MCP_SERVER_NAME).await?;
     resumed
         .submit_turn("inspect unchanged deferred tools after resume")
         .await?;
@@ -1506,7 +1506,7 @@ async fn apps_guidance_and_deferred_namespace_appear_after_recovery_within_a_tur
         matches!(
             event,
             EventMsg::McpStartupUpdate(update)
-                if update.server == CODEX_APPS_MCP_SERVER_NAME
+                if update.server == INOCODE_APPS_MCP_SERVER_NAME
                     && matches!(update.status, codex_protocol::protocol::McpStartupStatus::Ready)
         )
     })
@@ -1625,7 +1625,7 @@ async fn code_mode_discovered_apps_tool_survives_startup_failure_and_recovers() 
             })
     };
     let warm = builder().build_with_auto_env(&server).await?;
-    wait_for_mcp_server(&warm.codex, CODEX_APPS_MCP_SERVER_NAME).await?;
+    wait_for_mcp_server(&warm.codex, INOCODE_APPS_MCP_SERVER_NAME).await?;
     warm.codex.ensure_rollout_materialized().await;
 
     // Restart with the persisted catalog and hold discovery until the model has used it.
@@ -1713,7 +1713,7 @@ async fn code_mode_discovered_apps_tool_survives_startup_failure_and_recovers() 
     wait_for_event(&test.codex, |event| {
         matches!(
             event, EventMsg::McpStartupUpdate(update)
-                if update.server == CODEX_APPS_MCP_SERVER_NAME
+                if update.server == INOCODE_APPS_MCP_SERVER_NAME
                     && matches!(update.status, codex_protocol::protocol::McpStartupStatus::Failed { .. })
         )
     })
@@ -1853,7 +1853,7 @@ async fn later_follow_up_uses_background_recovered_apps_after_mid_thread_startup
                 vec![SEARCH_CALENDAR_NAMESPACE.to_string()];
         });
     let test = builder.build(&server).await?;
-    wait_for_mcp_server(&test.codex, CODEX_APPS_MCP_SERVER_NAME).await?;
+    wait_for_mcp_server(&test.codex, INOCODE_APPS_MCP_SERVER_NAME).await?;
     test.submit_turn("use Calendar before refreshing MCP")
         .await?;
 
@@ -1882,14 +1882,14 @@ async fn later_follow_up_uses_background_recovered_apps_after_mid_thread_startup
         let mut apps_ready = false;
         while !turn_complete || !apps_ready {
             let event = test
-                .codex
+                .inocode
                 .next_event()
                 .await
                 .expect("event stream should stay open");
             match event.msg {
                 EventMsg::TurnComplete(_) => turn_complete = true,
                 EventMsg::McpStartupUpdate(update)
-                    if update.server == CODEX_APPS_MCP_SERVER_NAME
+                    if update.server == INOCODE_APPS_MCP_SERVER_NAME
                         && matches!(
                             update.status,
                             codex_protocol::protocol::McpStartupStatus::Ready

@@ -939,7 +939,7 @@ async fn manual_compact_uses_custom_prompt() {
         .build(&server)
         .await
         .expect("create conversation")
-        .codex;
+        .inocode;
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -2247,7 +2247,7 @@ async fn auto_compact_runs_after_token_limit_hit() {
         set_test_compact_prompt(config);
         config.model_auto_compact_token_limit = Some(200_000);
     });
-    let codex = builder.build(&server).await.unwrap().codex;
+    let codex = builder.build(&server).await.unwrap().inocode;
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -2419,7 +2419,7 @@ async fn auto_compact_emits_context_compaction_items() {
         set_test_compact_prompt(config);
         config.model_auto_compact_token_limit = Some(200_000);
     });
-    let codex = builder.build(&server).await.unwrap().codex;
+    let codex = builder.build(&server).await.unwrap().inocode;
 
     let mut started_item = None;
     let mut completed_item = None;
@@ -2499,7 +2499,7 @@ async fn auto_compact_starts_after_turn_started() {
         set_test_compact_prompt(config);
         config.model_auto_compact_token_limit = Some(200_000);
     });
-    let codex = builder.build(&server).await.unwrap().codex;
+    let codex = builder.build(&server).await.unwrap().inocode;
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -2603,7 +2603,7 @@ async fn auto_compact_runs_after_resume_when_token_usage_is_over_limit() {
     let response_mock = mount_sse_sequence(&server, vec![compact_turn, sse_follow_up]).await;
 
     resumed
-        .codex
+        .inocode
         .start_or_steer_turn(disabled_permission_user_turn(
             follow_up_user,
             resumed.cwd.path().to_path_buf(),
@@ -2988,7 +2988,7 @@ async fn pre_sampling_compact_falls_back_from_retired_previous_model_after_renam
         .expect("rollout path");
 
     initial
-        .codex
+        .inocode
         .start_or_steer_turn(disabled_permission_user_turn(
             "before switch",
             initial.cwd.path().to_path_buf(),
@@ -3002,7 +3002,7 @@ async fn pre_sampling_compact_falls_back_from_retired_previous_model_after_renam
     .await;
 
     initial
-        .codex
+        .inocode
         .submit(Op::Shutdown)
         .await
         .expect("shutdown initial session");
@@ -3025,7 +3025,7 @@ async fn pre_sampling_compact_falls_back_from_retired_previous_model_after_renam
         .expect("resume codex");
 
     resumed
-        .codex
+        .inocode
         .start_or_steer_turn(disabled_permission_user_turn(
             "after switch",
             resumed.cwd.path().to_path_buf(),
@@ -3127,7 +3127,7 @@ async fn pre_sampling_compact_falls_back_when_previous_model_is_not_found() {
         .expect("rollout path");
 
     initial
-        .codex
+        .inocode
         .start_or_steer_turn(disabled_permission_user_turn(
             "before switch",
             initial.cwd.path().to_path_buf(),
@@ -3141,7 +3141,7 @@ async fn pre_sampling_compact_falls_back_when_previous_model_is_not_found() {
     .await;
 
     initial
-        .codex
+        .inocode
         .submit(Op::Shutdown)
         .await
         .expect("shutdown initial session");
@@ -3165,7 +3165,7 @@ async fn pre_sampling_compact_falls_back_when_previous_model_is_not_found() {
         .expect("resume codex");
 
     resumed
-        .codex
+        .inocode
         .start_or_steer_turn(disabled_permission_user_turn(
             "after switch",
             resumed.cwd.path().to_path_buf(),
@@ -3994,7 +3994,7 @@ async fn pre_sampling_compact_runs_after_resume_and_switch_to_smaller_model() {
         .expect("rollout path");
 
     initial
-        .codex
+        .inocode
         .start_or_steer_turn(disabled_permission_user_turn(
             "before resume",
             initial.cwd.path().to_path_buf(),
@@ -4008,7 +4008,7 @@ async fn pre_sampling_compact_runs_after_resume_and_switch_to_smaller_model() {
     .await;
 
     initial
-        .codex
+        .inocode
         .submit(Op::Shutdown)
         .await
         .expect("shutdown initial session");
@@ -4031,7 +4031,7 @@ async fn pre_sampling_compact_runs_after_resume_and_switch_to_smaller_model() {
         .expect("resume codex");
 
     resumed
-        .codex
+        .inocode
         .start_or_steer_turn(disabled_permission_user_turn(
             "after resume",
             resumed.cwd.path().to_path_buf(),
@@ -4115,7 +4115,7 @@ async fn pre_sampling_compact_recovers_comp_hash_after_resume() {
         .expect("rollout path");
 
     initial
-        .codex
+        .inocode
         .start_or_steer_turn(disabled_permission_user_turn(
             "before resume",
             initial.cwd.path().to_path_buf(),
@@ -4129,7 +4129,7 @@ async fn pre_sampling_compact_recovers_comp_hash_after_resume() {
     .await;
 
     initial
-        .codex
+        .inocode
         .submit(Op::Shutdown)
         .await
         .expect("shutdown initial session");
@@ -4162,7 +4162,7 @@ async fn pre_sampling_compact_recovers_comp_hash_after_resume() {
         .expect("resume codex");
 
     resumed
-        .codex
+        .inocode
         .start_or_steer_turn(disabled_permission_user_turn(
             "after resume",
             resumed.cwd.path().to_path_buf(),
@@ -4242,7 +4242,7 @@ async fn pre_sampling_compact_skips_missing_comp_hash_after_resume() {
         .expect("rollout path");
 
     initial
-        .codex
+        .inocode
         .start_or_steer_turn(disabled_permission_user_turn(
             "before resume",
             initial.cwd.path().to_path_buf(),
@@ -4256,7 +4256,7 @@ async fn pre_sampling_compact_skips_missing_comp_hash_after_resume() {
     .await;
 
     initial
-        .codex
+        .inocode
         .submit(Op::Shutdown)
         .await
         .expect("shutdown initial session");
@@ -4287,7 +4287,7 @@ async fn pre_sampling_compact_skips_missing_comp_hash_after_resume() {
         .expect("resume codex");
 
     resumed
-        .codex
+        .inocode
         .start_or_steer_turn(disabled_permission_user_turn(
             "after resume",
             resumed.cwd.path().to_path_buf(),
@@ -4488,7 +4488,7 @@ async fn manual_compact_retries_after_context_window_error() {
         set_test_compact_prompt(config);
         config.model_auto_compact_token_limit = Some(200_000);
     });
-    let codex = builder.build(&server).await.unwrap().codex;
+    let codex = builder.build(&server).await.unwrap().inocode;
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -4582,7 +4582,7 @@ async fn manual_compact_non_context_failure_retries_then_emits_task_error() {
         .build(&server)
         .await
         .expect("build codex")
-        .codex;
+        .inocode;
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -4672,7 +4672,7 @@ async fn manual_compact_twice_preserves_latest_user_messages() {
         config.model_provider = model_provider;
         set_test_compact_prompt(config);
     });
-    let codex = builder.build(&server).await.unwrap().codex;
+    let codex = builder.build(&server).await.unwrap().inocode;
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -4903,7 +4903,7 @@ async fn auto_compact_allows_multiple_attempts_when_interleaved_with_other_turn_
         // Leave enough headroom for per-item request metadata before the second compaction.
         config.model_auto_compact_token_limit = Some(300);
     });
-    let codex = builder.build(&server).await.unwrap().codex;
+    let codex = builder.build(&server).await.unwrap().inocode;
 
     let mut auto_compact_lifecycle_events = Vec::new();
     for user in [MULTI_AUTO_MSG, follow_up_user, final_user] {
@@ -5043,7 +5043,7 @@ async fn paginated_compaction_cold_resume_from_bounded_suffix() -> Result<()> {
     // The resumed turn retains its frozen settings, even after an in-flight update.
     let expected_settings = test.codex.thread_settings_snapshot().await;
     let codex_core::TurnInputSubmission::Started { turn_id, .. } = test
-        .codex
+        .inocode
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: FUNCTION_CALL_LIMIT_MSG.into(),
             text_elements: Vec::new(),
@@ -5212,7 +5212,7 @@ async fn snapshot_request_shape_mid_turn_continuation_compaction() {
         config.model_context_window = Some(context_window);
         config.model_auto_compact_token_limit = Some(limit);
     });
-    let codex = builder.build_with_auto_env(&server).await.unwrap().codex;
+    let codex = builder.build_with_auto_env(&server).await.unwrap().inocode;
     let continuation = r#"{"review_target":"RB._~:-opaque"}"#;
 
     codex
@@ -5800,7 +5800,7 @@ async fn snapshot_request_shape_pre_turn_compaction_including_incoming_user_mess
         .build(&server)
         .await
         .expect("build codex")
-        .codex;
+        .inocode;
 
     for user in ["USER_ONE", "USER_TWO"] {
         codex
@@ -6019,7 +6019,7 @@ async fn snapshot_request_shape_pre_turn_compaction_context_window_exceeded() {
         .build(&server)
         .await
         .expect("build codex")
-        .codex;
+        .inocode;
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -6093,7 +6093,7 @@ async fn snapshot_request_shape_manual_compact_without_previous_user_messages() 
         .build(&server)
         .await
         .expect("build codex")
-        .codex;
+        .inocode;
 
     codex.submit(Op::Compact).await.expect("run /compact");
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;

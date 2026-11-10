@@ -41,7 +41,7 @@ fn typed_message_records_keep_independent_daily_remainders() {
             ..Default::default()
         },
         clients: vec![backend::ClientWorkspaceUsageCount {
-            client_id: "CODEX_CLI".into(),
+            client_id: "INOCODE_CLI".into(),
             turns: 8,
             ..Default::default()
         }],

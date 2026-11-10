@@ -345,7 +345,7 @@ impl<K: KeyringStore + Clone + 'static> CredentialStore for OAuthCredentialStore
                 if inner.store.backend == Backend::Keyring(AuthKeyringBackendKind::Direct)
                     && !inner.server_name.starts_with("ema-idp:")
                 {
-                    // Ordinary direct-keyring entries are shared across CODEX_HOMEs, but their
+                    // Ordinary direct-keyring entries are shared across INOCODE_HOMEs, but their
                     // refresh locks are not. Do not risk overwriting another home's newer login.
                     // Enterprise entries include the home in their key and remain protected.
                     warn!(

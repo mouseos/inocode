@@ -62,7 +62,7 @@ fn adapter_preserves_trusted_tool_authority_and_scope() {
     let tool = TrustedTool {
         server: "example".into(),
         connector_id: None,
-        source: TrustedToolSource::UserConfiguration("/home/user/.codex/config.toml".into()),
+        source: TrustedToolSource::UserConfiguration("/home/user/.inocode/config.toml".into()),
     };
     let trusted = ResponseItem::from(tool.render_fragment());
     let user: ResponseItem =
@@ -144,7 +144,7 @@ async fn decisions_key_lookup_honors_override_or_reloaded_login() {
     manager.reload().await;
     let default = live.and_then(current_key);
     let custom_url = decisions_api_key("openai", Some("https://gateway.example/v1"), &manager);
-    let expected = match std::env::var("CODEX_GUARDIAN_DECISIONS_API_KEY") {
+    let expected = match std::env::var("INOCODE_GUARDIAN_DECISIONS_API_KEY") {
         Ok(key) => (Ok(key.clone()), Ok(key)),
         Err(std::env::VarError::NotPresent) => {
             let pinned = pinned.unwrap();
@@ -166,11 +166,11 @@ async fn decisions_key_lookup_honors_override_or_reloaded_login() {
 #[test]
 fn decisions_prefers_cached_api_key_over_openai_env() -> anyhow::Result<()> {
     // Bazel runs tests in a shared process. Set keys only in a child so other tests cannot see them.
-    if std::env::var_os("CODEX_GUARDIAN_DECISIONS_TEST_CHILD").is_none() {
+    if std::env::var_os("INOCODE_GUARDIAN_DECISIONS_TEST_CHILD").is_none() {
         let output = std::process::Command::new(std::env::current_exe()?)
             .args(["--exact", std::thread::current().name().unwrap()])
-            .env("CODEX_GUARDIAN_DECISIONS_TEST_CHILD", "1")
-            .env_remove("CODEX_GUARDIAN_DECISIONS_API_KEY")
+            .env("INOCODE_GUARDIAN_DECISIONS_TEST_CHILD", "1")
+            .env_remove("INOCODE_GUARDIAN_DECISIONS_API_KEY")
             .env("OPENAI_API_KEY", "synthetic-env-key")
             .output()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -204,11 +204,11 @@ fn decisions_prefers_cached_api_key_over_openai_env() -> anyhow::Result<()> {
 #[test]
 fn decisions_falls_back_to_openai_env_key() -> anyhow::Result<()> {
     let env_key = "synthetic-env-key";
-    if std::env::var_os("CODEX_GUARDIAN_DECISIONS_TEST_CHILD").is_none() {
+    if std::env::var_os("INOCODE_GUARDIAN_DECISIONS_TEST_CHILD").is_none() {
         let output = std::process::Command::new(std::env::current_exe()?)
             .args(["--exact", std::thread::current().name().unwrap()])
-            .env("CODEX_GUARDIAN_DECISIONS_TEST_CHILD", "1")
-            .env_remove("CODEX_GUARDIAN_DECISIONS_API_KEY")
+            .env("INOCODE_GUARDIAN_DECISIONS_TEST_CHILD", "1")
+            .env_remove("INOCODE_GUARDIAN_DECISIONS_API_KEY")
             .env("OPENAI_API_KEY", env_key)
             .output()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -783,7 +783,7 @@ async fn decisions_preserves_platform_wif_credentials() -> anyhow::Result<()> {
                 "OPENAI_IDENTITY_TOKEN_FILE",
                 Some(identity.path().to_str().expect("test path is UTF-8")),
             ),
-            ("CODEX_GUARDIAN_DECISIONS_API_KEY", None),
+            ("INOCODE_GUARDIAN_DECISIONS_API_KEY", None),
         ],
     )
     .await?;

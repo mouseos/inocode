@@ -18,7 +18,7 @@ fn snapshot() -> serde_json::Value {
 
 fn request() -> SkillReadRequest<'static> {
     SkillReadRequest {
-        authority: SkillAuthority::new(SkillSourceKind::Cloud, CODEX_APPS_MCP_SERVER_NAME),
+        authority: SkillAuthority::new(SkillSourceKind::Cloud, INOCODE_APPS_MCP_SERVER_NAME),
         package: SkillPackageId("skill://demo/work".into()),
         resource: SkillResourceId::new("skill://demo/work/SKILL.md"),
         context: SkillReadContext::Cloud {

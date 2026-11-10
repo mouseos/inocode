@@ -111,11 +111,11 @@ fn codex_home_for_windows_sandbox_test(name: &str) -> anyhow::Result<TestCodexHo
     // Only tests that use the elevated accounts also take the shared account guard.
     if let Some(test_tmpdir) = std::env::var_os("TEST_TMPDIR") {
         // The elevated backend provisions machine-local sandbox users. Bazel
-        // retries run in the same Windows VM, so keep CODEX_HOME stable within
+        // retries run in the same Windows VM, so keep INOCODE_HOME stable within
         // the test temp root and let setup reconcile its persisted ACL state.
         let codex_home = PathBuf::from(test_tmpdir).join(name);
         std::fs::create_dir_all(&codex_home)
-            .with_context(|| format!("create stable test CODEX_HOME {}", codex_home.display()))?;
+            .with_context(|| format!("create stable test INOCODE_HOME {}", codex_home.display()))?;
         return Ok(TestCodexHome::Persistent(codex_home));
     }
 
@@ -279,11 +279,11 @@ fn windows_sandbox_cli_preserves_managed_deny_reads_across_launches() -> anyhow:
     for launch in 1..=2 {
         let output = Command::new(&codex)
             .current_dir(&work)
-            .env("CODEX_HOME", codex_home.path())
-            .env("CODEX_WINDOWS_ALLOWED_TEXT", &allowed_text)
-            .env("CODEX_WINDOWS_DENIED_TEXT", &denied_text)
-            .env("CODEX_WINDOWS_ALLOWED_MODULE", &allowed_module)
-            .env("CODEX_WINDOWS_DENIED_MODULE", &denied_module)
+            .env("INOCODE_HOME", codex_home.path())
+            .env("INOCODE_WINDOWS_ALLOWED_TEXT", &allowed_text)
+            .env("INOCODE_WINDOWS_DENIED_TEXT", &denied_text)
+            .env("INOCODE_WINDOWS_ALLOWED_MODULE", &allowed_module)
+            .env("INOCODE_WINDOWS_DENIED_MODULE", &denied_module)
             .args(["sandbox", "--permission-profile"])
             .arg("managed-deny-test")
             .arg("--cd")
@@ -339,7 +339,7 @@ async fn windows_elevated_setup_rejects_default_root_deny() -> anyhow::Result<()
 async fn windows_restricted_token_rejects_exact_and_glob_deny_read_policy() -> anyhow::Result<()> {
     let codex_home =
         codex_home_for_windows_sandbox_test("windows-restricted-token-deny-read-codex-home")?;
-    let _codex_home_guard = EnvVarGuard::set("CODEX_HOME", codex_home.path().as_os_str());
+    let _codex_home_guard = EnvVarGuard::set("INOCODE_HOME", codex_home.path().as_os_str());
     let workspace = TempDir::new()?;
     let cwd = dunce::canonicalize(workspace.path())?.abs();
     let secret = cwd.join("secret.env");
@@ -427,7 +427,7 @@ async fn windows_elevated_temp_only_core_and_direct_spawn_enforce_carveouts() ->
 {
     let _account_guard = WindowsSandboxAccountTestGuard::acquire()?;
     let codex_home = codex_home_for_windows_sandbox_test("windows-temp-only-child-codex-home")?;
-    let _codex_home_guard = EnvVarGuard::set("CODEX_HOME", codex_home.path().as_os_str());
+    let _codex_home_guard = EnvVarGuard::set("INOCODE_HOME", codex_home.path().as_os_str());
     stage_windows_sandbox_helpers()?;
     let fixture = TempDir::new()?;
     let root = dunce::canonicalize(fixture.path())?;
@@ -612,7 +612,7 @@ async fn windows_elevated_does_not_create_missing_workspace_metadata() -> anyhow
     let _account_guard = WindowsSandboxAccountTestGuard::acquire()?;
     let codex_home =
         codex_home_for_windows_sandbox_test("windows-elevated-missing-metadata-codex-home")?;
-    let _codex_home_guard = EnvVarGuard::set("CODEX_HOME", codex_home.path().as_os_str());
+    let _codex_home_guard = EnvVarGuard::set("INOCODE_HOME", codex_home.path().as_os_str());
     stage_windows_sandbox_helpers()?;
     let workspace = TempDir::new()?;
     let cwd = dunce::canonicalize(workspace.path())?.abs();
@@ -737,7 +737,7 @@ $rules = foreach ($name in @('codex_sandbox_offline_block_inbound', 'codex_sandb
 async fn windows_elevated_enforces_deny_read_and_protects_setup_marker() -> anyhow::Result<()> {
     let _account_guard = WindowsSandboxAccountTestGuard::acquire()?;
     let codex_home = codex_home_for_windows_sandbox_test("windows-elevated-deny-read-codex-home")?;
-    let _codex_home_guard = EnvVarGuard::set("CODEX_HOME", codex_home.path().as_os_str());
+    let _codex_home_guard = EnvVarGuard::set("INOCODE_HOME", codex_home.path().as_os_str());
     stage_windows_sandbox_helpers()?;
     let workspace = TempDir::new()?;
     let cwd = dunce::canonicalize(workspace.path())?.abs();
@@ -747,7 +747,7 @@ async fn windows_elevated_enforces_deny_read_and_protects_setup_marker() -> anyh
     let _user_profile_guard = EnvVarGuard::set("USERPROFILE", user_profile.path().as_os_str());
     let exact_secret = user_profile.path().join("exact-secret.txt");
     std::fs::write(&exact_secret, "exact secret\n")?;
-    let bundled_skill_dir = user_profile.path().join(".codex/plugins/cache");
+    let bundled_skill_dir = user_profile.path().join(".inocode/plugins/cache");
     std::fs::create_dir_all(&bundled_skill_dir)?;
     let bundled_skill = bundled_skill_dir.join("SKILL.md");
     let setup_marker = codex_home.path().join(".sandbox").join("setup_marker.json");
@@ -880,7 +880,7 @@ async fn windows_elevated_powershell_preserves_relative_paths() -> anyhow::Resul
     let codex_home = codex_home_for_windows_sandbox_test(
         "windows-elevated-powershell-relative-paths-codex-home",
     )?;
-    let _codex_home_guard = EnvVarGuard::set("CODEX_HOME", codex_home.path().as_os_str());
+    let _codex_home_guard = EnvVarGuard::set("INOCODE_HOME", codex_home.path().as_os_str());
     stage_windows_sandbox_helpers()?;
     // The refresh caller must own the helper directory after provisioning protects its DACL.
     std::fs::create_dir_all(codex_windows_sandbox::sandbox_bin_dir(codex_home.path()))?;
@@ -895,9 +895,9 @@ async fn windows_elevated_powershell_preserves_relative_paths() -> anyhow::Resul
 $owner = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $security = [System.Security.AccessControl.DirectorySecurity]::new()
 $security.SetSecurityDescriptorSddlForm("D:P(A;OICI;FA;;;${owner})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)", [System.Security.AccessControl.AccessControlSections]::Access)
-[System.IO.DirectoryInfo]::new($env:CODEX_TEST_PROFILE).SetAccessControl($security)"#,
+[System.IO.DirectoryInfo]::new($env:INOCODE_TEST_PROFILE).SetAccessControl($security)"#,
         )
-        .env("CODEX_TEST_PROFILE", &fake_profile)
+        .env("INOCODE_TEST_PROFILE", &fake_profile)
         .output()
         .context("configure protected synthetic user-profile ACL")?;
     assert!(
@@ -1007,7 +1007,7 @@ async fn windows_elevated_unified_exec_enforces_large_recursive_deny_reads() -> 
     let _account_guard = WindowsSandboxAccountTestGuard::acquire()?;
     let codex_home =
         codex_home_for_windows_sandbox_test("windows-elevated-tool-runtime-deny-read-codex-home")?;
-    let _codex_home_guard = EnvVarGuard::set("CODEX_HOME", codex_home.path().as_os_str());
+    let _codex_home_guard = EnvVarGuard::set("INOCODE_HOME", codex_home.path().as_os_str());
     stage_windows_sandbox_helpers()?;
 
     let configured_codex_home = dunce::canonicalize(codex_home.path())?.abs();
@@ -1278,7 +1278,7 @@ async fn windows_elevated_approved_git_pull_preserves_deny_read() -> anyhow::Res
 
     let _account_guard = WindowsSandboxAccountTestGuard::acquire()?;
     let codex_home = codex_home_for_windows_sandbox_test("windows-elevated-git-pull-deny-read")?;
-    let _codex_home_guard = EnvVarGuard::set("CODEX_HOME", codex_home.path().as_os_str());
+    let _codex_home_guard = EnvVarGuard::set("INOCODE_HOME", codex_home.path().as_os_str());
     stage_windows_sandbox_helpers()?;
     let home = dunce::canonicalize(codex_home.path())?.abs();
     let builder = test_codex()
@@ -1373,7 +1373,7 @@ async fn windows_elevated_approved_git_pull_preserves_deny_read() -> anyhow::Res
         "exec_command",
     )
     .await;
-    let codex = &harness.test().codex;
+    let codex = &harness.test().inocode;
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "pull the fixture repository".into(),

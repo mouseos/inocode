@@ -150,7 +150,7 @@ async fn external_agent_config_import_skips_repository_redirect_after_detection(
     let codex_home = TempDir::new()?;
     let repository = TempDir::new()?;
     let repo_root = repository.path();
-    let repo_config_dir = repo_root.join(".codex");
+    let repo_config_dir = repo_root.join(".inocode");
     let global_config = codex_home.path().join("config.toml");
     std::fs::create_dir(repo_root.join(".git"))?;
     std::fs::create_dir(&repo_config_dir)?;
@@ -708,7 +708,7 @@ async fn external_agent_config_import_sends_completion_notification_for_sync_onl
         .without_auto_env()
         .with_env_overrides(&[
             ("HOME", Some(home_dir.as_str())),
-            ("CODEX_SQLITE_HOME", Some(sqlite_home_dir.as_str())),
+            ("INOCODE_SQLITE_HOME", Some(sqlite_home_dir.as_str())),
         ])
         .build_initialized_with_timeout(DEFAULT_TIMEOUT)
         .await?;
@@ -813,7 +813,7 @@ async fn external_agent_config_records_externally_completed_import_history() -> 
         .without_auto_env()
         .with_env_overrides(&[
             ("HOME", Some(home_dir.as_str())),
-            ("CODEX_SQLITE_HOME", Some(sqlite_home_dir.as_str())),
+            ("INOCODE_SQLITE_HOME", Some(sqlite_home_dir.as_str())),
         ])
         .build_initialized_with_timeout(DEFAULT_TIMEOUT)
         .await?;
@@ -1333,7 +1333,7 @@ async fn external_agent_config_import_reports_failed_sync_import_in_completion()
         .with_env_overrides(&[
             ("HOME", Some(home_dir.as_str())),
             (
-                "CODEX_ANALYTICS_EVENTS_CAPTURE_FILE",
+                "INOCODE_ANALYTICS_EVENTS_CAPTURE_FILE",
                 Some(analytics_capture_file.as_str()),
             ),
         ])

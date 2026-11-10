@@ -12,7 +12,7 @@ import unittest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "codex-cli" / "scripts"))
 
-from build_npm_package import CODEX_PLATFORM_PACKAGES
+from build_npm_package import INOCODE_PLATFORM_PACKAGES
 
 
 class NpmPackageTest(unittest.TestCase):
@@ -22,7 +22,7 @@ class NpmPackageTest(unittest.TestCase):
         # Use an installed executable as prebuilt input: packaging must preserve its
         # bytes even when staging a package for another operating system.
         executable = shutil.which("whoami") or sys.executable
-        for package, platform in CODEX_PLATFORM_PACKAGES.items():
+        for package, platform in INOCODE_PLATFORM_PACKAGES.items():
             with self.subTest(package=package), tempfile.TemporaryDirectory() as temp:
                 root = Path(temp)
                 target = platform["target_triple"]

@@ -138,7 +138,7 @@ async fn host_budget_context_refreshes_after_remote_compaction() -> Result<()> {
         .build_with_auto_env(&server)
         .await?;
     let reader = test
-        .codex
+        .inocode
         .thread_extension_data()
         .get::<HostSessionReader>()
         .expect("host agent session reader");

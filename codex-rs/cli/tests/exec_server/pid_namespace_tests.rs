@@ -83,9 +83,9 @@ exec "${0%/*}/real-bwrap" "$@"
                 "linux_sandbox_pid_namespace = 'inherit'\n")?;
             let mut command = tokio::process::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?);
             command.args(["exec-server", "--listen", "stdio"])
-                .env("CODEX_HOME", codex_home.path())
+                .env("INOCODE_HOME", codex_home.path())
                 .env("PATH", &path)
-                .env("CODEX_LINUX_SANDBOX_PID_NAMESPACE", "inherit")
+                .env("INOCODE_LINUX_SANDBOX_PID_NAMESPACE", "inherit")
                 .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
                 .kill_on_drop(true);
             if inherit {
@@ -112,7 +112,7 @@ if [ "$MINIMAL" = true ]; then
     ! cat /proc/version
 fi
 "#],
-                    "env": {"PATH": path, "MINIMAL": minimal.to_string(), "CODEX_LINUX_SANDBOX_PID_NAMESPACE": "inherit"},
+                    "env": {"PATH": path, "MINIMAL": minimal.to_string(), "INOCODE_LINUX_SANDBOX_PID_NAMESPACE": "inherit"},
                     "tty": false, "pipeStdin": false, "arg0": null
                 }
             })).await?;

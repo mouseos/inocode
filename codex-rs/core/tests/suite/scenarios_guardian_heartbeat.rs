@@ -82,7 +82,7 @@ async fn heartbeat_repetitions_keep_later_human_authorization() -> anyhow::Resul
             )
         };
         let submission = test
-            .codex
+            .inocode
             .start_or_steer_turn(
                 TurnInputRequest::user_input(vec![UserInput::Text {
                     text: prompt,

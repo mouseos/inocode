@@ -30,10 +30,10 @@ use codex_protocol::models::PermissionProfile;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use windows_sys::Win32::Foundation::CloseHandle;
 
-pub const CODEX_WINDOWS_SANDBOX_ARG1: &str = "--run-as-windows-sandbox";
+pub const INOCODE_WINDOWS_SANDBOX_ARG1: &str = "--run-as-windows-sandbox";
 
 const COMMAND_CWD_FLAG: &str = "--command-cwd";
-const CODEX_HOME_FLAG: &str = "--codex-home";
+const INOCODE_HOME_FLAG: &str = "--codex-home";
 const DENY_READ_PATHS_JSON_FLAG: &str = "--deny-read-paths-json";
 const DENY_WRITE_PATHS_JSON_FLAG: &str = "--deny-write-paths-json";
 const ENV_JSON_FLAG: &str = "--env-json";
@@ -73,8 +73,8 @@ pub fn create_windows_sandbox_command_args_for_permission_profile(
     let env_json = serde_json::to_string(env_map)
         .unwrap_or_else(|err| panic!("failed to serialize env: {err}"));
     let mut args = vec![
-        CODEX_WINDOWS_SANDBOX_ARG1.to_string(),
-        CODEX_HOME_FLAG.to_string(),
+        INOCODE_WINDOWS_SANDBOX_ARG1.to_string(),
+        INOCODE_HOME_FLAG.to_string(),
         codex_home.to_string_lossy().into_owned(),
         COMMAND_CWD_FLAG.to_string(),
         command_cwd.as_path().to_string_lossy().into_owned(),
@@ -247,7 +247,7 @@ pub fn create_windows_sandbox_command_args_for_permission_profile(
     if crate::launch_environment::needs_environment(&payload) {
         crate::environment_transport::encode(&payload, env_map)?;
         return Ok(vec![
-            CODEX_WINDOWS_SANDBOX_ARG1.to_string(),
+            INOCODE_WINDOWS_SANDBOX_ARG1.to_string(),
             crate::launch_environment::ARG.to_string(),
         ]);
     }
@@ -367,7 +367,7 @@ fn parse_windows_sandbox_wrapper_args(args: Vec<String>) -> Result<WindowsSandbo
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            CODEX_HOME_FLAG => codex_home = Some(PathBuf::from(next_flag_value(&mut args, &arg)?)),
+            INOCODE_HOME_FLAG => codex_home = Some(PathBuf::from(next_flag_value(&mut args, &arg)?)),
             COMMAND_CWD_FLAG => {
                 command_cwd = Some(absolute_path_arg(next_flag_value(&mut args, &arg)?, &arg)?);
             }
@@ -425,10 +425,10 @@ fn parse_windows_sandbox_wrapper_args(args: Vec<String>) -> Result<WindowsSandbo
         }
     }
 
-    let codex_home = codex_home.ok_or_else(|| anyhow!("missing required {CODEX_HOME_FLAG}"))?;
+    let codex_home = codex_home.ok_or_else(|| anyhow!("missing required {INOCODE_HOME_FLAG}"))?;
     if !codex_home.is_absolute() {
         bail!(
-            "{CODEX_HOME_FLAG} must be absolute: {}",
+            "{INOCODE_HOME_FLAG} must be absolute: {}",
             codex_home.display()
         );
     }

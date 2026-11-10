@@ -9,7 +9,7 @@ use crate::context::ContextualUserFragment;
 use crate::context::PluginInstructions;
 use crate::plugins::PluginCapabilitySummary;
 use crate::plugins::render_explicit_plugin_instructions;
-use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+use codex_mcp::INOCODE_APPS_MCP_SERVER_NAME;
 use codex_mcp::ToolInfo;
 
 pub(crate) fn build_plugin_injections(
@@ -31,7 +31,7 @@ pub(crate) fn build_plugin_injections(
             let available_mcp_servers = mcp_tools
                 .iter()
                 .filter(|tool| {
-                    tool.server_name != CODEX_APPS_MCP_SERVER_NAME
+                    tool.server_name != INOCODE_APPS_MCP_SERVER_NAME
                         && tool
                             .plugin_display_names
                             .iter()

@@ -68,7 +68,7 @@ runs:
       working-directory: codex-rs
       env:
         TARGET: ${{ inputs.target }}
-        CODEX_MUSL_RELEASE_LINK_FLAGS: "1"
+        INOCODE_MUSL_RELEASE_LINK_FLAGS: "1"
       run: bash "${GITHUB_WORKSPACE}/.github/scripts/install-musl-build-tools.sh"
 
     - name: Disable aws-lc jitter entropy (musl)
@@ -112,7 +112,7 @@ runs:
         # bwrap at runtime, so hash its final stripped bytes first.
         strip --strip-debug --strip-unneeded "$bwrap_path"
         digest="$(sha256sum "$bwrap_path" | awk '{print $1}')"
-        echo "CODEX_BWRAP_SHA256=${digest}" >> "$GITHUB_ENV"
+        echo "INOCODE_BWRAP_SHA256=${digest}" >> "$GITHUB_ENV"
 
     - name: Build Codex package binaries
       shell: bash

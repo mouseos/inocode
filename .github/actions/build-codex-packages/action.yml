@@ -123,7 +123,7 @@ runs:
       working-directory: codex-rs
       env:
         TARGET: ${{ inputs.target }}
-        CODEX_PACKAGE_VERSION: ${{ inputs.package-version }}
+        INOCODE_PACKAGE_VERSION: ${{ inputs.package-version }}
         PACKAGE_SOURCE_ROOT: ${{ steps.package_setup.outputs.source_root }}
       run: |
         set -euo pipefail
@@ -140,7 +140,7 @@ runs:
           --code-mode-host-bin "${release_dir}/codex-code-mode-host${exe_suffix}"
           --exec-server-bin "${release_dir}/codex-exec-server${exe_suffix}"
           --cargo-profile release
-          --package-version "$CODEX_PACKAGE_VERSION"
+          --package-version "$INOCODE_PACKAGE_VERSION"
           --force
         )
         if [[ "$RUNNER_OS" == "Linux" ]]; then

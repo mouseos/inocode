@@ -81,12 +81,12 @@ fn snapshot_capture_selects_declarations_and_environment() -> Result<()> {
             )
             .unwrap();
             let output = Command::new(shell)
-                .args(["-c", &format!("readonly CODEX_THREAD_ID; {script}")])
+                .args(["-c", &format!("readonly INOCODE_THREAD_ID; {script}")])
                 .env_clear()
                 .env("HOME", dir.path())
                 .env("PATH", "/usr/bin:/bin")
-                .env("CODEX_THREAD_ID", "capture-thread")
-                .env("CODEX_TOOL_CALL_ID", "profile-call")
+                .env("INOCODE_THREAD_ID", "capture-thread")
+                .env("INOCODE_TOOL_CALL_ID", "profile-call")
                 .env("APP_SETTING", "value")
                 .output()?;
             assert!(output.status.success(), "{shell}: {output:?}");
@@ -111,8 +111,8 @@ fn snapshot_capture_selects_declarations_and_environment() -> Result<()> {
 
             // Both replay paths must preserve current metadata from a full capture.
             let replay_environment = HashMap::from([
-                ("CODEX_THREAD_ID".to_string(), "capture-thread".to_string()),
-                ("CODEX_TOOL_CALL_ID".to_string(), "profile-call".to_string()),
+                ("INOCODE_THREAD_ID".to_string(), "capture-thread".to_string()),
+                ("INOCODE_TOOL_CALL_ID".to_string(), "profile-call".to_string()),
                 ("APP_SETTING".to_string(), "value".to_string()),
             ]);
             let empty = HashMap::new();
@@ -133,20 +133,20 @@ fn snapshot_capture_selects_declarations_and_environment() -> Result<()> {
                 ),
                 brokered.script,
             ] {
-                assert!(!snapshot.contains("CODEX_THREAD_ID"), "{shell}: {snapshot}");
+                assert!(!snapshot.contains("INOCODE_THREAD_ID"), "{shell}: {snapshot}");
                 assert!(
-                    !snapshot.contains("CODEX_TOOL_CALL_ID"),
+                    !snapshot.contains("INOCODE_TOOL_CALL_ID"),
                     "{shell}: {snapshot}"
                 );
                 let path = dir.path().join("snapshot.sh");
                 std::fs::write(&path, snapshot)?;
                 let replay = Command::new(shell)
-                    .args(["-c", "set -e; . \"$1\"; printf '%s|%s|%s' \"$CODEX_THREAD_ID\" \"$CODEX_TOOL_CALL_ID\" \"$APP_SETTING\"", "replay"])
+                    .args(["-c", "set -e; . \"$1\"; printf '%s|%s|%s' \"$INOCODE_THREAD_ID\" \"$INOCODE_TOOL_CALL_ID\" \"$APP_SETTING\"", "replay"])
                     .arg(&path)
                     .env_clear()
                     .env("PATH", "/usr/bin:/bin")
-                    .env("CODEX_THREAD_ID", "current-thread")
-                    .env("CODEX_TOOL_CALL_ID", "current-call")
+                    .env("INOCODE_THREAD_ID", "current-thread")
+                    .env("INOCODE_TOOL_CALL_ID", "current-call")
                     .output()?;
                 assert!(replay.status.success(), "{shell}: {replay:?}");
                 assert_eq!(

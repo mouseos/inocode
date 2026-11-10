@@ -204,7 +204,7 @@ fn queue_rejects_unsupported_options() -> Result<()> {
         ("--remote unix:// queue -C .", "`--cd` with `--remote`"),
     ] {
         let output = std::process::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?)
-            .env("CODEX_HOME", codex_home.path())
+            .env("INOCODE_HOME", codex_home.path())
             .args(args.split_whitespace())
             .args(["--thread", THREAD_ID, "--message", "do the thing"])
             .output()?;
@@ -235,7 +235,7 @@ async fn run_remote_queue_command(response: QueueResponse) -> Result<(Output, Va
             "--remote",
             endpoint.as_str(),
             "--remote-auth-token-env",
-            "CODEX_REMOTE_TOKEN",
+            "INOCODE_REMOTE_TOKEN",
             "queue",
         ]
     } else {
@@ -244,12 +244,12 @@ async fn run_remote_queue_command(response: QueueResponse) -> Result<(Output, Va
             "--remote",
             endpoint.as_str(),
             "--remote-auth-token-env",
-            "CODEX_REMOTE_TOKEN",
+            "INOCODE_REMOTE_TOKEN",
         ]
     };
     let output = tokio::process::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?)
-        .env("CODEX_HOME", codex_home.path())
-        .env("CODEX_REMOTE_TOKEN", "test-token")
+        .env("INOCODE_HOME", codex_home.path())
+        .env("INOCODE_REMOTE_TOKEN", "test-token")
         .args(remote_args)
         .args(resume.then_some("--resume"))
         .args(["--thread", THREAD_ID, "--message", "do the thing"])
@@ -308,7 +308,7 @@ async fn remote_session_commands_with_workload_identity_use_server_auth() -> Res
         .await;
     MockResponsesConfig::new(&model.uri())
         .with_root_config("features.plugins = false\nanalytics.enabled = false")
-        .with_provider_config("env_key = \"CODEX_QUEUE_SERVER_API_KEY\"")
+        .with_provider_config("env_key = \"INOCODE_QUEUE_SERVER_API_KEY\"")
         .write(codex_home.path())?;
     let _server = TestAppServer::builder()
         .with_program(&codex)
@@ -318,11 +318,11 @@ async fn remote_session_commands_with_workload_identity_use_server_auth() -> Res
         .with_args(&["app-server", "--listen", "unix://"])
         .with_env_overrides(&[
             ("OPENAI_API_KEY", None),
-            ("CODEX_API_KEY", None),
-            ("CODEX_ACCESS_TOKEN", None),
+            ("INOCODE_API_KEY", None),
+            ("INOCODE_ACCESS_TOKEN", None),
             (OPENAI_FEDERATION_RULE_ID_ENV_VAR, None),
             (OPENAI_IDENTITY_TOKEN_FILE_ENV_VAR, None),
-            ("CODEX_QUEUE_SERVER_API_KEY", Some("server-only-test-key")),
+            ("INOCODE_QUEUE_SERVER_API_KEY", Some("server-only-test-key")),
         ])
         .build()
         .await?;
@@ -358,13 +358,13 @@ async fn remote_session_commands_with_workload_identity_use_server_auth() -> Res
     let output = timeout(
         Duration::from_secs(30),
         Command::new(&codex)
-            .env("CODEX_HOME", codex_home.path())
+            .env("INOCODE_HOME", codex_home.path())
             .env(OPENAI_FEDERATION_RULE_ID_ENV_VAR, "rule-test")
             .env(
                 OPENAI_IDENTITY_TOKEN_FILE_ENV_VAR,
                 codex_home.path().join("missing-identity-token"),
             )
-            .env_remove("CODEX_QUEUE_SERVER_API_KEY")
+            .env_remove("INOCODE_QUEUE_SERVER_API_KEY")
             .kill_on_drop(true)
             .args(["queue", "--resume", "--remote", "unix://"])
             .args(["--thread", &thread_id, "--message", message])
@@ -432,14 +432,14 @@ async fn remote_session_commands_with_workload_identity_use_server_auth() -> Res
     let remote_command = || {
         let mut command = Command::new(&codex);
         command
-            .env("CODEX_HOME", caller_home.path())
+            .env("INOCODE_HOME", caller_home.path())
             .current_dir(caller_home.path())
             .env(OPENAI_FEDERATION_RULE_ID_ENV_VAR, "rule-test")
             .env(
                 OPENAI_IDENTITY_TOKEN_FILE_ENV_VAR,
                 caller_home.path().join("missing-identity-token"),
             )
-            .env_remove("CODEX_QUEUE_SERVER_API_KEY")
+            .env_remove("INOCODE_QUEUE_SERVER_API_KEY")
             .kill_on_drop(true)
             .args(["--remote", &endpoint]);
         command
@@ -602,7 +602,7 @@ fn remote_session_commands_validate_config() -> Result<()> {
             let codex_home = TempDir::new()?;
             std::fs::write(codex_home.path().join(config_file), config)?;
             let output = std::process::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?)
-                .env("CODEX_HOME", codex_home.path())
+                .env("INOCODE_HOME", codex_home.path())
                 .current_dir(codex_home.path())
                 .args(args)
                 .args(["--remote", "ws://127.0.0.1:1"])
@@ -645,7 +645,7 @@ async fn queue_rejects_local_daemon_that_does_not_support_queueing() -> Result<(
     });
 
     let output = tokio::process::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?)
-        .env("CODEX_HOME", codex_home.path())
+        .env("INOCODE_HOME", codex_home.path())
         .args(["queue", "--thread", THREAD_ID, "--message", "do the thing"])
         .output()
         .await?;
@@ -679,7 +679,7 @@ async fn queue_rejects_overrides_that_bypass_local_daemon() -> Result<()> {
     });
 
     let output = tokio::process::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?)
-        .env("CODEX_HOME", codex_home.path())
+        .env("INOCODE_HOME", codex_home.path())
         .args([
             "queue",
             "-C",

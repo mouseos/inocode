@@ -28,7 +28,7 @@ environment configuration.
 
 ## Release verification
 
-When `CODEX_PROVISIONED_MACOS_CANDIDATE` is enabled, tag releases automatically
+When `INOCODE_PROVISIONED_MACOS_CANDIDATE` is enabled, tag releases automatically
 publish the provisioned archives and versioned `codex-provisioned` manifest after
 both architecture packages pass the existing signature, entitlement, profile,
 architecture, stapling, Gatekeeper, and package-smoke checks. An enabled

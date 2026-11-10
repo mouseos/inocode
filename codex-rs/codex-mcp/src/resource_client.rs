@@ -26,7 +26,7 @@ use crate::McpEventStreamOpener;
 use crate::McpRuntime;
 use crate::connection_manager::McpConnectionSet;
 use crate::connection_manager::McpServerConnection;
-use crate::mcp::CODEX_APPS_MCP_SERVER_NAME;
+use crate::mcp::INOCODE_APPS_MCP_SERVER_NAME;
 
 /// One page of resources returned by an MCP server.
 #[derive(Clone, Debug, PartialEq)]
@@ -321,7 +321,7 @@ impl McpResourceClient {
                     .await?
             } else {
                 let (managed, timeout) = connections
-                    .client_by_name(CODEX_APPS_MCP_SERVER_NAME)
+                    .client_by_name(INOCODE_APPS_MCP_SERVER_NAME)
                     .await?;
                 list(managed.client, timeout).await?
             };
@@ -363,10 +363,10 @@ impl McpResourceClient {
     pub async fn list_events(&self) -> Result<McpEventCatalogSnapshot> {
         let (connections, _) = self
             .runtime
-            .latest_connections_for_event_server(CODEX_APPS_MCP_SERVER_NAME)?;
+            .latest_connections_for_event_server(INOCODE_APPS_MCP_SERVER_NAME)?;
         let cache_key = McpResourceClientCacheKey(Arc::downgrade(&connections));
         let (managed, request_timeout) = connections
-            .client_by_name(CODEX_APPS_MCP_SERVER_NAME)
+            .client_by_name(INOCODE_APPS_MCP_SERVER_NAME)
             .await?;
         let result = managed
             .client
@@ -395,9 +395,9 @@ impl McpResourceClient {
     ) -> Result<McpEventStream> {
         let (connections, cancel_event_streams_on_server_removal) = self
             .runtime
-            .latest_connections_for_event_server(CODEX_APPS_MCP_SERVER_NAME)?;
+            .latest_connections_for_event_server(INOCODE_APPS_MCP_SERVER_NAME)?;
         let (managed, _) = connections
-            .client_by_name(CODEX_APPS_MCP_SERVER_NAME)
+            .client_by_name(INOCODE_APPS_MCP_SERVER_NAME)
             .await?;
         McpEventStream::open(
             managed.client,

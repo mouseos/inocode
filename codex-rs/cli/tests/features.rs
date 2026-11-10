@@ -21,7 +21,7 @@ use wiremock::matchers::path;
 
 fn codex_command(codex_home: &Path) -> Result<assert_cmd::Command> {
     let mut cmd = assert_cmd::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?);
-    cmd.env("CODEX_HOME", codex_home);
+    cmd.env("INOCODE_HOME", codex_home);
     Ok(cmd)
 }
 
@@ -308,8 +308,8 @@ async fn features_list_honors_cloud_managed_feature_requirements() -> Result<()>
         .current_dir(codex_home.path())
         .env("NO_PROXY", "127.0.0.1,localhost")
         .env("no_proxy", "127.0.0.1,localhost")
-        .env_remove("CODEX_ACCESS_TOKEN")
-        .env_remove("CODEX_API_KEY")
+        .env_remove("INOCODE_ACCESS_TOKEN")
+        .env_remove("INOCODE_API_KEY")
         .env_remove("OPENAI_API_KEY")
         .args(["features", "list"])
         .assert()

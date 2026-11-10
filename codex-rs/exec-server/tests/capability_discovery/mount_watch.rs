@@ -16,7 +16,7 @@ use pretty_assertions::assert_eq;
 use std::path::Path;
 use std::process::Command;
 
-const PARENT_NAMESPACE: &str = "CODEX_TEST_MISSING_WATCH_PARENT_MOUNT_NS";
+const PARENT_NAMESPACE: &str = "INOCODE_TEST_MISSING_WATCH_PARENT_MOUNT_NS";
 
 #[test]
 fn bind_mount_and_unmount_reveal_skills() -> anyhow::Result<()> {

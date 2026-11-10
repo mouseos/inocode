@@ -394,7 +394,7 @@ fn daemon_eligibility_preserves_launch_options_and_explains_exclusions() {
             LoaderOverrides::default(),
             false,
             Some(std::ffi::OsStr::new("executor")),
-            "executor selection (CODEX_EXEC_SERVER_URL)",
+            "executor selection (INOCODE_EXEC_SERVER_URL)",
         ),
     ] {
         assert_eq!(

@@ -81,7 +81,7 @@ struct SnapshotRun {
 
 const POLICY_PATH_FOR_TEST: &str = "/codex/policy/path";
 const SNAPSHOT_PATH_FOR_TEST: &str = "/codex/snapshot/path";
-const SNAPSHOT_MARKER_VAR: &str = "CODEX_SNAPSHOT_POLICY_MARKER";
+const SNAPSHOT_MARKER_VAR: &str = "INOCODE_SNAPSHOT_POLICY_MARKER";
 const SNAPSHOT_MARKER_VALUE: &str = "from_snapshot";
 const POLICY_SUCCESS_OUTPUT: &str = "policy-after-snapshot";
 
@@ -366,7 +366,7 @@ async fn run_no_shell_turn(harness: &TestCodexHarness) -> Result<()> {
         ]),
     )
     .await;
-    let codex = &harness.test().codex;
+    let codex = &harness.test().inocode;
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "hello".to_string(),
@@ -612,7 +612,7 @@ async fn shell_snapshot_v2_prewarm_stops_on_shutdown() -> Result<()> {
     wait_for_file_contents(&profile_home.path().join("captures"), "x").await?;
     let pid = fs::read_to_string(profile_home.path().join("pid")).await?;
 
-    let codex = &harness.test().codex;
+    let codex = &harness.test().inocode;
     codex.submit(Op::Shutdown {}).await?;
     wait_for_event(codex, |event| matches!(event, EventMsg::ShutdownComplete)).await;
     tokio::time::timeout(Duration::from_secs(2), async {
@@ -706,7 +706,7 @@ async fn shell_snapshot_v2_guardian_uses_its_resolved_permissions_and_tools(
     // Appending detects any successful reviewer write, even with the wrong thread ID.
     fs::write(
         profile_home.path().join(".bashrc"),
-        "printf '%s\\n' \"$CODEX_THREAD_ID\" >> \"$HOME/captures\"\n",
+        "printf '%s\\n' \"$INOCODE_THREAD_ID\" >> \"$HOME/captures\"\n",
     )
     .await?;
     let builder =
@@ -1004,7 +1004,7 @@ async fn shell_snapshot_v2_preserves_legacy_snapshots_for_user_shell() -> Result
     let harness = TestCodexHarness::with_auto_env_builder(builder).await?;
     let snapshot_path = wait_for_snapshot(harness.test().home.path()).await?;
     assert_posix_snapshot_sections(&fs::read_to_string(snapshot_path).await?);
-    let codex = &harness.test().codex;
+    let codex = &harness.test().inocode;
     codex
         .submit(Op::RunUserShellCommand {
             command: "printf legacy".to_string(),

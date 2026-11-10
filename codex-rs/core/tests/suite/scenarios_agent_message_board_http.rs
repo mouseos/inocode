@@ -47,7 +47,7 @@ async fn http_board_is_shared_with_children(mode: BoardMode) -> anyhow::Result<(
                 .arg("--sqlite-home")
                 .arg(sqlite.home())
                 .args(["--listen", "127.0.0.1:0", "--allowed-host", "board.example"])
-                .env("CODEX_MESSAGE_BOARD_TOKEN", "http-board-test-token")
+                .env("INOCODE_MESSAGE_BOARD_TOKEN", "http-board-test-token")
                 .stdout(std::process::Stdio::piped())
                 .kill_on_drop(true)
                 .spawn()?;

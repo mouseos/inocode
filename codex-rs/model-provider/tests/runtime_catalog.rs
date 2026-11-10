@@ -31,7 +31,7 @@ use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
-const CHILD_SERVER: &str = "CODEX_RUNTIME_CATALOG_TEST_SERVER";
+const CHILD_SERVER: &str = "INOCODE_RUNTIME_CATALOG_TEST_SERVER";
 const TEST_NAME: &str = "production_catalog_uses_runtime_auth_and_preserves_provider_isolation";
 
 #[tokio::test]

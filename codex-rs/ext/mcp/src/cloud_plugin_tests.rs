@@ -546,7 +546,7 @@ async fn run_cloud_catalog_refresh_lifecycle() -> anyhow::Result<()> {
             config.chatgpt_base_url = apps_server.chatgpt_base_url;
         });
     let test = builder.build_with_auto_env(&server).await?;
-    assert!(!test.config.mcp_servers.get()[codex_mcp::CODEX_APPS_MCP_SERVER_NAME].enabled);
+    assert!(!test.config.mcp_servers.get()[codex_mcp::INOCODE_APPS_MCP_SERVER_NAME].enabled);
     let calendar = ("calendar", "list_events", "Cloud Demo");
     let gmail = ("gmail", "search_email", "Gmail Demo");
     for (turn, reply, expected_plugin, new_account, tool_call) in [
@@ -692,7 +692,7 @@ async fn run_cloud_catalog_refresh_lifecycle() -> anyhow::Result<()> {
                 .clone()
                 .context("cloud provider resource client missing")?;
             let previous_auth =
-                resources.auth_cache_key_for_server(codex_mcp::CODEX_APPS_MCP_SERVER_NAME);
+                resources.auth_cache_key_for_server(codex_mcp::INOCODE_APPS_MCP_SERVER_NAME);
             codex_login::auth::login_with_chatgpt_auth_tokens(
                 test.codex_home_path(),
                 "header.e30.changed",
@@ -702,10 +702,10 @@ async fn run_cloud_catalog_refresh_lifecycle() -> anyhow::Result<()> {
             test.thread_manager.auth_manager().reload().await;
             tokio::time::timeout(std::time::Duration::from_secs(10), async {
                 loop {
-                    if resources.auth_cache_key_for_server(codex_mcp::CODEX_APPS_MCP_SERVER_NAME)
+                    if resources.auth_cache_key_for_server(codex_mcp::INOCODE_APPS_MCP_SERVER_NAME)
                         != previous_auth
                         && test
-                            .codex
+                            .inocode
                             .thread_extension_data()
                             .get::<SelectedPluginSnapshot>()
                             .is_some_and(|snapshot| snapshot.plugins.is_empty())
@@ -766,7 +766,7 @@ async fn run_cloud_catalog_refresh_lifecycle() -> anyhow::Result<()> {
                             .clone()
                             .context("cloud provider resource client missing")?;
                         let previous_auth = resources
-                            .auth_cache_key_for_server(codex_mcp::CODEX_APPS_MCP_SERVER_NAME);
+                            .auth_cache_key_for_server(codex_mcp::INOCODE_APPS_MCP_SERVER_NAME);
                         // Rotate credentials without replacing the captured runtime/client.
                         codex_login::auth::login_with_chatgpt_auth_tokens(
                             test.codex_home_path(),
@@ -777,7 +777,7 @@ async fn run_cloud_catalog_refresh_lifecycle() -> anyhow::Result<()> {
                         test.thread_manager.auth_manager().reload().await;
                         // Auth must be published while cloud discovery remains paused.
                         while resources
-                            .auth_cache_key_for_server(codex_mcp::CODEX_APPS_MCP_SERVER_NAME)
+                            .auth_cache_key_for_server(codex_mcp::INOCODE_APPS_MCP_SERVER_NAME)
                             == previous_auth
                         {
                             tokio::task::yield_now().await;
@@ -791,7 +791,7 @@ async fn run_cloud_catalog_refresh_lifecycle() -> anyhow::Result<()> {
             .await??;
             // Refresh under the new auth without retaining the old catalog.
             let state = test
-                .codex
+                .inocode
                 .thread_extension_data()
                 .get::<PluginsThreadState>()
                 .context("plugin state missing")?;

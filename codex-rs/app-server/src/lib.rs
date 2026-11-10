@@ -170,7 +170,7 @@ pub use crate::transport::verified_local_daemon_socket;
 const LOG_FORMAT_ENV_VAR: &str = "LOG_FORMAT";
 const OTEL_SERVICE_NAME: &str = "codex-app-server";
 #[cfg(debug_assertions)]
-const TEST_USER_CONFIG_FILE_ENV_VAR: &str = "CODEX_APP_SERVER_TEST_USER_CONFIG_FILE";
+const TEST_USER_CONFIG_FILE_ENV_VAR: &str = "INOCODE_APP_SERVER_TEST_USER_CONFIG_FILE";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LogFormat {

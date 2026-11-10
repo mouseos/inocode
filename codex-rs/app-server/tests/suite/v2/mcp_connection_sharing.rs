@@ -47,10 +47,10 @@ async fn stdio_sharing_follows_protocol_and_enablement_for_loaded_chats() -> Res
             }
             if name == "beta" && modern {
                 // An experimental-only advertisement must leave this server usable without leases.
-                config.push_str("CODEX_MCP_PROTOCOL_VERSION = \"2026-07-28\"\n");
+                config.push_str("INOCODE_MCP_PROTOCOL_VERSION = \"2026-07-28\"\n");
                 config.push_str("MCP_TEST_EXPERIMENTAL_LEASE_ONLY = \"1\"\n");
             } else if name == "beta" {
-                config.push_str("CODEX_MCP_PROTOCOL_VERSION = \"2025-06-18\"\n");
+                config.push_str("INOCODE_MCP_PROTOCOL_VERSION = \"2025-06-18\"\n");
             }
         }
         MockResponsesConfig::new(&responses.uri())

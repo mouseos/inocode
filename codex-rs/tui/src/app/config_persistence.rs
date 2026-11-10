@@ -483,7 +483,7 @@ impl App {
             .await?;
         self.apply_runtime_policy_overrides(&mut config, RuntimePolicyOverrideScope::All)?;
         self.local_settings = self.local_settings.reloaded(&config);
-        self.refresh_server_version_overview_notice(CODEX_CLI_VERSION);
+        self.refresh_server_version_overview_notice(INOCODE_CLI_VERSION);
         // Copy preferences read directly by the live widget. Other preferences have runtime
         // caches and are adopted when the widget is replaced.
         self.chat_widget

@@ -23,7 +23,7 @@ jobs:
       - id: codex
         uses: openai/codex-action@5c3f4ccdb2b8790f73d6b21751ac00e602aa0c02 # v1.7
         with:
-          openai-api-key: ${{ secrets.CODEX_OPENAI_API_KEY }}
+          openai-api-key: ${{ secrets.INOCODE_OPENAI_API_KEY }}
           allow-users: "*"
           safety-strategy: drop-sudo
           sandbox: read-only
@@ -71,11 +71,11 @@ jobs:
       - name: Apply translation
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         env:
-          CODEX_OUTPUT: ${{ needs.translate-issue.outputs.codex_output }}
+          INOCODE_OUTPUT: ${{ needs.translate-issue.outputs.codex_output }}
         with:
           github-token: ${{ github.token }}
           script: |
-            const raw = process.env.CODEX_OUTPUT ?? '';
+            const raw = process.env.INOCODE_OUTPUT ?? '';
             let parsed;
             try {
               parsed = JSON.parse(raw);

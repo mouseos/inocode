@@ -80,8 +80,8 @@ fn message_surfaces_include_both_desktop_clients_and_unmapped_counts() {
     let date = NaiveDate::from_ymd_opt(/*year*/ 2026, /*month*/ 1, /*day*/ 9).unwrap();
     let response = serde_json::from_value(
         json!({"data": [{"date": "2026-01-09", "totals": {"turns": 10}, "clients": [
-            {"client_id": "CODEX_DESKTOP_APP", "turns": 2},
-            {"client_id": "CODEX_WORK_DESKTOP", "turns": 3},
+            {"client_id": "INOCODE_DESKTOP_APP", "turns": 2},
+            {"client_id": "INOCODE_WORK_DESKTOP", "turns": 3},
             {"client_id": "new_client", "turns": 1}
         ]}]}),
     )
@@ -300,8 +300,8 @@ fn duplicate_message_dates_preserve_each_records_other_remainder() {
     let date = NaiveDate::from_ymd_opt(/*year*/ 2026, /*month*/ 1, /*day*/ 9).unwrap();
     for grouping in [Grouping::Model, Grouping::Surface] {
         let response = serde_json::from_value(json!({"data": [
-            {"date": "2026-01-09", "totals": {"turns": 10}, "models": [{"model": "example", "turns": 8}], "clients": [{"client_id": "CODEX_CLI", "turns": 8}]},
-            {"date": "2026-01-09", "totals": {"turns": 10}, "models": [{"model": "example", "turns": 8}], "clients": [{"client_id": "CODEX_CLI", "turns": 8}]}
+            {"date": "2026-01-09", "totals": {"turns": 10}, "models": [{"model": "example", "turns": 8}], "clients": [{"client_id": "INOCODE_CLI", "turns": 8}]},
+            {"date": "2026-01-09", "totals": {"turns": 10}, "models": [{"model": "example", "turns": 8}], "clients": [{"client_id": "INOCODE_CLI", "turns": 8}]}
         ]})).unwrap();
         let (key, label) = if grouping == Grouping::Model {
             ("example", "example")

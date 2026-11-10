@@ -6,14 +6,14 @@ use std::process::Command;
 use std::process::Stdio;
 use std::time::Duration;
 
-use codex_exec_server::CODEX_ARG0_EXEC_HELPER_ARG1;
-use codex_exec_server::CODEX_FS_HELPER_ARG1;
+use codex_exec_server::INOCODE_ARG0_EXEC_HELPER_ARG1;
+use codex_exec_server::INOCODE_FS_HELPER_ARG1;
 use codex_exec_server::ExecServerRuntimeOptions;
 use codex_exec_server::ExecServerTelemetry;
 use codex_exec_server::RequestDispatchMode;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
-use codex_sandboxing::landlock::CODEX_LINUX_SANDBOX_ARG0;
+use codex_sandboxing::landlock::INOCODE_LINUX_SANDBOX_ARG0;
 use codex_test_binary_support::TestBinaryDispatchGuard;
 use codex_test_binary_support::TestBinaryDispatchMode;
 use codex_test_binary_support::configure_test_binary_dispatch;
@@ -26,10 +26,10 @@ pub(crate) const TEST_BUILD_COMMIT: &str = "0123456789abcdef0123456789abcdef0123
 pub(crate) const DELAYED_OUTPUT_AFTER_EXIT_PARENT_ARG: &str =
     "--codex-test-delayed-output-after-exit-parent";
 pub(crate) const SYSTEM_PROXY_REQUEST_URL_ENV: &str =
-    "CODEX_EXEC_SERVER_TEST_SYSTEM_PROXY_REQUEST_URL";
-pub(crate) const SYSTEM_PROXY_URL_ENV: &str = "CODEX_EXEC_SERVER_TEST_SYSTEM_PROXY_URL";
+    "INOCODE_EXEC_SERVER_TEST_SYSTEM_PROXY_REQUEST_URL";
+pub(crate) const SYSTEM_PROXY_URL_ENV: &str = "INOCODE_EXEC_SERVER_TEST_SYSTEM_PROXY_URL";
 
-const CODEX_WINDOWS_SANDBOX_ARG1: &str = "--run-as-windows-sandbox";
+const INOCODE_WINDOWS_SANDBOX_ARG1: &str = "--run-as-windows-sandbox";
 const DELAYED_OUTPUT_AFTER_EXIT_CHILD_ARG: &str = "--codex-test-delayed-output-after-exit-child";
 
 #[macro_export]
@@ -45,19 +45,19 @@ macro_rules! skip_if_mxc_unavailable {
 #[ctor]
 pub static TEST_BINARY_DISPATCH_GUARD: Option<TestBinaryDispatchGuard> = {
     let guard = configure_test_binary_dispatch("codex-exec-server-tests", |exe_name, argv1| {
-        if argv1 == Some(CODEX_ARG0_EXEC_HELPER_ARG1) {
+        if argv1 == Some(INOCODE_ARG0_EXEC_HELPER_ARG1) {
             return TestBinaryDispatchMode::DispatchArg0Only;
         }
-        if argv1 == Some(CODEX_FS_HELPER_ARG1) {
+        if argv1 == Some(INOCODE_FS_HELPER_ARG1) {
             return TestBinaryDispatchMode::DispatchArg0Only;
         }
-        if argv1 == Some(CODEX_WINDOWS_SANDBOX_ARG1) {
+        if argv1 == Some(INOCODE_WINDOWS_SANDBOX_ARG1) {
             return TestBinaryDispatchMode::DispatchArg0Only;
         }
-        if argv1 == Some(codex_sandboxing::CODEX_WINDOWS_MXC_ARG1) {
+        if argv1 == Some(codex_sandboxing::INOCODE_WINDOWS_MXC_ARG1) {
             return TestBinaryDispatchMode::DispatchArg0Only;
         }
-        if exe_name == CODEX_LINUX_SANDBOX_ARG0 {
+        if exe_name == INOCODE_LINUX_SANDBOX_ARG0 {
             return TestBinaryDispatchMode::DispatchArg0Only;
         }
         TestBinaryDispatchMode::InstallAliases
@@ -224,7 +224,7 @@ fn maybe_run_exec_server_from_test_binary(guard: Option<&TestBinaryDispatchGuard
             std::process::exit(1);
         }
     };
-    runtime_paths.prefer_mxc = env::var("CODEX_EXEC_SERVER_TEST_PREFER_MXC")
+    runtime_paths.prefer_mxc = env::var("INOCODE_EXEC_SERVER_TEST_PREFER_MXC")
         .ok()
         .map(|value| {
             value.parse().unwrap_or_else(|error| {

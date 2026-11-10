@@ -34,7 +34,7 @@ use codex_history::InitialHistory;
 use codex_history::ResumedHistory;
 use codex_history::RolloutItem;
 use codex_login::CodexAuth;
-use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+use codex_mcp::INOCODE_APPS_MCP_SERVER_NAME;
 use codex_models_manager::bundled_models_response;
 use codex_otel::OtelExporter;
 use codex_otel::OtelHttpProtocol;
@@ -1995,7 +1995,7 @@ async fn executor_skill_tool_reads_references_under_current_permissions(
         .with_config(configure_catalog_test);
     let test = builder.build_with_auto_env(&server).await?;
     let selection = test
-        .codex
+        .inocode
         .environment_selections()
         .await
         .into_iter()
@@ -3240,7 +3240,7 @@ async fn production_turn_uses_provider_host_catalog_and_core_snapshot_injection(
         .with_extensions(Arc::new(extensions.build()))
         .with_config(configure_catalog_test);
     let test = builder.build_with_auto_env(&server).await?;
-    wait_for_mcp_server(&test.codex, CODEX_APPS_MCP_SERVER_NAME).await?;
+    wait_for_mcp_server(&test.codex, INOCODE_APPS_MCP_SERVER_NAME).await?;
 
     test.submit_turn(&format!("Use ${skill_name}.")).await?;
     let request = response.single_request();
@@ -3587,7 +3587,7 @@ async fn production_turn_keeps_rebalanced_catalogs_stable_after_compaction_and_r
         entries: vec![
             SkillCatalogEntry::new(
                 SkillPackageId("cloud/cloud-search".to_string()),
-                SkillAuthority::new(SkillSourceKind::Cloud, CODEX_APPS_MCP_SERVER_NAME),
+                SkillAuthority::new(SkillSourceKind::Cloud, INOCODE_APPS_MCP_SERVER_NAME),
                 skill_name,
                 skill_description.as_str(),
                 SkillResourceId::new(skill_resource),

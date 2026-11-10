@@ -158,9 +158,9 @@ fast_default_opt_out = true
         std::fs::write(home.path().join("config.toml"), config_text)?;
         let project = tempfile::tempdir()?;
         let project_cwd = AbsolutePathBuf::from_absolute_path(project.path())?;
-        std::fs::create_dir(project.path().join(".codex"))?;
+        std::fs::create_dir(project.path().join(".inocode"))?;
         std::fs::write(
-            project.path().join(".codex/config.toml"),
+            project.path().join(".inocode/config.toml"),
             "[tui]\ntheme = 'project-theme'\n[tui.default_hosts.project_a]\nuser_a = 'project-override'\nuser_b = 'project-only'\n",
         )?;
         crate::legacy_core::config::set_project_trust_level(

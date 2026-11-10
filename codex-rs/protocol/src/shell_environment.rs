@@ -3,19 +3,19 @@ use crate::config_types::ShellEnvironmentPolicy;
 use crate::config_types::ShellEnvironmentPolicyInherit;
 use std::collections::HashMap;
 
-pub const CODEX_SESSION_ID_ENV_VAR: &str = "CODEX_SESSION_ID";
-pub const CODEX_THREAD_ID_ENV_VAR: &str = "CODEX_THREAD_ID";
-pub const CODEX_TOOL_CALL_ID_ENV_VAR: &str = "CODEX_TOOL_CALL_ID";
-pub const CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR: &str = "CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN";
+pub const INOCODE_SESSION_ID_ENV_VAR: &str = "INOCODE_SESSION_ID";
+pub const INOCODE_THREAD_ID_ENV_VAR: &str = "INOCODE_THREAD_ID";
+pub const INOCODE_TOOL_CALL_ID_ENV_VAR: &str = "INOCODE_TOOL_CALL_ID";
+pub const INOCODE_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR: &str = "INOCODE_EXEC_SERVER_NOISE_AUTH_TOKEN";
 pub const OPENAI_FEDERATION_RULE_ID_ENV_VAR: &str = "OPENAI_FEDERATION_RULE_ID";
 pub const OPENAI_IDENTITY_TOKEN_FILE_ENV_VAR: &str = "OPENAI_IDENTITY_TOKEN_FILE";
 pub const OPENAI_WORKLOAD_IDENTITY_CONTEXT_ENV_VAR: &str = "OPENAI_WORKLOAD_IDENTITY_CONTEXT";
 
 /// Environment variables that model-reachable child processes must not inherit.
 pub const NON_INHERITABLE_ENV_VARS: &[&str] = &[
-    CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR,
+    INOCODE_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR,
     "NODE_REPL_AUTH_TOKEN",
-    "CODEX_GUARDIAN_DECISIONS_API_KEY",
+    "INOCODE_GUARDIAN_DECISIONS_API_KEY",
     OPENAI_FEDERATION_RULE_ID_ENV_VAR,
     OPENAI_IDENTITY_TOKEN_FILE_ENV_VAR,
     OPENAI_WORKLOAD_IDENTITY_CONTEXT_ENV_VAR,
@@ -29,12 +29,12 @@ pub fn is_non_inheritable_env_var(name: &str) -> bool {
 
 pub fn set_tool_call_id_env_var(env: &mut HashMap<String, String>, tool_call_id: Option<&str>) {
     #[cfg(windows)]
-    env.retain(|name, _| !name.eq_ignore_ascii_case(CODEX_TOOL_CALL_ID_ENV_VAR));
+    env.retain(|name, _| !name.eq_ignore_ascii_case(INOCODE_TOOL_CALL_ID_ENV_VAR));
     #[cfg(not(windows))]
-    env.remove(CODEX_TOOL_CALL_ID_ENV_VAR);
+    env.remove(INOCODE_TOOL_CALL_ID_ENV_VAR);
     if let Some(tool_call_id) = tool_call_id.filter(|tool_call_id| !tool_call_id.contains('\0')) {
         env.insert(
-            CODEX_TOOL_CALL_ID_ENV_VAR.to_string(),
+            INOCODE_TOOL_CALL_ID_ENV_VAR.to_string(),
             tool_call_id.to_string(),
         );
     }
@@ -164,7 +164,7 @@ where
 
     // Step 6 - Populate the thread ID environment variable when provided.
     if let Some(thread_id) = thread_id {
-        env_map.insert(CODEX_THREAD_ID_ENV_VAR.to_string(), thread_id.to_string());
+        env_map.insert(INOCODE_THREAD_ID_ENV_VAR.to_string(), thread_id.to_string());
     }
 
     // Restricted launch context cannot be restored through user-provided shell

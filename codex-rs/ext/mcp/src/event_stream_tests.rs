@@ -28,7 +28,7 @@ use codex_login::CodexAuth;
 use codex_login::ExternalAuth;
 use codex_login::ExternalAuthFuture;
 use codex_login::ExternalAuthRefreshContext;
-use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+use codex_mcp::INOCODE_APPS_MCP_SERVER_NAME;
 use codex_mcp::CodexAppsResourceListParams;
 use codex_mcp::EffectiveMcpServer;
 use codex_mcp::McpEventNotification;
@@ -103,7 +103,7 @@ impl Fixture {
         assert!(
             fixture
                 .runtime
-                .latest_wait_for_server_ready(CODEX_APPS_MCP_SERVER_NAME, WAIT)
+                .latest_wait_for_server_ready(INOCODE_APPS_MCP_SERVER_NAME, WAIT)
                 .await
         );
         Ok(fixture)
@@ -283,7 +283,7 @@ impl Fixture {
             plugins_available: false,
             ready_selected_capability_roots: Vec::new(),
             mcp_servers: HashMap::from([(
-                CODEX_APPS_MCP_SERVER_NAME.into(),
+                INOCODE_APPS_MCP_SERVER_NAME.into(),
                 EffectiveMcpServer::from_host_config(server_config.clone()),
             )]),
             submit_id: "test".into(),
@@ -352,7 +352,7 @@ async fn apps_resource_discovery_during_initial_tools_list() -> Result<()> {
         let mut ready = Box::pin(
             fixture
                 .runtime
-                .latest_wait_for_server_ready(CODEX_APPS_MCP_SERVER_NAME, WAIT),
+                .latest_wait_for_server_ready(INOCODE_APPS_MCP_SERVER_NAME, WAIT),
         );
         assert!(futures::poll!(&mut ready).is_pending());
         blocked.release.notify_one();
@@ -442,7 +442,7 @@ async fn apps_resource_discovery_multiplexes_catalogs_while_tools_list_is_pendin
     let mut ready = Box::pin(
         fixture
             .runtime
-            .latest_wait_for_server_ready(CODEX_APPS_MCP_SERVER_NAME, WAIT),
+            .latest_wait_for_server_ready(INOCODE_APPS_MCP_SERVER_NAME, WAIT),
     );
     assert!(futures::poll!(&mut ready).is_pending());
     blocked.release.notify_one();
@@ -515,7 +515,7 @@ async fn apps_resource_discovery_observes_cancellation_after_inventory_finishes(
     assert!(
         fixture
             .runtime
-            .latest_wait_for_server_ready(CODEX_APPS_MCP_SERVER_NAME, WAIT)
+            .latest_wait_for_server_ready(INOCODE_APPS_MCP_SERVER_NAME, WAIT)
             .await
     );
     assert!(futures::poll!(&mut page).is_pending());
@@ -584,7 +584,7 @@ async fn apps_resource_discovery_discards_page_after_account_switch() -> Result<
         result = timeout(WAIT, blocked.resource_started.notified()) => result?,
     }
 
-    let previous_auth = reader.auth_cache_key_for_server(CODEX_APPS_MCP_SERVER_NAME);
+    let previous_auth = reader.auth_cache_key_for_server(INOCODE_APPS_MCP_SERVER_NAME);
     let next_auth = CodexAuth::from_external_chatgpt_tokens(
         "header.e30.second",
         "second-account",
@@ -598,7 +598,7 @@ async fn apps_resource_discovery_discards_page_after_account_switch() -> Result<
         codex_mcp::codex_apps_tools_cache_key(Some(&next_auth));
     fixture.runtime_input.auth = Some(next_auth);
     timeout(WAIT, fixture.runtime.replace(fixture.runtime_input)).await?;
-    assert!(previous_auth != reader.auth_cache_key_for_server(CODEX_APPS_MCP_SERVER_NAME));
+    assert!(previous_auth != reader.auth_cache_key_for_server(INOCODE_APPS_MCP_SERVER_NAME));
     blocked.release_resource.notify_one();
     let error = timeout(WAIT, page).await?.unwrap_err();
     assert_eq!(

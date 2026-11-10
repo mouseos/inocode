@@ -64,10 +64,10 @@ mod client_inbound_request_limit;
 use codex_exec_server_protocol as protocol;
 
 /// Process-local opt-in for tying a remote executor to its parent's stdin pipe.
-pub const CODEX_EXEC_SERVER_EXIT_ON_STDIN_CLOSE_ENV_VAR: &str =
-    "CODEX_EXEC_SERVER_EXIT_ON_STDIN_CLOSE";
+pub const INOCODE_EXEC_SERVER_EXIT_ON_STDIN_CLOSE_ENV_VAR: &str =
+    "INOCODE_EXEC_SERVER_EXIT_ON_STDIN_CLOSE";
 
-pub use arg0_exec_helper::CODEX_ARG0_EXEC_HELPER_ARG1;
+pub use arg0_exec_helper::INOCODE_ARG0_EXEC_HELPER_ARG1;
 pub use arg0_exec_helper::main as run_arg0_exec_helper_main;
 pub use capability_discovery::CapabilityDiscoveryError;
 pub use capability_discovery::discover_capability_roots;
@@ -110,11 +110,11 @@ pub use codex_file_system::WalkOptions;
 pub use codex_file_system::WalkOutcome;
 pub use codex_file_system::WindowsSandboxSelection;
 pub use codex_file_system::WriteFileOptions;
-pub use codex_protocol::shell_environment::CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR;
-pub use environment::CODEX_EXEC_SERVER_NOISE_CHATGPT_ACCOUNT_ID_ENV_VAR;
-pub use environment::CODEX_EXEC_SERVER_NOISE_ENVIRONMENT_ID_ENV_VAR;
-pub use environment::CODEX_EXEC_SERVER_NOISE_REGISTRY_URL_ENV_VAR;
-pub use environment::CODEX_EXEC_SERVER_URL_ENV_VAR;
+pub use codex_protocol::shell_environment::INOCODE_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR;
+pub use environment::INOCODE_EXEC_SERVER_NOISE_CHATGPT_ACCOUNT_ID_ENV_VAR;
+pub use environment::INOCODE_EXEC_SERVER_NOISE_ENVIRONMENT_ID_ENV_VAR;
+pub use environment::INOCODE_EXEC_SERVER_NOISE_REGISTRY_URL_ENV_VAR;
+pub use environment::INOCODE_EXEC_SERVER_URL_ENV_VAR;
 pub use environment::ConnectionAttemptOutcome;
 pub use environment::Environment;
 pub use environment::EnvironmentConnectionState;
@@ -136,7 +136,7 @@ pub use environment_registry::EnvironmentRegistryHarnessKeyValidationRequest;
 pub use environment_registry::EnvironmentRegistryHarnessKeyValidationResponse;
 pub use environment_registry::EnvironmentRegistryRegistrationRequest;
 pub use environment_registry::EnvironmentRegistryRegistrationResponse;
-pub use fs_helper::CODEX_FS_HELPER_ARG1;
+pub use fs_helper::INOCODE_FS_HELPER_ARG1;
 pub use fs_helper_main::main as run_fs_helper_main;
 pub use local_file_system::LOCAL_FS;
 pub use local_file_system::LocalFileSystem;

@@ -96,7 +96,7 @@ def runtime_env(tmp_path_factory: pytest.TempPathFactory) -> PreparedRuntimeEnv:
 
     env = os.environ.copy()
     env["PYTHONPATH"] = os.pathsep.join([str(isolated_site), str(ROOT / "src")])
-    env["CODEX_PYTHON_SDK_DIR"] = str(ROOT)
+    env["INOCODE_PYTHON_SDK_DIR"] = str(ROOT)
     return PreparedRuntimeEnv(python=python, env=env, runtime_version=runtime_version)
 
 

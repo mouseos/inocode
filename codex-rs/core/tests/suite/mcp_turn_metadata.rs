@@ -202,7 +202,7 @@ async fn mcp_app_ui_survives_tool_events_and_resume(
 
     let resumed = builder.restart(&server, &test).await?;
     let completed_history = resumed
-        .codex
+        .inocode
         .load_history(/*include_archived*/ false)
         .await?
         .items

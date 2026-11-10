@@ -102,7 +102,7 @@ type PreBuildHook = dyn FnOnce(&Path) + Send + 'static;
 type WorkspaceSetup = dyn FnOnce(AbsolutePathBuf, Arc<dyn ExecutorFileSystem>) -> BoxFuture<'static, Result<()>>
     + Send;
 const TEST_MODEL_WITH_EXPERIMENTAL_TOOLS: &str = "test-gpt-5.1-codex";
-const REMOTE_EXEC_SERVER_URL_ENV_VAR: &str = "CODEX_TEST_REMOTE_EXEC_SERVER_URL";
+const REMOTE_EXEC_SERVER_URL_ENV_VAR: &str = "INOCODE_TEST_REMOTE_EXEC_SERVER_URL";
 static REMOTE_TEST_INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 const SUBMIT_TURN_COMPLETE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -635,10 +635,10 @@ impl TestCodexBuilder {
 
     /// Builds a test runtime using the execution environment selected by the test process.
     ///
-    /// With no remote test configuration, or with `CODEX_TEST_ENVIRONMENT=local`, this uses a
-    /// temporary local environment just like [`Self::build`]. `CODEX_TEST_ENVIRONMENT=docker` or
-    /// `CODEX_TEST_ENVIRONMENT=wine-exec` selects the remote exec server configured by
-    /// `CODEX_TEST_REMOTE_EXEC_SERVER_URL`; the legacy `CODEX_TEST_REMOTE_ENV` Docker-container
+    /// With no remote test configuration, or with `INOCODE_TEST_ENVIRONMENT=local`, this uses a
+    /// temporary local environment just like [`Self::build`]. `INOCODE_TEST_ENVIRONMENT=docker` or
+    /// `INOCODE_TEST_ENVIRONMENT=wine-exec` selects the remote exec server configured by
+    /// `INOCODE_TEST_REMOTE_EXEC_SERVER_URL`; the legacy `INOCODE_TEST_REMOTE_ENV` Docker-container
     /// configuration does the same. Only the automatically selected environment is registered.
     /// Use [`Self::build_with_remote_and_local_env`] when a remote test also needs the local
     /// environment to be selectable explicitly.

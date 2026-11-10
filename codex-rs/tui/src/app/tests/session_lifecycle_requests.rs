@@ -4540,7 +4540,7 @@ async fn managed_worktree_transitions_bind_owner_and_preserve_only_fork_history(
     let source = dunce::canonicalize(root.path())?.join("source");
     let project_pool = dunce::canonicalize(root.path())?.join("project-pool");
     fs::create_dir_all(&home)?;
-    fs::create_dir_all(source.join(".codex"))?;
+    fs::create_dir_all(source.join(".inocode"))?;
     fs::write(home.join("config.toml"), "[features]\nworktrees = true\n")?;
     crate::legacy_core::config::set_project_trust_level(
         &home,
@@ -4557,7 +4557,7 @@ git-worktree-root = {}
 "#,
         toml::Value::String(project_pool.display().to_string()),
     );
-    fs::write(source.join(".codex/config.toml"), destination)?;
+    fs::write(source.join(".inocode/config.toml"), destination)?;
     fs::write(source.join("AGENTS.md"), "committed worktree instructions")?;
     for args in [
         vec!["init", "--quiet"],
@@ -4581,7 +4581,7 @@ git-worktree-root = {}
         );
     }
     fs::write(
-        source.join(".codex/config.toml"),
+        source.join(".inocode/config.toml"),
         r#"developer_instructions = "dirty policy"
 model = "gpt-5.4"
 model_reasoning_effort = "low"
@@ -4700,7 +4700,7 @@ model_reasoning_effort = "low"
     );
     assert!(retained.contains("git worktree remove <checkout-path>"));
     fs::write(
-        source.join(".codex/config.toml"),
+        source.join(".inocode/config.toml"),
         r#"developer_instructions = "committed policy"
 [features]
 terminal_visualization_instructions = true
@@ -5116,21 +5116,21 @@ async fn change_directory_scenario() -> Result<()> {
         names.map(|name| codex_home.path().join(name));
     fs::create_dir_all(&current)?;
     for directory in [&trusted, &unknown, &untrusted, &mismatch, &failed] {
-        fs::create_dir_all(directory.join(".codex"))?;
-        fs::write(directory.join(".codex/config.toml"), "")?;
+        fs::create_dir_all(directory.join(".inocode"))?;
+        fs::write(directory.join(".inocode/config.toml"), "")?;
     }
     let contents = "developer_instructions = \"destination policy\"\nmodel_reasoning_effort = \"high\"\napproval_policy = \"on-request\"\n[tui]\ntheme = \"dracula\"\n[tui.keymap.global]\nopen_transcript = \"f12\"";
-    fs::write(trusted.join(".codex/config.toml"), contents)?;
+    fs::write(trusted.join(".inocode/config.toml"), contents)?;
     let agents = trusted.join("AGENTS.md");
     fs::write(&agents, "Follow destination project instructions.")?;
     let hooks = r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"x"}]}]}}"#;
-    fs::write(trusted.join(".codex/hooks.json"), hooks)?;
+    fs::write(trusted.join(".inocode/hooks.json"), hooks)?;
     let contents = "default_permissions = \"dev\"\n[permissions.dev.filesystem]\n\":root\" = \"write\"\n[tui.keymap.global]\nopen_transcript = \"ctrl-l\"";
-    fs::write(mismatch.join(".codex/config.toml"), contents)?;
+    fs::write(mismatch.join(".inocode/config.toml"), contents)?;
     let requirements = codex_home.path().join("requirements.toml");
     let rules = "allowed_approval_policies=[\"untrusted\"]\nallowed_sandbox_modes=[\"read-only\"]";
     fs::write(&requirements, rules)?;
-    fs::create_dir_all(unknown.join(".codex"))?;
+    fs::create_dir_all(unknown.join(".inocode"))?;
     for dir in [&trusted, &untrusted, &mismatch, &failed] {
         let trust = [T::Trusted, T::Untrusted][usize::from(dir == &untrusted)];
         crate::legacy_core::config::set_project_trust_level(codex_home.path(), dir, trust)

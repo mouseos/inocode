@@ -19,7 +19,7 @@ use codex_extension_api::ExtensionRegistry;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_features::Feature;
 use codex_login::CodexAuth;
-use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+use codex_mcp::INOCODE_APPS_MCP_SERVER_NAME;
 use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
 use codex_model_provider_info::OPENAI_PROVIDER_ID;
 use codex_plugin::PluginId;
@@ -480,7 +480,7 @@ async fn persisted_remote_plugin_command_attribution_flows_through_turn_context(
     let script_path = write_remote_plugin_script_and_config(codex_home.as_ref());
     std::fs::write(
         &script_path,
-        r#"printf '%s' '{"version":1,"measurements":[{"name":"files_scanned","value":7}]}' > "$CODEX_PLUGIN_METRICS_OUTPUT"
+        r#"printf '%s' '{"version":1,"measurements":[{"name":"files_scanned","value":7}]}' > "$INOCODE_PLUGIN_METRICS_OUTPUT"
 "#,
     )?;
     let plugin_root = script_path
@@ -609,10 +609,10 @@ async fn plugin_metrics_stdin_works_with_sandbox_approval_disabled(
     let script = write_remote_plugin_script_and_config(home.as_ref());
     std::fs::write(
         &script,
-        r#"test -n "${CODEX_PLUGIN_METRICS_OUTPUT:-}" || exit 2
+        r#"test -n "${INOCODE_PLUGIN_METRICS_OUTPUT:-}" || exit 2
 IFS= read -r input
 test "$input" = continue || exit 3
-printf '%s' '{"version":1,"measurements":[{"name":"files_scanned","value":7}]}' > "$CODEX_PLUGIN_METRICS_OUTPUT" || exit 4
+printf '%s' '{"version":1,"measurements":[{"name":"files_scanned","value":7}]}' > "$INOCODE_PLUGIN_METRICS_OUTPUT" || exit 4
 printf 'STDIN_OK\n'
 "#,
     )?;
@@ -738,8 +738,8 @@ async fn remote_plugin_measurements_require_the_frontend_version() -> Result<()>
     let server = start_mock_server().await;
     let home = Arc::new(TempDir::new()?);
     let frontend_script = write_remote_plugin_script_and_config(home.as_ref());
-    let script = r#"if [ -n "${CODEX_PLUGIN_METRICS_OUTPUT:-}" ]; then
-  printf '%s' '{"version":1,"measurements":[{"name":"duration_ms","value":7,"dimensions":{"release":"v1"}}]}' > "$CODEX_PLUGIN_METRICS_OUTPUT"
+    let script = r#"if [ -n "${INOCODE_PLUGIN_METRICS_OUTPUT:-}" ]; then
+  printf '%s' '{"version":1,"measurements":[{"name":"duration_ms","value":7,"dimensions":{"release":"v1"}}]}' > "$INOCODE_PLUGIN_METRICS_OUTPUT"
 else
   printf 'no metrics sidecar\n'
 fi
@@ -921,7 +921,7 @@ async fn thread_disabled_plugins_filter_skills_and_tools_without_changing_shared
             "echo",
             Some(serde_json::json!({"message": "plugin check"})),
         ),
-        (CODEX_APPS_MCP_SERVER_NAME, "calendar_list_events", None),
+        (INOCODE_APPS_MCP_SERVER_NAME, "calendar_list_events", None),
     ];
 
     for (phase, enabled, injection_count) in [(0, true, 1), (1, false, 1), (2, true, 2)] {
@@ -1014,12 +1014,12 @@ async fn thread_disabled_plugins_filter_skills_and_tools_without_changing_shared
         // Direct Apps RPC calls keep their existing behavior outside model tool filtering.
         for (server_name, tool, arguments) in &tool_calls {
             let result = test
-                .codex
+                .inocode
                 .call_mcp_tool(server_name, tool, arguments.clone(), /*meta*/ None)
                 .await;
             assert_eq!(
                 result.is_ok(),
-                enabled || *server_name == CODEX_APPS_MCP_SERVER_NAME,
+                enabled || *server_name == INOCODE_APPS_MCP_SERVER_NAME,
                 "unexpected {server_name}/{tool} result: {result:?}"
             );
         }
@@ -1052,7 +1052,7 @@ async fn agent_plugin_skills_use_shared_catalog_and_direct_child_discovery() -> 
     let test_codex = builder.build_with_auto_env(&server).await?;
 
     test_codex
-        .codex
+        .inocode
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Skill {
             name: "acme.tools:review".into(),
             path: skill_path,
@@ -1210,7 +1210,7 @@ async fn legacy_plugin_skill_prompt_remains_complete() -> Result<()> {
     let test_codex = builder.build_with_auto_env(&server).await?;
 
     test_codex
-        .codex
+        .inocode
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Skill {
             name: "sample:sample-search".into(),
             path: skill_path,
@@ -1449,7 +1449,7 @@ async fn agent_plugin_root_mcp_stdio_tool_round_trip_expands_reserved_paths_and_
     );
 
     test_codex
-        .codex
+        .inocode
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "call the Agent Plugin echo tool".into(),
             text_elements: Vec::new(),
@@ -1881,7 +1881,7 @@ async fn explicit_plugin_mentions_use_apps_for_chatgpt_dual_surface_plugins(
         build_apps_enabled_plugin_test_codex(&server, codex_home, apps_server.chatgpt_base_url)
             .await?;
     let codex = Arc::clone(&test_codex.codex);
-    wait_for_mcp_server(&codex, CODEX_APPS_MCP_SERVER_NAME).await?;
+    wait_for_mcp_server(&codex, INOCODE_APPS_MCP_SERVER_NAME).await?;
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![
@@ -2058,9 +2058,9 @@ async fn system_marketplace_plugin_honors_layered_activation_and_mcp_policy(
         ),
     )?;
     std::fs::create_dir_all(project.path().join(".git"))?;
-    std::fs::create_dir_all(project.path().join(".codex"))?;
+    std::fs::create_dir_all(project.path().join(".inocode"))?;
     std::fs::write(
-        project.path().join(".codex/config.toml"),
+        project.path().join(".inocode/config.toml"),
         format!(
             "[plugins.\"{SAMPLE_PLUGIN_CONFIG_NAME}\"]\nenabled = {plugin_enabled}\n[plugins.\"{SAMPLE_PLUGIN_CONFIG_NAME}\".mcp_servers.sample]\nenabled = {project_enabled}\ndisabled_tools = [\"echo-tool\"]\n"
         ),

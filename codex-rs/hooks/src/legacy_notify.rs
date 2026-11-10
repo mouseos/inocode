@@ -76,7 +76,7 @@ pub(crate) fn notify_hook(argv: Vec<String>, environment: Arc<Vec<(OsString, OsS
 mod tests {
     use anyhow::Result;
     use codex_protocol::ThreadId;
-    use codex_protocol::shell_environment::CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR;
+    use codex_protocol::shell_environment::INOCODE_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR;
     use codex_utils_absolute_path::test_support::PathBufExt;
     use codex_utils_absolute_path::test_support::test_path_buf;
     use pretty_assertions::assert_eq;
@@ -153,11 +153,11 @@ mod tests {
         let argv = vec!["notify-command".to_string()];
         let environment = vec![
             (
-                OsString::from("CODEX_LEGACY_NOTIFY_SNAPSHOT"),
+                OsString::from("INOCODE_LEGACY_NOTIFY_SNAPSHOT"),
                 OsString::from("captured"),
             ),
             (
-                OsString::from(CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR),
+                OsString::from(INOCODE_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR),
                 OsString::from("restricted-token"),
             ),
         ];
@@ -175,7 +175,7 @@ mod tests {
         assert_eq!(
             configured_environment,
             vec![(
-                OsString::from("CODEX_LEGACY_NOTIFY_SNAPSHOT"),
+                OsString::from("INOCODE_LEGACY_NOTIFY_SNAPSHOT"),
                 OsString::from("captured"),
             )]
         );

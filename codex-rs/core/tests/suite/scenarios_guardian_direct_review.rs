@@ -783,7 +783,7 @@ async fn direct_exec_review_honors_hook_denial_before_policy_skip() -> Result<()
         }))?])
         .await?;
     let error = test
-        .codex
+        .inocode
         .guardian_review(&CancellationToken::new())
         .await
         .expect_err("hook must reject the call before policy can skip review");

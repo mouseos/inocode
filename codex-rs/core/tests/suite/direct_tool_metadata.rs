@@ -6,7 +6,7 @@ use codex_core::StartThreadOptions;
 use codex_core::TurnInputRequest;
 use codex_core::TurnStartOptions;
 use codex_features::Feature;
-use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+use codex_mcp::INOCODE_APPS_MCP_SERVER_NAME;
 use codex_model_provider::RemoteCompactionSupport;
 use core_test_support::apps_test_server::AppsTestServer;
 use core_test_support::apps_test_server::SEARCH_CALENDAR_LIST_TOOL;
@@ -419,7 +419,7 @@ async fn direct_call_metadata_during_compaction_respects_provider_support(
         let mut config = test.config.clone();
         config.features.disable(Feature::ExecutedToolCallMetadata)?;
         let _ = test
-            .codex
+            .inocode
             .refresh_runtime_config(current_config, config)
             .await;
     }
@@ -765,7 +765,7 @@ async fn direct_metadata_limit_respects_provider_support(
     // build() always selects the local test environment; all network destinations are the mock.
     let test = builder.build(&server).await?;
     assert!(test.codex.analytics_enabled());
-    wait_for_mcp_server(&test.codex, CODEX_APPS_MCP_SERVER_NAME).await?;
+    wait_for_mcp_server(&test.codex, INOCODE_APPS_MCP_SERVER_NAME).await?;
     test.submit_turn_with_approval_and_permission_profile(
         "Use [$calendar](app://calendar) to list events twice.",
         AskForApproval::OnRequest,
@@ -878,7 +878,7 @@ async fn direct_metadata_limit_respects_provider_support(
             rollout_path.clone(),
         )
         .await?;
-    wait_for_mcp_server(&forked.thread, CODEX_APPS_MCP_SERVER_NAME).await?;
+    wait_for_mcp_server(&forked.thread, INOCODE_APPS_MCP_SERVER_NAME).await?;
     forked
         .thread
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -905,7 +905,7 @@ async fn direct_metadata_limit_respects_provider_support(
         .resume(&server, test.home.clone(), rollout_path)
         .await
         .expect("resume original thread");
-    wait_for_mcp_server(&resumed.codex, CODEX_APPS_MCP_SERVER_NAME)
+    wait_for_mcp_server(&resumed.codex, INOCODE_APPS_MCP_SERVER_NAME)
         .await
         .expect("start resumed MCP server");
     resumed
@@ -913,7 +913,7 @@ async fn direct_metadata_limit_respects_provider_support(
         .await
         .expect("run resumed turn");
     resumed
-        .codex
+        .inocode
         .shutdown_and_wait()
         .await
         .expect("shutdown resumed thread");

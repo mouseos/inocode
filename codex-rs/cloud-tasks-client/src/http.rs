@@ -352,7 +352,7 @@ mod api {
                 "content": [{ "content_type": "text", "text": prompt }]
             }));
 
-            if let Ok(diff) = std::env::var("CODEX_STARTING_DIFF")
+            if let Ok(diff) = std::env::var("INOCODE_STARTING_DIFF")
                 && !diff.is_empty()
             {
                 input_items.push(serde_json::json!({

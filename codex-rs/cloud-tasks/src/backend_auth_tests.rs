@@ -34,7 +34,7 @@ fn access_token(expires_at: i64) -> String {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn environment_discovery_refreshes_after_cloud_startup() {
-    const SERVER: &str = "CODEX_CLOUD_REFRESH_TEST_SERVER";
+    const SERVER: &str = "INOCODE_CLOUD_REFRESH_TEST_SERVER";
     if let Ok(server) = std::env::var(SERVER) {
         let overrides = CliConfigOverrides {
             raw_overrides: vec![
@@ -122,18 +122,18 @@ async fn environment_discovery_refreshes_after_cloud_startup() {
         ])
         .current_dir(home.path())
         .env(SERVER, server.uri())
-        .env("CODEX_HOME", home.path())
+        .env("INOCODE_HOME", home.path())
         .env(
-            "CODEX_REFRESH_TOKEN_URL_OVERRIDE",
+            "INOCODE_REFRESH_TOKEN_URL_OVERRIDE",
             format!("{}/token", server.uri()),
         )
         .env(
-            "CODEX_CLOUD_TASKS_BASE_URL",
+            "INOCODE_CLOUD_TASKS_BASE_URL",
             "https://chatgpt.com/backend-api",
         )
-        .env_remove("CODEX_CLOUD_TASKS_MODE")
-        .env_remove("CODEX_ACCESS_TOKEN")
-        .env_remove("CODEX_API_KEY")
+        .env_remove("INOCODE_CLOUD_TASKS_MODE")
+        .env_remove("INOCODE_ACCESS_TOKEN")
+        .env_remove("INOCODE_API_KEY")
         .env_remove("OPENAI_API_KEY");
     let output = tokio::task::spawn_blocking(move || command.output())
         .await
@@ -156,7 +156,7 @@ async fn cloud_list_preserves_existing_agent_identity_during_runtime_rollout() -
 
     const TEST: &str =
         "backend_auth_tests::cloud_list_preserves_existing_agent_identity_during_runtime_rollout";
-    const MODE: &str = "CODEX_CLOUD_PROGRAMMATIC_TEST_MODE";
+    const MODE: &str = "INOCODE_CLOUD_PROGRAMMATIC_TEST_MODE";
     if let Ok(mode) = std::env::var(MODE) {
         let enabled = mode != "off";
         let mode = if enabled {
@@ -217,14 +217,14 @@ async fn cloud_list_preserves_existing_agent_identity_during_runtime_rollout() -
                 .args(["--exact", TEST, "--nocapture"])
                 .current_dir(home.path())
                 .env(MODE, mode)
-                .env("CODEX_HOME", home.path())
+                .env("INOCODE_HOME", home.path())
                 .env(
-                    "CODEX_CLOUD_TASKS_BASE_URL",
+                    "INOCODE_CLOUD_TASKS_BASE_URL",
                     "https://chatgpt.com/backend-api",
                 )
-                .env_remove("CODEX_CLOUD_TASKS_MODE")
-                .env_remove("CODEX_ACCESS_TOKEN")
-                .env_remove("CODEX_API_KEY")
+                .env_remove("INOCODE_CLOUD_TASKS_MODE")
+                .env_remove("INOCODE_ACCESS_TOKEN")
+                .env_remove("INOCODE_API_KEY")
                 .env_remove("OPENAI_API_KEY");
             let output = tokio::task::spawn_blocking(move || command.output()).await??;
             assert!(

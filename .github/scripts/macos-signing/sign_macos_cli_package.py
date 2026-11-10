@@ -18,9 +18,9 @@ def main(configuration: bundle.ProfileConfiguration | None = None):
     package = args.package.resolve(strict=True)
     if not package.is_dir():
         parser.error("package must be an extracted CLI package directory")
-    repo_root = os.environ.get("CODEX_REPO_ROOT")
+    repo_root = os.environ.get("INOCODE_REPO_ROOT")
     if not repo_root:
-        parser.error("CODEX_REPO_ROOT must be set")
+        parser.error("INOCODE_REPO_ROOT must be set")
     reports = Path(repo_root) / "signing-verification"
     reports.mkdir(parents=True, exist_ok=True)
     provisioned = os.environ.get("PROVISIONED_MACOS", "false") == "true"

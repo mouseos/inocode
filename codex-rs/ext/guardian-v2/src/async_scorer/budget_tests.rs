@@ -177,7 +177,7 @@ async fn assert_catalog_budget(evidence: BudgetEvidence) -> Result<()> {
         }));
         fixture
             .test
-            .codex
+            .inocode
             .inject_response_items(history.clone())
             .await?;
         let history: Arc<dyn ConversationHistorySnapshot> = match evidence {
@@ -188,7 +188,7 @@ async fn assert_catalog_budget(evidence: BudgetEvidence) -> Result<()> {
                 compaction_model_hash: Some("budget-checkpoint".to_owned()),
                 review_context_revision: fixture
                     .test
-                    .codex
+                    .inocode
                     .conversation_history_snapshot()
                     .await
                     .guardian_review_context_revision(),

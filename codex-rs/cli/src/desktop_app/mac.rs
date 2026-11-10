@@ -5,10 +5,10 @@ use std::path::PathBuf;
 use tempfile::Builder;
 use tokio::process::Command;
 
-const CODEX_BUNDLE_IDENTIFIER: &str = "com.openai.codex";
+const INOCODE_BUNDLE_IDENTIFIER: &str = "com.openai.codex";
 const OPENAI_APPLE_TEAM_IDENTIFIER: &str = "2DC432GLL2";
-const CODEX_DMG_URL_ARM64: &str = "https://persistent.oaistatic.com/codex-app-prod/Codex.dmg";
-const CODEX_DMG_URL_X64: &str =
+const INOCODE_DMG_URL_ARM64: &str = "https://persistent.oaistatic.com/codex-app-prod/Codex.dmg";
+const INOCODE_DMG_URL_X64: &str =
     "https://persistent.oaistatic.com/codex-app-prod/Codex-latest-x64.dmg";
 
 pub async fn run_mac_app_open_or_install(
@@ -26,9 +26,9 @@ pub async fn run_mac_app_open_or_install(
     eprintln!("Desktop app not found; downloading installer...");
     let download_url = download_url_override.unwrap_or_else(|| {
         let default_url = if is_apple_silicon_mac() {
-            CODEX_DMG_URL_ARM64
+            INOCODE_DMG_URL_ARM64
         } else {
-            CODEX_DMG_URL_X64
+            INOCODE_DMG_URL_X64
         };
         default_url.to_string()
     });
@@ -95,7 +95,7 @@ fn is_codex_app_bundle(app_path: &Path) -> bool {
         .output()
         .is_ok_and(|output| {
             output.status.success()
-                && String::from_utf8_lossy(&output.stdout).trim() == CODEX_BUNDLE_IDENTIFIER
+                && String::from_utf8_lossy(&output.stdout).trim() == INOCODE_BUNDLE_IDENTIFIER
         })
 }
 
@@ -127,7 +127,7 @@ async fn open_codex_app(app_path: &Path, workspace: &Path) -> anyhow::Result<()>
 
 async fn verify_codex_app_bundle(app_path: &Path) -> anyhow::Result<()> {
     let requirement = format!(
-        "identifier \"{CODEX_BUNDLE_IDENTIFIER}\" and anchor apple generic and certificate leaf[subject.OU] = \"{OPENAI_APPLE_TEAM_IDENTIFIER}\""
+        "identifier \"{INOCODE_BUNDLE_IDENTIFIER}\" and anchor apple generic and certificate leaf[subject.OU] = \"{OPENAI_APPLE_TEAM_IDENTIFIER}\""
     );
     let output = Command::new("/usr/bin/codesign")
         .args(["--verify", "--deep", "--strict"])
@@ -142,7 +142,7 @@ async fn verify_codex_app_bundle(app_path: &Path) -> anyhow::Result<()> {
     }
 
     anyhow::bail!(
-        "Desktop app at {} failed OpenAI signature verification (team {OPENAI_APPLE_TEAM_IDENTIFIER}, bundle {CODEX_BUNDLE_IDENTIFIER}): {}",
+        "Desktop app at {} failed OpenAI signature verification (team {OPENAI_APPLE_TEAM_IDENTIFIER}, bundle {INOCODE_BUNDLE_IDENTIFIER}): {}",
         app_path.display(),
         String::from_utf8_lossy(&output.stderr).trim()
     );

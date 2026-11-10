@@ -2,7 +2,7 @@
 //! Keep the projected declaration and invocation pin private to its sampling step.
 
 use super::McpBinding;
-use crate::CODEX_APPS_MCP_SERVER_NAME;
+use crate::INOCODE_APPS_MCP_SERVER_NAME;
 use crate::MCP_TOOL_CODEX_APPS_META_KEY;
 use crate::pagination::MAX_CODEX_APPS_TOOL_CATALOG_ITEMS;
 use crate::pagination::collect_paginated_with_limit;
@@ -14,7 +14,7 @@ use std::time::Duration;
 pub const SEARCH_CONNECTOR: &str = "connector_openai_search_service";
 
 pub fn is_model_search_tool(tool: &crate::ToolInfo) -> bool {
-    tool.server_name == CODEX_APPS_MCP_SERVER_NAME
+    tool.server_name == INOCODE_APPS_MCP_SERVER_NAME
         && tool.connector_id.as_deref() == Some(SEARCH_CONNECTOR)
         && tool.tool.name.rsplit('.').next() == Some("web_run")
 }

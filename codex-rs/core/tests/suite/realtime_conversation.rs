@@ -95,7 +95,7 @@ const USER_FIRST_NAME_PLACEHOLDER: &str = "{{ user_first_name }}";
 const MEMORY_PROMPT_PHRASE: &str =
     "You have access to a memory folder with guidance from prior runs.";
 const REALTIME_CONVERSATION_TEST_SUBPROCESS_ENV_VAR: &str =
-    "CODEX_REALTIME_CONVERSATION_TEST_SUBPROCESS";
+    "INOCODE_REALTIME_CONVERSATION_TEST_SUBPROCESS";
 
 #[derive(Debug, Clone)]
 struct RealtimeCallRequestCapture {
@@ -5878,7 +5878,7 @@ async fn inbound_handoff_request_updates_realtime_state_during_active_turn(
     let test = builder.build_with_streaming_server(&api_server).await?;
 
     let started = test
-        .codex
+        .inocode
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "first prompt".to_string(),
             text_elements: Vec::new(),
@@ -5995,7 +5995,7 @@ async fn inbound_handoff_request_updates_realtime_state_during_active_turn(
         return Ok(());
     }
     let steered = test
-        .codex
+        .inocode
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
             text: "continue in text".to_string(),
             text_elements: Vec::new(),

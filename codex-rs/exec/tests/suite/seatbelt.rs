@@ -24,13 +24,13 @@ async fn codex_home_symlink_opt_out_uses_loaded_user_config() -> anyhow::Result<
     core_test_support::skip_if_sandbox!(Ok(()));
     for (home_env, root_alias, enabled, ignore_user_config) in [
         ("user-home", Some("user-home"), true, false),
-        ("home-link/../.codex", Some(".codex"), false, false),
-        ("home-link/../.codex", None, true, false),
+        ("home-link/../.inocode", Some(".inocode"), false, false),
+        ("home-link/../.inocode", None, true, false),
         ("user-home", Some("user-home"), true, true),
     ] {
         let test = test_codex_exec();
-        let home = test.home_path().join(".codex");
-        let project_home = test.cwd_path().join(".codex");
+        let home = test.home_path().join(".inocode");
+        let project_home = test.cwd_path().join(".inocode");
         let child = test.home_path().join("child");
         for directory in [&home, &project_home, &child] {
             fs::create_dir(directory)?;
@@ -80,10 +80,10 @@ async fn codex_home_symlink_opt_out_uses_loaded_user_config() -> anyhow::Result<
         .await;
         let mut command = test.cmd_with_server(&server);
         command
-            .env_remove("CODEX_API_KEY")
+            .env_remove("INOCODE_API_KEY")
             .env_remove("OPENAI_API_KEY")
-            .env_remove("CODEX_ACCESS_TOKEN")
-            .env("CODEX_HOME", home_env)
+            .env_remove("INOCODE_ACCESS_TOKEN")
+            .env("INOCODE_HOME", home_env)
             .args(["--skip-git-repo-check", "--sandbox", "workspace-write", "--add-dir"])
             .arg(&visualizations)
             .args(["-c", "approvals_reviewer=\"user\"", "-c", "features.shell_snapshot_v2=false"])

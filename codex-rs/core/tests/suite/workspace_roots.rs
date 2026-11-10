@@ -261,7 +261,7 @@ async fn workspace_roots_allow_file_and_command_writes_in_secondary_root(
         .join(&secondary_root_name)?;
     if owner_resolved_roots {
         let selection = test
-            .codex
+            .inocode
             .environment_selections()
             .await
             .into_iter()
@@ -344,7 +344,7 @@ async fn workspace_roots_allow_file_and_command_writes_in_secondary_root(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn workspace_roots_allow_patches_but_protect_metadata_directories() -> Result<()> {
     const PATCH_CONTENTS: &str = "workspace root patch access";
-    const PROTECTED_METADATA_DIRECTORIES: [&str; 4] = [".git", ".agents", ".codex", ".aws"];
+    const PROTECTED_METADATA_DIRECTORIES: [&str; 4] = [".git", ".agents", ".inocode", ".aws"];
 
     skip_if_wine_exec!(
         Ok(()),

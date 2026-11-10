@@ -444,8 +444,8 @@ fn duplicate_message_dates_render_the_full_other_remainder() {
     use crate::analytics::models::AccountAnalyticsReport;
     let date = "2026-01-15".parse().unwrap();
     let response = serde_json::from_value(serde_json::json!({"data": [
-        {"date": "2026-01-15", "totals": {"turns": 10}, "clients": [{"client_id": "CODEX_CLI", "turns": 8}]},
-        {"date": "2026-01-15", "totals": {"turns": 10}, "clients": [{"client_id": "CODEX_CLI", "turns": 8}]}
+        {"date": "2026-01-15", "totals": {"turns": 10}, "clients": [{"client_id": "INOCODE_CLI", "turns": 8}]},
+        {"date": "2026-01-15", "totals": {"turns": 10}, "clients": [{"client_id": "INOCODE_CLI", "turns": 8}]}
     ]})).unwrap();
     let history = crate::analytics::normalize::history(
         response,

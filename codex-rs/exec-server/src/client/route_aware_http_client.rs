@@ -12,7 +12,7 @@ use codex_http_client::ClientRouteClass;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::RouteAwareClientPool;
 use codex_http_client::RouteAwareRequestError;
-use codex_protocol::shell_environment::CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR;
+use codex_protocol::shell_environment::INOCODE_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR;
 use codex_protocol::shell_environment::OPENAI_FEDERATION_RULE_ID_ENV_VAR;
 use codex_protocol::shell_environment::OPENAI_IDENTITY_TOKEN_FILE_ENV_VAR;
 use codex_protocol::shell_environment::OPENAI_WORKLOAD_IDENTITY_CONTEXT_ENV_VAR;
@@ -41,15 +41,15 @@ use crate::rpc::internal_error;
 use crate::rpc::invalid_params;
 
 const HTTP_HEADER_ENV_DENYLIST: &[&str] = &[
-    CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR,
+    INOCODE_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR,
     OPENAI_FEDERATION_RULE_ID_ENV_VAR,
     OPENAI_IDENTITY_TOKEN_FILE_ENV_VAR,
     OPENAI_WORKLOAD_IDENTITY_CONTEXT_ENV_VAR,
     "OPENAI_API_KEY",
-    "CODEX_GUARDIAN_DECISIONS_API_KEY",
-    "CODEX_API_KEY",
-    "CODEX_ACCESS_TOKEN",
-    "CODEX_CONNECTORS_TOKEN",
+    "INOCODE_GUARDIAN_DECISIONS_API_KEY",
+    "INOCODE_API_KEY",
+    "INOCODE_ACCESS_TOKEN",
+    "INOCODE_CONNECTORS_TOKEN",
     "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
     "AWS_SESSION_TOKEN",

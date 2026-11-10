@@ -10,7 +10,7 @@ use std::process::Stdio;
 
 #[test]
 fn cleanup_preserves_live_process_and_reclaims_its_abandoned_checkout() -> Result<()> {
-    const CHILD_HOME: &str = "CODEX_MARKETPLACE_STAGING_CHILD_HOME";
+    const CHILD_HOME: &str = "INOCODE_MARKETPLACE_STAGING_CHILD_HOME";
     if let Some(home) = std::env::var_os(CHILD_HOME) {
         let staging = MarketplaceStagingDir::new(Path::new(&home))?;
         fs::create_dir_all(staging.path())?;

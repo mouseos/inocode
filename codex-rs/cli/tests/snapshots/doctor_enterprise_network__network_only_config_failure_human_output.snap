@@ -12,7 +12,7 @@ Configuration
   [XX] config       config could not be loaded - Fix the reported config error, then rerun codex doctor.
       feature flags            0 enabled · 0 overridden
       error                    invalid configuration
-      file                     <CODEX_HOME>/config.toml
+      file                     <INOCODE_HOME>/config.toml
       line                     1
       column                   18
       network diagnostics      effective network configuration is unavailable

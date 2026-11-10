@@ -1,7 +1,7 @@
 //! The host-local rendezvous root for privileged app-server RPC sockets.
 //!
 //! Every listener uses this root, which sandboxes hide even before a daemon
-//! starts. It must not depend on HOME, TMPDIR, CODEX_HOME, or command settings.
+//! starts. It must not depend on HOME, TMPDIR, INOCODE_HOME, or command settings.
 
 use std::fs;
 use std::io;

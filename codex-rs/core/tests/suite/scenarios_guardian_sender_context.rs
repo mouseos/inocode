@@ -93,7 +93,7 @@ async fn cross_host_sender_context(history_mode: ThreadHistoryMode) -> Result<()
     let mut requests = sender_mock.requests();
     // Replay a historical rollback: its removed permission must never reach the receiver.
     sender
-        .codex
+        .inocode
         .append_rollout_items(&[RolloutItem::EventMsg(EventMsg::ThreadRolledBack(
             ThreadRolledBackEvent { num_turns: 1 },
         ))])
@@ -133,7 +133,7 @@ async fn cross_host_sender_context(history_mode: ThreadHistoryMode) -> Result<()
         "output": format!("<codex_delegation><source_thread_id>{sender_id}</source_thread_id><source_orbit_id>orbit-source</source_orbit_id><input>Inspect.</input></codex_delegation>"),
     }))?;
     receiver
-        .codex
+        .inocode
         .start_or_steer_turn(TurnInputRequest::new(TurnInput::ResponseItem(delivery)))
         .await?;
     wait_for_event(&receiver.codex, |event| {

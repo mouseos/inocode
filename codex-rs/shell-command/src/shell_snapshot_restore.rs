@@ -2,8 +2,8 @@
 
 use std::collections::HashMap;
 
-pub const SNAPSHOT_BROKERED_VALUE_ENV_PREFIX: &str = "CODEX_NETWORK_PROXY_SNAPSHOT_BROKERED_VALUE_";
-pub const SNAPSHOT_BROKERED_UNSET_ENV_PREFIX: &str = "CODEX_NETWORK_PROXY_SNAPSHOT_BROKERED_UNSET_";
+pub const SNAPSHOT_BROKERED_VALUE_ENV_PREFIX: &str = "INOCODE_NETWORK_PROXY_SNAPSHOT_BROKERED_VALUE_";
+pub const SNAPSHOT_BROKERED_UNSET_ENV_PREFIX: &str = "INOCODE_NETWORK_PROXY_SNAPSHOT_BROKERED_UNSET_";
 
 /// Restore protected credential copies and unsets after shell startup.
 /// Keep the copies for another replay stage, or remove them before the user command.

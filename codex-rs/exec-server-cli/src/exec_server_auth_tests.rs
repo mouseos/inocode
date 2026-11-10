@@ -228,7 +228,7 @@ async fn chatgpt_executor_rejects_same_owner_agent_identity() {
 
 #[tokio::test]
 async fn executor_concurrent_rotation_checks_identity_before_refresh() {
-    const CHILD_MODE: &str = "CODEX_EXECUTOR_AUTH_TEST_MODE";
+    const CHILD_MODE: &str = "INOCODE_EXECUTOR_AUTH_TEST_MODE";
     let Ok(mode) = std::env::var(CHILD_MODE) else {
         // Run in subprocesses so endpoint overrides cannot affect parallel tests.
         let server = MockServer::start().await;
@@ -288,12 +288,12 @@ async fn executor_concurrent_rotation_checks_identity_before_refresh() {
                     "--nocapture",
                 ])
                 .env(CHILD_MODE, mode)
-                .env_remove("CODEX_ACCESS_TOKEN")
+                .env_remove("INOCODE_ACCESS_TOKEN")
                 .env("NO_PROXY", "127.0.0.1,localhost")
                 .env("no_proxy", "127.0.0.1,localhost")
-                .env("CODEX_AUTHAPI_BASE_URL", server.uri())
-                .env("CODEX_AGENT_IDENTITY_AUTHAPI_BASE_URL", server.uri())
-                .env("CODEX_REFRESH_TOKEN_URL_OVERRIDE", format!("{}/oauth/token", server.uri()))
+                .env("INOCODE_AUTHAPI_BASE_URL", server.uri())
+                .env("INOCODE_AGENT_IDENTITY_AUTHAPI_BASE_URL", server.uri())
+                .env("INOCODE_REFRESH_TOKEN_URL_OVERRIDE", format!("{}/oauth/token", server.uri()))
                 .kill_on_drop(true);
             let output = tokio::time::timeout(Duration::from_secs(30), child.output())
                 .await
@@ -409,7 +409,7 @@ async fn executor_refresh_survives_cancelled_caller() {
     use tokio::io::AsyncReadExt;
     use tokio::io::AsyncWriteExt;
 
-    const CHILD_MODE: &str = "CODEX_EXECUTOR_CANCEL_TEST_MODE";
+    const CHILD_MODE: &str = "INOCODE_EXECUTOR_CANCEL_TEST_MODE";
     let Ok(mode) = std::env::var(CHILD_MODE) else {
         // Isolate endpoint overrides; release the response only after the caller
         // is cancelled, with no sleep or race against the HTTP response.
@@ -421,8 +421,8 @@ async fn executor_refresh_survives_cancelled_caller() {
                 let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
                     .args(["--exact", "exec_server_auth::tests::executor_refresh_survives_cancelled_caller", "--nocapture"])
                     .env(CHILD_MODE, mode)
-                    .env_remove("CODEX_ACCESS_TOKEN")
-                    .env("CODEX_REFRESH_TOKEN_URL_OVERRIDE", endpoint)
+                    .env_remove("INOCODE_ACCESS_TOKEN")
+                    .env("INOCODE_REFRESH_TOKEN_URL_OVERRIDE", endpoint)
                     .env("NO_PROXY", "127.0.0.1,localhost")
                     .env("no_proxy", "127.0.0.1,localhost")
                     .stdin(Stdio::piped())

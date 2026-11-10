@@ -6,10 +6,10 @@ use std::sync::Mutex;
 
 use anyhow::Context;
 use anyhow::Result;
-use codex_exec_server::CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR;
-use codex_exec_server::CODEX_EXEC_SERVER_NOISE_ENVIRONMENT_ID_ENV_VAR;
-use codex_exec_server::CODEX_EXEC_SERVER_NOISE_REGISTRY_URL_ENV_VAR;
-use codex_exec_server::CODEX_EXEC_SERVER_URL_ENV_VAR;
+use codex_exec_server::INOCODE_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR;
+use codex_exec_server::INOCODE_EXEC_SERVER_NOISE_ENVIRONMENT_ID_ENV_VAR;
+use codex_exec_server::INOCODE_EXEC_SERVER_NOISE_REGISTRY_URL_ENV_VAR;
+use codex_exec_server::INOCODE_EXEC_SERVER_URL_ENV_VAR;
 use codex_exec_server::REMOTE_ENVIRONMENT_ID;
 use codex_exec_server_test_support::relay::TEST_TIMEOUT as VERSION_SKEW_TIMEOUT;
 use codex_exec_server_test_support::relay::accept_websocket;
@@ -40,9 +40,9 @@ const ENVIRONMENT_ID: &str = "env-noise-relay-test";
 const EXECUTOR_REGISTRATION_ID: &str = "registration-1";
 const HARNESS_KEY_AUTHORIZATION: &str = "harness-key-authorization";
 const REGISTRY_TOKEN: &str = "registry-token";
-const RELEASED_CODEX_ENV_VAR: &str = "CODEX_TEST_RELEASED_CODEX";
-const CURRENT_CODEX_ENV_VAR: &str = "CODEX_TEST_CURRENT_CODEX";
-const EXECUTOR_MARKER_ENV_VAR: &str = "CODEX_EXECUTOR_VERSION_SKEW_MARKER";
+const RELEASED_CODEX_ENV_VAR: &str = "INOCODE_TEST_RELEASED_CODEX";
+const CURRENT_CODEX_ENV_VAR: &str = "INOCODE_TEST_CURRENT_CODEX";
+const EXECUTOR_MARKER_ENV_VAR: &str = "INOCODE_EXECUTOR_VERSION_SKEW_MARKER";
 const EXPECTED_OUTPUT: &str = "executor-version-skew-ok";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -167,8 +167,8 @@ stream_max_retries = 0
             ENVIRONMENT_ID,
         ])
         .current_dir(codex_home.path())
-        .env("CODEX_HOME", codex_home.path())
-        .env("CODEX_API_KEY", REGISTRY_TOKEN)
+        .env("INOCODE_HOME", codex_home.path())
+        .env("INOCODE_API_KEY", REGISTRY_TOKEN)
         .env(EXECUTOR_MARKER_ENV_VAR, EXPECTED_OUTPUT)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -209,19 +209,19 @@ stream_max_retries = 0
     let mut app_server = Command::new(app_binary)
         .arg("app-server")
         .current_dir(codex_home.path())
-        .env("CODEX_HOME", codex_home.path())
-        .env("CODEX_API_KEY", REGISTRY_TOKEN)
+        .env("INOCODE_HOME", codex_home.path())
+        .env("INOCODE_API_KEY", REGISTRY_TOKEN)
         .env(
-            "CODEX_APP_SERVER_MANAGED_CONFIG_PATH",
+            "INOCODE_APP_SERVER_MANAGED_CONFIG_PATH",
             codex_home.path().join("managed_config.toml"),
         )
-        .env(CODEX_EXEC_SERVER_NOISE_REGISTRY_URL_ENV_VAR, &registry_url)
+        .env(INOCODE_EXEC_SERVER_NOISE_REGISTRY_URL_ENV_VAR, &registry_url)
         .env(
-            CODEX_EXEC_SERVER_NOISE_ENVIRONMENT_ID_ENV_VAR,
+            INOCODE_EXEC_SERVER_NOISE_ENVIRONMENT_ID_ENV_VAR,
             ENVIRONMENT_ID,
         )
-        .env(CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR, REGISTRY_TOKEN)
-        .env_remove(CODEX_EXEC_SERVER_URL_ENV_VAR)
+        .env(INOCODE_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR, REGISTRY_TOKEN)
+        .env_remove(INOCODE_EXEC_SERVER_URL_ENV_VAR)
         .env_remove(EXECUTOR_MARKER_ENV_VAR)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

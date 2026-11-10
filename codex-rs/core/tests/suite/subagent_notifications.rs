@@ -549,7 +549,7 @@ async fn setup_turn_one_with_custom_spawned_child(
     if child_response_delay.is_none() && wait_for_parent_notification {
         let _ = wait_for_requests(&child_request_log).await?;
         let rollout_path = test
-            .codex
+            .inocode
             .rollout_path()
             .ok_or_else(|| anyhow::anyhow!("expected parent rollout path"))?;
         let deadline = Instant::now() + Duration::from_secs(6);
@@ -2820,7 +2820,7 @@ async fn plaintext_multi_agent_v2_completion_sends_agent_message(
             let mut completed_activity_completed = None;
             loop {
                 let event = test
-                    .codex
+                    .inocode
                     .next_event()
                     .await
                     .expect("event stream should remain open");

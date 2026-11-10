@@ -155,8 +155,8 @@ async fn standalone_web_search_uses_workspace_routing(
     )?;
     let mut env_overrides = vec![
         ("OPENAI_API_KEY", None),
-        ("CODEX_API_KEY", None),
-        ("CODEX_CA_CERTIFICATE", cert_path.to_str()),
+        ("INOCODE_API_KEY", None),
+        ("INOCODE_CA_CERTIFICATE", cert_path.to_str()),
         ("SSL_CERT_FILE", cert_path.to_str()),
     ];
     env_overrides.extend(

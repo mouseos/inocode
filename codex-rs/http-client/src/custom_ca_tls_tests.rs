@@ -1,6 +1,6 @@
 //! Handshake and fresh-file-read coverage for shared custom trust configuration.
 
-use super::CODEX_CA_CERT_ENV;
+use super::INOCODE_CA_CERT_ENV;
 use super::ConfiguredCaBundle;
 use super::build_rustls_client_config;
 use pretty_assertions::assert_eq;
@@ -27,7 +27,7 @@ fn custom_intermediate_trust_preserves_hostname_validation() {
     let path = temp.path().join("intermediate.pem");
     std::fs::write(&path, intermediate.pem()).unwrap();
     let bundle = ConfiguredCaBundle {
-        source_env: CODEX_CA_CERT_ENV,
+        source_env: INOCODE_CA_CERT_ENV,
         path,
     };
     let config = build_rustls_client_config(Some(&bundle)).unwrap();

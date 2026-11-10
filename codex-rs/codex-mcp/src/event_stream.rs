@@ -19,7 +19,7 @@ use serde_json::Map;
 use serde_json::Value;
 use tokio::sync::watch;
 
-use crate::CODEX_APPS_MCP_SERVER_NAME;
+use crate::INOCODE_APPS_MCP_SERVER_NAME;
 use crate::EffectiveMcpServer;
 use crate::McpEventStream;
 use crate::McpProtocolMode;
@@ -80,7 +80,7 @@ impl McpEventStreamOpener {
                     .unwrap_or(DEFAULT_STARTUP_TIMEOUT);
                 let client = Arc::new(tokio::time::timeout(startup_timeout, make_rmcp_client(
                     /*ema_auth*/ None,
-                    CODEX_APPS_MCP_SERVER_NAME,
+                    INOCODE_APPS_MCP_SERVER_NAME,
                     connection.server.clone(),
                     connection.store_mode,
                     connection.keyring_backend_kind,

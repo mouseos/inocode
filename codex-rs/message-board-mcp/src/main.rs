@@ -26,7 +26,7 @@ struct Args {
     #[arg(long = "allowed-host")]
     allowed_hosts: Vec<String>,
     /// Name of the environment variable containing the trusted-host bearer token.
-    #[arg(long, default_value = "CODEX_MESSAGE_BOARD_TOKEN")]
+    #[arg(long, default_value = "INOCODE_MESSAGE_BOARD_TOKEN")]
     bearer_token_env: String,
 }
 

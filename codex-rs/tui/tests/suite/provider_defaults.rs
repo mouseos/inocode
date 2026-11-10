@@ -53,7 +53,7 @@ async fn resume_lists_all_providers_and_fork_keeps_provider_filter() -> Result<(
                     "-c",
                     "model_provider=\"server-provider\"",
                 ])
-                .env("CODEX_HOME", home.path())
+                .env("INOCODE_HOME", home.path())
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::inherit())

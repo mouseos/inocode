@@ -67,7 +67,7 @@ fn install_startup_libraries(runtime: &Path) -> Result<()> {
             .context("runtime parent")?
             .to_owned()
     } else {
-        std::env::var_os("CODEX_TEST_VOICE_RUNTIME")
+        std::env::var_os("INOCODE_TEST_VOICE_RUNTIME")
             .map(PathBuf::from)
             .context("prepared runtime required for installed helper tests")?
     };

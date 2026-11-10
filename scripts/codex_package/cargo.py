@@ -11,7 +11,7 @@ from .targets import TargetSpec
 from .v8 import resolve_codex_v8_cargo_env
 
 
-CODEX_RS_ROOT = REPO_ROOT / "codex-rs"
+INOCODE_RS_ROOT = REPO_ROOT / "codex-rs"
 
 
 @dataclass(frozen=True)
@@ -79,7 +79,7 @@ def build_source_binaries(
         print("+", " ".join(cmd))
         subprocess.run(
             cmd,
-            cwd=CODEX_RS_ROOT,
+            cwd=INOCODE_RS_ROOT,
             check=True,
             env=cargo_env,
         )
@@ -180,13 +180,13 @@ def cargo_profile_output_dir(spec: TargetSpec, profile: str) -> Path:
 def cargo_target_dir() -> Path:
     target_dir = os.environ.get("CARGO_TARGET_DIR")
     if target_dir is None:
-        return CODEX_RS_ROOT / "target"
+        return INOCODE_RS_ROOT / "target"
 
     path = Path(target_dir)
     if path.is_absolute():
         return path
 
-    return CODEX_RS_ROOT / path
+    return INOCODE_RS_ROOT / path
 
 
 def cargo_profile_dirname(profile: str) -> str:
