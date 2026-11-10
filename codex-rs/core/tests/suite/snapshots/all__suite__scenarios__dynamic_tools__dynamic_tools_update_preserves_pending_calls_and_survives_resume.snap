@@ -34,7 +34,6 @@ Settings:
       - function/spawn_agent
       - function/wait_agent
     - function/release: Check release.; args=[]; hash=4c6f91a1a21d2a65
-    - web_search; hash=f103e327c6870a46
 -- request 1 (turn) --
 00:message/developer:
     <MODEL_INSTRUCTIONS>

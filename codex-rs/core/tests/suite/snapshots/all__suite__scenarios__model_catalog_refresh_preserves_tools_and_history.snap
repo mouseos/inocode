@@ -25,7 +25,6 @@ Settings:
       - function/send_input
       - function/spawn_agent
       - function/wait_agent
-    - web_search; hash=8586237e354ee5ed
 -- request 1 (turn) --
 00:message/developer:
     Test model instructions.
