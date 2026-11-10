@@ -13,7 +13,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SKIP_DIRS = {".git", "target", "node_modules", "third_party", ".venv"}
-SKIP_FILES = {"LICENSE", "NOTICE", "CHANGELOG.md", "UPSTREAM.md", "check_isolation.py", "smoke_isolation.py"}
+SKIP_FILES = {"LICENSE", "NOTICE", "CHANGELOG.md", "UPSTREAM.md", "check_isolation.py", "smoke_isolation.py", "inocode-isolation.md"}
 EXTS = {".rs", ".toml", ".py", ".js", ".ts", ".json", ".yml", ".yaml", ".sh", ".ps1", ".bzl", ".md", ".snap"}
 
 # Upstream Windows Filtering Platform keys (kernel-global objects).
