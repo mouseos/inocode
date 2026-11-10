@@ -320,6 +320,7 @@ impl MessageProcessor {
         gateway_login_control.require_explicit_login();
         let thread_state_manager = ThreadStateManager::new();
         outgoing.watch_user_verification_auth(Arc::clone(&auth_manager));
+        crate::inocode::spawn_team_notifier(Arc::clone(&outgoing));
         // The thread store is intentionally process-scoped. Config reloads can
         // affect per-thread behavior, but they must not move newly started,
         // resumed, or forked threads to a different persistence backend/root.

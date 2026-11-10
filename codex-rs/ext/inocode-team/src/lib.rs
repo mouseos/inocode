@@ -19,5 +19,7 @@ pub use estimate::recommendation_text;
 pub use roster::AgentState;
 pub use roster::TeamAgent;
 pub use roster::TeamRoster;
+pub use roster::add_thread_tokens;
 pub use roster::roster_for;
+pub use roster::subscribe;
 pub use roster::TeamStatus;

@@ -5693,6 +5693,7 @@ impl Session {
             }),
         )
         .await;
+        crate::inocode_team::record_tokens(self.thread_id, usage);
         self.record_response_token_usage(turn_context, response_id, usage)
             .await;
     }

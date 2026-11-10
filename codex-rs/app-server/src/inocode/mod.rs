@@ -17,6 +17,8 @@ use codex_app_server_protocol::JSONRPCErrorError;
 
 pub(crate) type InocodeResult = Result<Option<ClientResponsePayload>, JSONRPCErrorError>;
 
+pub(crate) use team::spawn_notifier as spawn_team_notifier;
+
 /// Routes an `inocode/*` request to its area handler. Any other method gets
 /// the same "method not found" error as an unknown official method.
 pub(crate) async fn handle(request: ClientRequest) -> InocodeResult {

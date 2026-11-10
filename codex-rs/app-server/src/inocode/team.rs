@@ -43,6 +43,36 @@ pub(crate) fn to_response(status: TeamStatus) -> InocodeTeamStatusResponse {
     }
 }
 
+/// Forwards roster changes to clients as `inocode/team/updated`. Call once at startup.
+pub(crate) fn spawn_notifier(outgoing: std::sync::Arc<crate::outgoing_message::OutgoingMessageSender>) {
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    let mut rx = codex_inocode_team::subscribe();
+    handle.spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(thread_id) => {
+                    let status = to_response(codex_inocode_team::roster_for(&thread_id).status());
+                    outgoing
+                        .send_server_notification(
+                            codex_app_server_protocol::ServerNotification::InocodeTeamUpdated(
+                                codex_app_server_protocol::InocodeTeamUpdatedNotification {
+                                    thread_id,
+                                    agents: status.agents,
+                                    estimate: status.estimate,
+                                },
+                            ),
+                        )
+                        .await;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+}
+
 pub(crate) async fn handle(request: ClientRequest) -> InocodeResult {
     match request {
         ClientRequest::InocodeTeamStatus { params, .. } => {
