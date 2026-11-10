@@ -54,6 +54,7 @@ pub(super) async fn handle_message_string_tool(
         source,
         ..
     } = invocation;
+    let logged_text = message.clone();
     let receiver_thread_id = resolve_agent_target(&session, &turn, &target).await?;
     analytics.set_receiver(receiver_thread_id);
     let resume_config =
@@ -83,6 +84,21 @@ pub(super) async fn handle_message_string_tool(
     let receiver_agent_path = receipt.metadata.agent_path.ok_or_else(|| {
         FunctionCallError::RespondToModel("target agent is missing an agent_path".to_string())
     })?;
+    crate::inocode_loop::log_agent_message(
+        session.thread_id,
+        turn.session_source
+            .get_agent_path()
+            .map(|path| path.to_string())
+            .as_deref()
+            .unwrap_or("/root"),
+        receiver_agent_path.as_str(),
+        if mode == MessageDeliveryMode::TriggerTurn {
+            "followup_task"
+        } else {
+            "send_message"
+        },
+        &logged_text,
+    );
     emit_sub_agent_activity(
         &session,
         &turn,

@@ -177,6 +177,16 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, String> {
     {
         config.developer_instructions = Some(developer_instructions);
     }
+    if codex_inocode_flags::InocodeFlags::load().protocol_enabled
+        && !config
+            .developer_instructions
+            .as_deref()
+            .is_some_and(|text| text.contains(codex_inocode_protocol::SYSTEM_PROMPT_SECTION))
+    {
+        config.developer_instructions = Some(codex_inocode_protocol::append_to_instructions(
+            config.developer_instructions.as_deref(),
+        ));
+    }
     apply_spawn_agent_runtime_overrides(&mut config, turn)?;
 
     Ok(config)
