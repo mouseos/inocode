@@ -29,7 +29,7 @@ fn old_local_daemon_worktree_error_suggests_update() -> Result<()> {
     let cell = crate::history_cell::new_error_event(message.to_string());
     insta::assert_snapshot!(
         lines_to_single_string(&cell.display_lines(/*width*/ 120)),
-        @"■ The local Codex service cannot check background terminals. Run `codex app-server daemon update`, then restart Codex."
+        @"■ The local InoCode service cannot check background terminals. Run `inocode app-server daemon update`, then restart InoCode."
     );
     assert_eq!(
         managed_worktree_creation::background_terminals_blocker(

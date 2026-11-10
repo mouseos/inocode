@@ -249,7 +249,8 @@ async fn cloud_skills_reuse_cache_and_invalidate_on_connection_or_auth_change() 
             test.thread_manager.auth_manager().reload().await;
             // Wait for the real auth transition, without manually refreshing MCP.
             tokio::time::timeout(Duration::from_secs(10), async {
-                while client.auth_cache_key_for_server(INOCODE_APPS_MCP_SERVER_NAME) == previous_auth
+                while client.auth_cache_key_for_server(INOCODE_APPS_MCP_SERVER_NAME)
+                    == previous_auth
                 {
                     tokio::task::yield_now().await;
                 }

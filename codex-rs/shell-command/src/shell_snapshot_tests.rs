@@ -111,8 +111,14 @@ fn snapshot_capture_selects_declarations_and_environment() -> Result<()> {
 
             // Both replay paths must preserve current metadata from a full capture.
             let replay_environment = HashMap::from([
-                ("INOCODE_THREAD_ID".to_string(), "capture-thread".to_string()),
-                ("INOCODE_TOOL_CALL_ID".to_string(), "profile-call".to_string()),
+                (
+                    "INOCODE_THREAD_ID".to_string(),
+                    "capture-thread".to_string(),
+                ),
+                (
+                    "INOCODE_TOOL_CALL_ID".to_string(),
+                    "profile-call".to_string(),
+                ),
                 ("APP_SETTING".to_string(), "value".to_string()),
             ]);
             let empty = HashMap::new();
@@ -133,7 +139,10 @@ fn snapshot_capture_selects_declarations_and_environment() -> Result<()> {
                 ),
                 brokered.script,
             ] {
-                assert!(!snapshot.contains("INOCODE_THREAD_ID"), "{shell}: {snapshot}");
+                assert!(
+                    !snapshot.contains("INOCODE_THREAD_ID"),
+                    "{shell}: {snapshot}"
+                );
                 assert!(
                     !snapshot.contains("INOCODE_TOOL_CALL_ID"),
                     "{shell}: {snapshot}"

@@ -358,9 +358,9 @@ impl BedrockState {
         let mut footer = Vec::new();
         match &self.view {
             BedrockView::GovCloudWarning(_) => {
-                lines = vec!["Using Codex with AWS GovCloud".bold().into(), "".into()];
+                lines = vec!["Using InoCode with AWS GovCloud".bold().into(), "".into()];
                 lines.push(Line::from(vec![
-                    "You are using Codex with AWS GovCloud. Please ensure you or your administrator have read the ".into(),
+                    "You are using InoCode with AWS GovCloud. Please ensure you or your administrator have read the ".into(),
                     "application configuration and security guidance"
                         .cyan()
                         .underlined(),
@@ -449,7 +449,8 @@ impl BedrockState {
             }
             BedrockView::EnvironmentInstructions => {
                 lines.push(
-                    "  Export AWS credentials, then run `codex --no-daemon` in that shell.".into(),
+                    "  Export AWS credentials, then run `inocode --no-daemon` in that shell."
+                        .into(),
                 );
                 lines.push("".into());
                 lines.push(Line::from(vec![

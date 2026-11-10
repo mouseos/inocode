@@ -803,7 +803,8 @@ fn mixed_catalogs_alias_all_skill_sources_under_budget_pressure() {
     let executor_root =
         "skill://executor-environment-with-a-long-shared-root/workspaces/project/.agents/skills";
     let cloud_root = "skill://plugin_connector_1p_2330815c823c8191941e5dc465bb899f";
-    let host_root = "/Users/test/.inocode/plugins/cache/openai-curated/example/hash1234567890/skills";
+    let host_root =
+        "/Users/test/.inocode/plugins/cache/openai-curated/example/hash1234567890/skills";
     let catalog =
         |source: SkillSourceKind, authority: &str, root: &str, prefix: &str| SkillCatalog {
             is_partial: false,

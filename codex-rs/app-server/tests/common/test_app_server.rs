@@ -2097,7 +2097,10 @@ impl TestAppServerBuilder {
                         INOCODE_EXEC_SERVER_NOISE_ENVIRONMENT_ID_ENV_VAR.to_string(),
                         None,
                     ),
-                    (INOCODE_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR.to_string(), None),
+                    (
+                        INOCODE_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR.to_string(),
+                        None,
+                    ),
                     (
                         INOCODE_EXEC_SERVER_NOISE_CHATGPT_ACCOUNT_ID_ENV_VAR.to_string(),
                         None,

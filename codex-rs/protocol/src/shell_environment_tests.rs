@@ -47,7 +47,10 @@ fn tool_call_id_replaces_platform_equivalent_names() {
             ),
         ]);
         if let Some(expected_call) = expected_call {
-            expected.insert("INOCODE_TOOL_CALL_ID".to_string(), expected_call.to_string());
+            expected.insert(
+                "INOCODE_TOOL_CALL_ID".to_string(),
+                expected_call.to_string(),
+            );
         }
         assert_eq!(env, expected, "call_id: {call_id:?}");
     }
@@ -142,7 +145,10 @@ fn command_scrubber_removes_names_from_real_child_environment() {
             INOCODE_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR,
             "configured-noise-token",
         )
-        .env("INOCODE_GUARDIAN_DECISIONS_API_KEY", "synthetic-override-key")
+        .env(
+            "INOCODE_GUARDIAN_DECISIONS_API_KEY",
+            "synthetic-override-key",
+        )
         .env("SAFE", "value");
     scrub_non_inheritable_env_vars(&mut command);
     let output = command.output().expect("read child environment");

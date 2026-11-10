@@ -367,7 +367,9 @@ fn parse_windows_sandbox_wrapper_args(args: Vec<String>) -> Result<WindowsSandbo
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            INOCODE_HOME_FLAG => codex_home = Some(PathBuf::from(next_flag_value(&mut args, &arg)?)),
+            INOCODE_HOME_FLAG => {
+                codex_home = Some(PathBuf::from(next_flag_value(&mut args, &arg)?))
+            }
             COMMAND_CWD_FLAG => {
                 command_cwd = Some(absolute_path_arg(next_flag_value(&mut args, &arg)?, &arg)?);
             }

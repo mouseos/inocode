@@ -1,4 +1,4 @@
-//! Binds provisioning requests to the packaged Codex client and its Windows user.
+//! Binds provisioning requests to the packaged InoCode client and its Windows user.
 
 use std::io;
 use std::os::windows::io::AsRawHandle;
@@ -67,13 +67,13 @@ pub(crate) fn authorize_client_process(pipe: HANDLE) -> Result<AuthorizedClientP
                 && is_known_codex_package_family(&client_family) => {}
             #[cfg(debug_assertions)]
             None if FOREGROUND_MODE.load(Ordering::Acquire) => {
-                bail!("provisioning client does not belong to a trusted Codex package family")
+                bail!("provisioning client does not belong to a trusted InoCode package family")
             }
             None => bail!("provisioning service has no package identity"),
         },
         #[cfg(debug_assertions)]
         None if FOREGROUND_MODE.load(Ordering::Acquire) => {}
-        None => bail!("provisioning clients must run with an installed Codex package identity"),
+        None => bail!("provisioning clients must run with an installed InoCode package identity"),
     }
 
     Ok(AuthorizedClientProcess { handle: process })

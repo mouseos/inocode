@@ -18,7 +18,7 @@ mod principals;
 mod processes;
 mod retained_logons;
 
-/// Removes machine-wide legacy sandbox resources without reading or changing Codex home.
+/// Removes machine-wide legacy sandbox resources without reading or changing InoCode home.
 pub fn clean_up_legacy_windows_sandbox() -> Result<()> {
     ensure!(
         crate::setup::is_elevated()?,

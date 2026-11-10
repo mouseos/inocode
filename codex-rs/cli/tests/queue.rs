@@ -211,7 +211,7 @@ fn queue_rejects_unsupported_options() -> Result<()> {
         assert!(!output.status.success());
         let stderr = String::from_utf8(output.stderr)?;
         assert!(
-            stderr.contains("`codex queue`") && stderr.contains(expected),
+            stderr.contains("`inocode queue`") && stderr.contains(expected),
             "{args:?}: {stderr}"
         );
     }

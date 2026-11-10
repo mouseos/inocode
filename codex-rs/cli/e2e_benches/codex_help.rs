@@ -9,7 +9,7 @@ fn main() {
 }
 
 /// Exercises the Bazel-backed end-to-end benchmark path with a cheap,
-/// deterministic Codex invocation. Richer scenarios can add separate
+/// deterministic InoCode invocation. Richer scenarios can add separate
 /// benchmark binaries without making the shared harness depend on them.
 #[divan::bench(sample_count = 20, sample_size = 1)]
 fn codex_help(bencher: Bencher) {
@@ -20,7 +20,7 @@ fn codex_help(bencher: Bencher) {
         let output = Command::new(&codex)
             .arg("--help")
             .output()
-            .expect("codex --help should run");
-        assert!(output.status.success(), "codex --help should succeed");
+            .expect("inocode --help should run");
+        assert!(output.status.success(), "inocode --help should succeed");
     });
 }

@@ -791,7 +791,7 @@ jobs:
               --target "$binary" \
               --identity unused \
               --deep false \
-              --identifier "com.openai.codex.${resource}" \
+              --identifier "com.mouseos.inocode.${resource}" \
               --options runtime \
               --timestamp true
 
@@ -825,12 +825,12 @@ jobs:
             name="$(basename "$library")"
             .github/scripts/macos-signing/sign_macos_code.sh \
               --target "$library" --identity unused --deep false \
-              --identifier "com.openai.codex.voice.${name}" \
+              --identifier "com.mouseos.inocode.voice.${name}" \
               --options runtime --timestamp true
           done < <(find "$signed/runtime" -name '*.dylib' -type f -print0)
           .github/scripts/macos-signing/sign_macos_code.sh \
             --target "$signed/codex-voice-host" --identity unused --deep false \
-            --identifier com.openai.codex.voice-host --options runtime --timestamp true \
+            --identifier com.mouseos.inocode.voice-host --options runtime --timestamp true \
             --entitlements .github/scripts/macos-signing/codex-voice-host.entitlements.plist
 
           # Notarize the actual signed closure together, then hash those bytes.
@@ -1914,7 +1914,7 @@ jobs:
           sdk_tarball="dist/npm/codex-sdk-npm-${VERSION}.tgz"
           # Keep this list in sync with INOCODE_PLATFORM_PACKAGES in
           # codex-cli/scripts/build_npm_package.py. The root wrapper advances
-          # @openai/codex@latest as soon as it publishes, so every platform
+          # @mouseos/inocode@latest as soon as it publishes, so every platform
           # package it aliases must already exist in the registry first.
           platform_tarballs=(
             "dist/npm/codex-npm-linux-x64-${VERSION}.tgz"
@@ -1954,7 +1954,7 @@ jobs:
           done
 
           # npm returns HTTP 409 when concurrent publishes update the same
-          # packument. Every platform tarball is a version of @openai/codex,
+          # packument. Every platform tarball is a version of @mouseos/inocode,
           # so publish all tarballs serially.
           tarballs=(
             "${platform_tarballs[@]}"

@@ -298,7 +298,7 @@ mod tests {
 
         assert_eq!(
             rendered,
-            "Hello, Codex. You are in codex-rs. Codex is repeated."
+            "Hello, InoCode. You are in codex-rs. InoCode is repeated."
         );
     }
 
@@ -308,7 +308,7 @@ mod tests {
 
         assert_eq!(
             template.render([("greeting", "Hello"), ("name", "Codex")]),
-            Ok("Hello, Codex!".to_string())
+            Ok("Hello, InoCode!".to_string())
         );
         assert_eq!(
             template.render([("greeting", "Hi"), ("name", "builder")]),
@@ -344,7 +344,7 @@ mod tests {
 
         assert_eq!(
             rendered,
-            "literal open: {{, literal close: }}, value: Codex"
+            "literal open: {{, literal close: }}, value: InoCode"
         );
     }
 

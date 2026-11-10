@@ -6,10 +6,10 @@ use codex_app_server_protocol::FeedbackSaveResponse;
 use codex_connectors::ConnectorDirectoryCacheContext;
 use codex_connectors::ConnectorDirectoryCacheKey;
 use codex_connectors::connector_runtime_cache_path;
-use codex_feedback::INOCODE_APP_DIRECTORY_CACHE_ATTACHMENT_FILENAME;
-use codex_feedback::INOCODE_APPS_TOOLS_CACHE_ATTACHMENT_FILENAME;
 use codex_feedback::FeedbackAttachment;
 use codex_feedback::FeedbackSnapshot;
+use codex_feedback::INOCODE_APP_DIRECTORY_CACHE_ATTACHMENT_FILENAME;
+use codex_feedback::INOCODE_APPS_TOOLS_CACHE_ATTACHMENT_FILENAME;
 #[cfg(target_os = "windows")]
 use codex_feedback::WINDOWS_SANDBOX_LOG_ATTACHMENT_FILENAME;
 use codex_feedback::guardian_review_failures;

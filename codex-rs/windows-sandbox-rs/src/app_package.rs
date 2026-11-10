@@ -234,7 +234,7 @@ fn authorize_runner_receipt(
     );
     ensure!(
         record.codex_home == codex_home,
-        "registered Core setup belongs to another Codex home"
+        "registered Core setup belongs to another InoCode home"
     );
     let runtime = record.runtime()?;
     ensure!(

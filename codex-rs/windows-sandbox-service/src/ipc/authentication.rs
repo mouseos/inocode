@@ -103,7 +103,7 @@ fn authenticate_impersonated_client(
     // SAFETY: OpenThreadToken transferred this handle on success.
     let token = unsafe { OwnedHandle::from_raw_handle(raw_token) };
     crate::package_identity::authorize_client(authorized_process, token.as_raw_handle())
-        .context("authorize the packaged Codex provisioning client")?;
+        .context("authorize the packaged InoCode provisioning client")?;
     let mut session = 0_u32;
     let mut returned = 0_u32;
     if unsafe {

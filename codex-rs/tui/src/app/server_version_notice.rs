@@ -61,7 +61,7 @@ impl App {
                     ServerVersionNoticeKind::Different => "≠",
                 };
             Some(format!(
-                "Service v{server} {comparison} Codex CLI v{client_version}{guidance}"
+                "Service v{server} {comparison} InoCode CLI v{client_version}{guidance}"
             ))
         });
     }

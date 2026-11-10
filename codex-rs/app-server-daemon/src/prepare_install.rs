@@ -74,7 +74,7 @@ pub async fn update_from_cli(
             .ok()
             .map(|info| info.app_server_version),
         managed_codex_path,
-        message: "The CLI package is selected and pinned. Run `codex app-server daemon update` to return to production updates.".to_string(),
+        message: "The CLI package is selected and pinned. Run `inocode app-server daemon update` to return to production updates.".to_string(),
     }))
 }
 
@@ -96,7 +96,7 @@ async fn prepare_from_package(
         .settings_file
         .parent()
         .and_then(Path::parent)
-        .context("daemon settings path has no Codex home")?;
+        .context("daemon settings path has no InoCode home")?;
     let previous_root = managed_install::package_root(home);
     let root = home.join("packages/app-server-daemon");
     anyhow::ensure!(
@@ -120,7 +120,7 @@ async fn prepare_from_package(
     } else {
         anyhow::ensure!(
             previous_root.join("current").symlink_metadata().is_ok(),
-            "no daemon package is selected; run `codex app-server daemon start` first"
+            "no daemon package is selected; run `inocode app-server daemon start` first"
         );
     }
     std::fs::create_dir_all(&root)?;
@@ -131,7 +131,7 @@ async fn prepare_from_package(
     let backend = daemon.running_backend_instance(settings).await?;
     anyhow::ensure!(
         backend.is_some() || crate::client::probe(&daemon.socket_path).await.is_err(),
-        "app server is running but is not managed by codex app-server daemon"
+        "app server is running but is not managed by inocode app-server daemon"
     );
     let selected = managed_install::managed_codex_bin(home);
     let previous_release = previous_root.join("current").canonicalize().ok();
@@ -146,7 +146,7 @@ async fn prepare_from_package(
         );
     }
     let source = source.context(
-        "this CLI has no complete local package; install a packaged Codex CLI or use the standalone installer",
+        "this CLI has no complete local package; install a packaged InoCode CLI or use the standalone installer",
     )?;
     anyhow::ensure!(
         !root.canonicalize()?.starts_with(source.canonicalize()?),
@@ -413,7 +413,7 @@ async fn prepare_from_package(
             ..daemon.clone()
         };
         selected.start_managed_backend(settings).await.context(
-            "daemon package selected but could not start; retry with `codex app-server daemon start`",
+            "daemon package selected but could not start; retry with `inocode app-server daemon start`",
         )?;
         selected.wait_until_ready().await?;
     }
@@ -532,7 +532,7 @@ fn validate_package(root: &Path, entrypoint: &str) -> Result<()> {
     for name in names {
         if !root.join(name).is_file() {
             return Err(anyhow!(
-                "local Codex package is missing {name}; reinstall the CLI or use the standalone installer"
+                "local InoCode package is missing {name}; reinstall the CLI or use the standalone installer"
             ));
         }
         #[cfg(unix)]
@@ -540,7 +540,7 @@ fn validate_package(root: &Path, entrypoint: &str) -> Result<()> {
             use std::os::unix::fs::PermissionsExt;
             if std::fs::metadata(root.join(name))?.permissions().mode() & 0o111 == 0 {
                 return Err(anyhow!(
-                    "local Codex package file {name} is not executable; reinstall the CLI or use the standalone installer"
+                    "local InoCode package file {name} is not executable; reinstall the CLI or use the standalone installer"
                 ));
             }
         }

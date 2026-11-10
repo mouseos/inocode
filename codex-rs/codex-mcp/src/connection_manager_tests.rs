@@ -12,8 +12,8 @@ use crate::elicitation::ElicitationReviewer;
 use crate::elicitation::elicitation_is_rejected_by_policy;
 use crate::mcp::tests::test_elicitation_config;
 use crate::rmcp_client::AsyncManagedClient;
-use crate::rmcp_client::INOCODE_APPS_RECONNECT_INITIAL_BACKOFF;
 use crate::rmcp_client::CodexAppsStartupReconnect;
+use crate::rmcp_client::INOCODE_APPS_RECONNECT_INITIAL_BACKOFF;
 use crate::rmcp_client::ManagedClient;
 use crate::rmcp_client::ManagedClientFuture;
 use crate::rmcp_client::StartupOutcomeError;
@@ -633,7 +633,10 @@ async fn stalled_apps_client_publication_expires_at_the_configured_startup_timeo
     client.client = futures::future::pending().boxed().shared();
     client.startup_complete.store(false, Ordering::Release);
     manager.insert_test_client(INOCODE_APPS_MCP_SERVER_NAME, client);
-    let view = manager.servers.get_mut(INOCODE_APPS_MCP_SERVER_NAME).unwrap();
+    let view = manager
+        .servers
+        .get_mut(INOCODE_APPS_MCP_SERVER_NAME)
+        .unwrap();
     let connection = Arc::get_mut(&mut view.connection).unwrap();
     let (_publisher, initialized) = watch::channel(None);
     connection.initialized_apps = Some(initialized);
@@ -4056,7 +4059,10 @@ async fn list_all_tools_resolves_server_catalogs_concurrently() {
 async fn catalog_listing_preserves_legacy_apps_tools_during_failed_startup() {
     for startup_complete in [false, true] {
         let mut manager = create_test_manager_with_failed_apps_startup(
-            vec![create_test_tool(INOCODE_APPS_MCP_SERVER_NAME, "drive_search")],
+            vec![create_test_tool(
+                INOCODE_APPS_MCP_SERVER_NAME,
+                "drive_search",
+            )],
             Arc::new(|| futures::future::pending().boxed().shared()),
         );
         let connection = Arc::get_mut(
@@ -4604,7 +4610,10 @@ async fn tool_lists_do_not_block_and_share_codex_apps_startup_reconnect() {
         .shared()
     });
     let mut manager = create_test_manager_with_failed_apps_startup(
-        vec![create_test_tool(INOCODE_APPS_MCP_SERVER_NAME, "drive_search")],
+        vec![create_test_tool(
+            INOCODE_APPS_MCP_SERVER_NAME,
+            "drive_search",
+        )],
         reconnect_factory,
     );
     manager.set_test_server_metadata(
@@ -6406,7 +6415,10 @@ fn connection_identity_tracks_only_oauth_credentials_when_oauth_is_active() {
 #[test]
 fn connection_identity_uses_effective_authorization_headers() {
     let runtime_context = reusable_server_runtime_context();
-    let missing_env_var = format!("INOCODE_TEST_UNSET_MCP_AUTHORIZATION_{}", std::process::id());
+    let missing_env_var = format!(
+        "INOCODE_TEST_UNSET_MCP_AUTHORIZATION_{}",
+        std::process::id()
+    );
     assert!(std::env::var_os(&missing_env_var).is_none());
 
     for (static_header, environment_header, has_authorization) in [

@@ -334,7 +334,7 @@ fn ensure_supported_platform() -> Result<()> {
 #[cfg(not(any(unix, windows)))]
 fn ensure_supported_platform() -> Result<()> {
     Err(anyhow!(
-        "codex app-server daemon lifecycle is only supported on Unix and Windows platforms"
+        "inocode app-server daemon lifecycle is only supported on Unix and Windows platforms"
     ))
 }
 
@@ -390,7 +390,7 @@ impl Daemon {
             self.settings_file
                 .parent()
                 .and_then(Path::parent)
-                .context("daemon settings path has no Codex home")?,
+                .context("daemon settings path has no InoCode home")?,
         ))
     }
 
@@ -402,7 +402,7 @@ impl Daemon {
             .settings_file
             .parent()
             .and_then(Path::parent)
-            .context("daemon settings path has no Codex home")?;
+            .context("daemon settings path has no InoCode home")?;
         let (pid, updater) = if managed_codex_bin.starts_with(home.join("packages/standalone")) {
             (LEGACY_PID_FILE_NAME, LEGACY_UPDATE_PID_FILE_NAME)
         } else {
@@ -509,7 +509,7 @@ impl Daemon {
             && self.running_backend(&settings).await?.is_none()
         {
             return Err(anyhow!(
-                "app server is running but is not managed by codex app-server daemon"
+                "app server is running but is not managed by inocode app-server daemon"
             ));
         }
         prepare_install::prepare(self, &settings).await?;
@@ -638,7 +638,7 @@ impl Daemon {
             }
         } else if client::probe(&self.socket_path).await.is_ok() {
             return Err(anyhow!(
-                "app server is running but is not managed by codex app-server daemon"
+                "app server is running but is not managed by inocode app-server daemon"
             ));
         } else {
             diagnostics::event("daemon_not_running", ());
@@ -689,7 +689,7 @@ impl Daemon {
 
         if client::probe(&self.socket_path).await.is_ok() {
             return Err(anyhow!(
-                "app server is running but is not managed by codex app-server daemon"
+                "app server is running but is not managed by inocode app-server daemon"
             ));
         }
 
@@ -817,7 +817,7 @@ impl Daemon {
 
         if backend.is_none() && client::probe(&self.socket_path).await.is_ok() {
             return Err(anyhow!(
-                "app server is running but is not managed by codex app-server daemon"
+                "app server is running but is not managed by inocode app-server daemon"
             ));
         }
 
@@ -887,7 +887,7 @@ impl Daemon {
             && self.running_backend(&settings).await?.is_none()
         {
             return Err(anyhow!(
-                "app server is running but is not managed by codex app-server daemon"
+                "app server is running but is not managed by inocode app-server daemon"
             ));
         }
         prepare_install::prepare(self, &settings).await?;
@@ -1056,7 +1056,7 @@ impl Daemon {
             .settings_file
             .parent()
             .and_then(Path::parent)
-            .context("daemon settings path has no Codex home")?;
+            .context("daemon settings path has no InoCode home")?;
         Ok(managed_install::is_stable_standalone_release(
             codex_home,
             &self.current_managed_codex_bin()?,
@@ -1069,7 +1069,7 @@ impl Daemon {
             .settings_file
             .parent()
             .and_then(Path::parent)
-            .context("daemon settings path has no Codex home")?;
+            .context("daemon settings path has no InoCode home")?;
         Ok(managed_install::managed_codex_bin(home))
     }
 
@@ -1104,7 +1104,7 @@ impl Daemon {
 
         let managed_codex_path = self.managed_codex_bin.display();
         Err(anyhow!(
-            "daemon executable not found at {managed_codex_path}; repair the existing installation, or run `codex app-server daemon start` to install a missing daemon"
+            "daemon executable not found at {managed_codex_path}; repair the existing installation, or run `inocode app-server daemon start` to install a missing daemon"
         ))
     }
 

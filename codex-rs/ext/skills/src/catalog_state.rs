@@ -44,8 +44,9 @@ impl SkillCatalogState {
         &mut self,
         mcp_resources: Option<&McpResourceClient>,
     ) -> Arc<CloudSkillGeneration> {
-        let auth_cache_key = mcp_resources
-            .map(|client| client.auth_cache_key_for_server(codex_mcp::INOCODE_APPS_MCP_SERVER_NAME));
+        let auth_cache_key = mcp_resources.map(|client| {
+            client.auth_cache_key_for_server(codex_mcp::INOCODE_APPS_MCP_SERVER_NAME)
+        });
         if let Some(generation) = self
             .cloud_generation
             .as_ref()

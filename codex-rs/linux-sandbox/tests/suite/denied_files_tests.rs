@@ -136,9 +136,18 @@ printf '%s\000' "$INOCODE_TEST_DENIED_PATH_0" "$INOCODE_TEST_DENIED_PATH_1" "$IN
                 "INOCODE_TEST_PROTECTED_RG_MARKER",
                 fixture.path().join("protected-rg-ran"),
             ),
-            ("INOCODE_TEST_DENIED_PATH_0", denied_files[0].0.to_path_buf()),
-            ("INOCODE_TEST_DENIED_PATH_1", denied_files[1].0.to_path_buf()),
-            ("INOCODE_TEST_DENIED_PATH_2", denied_files[2].0.to_path_buf()),
+            (
+                "INOCODE_TEST_DENIED_PATH_0",
+                denied_files[0].0.to_path_buf(),
+            ),
+            (
+                "INOCODE_TEST_DENIED_PATH_1",
+                denied_files[1].0.to_path_buf(),
+            ),
+            (
+                "INOCODE_TEST_DENIED_PATH_2",
+                denied_files[2].0.to_path_buf(),
+            ),
         ] {
             env.insert(
                 name.to_string(),

@@ -404,10 +404,16 @@ async fn build_command_replays_snapshot_before_hook_overrides_and_scrubbing() {
             OsString::from("captured-noise-token"),
         ),
         #[cfg(unix)]
-        (OsString::from("INOCODE_HOOK_NON_UNICODE"), non_unicode_value),
+        (
+            OsString::from("INOCODE_HOOK_NON_UNICODE"),
+            non_unicode_value,
+        ),
     ];
     let env = HashMap::from([
-        ("INOCODE_HOOK_OVERRIDE".to_string(), "configured".to_string()),
+        (
+            "INOCODE_HOOK_OVERRIDE".to_string(),
+            "configured".to_string(),
+        ),
         ("INOCODE_HOOK_SAFE_ENV".to_string(), "visible".to_string()),
         (
             INOCODE_EXEC_SERVER_NOISE_AUTH_TOKEN_ENV_VAR.to_string(),

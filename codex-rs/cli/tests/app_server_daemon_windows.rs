@@ -18,7 +18,7 @@ fn winget_package_starts_and_reselects_daemon() -> Result<()> {
     }
     let temp = tempfile::tempdir()?;
     let home = temp.path().join("home");
-    let package = temp.path().join("WinGet/Packages/OpenAI.Codex");
+    let package = temp.path().join("WinGet/Packages/OpenAI.InoCode");
     let target = format!("{}-pc-windows-msvc", std::env::consts::ARCH);
     let entrypoint = format!("codex-{target}.exe");
     let codex = package.join(&entrypoint);

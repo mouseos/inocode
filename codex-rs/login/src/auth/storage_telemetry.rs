@@ -1,4 +1,4 @@
-//! Observes logical Codex credential operations without inspecting authentication material.
+//! Observes logical InoCode credential operations without inspecting authentication material.
 
 use super::AuthDotJson;
 use super::AuthStorageBackend;

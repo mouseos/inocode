@@ -131,14 +131,14 @@ pub(crate) fn run(
         Ok(()) => {
             crate::service::log_information(
                 crate::service::EVENT_PROVISIONING_SUCCEEDED,
-                "Codex sandbox provisioning completed successfully.",
+                "InoCode sandbox provisioning completed successfully.",
             );
             Ok(SandboxProvisioningResponse::Ok)
         }
         Err(error) => {
             crate::service::log_error(
                 crate::service::EVENT_PROVISIONING_FAILED,
-                &format!("Codex sandbox provisioning failed: {error}"),
+                &format!("InoCode sandbox provisioning failed: {error}"),
             );
             Err(error).context("sandbox provisioning failed")
         }

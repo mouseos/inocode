@@ -1,8 +1,8 @@
-use codex_feedback::INOCODE_APP_DIRECTORY_CACHE_ATTACHMENT_FILENAME;
-use codex_feedback::INOCODE_APPS_TOOLS_CACHE_ATTACHMENT_FILENAME;
 use codex_feedback::DOCTOR_REPORT_ATTACHMENT_FILENAME;
 use codex_feedback::FEEDBACK_DIAGNOSTICS_ATTACHMENT_FILENAME;
 use codex_feedback::FeedbackDiagnostics;
+use codex_feedback::INOCODE_APP_DIRECTORY_CACHE_ATTACHMENT_FILENAME;
+use codex_feedback::INOCODE_APPS_TOOLS_CACHE_ATTACHMENT_FILENAME;
 use codex_feedback::WINDOWS_SANDBOX_LOG_ATTACHMENT_FILENAME;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
@@ -314,7 +314,7 @@ pub(crate) fn feedback_upload_consent_params(
             super::SelectionItem {
                 name: "Yes".to_string(),
                 description: Some(
-                    "Share the current Codex session logs and diagnostics with the team for troubleshooting"
+                    "Share the current InoCode session logs and diagnostics with the team for troubleshooting"
                         .to_string(),
                 ),
                 actions: vec![yes_action],

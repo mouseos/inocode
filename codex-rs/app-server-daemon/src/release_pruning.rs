@@ -136,7 +136,7 @@ pub(crate) async fn prune(daemon: &Daemon, root: &Path, settings: &DaemonSetting
         .settings_file
         .parent()
         .and_then(Path::parent)
-        .context("missing Codex home")?;
+        .context("missing InoCode home")?;
     // Require a real dedicated root, never a shared alias or an in-progress migration.
     let releases = root.join("releases");
     let mount = owned_mount(&home.join("packages"))?;
@@ -212,7 +212,10 @@ pub(crate) async fn prune(daemon: &Daemon, root: &Path, settings: &DaemonSetting
             .and_then(|s| s.strip_suffix(&format!("-{}", manifest.target)));
         if !(name == format!("{}-{}", manifest.version, manifest.target)
             || local.is_some_and(|digest| blake3::Hash::from_hex(digest).is_ok()))
-            || !matches!(manifest.entrypoint.as_str(), "bin/inocode" | "bin/codex.exe")
+            || !matches!(
+                manifest.entrypoint.as_str(),
+                "bin/inocode" | "bin/codex.exe"
+            )
         {
             continue;
         }

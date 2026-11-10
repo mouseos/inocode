@@ -454,7 +454,8 @@ impl McpRuntime {
             ))
             .await,
         );
-        let hosted_event_server_retained = connections.contains_server(INOCODE_APPS_MCP_SERVER_NAME)
+        let hosted_event_server_retained = connections
+            .contains_server(INOCODE_APPS_MCP_SERVER_NAME)
             && config
                 .mcp_server_catalog
                 .server(INOCODE_APPS_MCP_SERVER_NAME)

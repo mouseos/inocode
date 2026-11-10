@@ -44,7 +44,10 @@ async fn supports_originator_override() -> anyhow::Result<()> {
         .await;
 
     test.cmd_with_server(&server)
-        .env("INOCODE_INTERNAL_ORIGINATOR_OVERRIDE", "codex_exec_override")
+        .env(
+            "INOCODE_INTERNAL_ORIGINATOR_OVERRIDE",
+            "codex_exec_override",
+        )
         .arg("--skip-git-repo-check")
         .arg("tell me something")
         .assert()

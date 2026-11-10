@@ -219,7 +219,7 @@ async fn canceling_while_saving_an_approved_device_login_keeps_it_for_the_next_r
         async {
             save_started
                 .await
-                .expect("Codex received the approved tokens")
+                .expect("InoCode received the approved tokens")
         },
         |_| {
             // The next keyring read happens after approval, just before saving the tokens.

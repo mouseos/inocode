@@ -107,7 +107,9 @@ fn install_junction(root: &Path, release: &Path) -> Result<()> {
         .env("INOCODE_DAEMON_JUNCTION_LINK", &junction)
         .env("INOCODE_DAEMON_JUNCTION_TARGET", release)
         .args(["/d", "/s", "/e:on", "/v:off", "/c"])
-        .raw_arg(r#""mklink /J "%INOCODE_DAEMON_JUNCTION_LINK%" "%INOCODE_DAEMON_JUNCTION_TARGET%"""#)
+        .raw_arg(
+            r#""mklink /J "%INOCODE_DAEMON_JUNCTION_LINK%" "%INOCODE_DAEMON_JUNCTION_TARGET%"""#,
+        )
         .creation_flags(CREATE_NO_WINDOW)
         .output()
         .context("failed to run cmd.exe to create managed daemon junction")?;

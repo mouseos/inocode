@@ -736,7 +736,7 @@ fn process_private_desktops() -> Result<BTreeSet<String>> {
                 .position(|&unit| unit == 0)
                 .unwrap_or(name.len());
             let name = String::from_utf16(&name[..end])?;
-            if name.starts_with("CodexSandboxDesktop-") {
+            if name.starts_with("InoCodeSandboxDesktop-") {
                 desktops.insert(name);
             }
         }

@@ -317,7 +317,10 @@ fn snapshot_filters_profile_exports_after_capture() {
         r#set: HashMap::from([
             ("PROFILE_ALLOWED".to_string(), "override".to_string()),
             ("INOCODE_THREAD_ID".to_string(), "policy-thread".to_string()),
-            ("INOCODE_TOOL_CALL_ID".to_string(), "policy-call".to_string()),
+            (
+                "INOCODE_TOOL_CALL_ID".to_string(),
+                "policy-call".to_string(),
+            ),
         ]),
         // Metadata must survive policy filtering so the cache owns its removal.
         include_only: vec![

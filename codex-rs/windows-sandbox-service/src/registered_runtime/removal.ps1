@@ -79,7 +79,7 @@ try {
             $security = [Security.AccessControl.MutexSecurity]::new()
             $security.SetSecurityDescriptorSddlForm('D:P(A;;GA;;;SY)(A;;GA;;;BA)')
             $created = $false
-            $mutex = [Threading.Mutex]::new($false, 'Global\CodexSandboxSetup', [ref]$created, $security)
+            $mutex = [Threading.Mutex]::new($false, 'Global\InoCodeSandboxSetup', [ref]$created, $security)
             try { $locked = $mutex.WaitOne(30000) }
             catch [Threading.AbandonedMutexException] { $locked = $true }
             if (!$locked) { throw 'Sandbox setup is still active' }
@@ -132,15 +132,15 @@ try {
                     # PowerShell converts $null to an empty string; DeleteProfile requires native NULL.
                     if (![CleanupNative]::DeleteProfile($sid, [NullString]::Value, [NullString]::Value)) { throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error()) }
                 }
-                [CleanupNative]::DeleteUser(('CodexSandbox' + $account.account), $sid)
+                [CleanupNative]::DeleteUser(('InoCodeSandbox' + $account.account), $sid)
                 [CleanupNative]::Log($plan.service_name, 4, 3004, "Removed $($account.account) sandbox profile and account")
             }
             $groupSid = $null
-            try { if ($plan.group_sid) { $groupSid = ([Security.Principal.NTAccount]::new('CodexSandboxUsers')).Translate([Security.Principal.SecurityIdentifier]).Value } }
+            try { if ($plan.group_sid) { $groupSid = ([Security.Principal.NTAccount]::new('InoCodeSandboxUsers')).Translate([Security.Principal.SecurityIdentifier]).Value } }
             catch [Security.Principal.IdentityNotMappedException] { }
             if ($groupSid) {
                 if ($groupSid -cne $plan.group_sid) { throw 'Sandbox group was replaced' }
-                $status = [CleanupNative]::NetLocalGroupDel($null, 'CodexSandboxUsers')
+                $status = [CleanupNative]::NetLocalGroupDel($null, 'InoCodeSandboxUsers')
                 if ($status -ne 0 -and $status -ne 2220) { throw [ComponentModel.Win32Exception]::new($status) }
             }
             $legacy = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($plan.legacy_key, $true)

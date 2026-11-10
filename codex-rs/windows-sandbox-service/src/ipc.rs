@@ -386,7 +386,7 @@ fn policy_rejection_diagnostic(error: &anyhow::Error) -> String {
     });
     let detail = detail.unwrap_or_else(|| "cause=unavailable".to_string());
     format!(
-        "Codex sandbox provisioning was rejected by administrator policy: stage={stage} {detail}"
+        "InoCode sandbox provisioning was rejected by administrator policy: stage={stage} {detail}"
     )
 }
 

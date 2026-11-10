@@ -5,8 +5,8 @@ The provisioned CLI has two deliberately separate identifiers:
 | Purpose                               | Identifier                      |
 | ------------------------------------- | ------------------------------- |
 | Code-signing identifier               | `codex`                         |
-| Bundle identifier                     | `com.openai.codex.cli`          |
-| Provisioned App ID and keychain group | `<TeamID>.com.openai.codex.cli` |
+| Bundle identifier                     | `com.mouseos.inocode.cli`          |
+| Provisioned App ID and keychain group | `<TeamID>.com.mouseos.inocode.cli` |
 
 The code-signing identifier preserves access to existing login-keychain items
 whose access rules require the original CLI identity. Giving the CLI an app
@@ -17,7 +17,7 @@ replace existing login-keychain credential access rules.
 
 Changing the new binary's designated requirement to accept both identifiers
 would not make it satisfy an existing item's requirement for `codex`. Items
-created by a binary signed as `com.openai.codex.cli` are a separate compatibility
+created by a binary signed as `com.mouseos.inocode.cli` are a separate compatibility
 case: restoring `codex` does not silently authorize access to those items.
 
 The signing backend must honor an explicit `--binary-identifier` when signing

@@ -981,7 +981,7 @@ fn file_link_preserves_label_and_decodes_fallback_destination() {
 #[test]
 fn file_link_keeps_descriptive_label_and_target() {
     let text = render_markdown_text_for_cwd(
-        "Your `codex` launcher [automatically adds those overrides](/home/dev-user/code/openai/project/dotslash-gen/bin/codex:1105), even though you did not specify any.",
+        "Your `inocode` launcher [automatically adds those overrides](/home/dev-user/code/openai/project/dotslash-gen/bin/codex:1105), even though you did not specify any.",
         Path::new("/home/dev-user/code/openai"),
     );
     let expected = Text::from(Line::from_iter([

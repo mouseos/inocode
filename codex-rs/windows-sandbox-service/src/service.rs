@@ -148,7 +148,7 @@ unsafe extern "system" fn service_main(_argument_count: u32, _arguments: *mut *m
         reason.record(fatal_error_hresult(&error));
         log_error(
             EVENT_SERVICE_FAILED,
-            &format!("The Codex sandbox service encountered a fatal error: {error:#}"),
+            &format!("The InoCode sandbox service encountered a fatal error: {error:#}"),
         );
         eprintln!("{} failed: {error:#}", state.service_name);
         if state.status_handle.get().is_some() {
@@ -187,7 +187,7 @@ fn service_main_inner(state: &ServiceState) -> Result<()> {
     reason.record(/*hresult*/ 0);
     log_information(
         EVENT_SERVICE_STOPPED,
-        "The Codex sandbox service has stopped.",
+        "The InoCode sandbox service has stopped.",
     );
     state.report_status(SERVICE_STOPPED, NO_ERROR)
 }
@@ -229,7 +229,7 @@ unsafe extern "system" fn service_control_handler(
                 }
                 log_information(
                     EVENT_SERVICE_STOP_REQUESTED,
-                    "The Codex sandbox service was asked to stop.",
+                    "The InoCode sandbox service was asked to stop.",
                 );
                 wake_listener();
             }
@@ -240,7 +240,7 @@ unsafe extern "system" fn service_control_handler(
             if let Err(error) = state.report_status(current_status, NO_ERROR) {
                 log_error(
                     EVENT_SERVICE_FAILED,
-                    "The Codex sandbox service could not report its current status.",
+                    "The InoCode sandbox service could not report its current status.",
                 );
                 eprintln!("unable to report the current service status: {error:#}");
             }

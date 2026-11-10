@@ -36,12 +36,12 @@ use tokio::time::timeout;
 
 use super::PreparedExecRequest;
 use super::prepare_exec_request_with_telemetry;
-#[cfg(unix)]
-use crate::INOCODE_ARG0_EXEC_HELPER_ARG1;
 use crate::ExecParams;
 use crate::ExecServerRuntimeOptions;
 #[cfg(any(unix, windows))]
 use crate::FileSystemSandboxContext;
+#[cfg(unix)]
+use crate::INOCODE_ARG0_EXEC_HELPER_ARG1;
 use crate::ProcessId;
 use crate::process_telemetry::ProcessTelemetry;
 

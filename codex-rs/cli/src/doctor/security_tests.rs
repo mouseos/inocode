@@ -62,7 +62,7 @@ fn each_endpoint_product_requires_vendor_specific_app_exclusions() {
                 .expect("serialize endpoint check")
                 .to_ascii_lowercase()
                 .contains("chatgpt"),
-            "{product}: endpoint diagnostics should only refer to Codex"
+            "{product}: endpoint diagnostics should only refer to InoCode"
         );
 
         assert_eq!(check.issues.len(), 1, "{product}");
@@ -77,7 +77,7 @@ fn each_endpoint_product_requires_vendor_specific_app_exclusions() {
             issue.cause
         );
         assert!(
-            issue.cause.contains("Verify Codex exclusions."),
+            issue.cause.contains("Verify InoCode exclusions."),
             "{product}: {}",
             issue.cause
         );

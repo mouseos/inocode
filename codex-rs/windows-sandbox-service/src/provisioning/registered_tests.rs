@@ -29,7 +29,7 @@ fn recorded_installation(accounts: &[SandboxRuntimeAccount]) -> InstallationReco
         session_id: 0,
         desktop_installation: None,
         runtime: Some(RuntimeRegistration {
-            package_family: "Codex.SandboxFixture_8wekyb3d8bbwe".into(),
+            package_family: "InoCode.SandboxFixture_8wekyb3d8bbwe".into(),
             accounts: accounts
                 .iter()
                 .map(|&account| RuntimeAccountRegistration {
@@ -159,7 +159,7 @@ fn native_successful_sibling_validation() -> Result<()> {
                                     Err(anyhow!("fixture PackageManager query failed"))
                                 } else {
                                     Ok(vec![
-                                        "Codex.SandboxFixture_1.0.0.0_x64__8wekyb3d8bbwe".into(),
+                                        "InoCode.SandboxFixture_1.0.0.0_x64__8wekyb3d8bbwe".into(),
                                     ])
                                 }
                             } else {
@@ -185,7 +185,7 @@ fn native_successful_sibling_validation() -> Result<()> {
             LogonUserW(
                 to_wide(account.username()).as_ptr(),
                 to_wide(".").as_ptr(),
-                to_wide("Codex-fixture-27967!").as_ptr(),
+                to_wide("InoCode-fixture-27967!").as_ptr(),
                 LOGON32_LOGON_INTERACTIVE,
                 LOGON32_PROVIDER_DEFAULT,
                 &mut token,

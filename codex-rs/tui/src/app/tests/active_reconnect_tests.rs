@@ -413,7 +413,7 @@ async fn reconnect_restores_history_permissions_and_resumes_unsent_input() -> Re
             .lines()
             .filter(|line| {
                 line.contains("Couldn't confirm whether")
-                    || line.contains("background Codex service")
+                    || line.contains("background InoCode service")
             })
             .collect::<Vec<_>>()
             .join("\n");

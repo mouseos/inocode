@@ -198,9 +198,9 @@ enum InitialOperation {
 
 enum StdinPromptBehavior {
     /// Read stdin only when there is no positional prompt, which is the legacy
-    /// `codex exec` behavior for `codex exec` with piped input.
+    /// `inocode exec` behavior for `inocode exec` with piped input.
     RequiredIfPiped,
-    /// Always treat stdin as the prompt, used for the explicit `codex exec -`
+    /// Always treat stdin as the prompt, used for the explicit `inocode exec -`
     /// sentinel and similar forced-stdin call sites.
     Forced,
     /// If stdin is piped alongside a positional prompt, treat stdin as
@@ -277,7 +277,10 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         );
     }
     if let Err(err) = set_default_originator("codex_exec".to_string()) {
-        tracing::warn!(?err, "Failed to set codex exec originator override {err:?}");
+        tracing::warn!(
+            ?err,
+            "Failed to set inocode exec originator override {err:?}"
+        );
     }
 
     let Cli {
@@ -301,7 +304,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
     if cyber_access_program.is_some() {
         match command.as_ref() {
             Some(ExecCommand::Review(_)) => {
-                anyhow::bail!("--cyber-access-program is not supported with `codex exec review`");
+                anyhow::bail!("--cyber-access-program is not supported with `inocode exec review`");
             }
             Some(ExecCommand::Fork(args)) if args.prompt.is_none() && prompt.is_none() => {
                 anyhow::bail!("Forking with --cyber-access-program requires a prompt");
@@ -335,10 +338,10 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         }
         match command.as_ref() {
             Some(ExecCommand::Resume(_)) => {
-                anyhow::bail!("--worktree is not supported with `codex exec resume`");
+                anyhow::bail!("--worktree is not supported with `inocode exec resume`");
             }
             Some(ExecCommand::Review(_)) => {
-                anyhow::bail!("--worktree is not supported with `codex exec review`");
+                anyhow::bail!("--worktree is not supported with `inocode exec review`");
             }
             Some(ExecCommand::Fork(_)) | None => {}
         }
@@ -681,7 +684,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         })
     {
         eprintln!(
-            "warning: Untrusted project-local configuration is disabled. Run `codex exec --trust` to allow project configuration and MCP servers for this and future chats in the project, including MCP commands outside the sandbox. Explicitly untrusted projects must have their trust setting updated first."
+            "warning: Untrusted project-local configuration is disabled. Run `inocode exec --trust` to allow project configuration and MCP servers for this and future chats in the project, including MCP commands outside the sandbox. Explicitly untrusted projects must have their trust setting updated first."
         );
     }
     let daybreak_override = cli_kv_overrides
@@ -1261,7 +1264,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
         event_processor.process_warning(message);
     }
 
-    info!("Codex initialized with event: {session_configured:?}");
+    info!("InoCode initialized with event: {session_configured:?}");
 
     let (interrupt_tx, mut interrupt_rx) = mpsc::unbounded_channel::<()>();
     tokio::spawn(async move {

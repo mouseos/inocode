@@ -39,7 +39,7 @@ Codex CLI can also be installed via the following package managers:
 
 ```shell
 # Install using npm
-npm install -g @openai/codex
+npm install -g @mouseos/inocode
 ```
 
 ```shell

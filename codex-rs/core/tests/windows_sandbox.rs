@@ -665,7 +665,7 @@ async fn windows_elevated_does_not_create_missing_workspace_metadata() -> anyhow
             "-Command",
             r#"
 $ErrorActionPreference = 'Stop'
-$sid = (Get-LocalUser -Name 'CodexSandboxOffline').SID.Value
+$sid = (Get-LocalUser -Name 'InoCodeSandboxOffline').SID.Value
 $rules = foreach ($name in @('codex_sandbox_offline_block_inbound', 'codex_sandbox_offline_block_outbound')) {
     $rule = @(Get-NetFirewallRule -PolicyStore ActiveStore -DisplayName $name)
     if ($rule.Count -ne 1) { throw "Expected exactly one effective rule for $name" }

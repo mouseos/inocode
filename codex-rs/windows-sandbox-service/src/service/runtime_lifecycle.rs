@@ -80,7 +80,7 @@ pub(super) fn run(
             state.report_status(SERVICE_RUNNING, NO_ERROR)?;
             log_information(
                 EVENT_SERVICE_STARTED,
-                "The Codex sandbox service is running.",
+                "The InoCode sandbox service is running.",
             );
             Ok(())
         },

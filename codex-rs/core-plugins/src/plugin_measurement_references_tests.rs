@@ -43,7 +43,10 @@ fn isolated_bundle_test(name: &str) -> Result<bool> {
             "--nocapture",
         ])
         .env(CHILD, name)
-        .env("INOCODE_TEST_ALLOW_HTTP_REMOTE_PLUGIN_BUNDLE_DOWNLOADS", "1")
+        .env(
+            "INOCODE_TEST_ALLOW_HTTP_REMOTE_PLUGIN_BUNDLE_DOWNLOADS",
+            "1",
+        )
         .output()?;
     assert!(
         output.status.success(),

@@ -143,7 +143,7 @@ pub(crate) async fn supports_daemon_command(codex_bin: &Path, args: &[&str]) -> 
 pub(crate) async fn resolved_managed_codex_bin(codex_bin: &Path) -> Result<PathBuf> {
     fs::canonicalize(codex_bin).await.with_context(|| {
         format!(
-            "failed to resolve managed Codex binary {}",
+            "failed to resolve managed InoCode binary {}",
             codex_bin.display()
         )
     })
@@ -160,13 +160,13 @@ pub(crate) async fn managed_codex_version(codex_bin: &Path) -> Result<String> {
         .await
         .with_context(|| {
             format!(
-                "failed to invoke managed Codex binary {}",
+                "failed to invoke managed InoCode binary {}",
                 codex_bin.display()
             )
         })?;
     if !output.status.success() {
         return Err(anyhow!(
-            "managed Codex binary {} exited with status {}",
+            "managed InoCode binary {} exited with status {}",
             codex_bin.display(),
             output.status
         ));
@@ -174,7 +174,7 @@ pub(crate) async fn managed_codex_version(codex_bin: &Path) -> Result<String> {
 
     let stdout = String::from_utf8(output.stdout).with_context(|| {
         format!(
-            "managed Codex version was not utf-8: {}",
+            "managed InoCode version was not utf-8: {}",
             codex_bin.display()
         )
     })?;
@@ -240,7 +240,11 @@ pub(crate) fn path_digest(path: &Path) -> [u8; 32] {
 }
 
 fn managed_codex_file_name() -> &'static str {
-    if cfg!(windows) { "inocode.exe" } else { "inocode" }
+    if cfg!(windows) {
+        "inocode.exe"
+    } else {
+        "inocode"
+    }
 }
 
 fn parse_codex_version(output: &str) -> Result<String> {
@@ -248,7 +252,7 @@ fn parse_codex_version(output: &str) -> Result<String> {
         .split_whitespace()
         .nth(1)
         .filter(|version| !version.is_empty())
-        .ok_or_else(|| anyhow!("managed Codex version output was malformed"))?;
+        .ok_or_else(|| anyhow!("managed InoCode version output was malformed"))?;
     Ok(version.to_string())
 }
 

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-BUNDLE_ID = "com.openai.codex.cli"
+BUNDLE_ID = "com.mouseos.inocode.cli"
 # Existing login-keychain ACLs identify the CLI by its code-signing identifier.
 # Keep this stable independently of the bundle and provisioned App ID.
 CODE_SIGNING_ID = "codex"

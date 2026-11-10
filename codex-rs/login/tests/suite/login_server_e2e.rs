@@ -22,8 +22,8 @@ use pretty_assertions::assert_eq;
 use tempfile::tempdir;
 use url::Url;
 
-const DEFAULT_LOGIN_PORT: u16 = 1455;
-const FALLBACK_LOGIN_PORT: u16 = 1457;
+const DEFAULT_LOGIN_PORT: u16 = 1457;
+const FALLBACK_LOGIN_PORT: u16 = 1455;
 const WORKSPACE_ID_ALLOWED: &str = "123e4567-e89b-42d3-a456-426614174000";
 const WORKSPACE_ID_SECOND_ALLOWED: &str = "123e4567-e89b-42d3-a456-426614174001";
 const WORKSPACE_ID_DISALLOWED: &str = "123e4567-e89b-42d3-a456-426614174002";
@@ -483,8 +483,8 @@ async fn oauth_access_denied_missing_entitlement_blocks_login_with_clear_error()
     assert!(resp.status().is_success());
     let body = resp.text().await?;
     assert!(
-        body.contains("You do not have access to Codex"),
-        "error body should clearly explain the Codex access denial"
+        body.contains("You do not have access to InoCode"),
+        "error body should clearly explain the InoCode access denial"
     );
     assert!(
         body.contains("Contact your workspace administrator"),
@@ -563,7 +563,7 @@ async fn oauth_access_denied_unknown_reason_uses_generic_error_page() -> Result<
         "generic oauth denial should preserve the oauth error details"
     );
     assert!(
-        body.contains("Return to Codex to retry"),
+        body.contains("Return to InoCode to retry"),
         "generic oauth denial should keep the generic help text"
     );
     assert!(
@@ -575,11 +575,11 @@ async fn oauth_access_denied_unknown_reason_uses_generic_error_page() -> Result<
         "generic oauth denial should include the oauth error description"
     );
     assert!(
-        !body.contains("You do not have access to Codex"),
+        !body.contains("You do not have access to InoCode"),
         "generic oauth denial should not show the entitlement-specific title"
     );
     assert!(
-        !body.contains("get access to Codex"),
+        !body.contains("get access to InoCode"),
         "generic oauth denial should not show the entitlement-specific admin guidance"
     );
 

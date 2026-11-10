@@ -39,7 +39,10 @@ pub fn create_env(
 
 /// Exposes the shared root-session identity and harness version to shell commands.
 pub(crate) fn inject_session_env(env: &mut HashMap<String, String>, session_id: SessionId) {
-    env.insert(INOCODE_SESSION_ID_ENV_VAR.to_string(), session_id.to_string());
+    env.insert(
+        INOCODE_SESSION_ID_ENV_VAR.to_string(),
+        session_id.to_string(),
+    );
     if cfg!(windows) {
         env.retain(|key, _| !key.eq_ignore_ascii_case(INOCODE_VERSION_ENV_VAR));
     }
@@ -74,7 +77,9 @@ pub(crate) fn inject_permission_profile_env(
 /// including those provided by remote executors. Override inherited values so
 /// they cannot restore the legacy normalization behavior.
 pub fn inject_apply_patch_env(env: &mut HashMap<String, String>) {
-    env.retain(|key, _| !key.eq_ignore_ascii_case(INOCODE_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR));
+    env.retain(|key, _| {
+        !key.eq_ignore_ascii_case(INOCODE_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR)
+    });
     env.insert(
         INOCODE_APPLY_PATCH_PRESERVE_LINE_ENDINGS_ENV_VAR.to_string(),
         "1".to_string(),

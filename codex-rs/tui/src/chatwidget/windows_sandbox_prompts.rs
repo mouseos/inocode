@@ -39,7 +39,7 @@ impl ChatWidget {
                 ]
             } else {
                 vec![
-                    line!["Your organization requires the default Codex agent sandbox to continue. Set it up to protect your files and control network access."],
+                    line!["Your organization requires the default InoCode agent sandbox to continue. Set it up to protect your files and control network access."],
                     line!["Learn more <https://developers.openai.com/codex/windows>"],
                 ]
             }),
@@ -157,11 +157,11 @@ impl ChatWidget {
         lines.push(line![""]);
         if allow_unelevated {
             lines.push(line![
-                "You can still use Codex in a non-admin sandbox. It carries greater risk if prompt injected."
+                "You can still use InoCode in a non-admin sandbox. It carries greater risk if prompt injected."
             ]);
         } else {
             lines.push(line![
-                "Your organization requires the default sandbox before Codex can continue."
+                "Your organization requires the default sandbox before InoCode can continue."
             ]);
         }
         lines.push(line![
@@ -209,7 +209,7 @@ impl ChatWidget {
         };
         if allow_unelevated {
             items.push(SelectionItem {
-                name: "Use Codex with non-admin sandbox".to_string(),
+                name: "Use InoCode with non-admin sandbox".to_string(),
                 description: None,
                 actions: vec![Box::new({
                     let otel = self.session_telemetry.clone();

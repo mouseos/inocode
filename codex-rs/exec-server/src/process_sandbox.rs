@@ -32,9 +32,9 @@ use codex_shell_command::shell_detect::fallback_powershell_shell_for_windows_san
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 
+use crate::ExecServerRuntimeOptions;
 #[cfg(unix)]
 use crate::INOCODE_ARG0_EXEC_HELPER_ARG1;
-use crate::ExecServerRuntimeOptions;
 use crate::process_telemetry::trace_process_id;
 use crate::protocol::ExecParams;
 use crate::rpc::internal_error;

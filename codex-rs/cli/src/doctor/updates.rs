@@ -1,4 +1,4 @@
-//! Diagnoses whether Codex update paths target the running installation.
+//! Diagnoses whether InoCode update paths target the running installation.
 //!
 //! Update diagnostics combine cached version metadata, install-channel hints,
 //! and bounded latest-version HTTP probes. It never executes package managers or
@@ -33,12 +33,15 @@ use super::network;
 const MAX_VERSION_RESPONSE_BYTES: usize = 1024 * 1024;
 
 const VERSION_FILE_NAME: &str = "version.json";
-const GITHUB_LATEST_RELEASE_URL: &str = "https://api.github.com/repos/mouseos/inocode/releases/latest";
+const GITHUB_LATEST_RELEASE_URL: &str =
+    "https://api.github.com/repos/mouseos/inocode/releases/latest";
 const HOMEBREW_CASK_API_URL: &str = "https://formulae.brew.sh/api/cask/inocode.json";
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-const DESKTOP_UPDATE_URL: &str = "https://github.com/mouseos/inocode/releases/latest/download/appcast-x64.xml";
+const DESKTOP_UPDATE_URL: &str =
+    "https://github.com/mouseos/inocode/releases/latest/download/appcast-x64.xml";
 #[cfg(all(target_os = "macos", not(target_arch = "x86_64")))]
-const DESKTOP_UPDATE_URL: &str = "https://github.com/mouseos/inocode/releases/latest/download/appcast.xml";
+const DESKTOP_UPDATE_URL: &str =
+    "https://github.com/mouseos/inocode/releases/latest/download/appcast.xml";
 #[cfg(target_os = "macos")]
 const BACKEND_DESKTOP_UPDATE_URL: &str = "https://chatgpt.com/backend-api/wham/app/appcast";
 #[cfg(target_os = "windows")]
@@ -297,7 +300,7 @@ fn windows_store_update(
         serde_json::from_slice(manifest).map_err(|_| "invalid Windows Store update manifest")?;
     if manifest.schema_version == 0
         || manifest.store_product_id != "9PLM9XGG6VKS"
-        || manifest.package_identity != "OpenAI.Codex"
+        || manifest.package_identity != "OpenAI.InoCode"
     {
         return Err("Windows Store update manifest does not target the production application");
     }
@@ -645,7 +648,7 @@ mod tests {
             "schemaVersion": 1,
             "buildVersion": "26.803.5235.1",
             "storeProductId": "9PLM9XGG6VKS",
-            "packageIdentity": "OpenAI.Codex",
+            "packageIdentity": "OpenAI.InoCode",
         });
         assert_eq!(
             windows_store_update(&serde_json::to_vec(&manifest).unwrap(), "26.803.5235.0"),

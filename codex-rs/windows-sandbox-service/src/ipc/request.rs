@@ -91,7 +91,7 @@ pub(super) fn validate_request(request: &[u8]) -> Result<ServiceRequest> {
 
 fn validate_home(home: &str) -> Result<()> {
     if home.is_empty() || home.contains(['\0', '\r', '\n']) {
-        bail!("Codex home is empty or contains an invalid control character");
+        bail!("InoCode home is empty or contains an invalid control character");
     }
     Ok(())
 }

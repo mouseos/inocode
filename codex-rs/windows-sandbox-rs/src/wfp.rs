@@ -66,9 +66,9 @@ use filter_specs::FilterSpec;
 
 const SESSION_NAME: &str = "InoCode Windows Sandbox WFP";
 const PROVIDER_NAME: &str = "InoCode Windows Sandbox WFP";
-const PROVIDER_DESCRIPTION: &str = "Persistent WFP provider for Codex Windows sandbox filters";
+const PROVIDER_DESCRIPTION: &str = "Persistent WFP provider for InoCode Windows sandbox filters";
 const SUBLAYER_NAME: &str = "InoCode Windows Sandbox WFP";
-const SUBLAYER_DESCRIPTION: &str = "Persistent WFP sublayer for Codex Windows sandbox filters";
+const SUBLAYER_DESCRIPTION: &str = "Persistent WFP sublayer for InoCode Windows sandbox filters";
 
 // WFP identifies persistent providers, sublayers, and filters by stable GUIDs.
 // These values are Codex-owned identities; do not regenerate them unless we
@@ -76,7 +76,7 @@ const SUBLAYER_DESCRIPTION: &str = "Persistent WFP sublayer for Codex Windows sa
 const PROVIDER_KEY: GUID = GUID::from_u128(0xd64bfd30_befe_42a8_80e2_5639ab5bc2b7);
 const SUBLAYER_KEY: GUID = GUID::from_u128(0x6f4b445b_00c0_440d_887f_2c023591f3a2);
 
-/// Installs the persistent Codex WFP filters for `account`.
+/// Installs the persistent InoCode WFP filters for `account`.
 ///
 /// This is intended to run from the already-elevated setup helper. Callers
 /// may continue ordinary setup after an error, but must restore these filters
@@ -252,7 +252,7 @@ impl Drop for UserMatchCondition {
     }
 }
 
-/// Ensures the persistent Codex WFP provider exists.
+/// Ensures the persistent InoCode WFP provider exists.
 fn ensure_provider(engine: HANDLE) -> Result<()> {
     let provider_name = to_wide(OsStr::new(PROVIDER_NAME));
     let provider_description = to_wide(OsStr::new(PROVIDER_DESCRIPTION));
@@ -271,7 +271,7 @@ fn ensure_provider(engine: HANDLE) -> Result<()> {
     ensure_success_or(result, "FwpmProviderAdd0", &[FWP_E_ALREADY_EXISTS as u32])
 }
 
-/// Ensures the persistent Codex sublayer exists under the Codex provider.
+/// Ensures the persistent InoCode sublayer exists under the InoCode provider.
 fn ensure_sublayer(engine: HANDLE) -> Result<()> {
     let sublayer_name = to_wide(OsStr::new(SUBLAYER_NAME));
     let sublayer_description = to_wide(OsStr::new(SUBLAYER_DESCRIPTION));

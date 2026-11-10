@@ -91,7 +91,9 @@ pub(super) async fn load_exec_server_remote_auth_provider(
 ) -> anyhow::Result<codex_api::SharedAuthProvider> {
     if use_agent_identity_auth {
         read_codex_access_token_from_env().ok_or_else(|| {
-            anyhow::anyhow!("INOCODE_ACCESS_TOKEN is required when --use-agent-identity-auth is set")
+            anyhow::anyhow!(
+                "INOCODE_ACCESS_TOKEN is required when --use-agent-identity-auth is set"
+            )
         })?;
         let auth = AuthManager::shared_from_config(config, /*enable_codex_api_key_env*/ false)
             .await?

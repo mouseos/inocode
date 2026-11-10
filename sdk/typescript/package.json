@@ -1,5 +1,5 @@
 {
-  "name": "@openai/codex-sdk",
+  "name": "@mouseos/inocode-sdk",
   "version": "0.0.0-dev",
   "description": "TypeScript SDK for Codex APIs.",
   "repository": {

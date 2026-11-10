@@ -821,7 +821,10 @@ fn executor_cache_identity_obeys_windows_and_posix_case_conventions() {
     let (_reference, roots) =
         reference_fixture(&[("sites", "2.0.0-RC1", "selected", "printf shared\\n\n")]);
     let plugin_id = PluginId::parse("sites@openai-curated-remote").expect("plugin id");
-    for prefix in ["file:///C:/Users/user/.inocode", "file://server/share/.inocode"] {
+    for prefix in [
+        "file:///C:/Users/user/.inocode",
+        "file://server/share/.inocode",
+    ] {
         let script = PathUri::parse(&format!(
             "{prefix}/PLUGINS/CACHE/OPENAI-CURATED-REMOTE/SITES/2.0.0-rc1/{REFERENCE_HELPER}"
         ))

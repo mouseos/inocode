@@ -2,7 +2,7 @@
 //!
 //! Local copying uses the native clipboard, or the Windows clipboard directly on WSL.
 //! WSL sessions over SSH with a forwarded X11 display use the native clipboard instead.
-//! In tmux and Herdr, also forward to the attached terminal so clients attached after Codex
+//! In tmux and Herdr, also forward to the attached terminal so clients attached after InoCode
 //! started receive the copy. Over SSH, wrap OSC 52 for GNU screen when detected.
 //!
 //! Terminal writes have no delivery acknowledgement: a successful send must not

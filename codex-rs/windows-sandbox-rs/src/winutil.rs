@@ -27,7 +27,7 @@ use windows_sys::Win32::System::Diagnostics::Debug::FORMAT_MESSAGE_IGNORE_INSERT
 use windows_sys::Win32::System::Diagnostics::Debug::FormatMessageW;
 
 pub const SANDBOX_USERS_GROUP: &str = "InoCodeSandboxUsers";
-const SANDBOX_USERS_GROUP_COMMENT: &str = "Codex sandbox internal group (managed)";
+const SANDBOX_USERS_GROUP_COMMENT: &str = "InoCode sandbox internal group (managed)";
 
 pub fn to_wide<S: AsRef<OsStr>>(s: S) -> Vec<u16> {
     let mut v: Vec<u16> = s.as_ref().encode_wide().collect();

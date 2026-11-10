@@ -19,7 +19,7 @@ fn service_routing_rejects_paths_and_malformed_families() {
         "OpenAI.Codex_3k8sg7r9htsxt\\child",
         "..\\OpenAI.Codex_3k8sg7r9htsxt",
         "OpenAI.Codex_extra_3k8sg7r9htsxt",
-        "OpenAI.Codex\0_3k8sg7r9htsxt",
+        "OpenAI.InoCode\0_3k8sg7r9htsxt",
     ] {
         assert!(validate_service_family_hint(family).is_err(), "{family:?}");
     }

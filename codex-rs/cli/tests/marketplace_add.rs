@@ -50,7 +50,7 @@ async fn marketplace_add_git_source_cleans_staging_after_failures() -> Result<()
         vec!["add", "."],
         vec![
             "-c",
-            "user.name=Codex Tests",
+            "user.name=InoCode Tests",
             "-c",
             "user.email=codex@example.com",
             "-c",

@@ -115,7 +115,10 @@ async fn worktree_start_and_fork_use_host_pool_and_preserve_legacy_resume() -> a
     legacy_manager.bind_thread(&legacy.root, &legacy_id)?;
     fs::write(source.join("AGENTS.md"), "uncommitted source instructions")?;
     fs::create_dir(source.join(".inocode"))?;
-    fs::write(source.join(".inocode/config.toml"), "[invalid source config")?;
+    fs::write(
+        source.join(".inocode/config.toml"),
+        "[invalid source config",
+    )?;
 
     let launcher = tempfile::tempdir()?;
     fs::create_dir(launcher.path().join("extra"))?;

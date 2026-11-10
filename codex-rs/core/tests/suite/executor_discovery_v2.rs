@@ -1208,7 +1208,10 @@ async fn auth_rotation_refreshes_plugin_acceptance_before_merged_skills() -> Res
                     entries: vec![
                         SkillCatalogEntry::new(
                             SkillPackageId("skill://plugin_demo/demo".into()),
-                            SkillAuthority::new(SkillSourceKind::Cloud, INOCODE_APPS_MCP_SERVER_NAME),
+                            SkillAuthority::new(
+                                SkillSourceKind::Cloud,
+                                INOCODE_APPS_MCP_SERVER_NAME,
+                            ),
                             "inert-sentinel",
                             "Accepted plugin skill",
                             SkillResourceId::new("skill://plugin_demo/demo/SKILL.md"),
@@ -1290,7 +1293,8 @@ async fn auth_rotation_refreshes_plugin_acceptance_before_merged_skills() -> Res
                 )?;
                 test.thread_manager.auth_manager().reload().await;
                 tokio::time::timeout(Duration::from_secs(15), async {
-                    while client.auth_cache_key_for_server(INOCODE_APPS_MCP_SERVER_NAME) == previous {
+                    while client.auth_cache_key_for_server(INOCODE_APPS_MCP_SERVER_NAME) == previous
+                    {
                         tokio::task::yield_now().await;
                     }
                 })

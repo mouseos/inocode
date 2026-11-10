@@ -78,58 +78,58 @@ class NpmAlphaTagTest(unittest.TestCase):
         # published release. Also exercise a missing pointer and dotted hotfix.
         cases = [
             (
-                "@openai/codex-sdk",
+                "@mouseos/inocode-sdk",
                 "latest",
                 "0.100.0",
                 "0.99.9",
                 "release-0.99.9-latest",
             ),
             (
-                "@openai/codex",
+                "@mouseos/inocode",
                 "linux-x64",
                 "0.99.9-linux-x64",
                 "0.100.0",
                 "linux-x64",
             ),
-            ("@openai/codex-responses-api-proxy", "latest", None, "0.100.0", "latest"),
+            ("@mouseos/inocode-responses-api-proxy", "latest", None, "0.100.0", "latest"),
             (
-                "@openai/codex",
+                "@mouseos/inocode",
                 "alpha",
                 "0.158.0-alpha.10",
                 "0.157.0-alpha.11.1",
                 "release-0.157.0-alpha.11.1-alpha",
             ),
             (
-                "@openai/codex",
+                "@mouseos/inocode",
                 "alpha-linux-x64",
                 "0.158.0-alpha.10-linux-x64",
                 "0.157.0-alpha.11.1",
                 "release-0.157.0-alpha.11.1-alpha-linux-x64",
             ),
             (
-                "@openai/codex",
+                "@mouseos/inocode",
                 "alpha-win32-arm64",
                 "0.158.0-alpha.9-win32-arm64",
                 "0.158.0-alpha.10",
                 "alpha-win32-arm64",
             ),
             (
-                "@openai/codex-sdk",
+                "@mouseos/inocode-sdk",
                 "alpha",
                 "0.158.0-alpha.10",
                 "0.158.0-alpha.10.1",
                 "alpha",
             ),
             (
-                "@openai/codex-responses-api-proxy",
+                "@mouseos/inocode-responses-api-proxy",
                 "alpha",
                 "0.159.0-alpha.1",
                 "0.158.0-alpha.10.1",
                 "release-0.158.0-alpha.10.1-alpha",
             ),
-            ("@openai/codex-sdk", "alpha", None, "0.158.0-alpha.10", "alpha"),
+            ("@mouseos/inocode-sdk", "alpha", None, "0.158.0-alpha.10", "alpha"),
             (
-                "@openai/codex",
+                "@mouseos/inocode",
                 "alpha-linux-x64",
                 "broken-linux-x64",
                 "0.158.0-alpha.10",
@@ -164,7 +164,7 @@ class NpmAlphaTagTest(unittest.TestCase):
     def test_stable_tags_reject_malformed_and_prerelease_versions(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tarball = Path(tmpdir) / "package.tgz"
-            self.write_package(tarball, "@openai/codex")
+            self.write_package(tarball, "@mouseos/inocode")
             for tag, current in (
                 ("latest", "broken"),
                 ("linux-x64", "0.100.0-alpha.1-linux-x64"),
@@ -180,7 +180,7 @@ class NpmAlphaTagTest(unittest.TestCase):
     def test_registry_failure_prevents_publish(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             tarball = Path(tmpdir) / "package.tgz"
-            self.write_package(tarball, "@openai/codex")
+            self.write_package(tarball, "@mouseos/inocode")
             with patch(
                 "npm_alpha_tag.subprocess.run",
                 side_effect=subprocess.CalledProcessError(1, "npm"),

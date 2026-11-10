@@ -10,7 +10,7 @@ from releases import is_valid_stable_release_version, should_update_version
 
 
 def npm_alpha_tag(tarball: Path, version: str, tag: str) -> str:
-    # Read the actual package name: platform archives share @openai/codex,
+    # Read the actual package name: platform archives share @mouseos/inocode,
     # while the SDK and proxy have independent latest/alpha pointers.
     with tarfile.open(tarball, "r:gz") as archive:
         with archive.extractfile("package/package.json") as manifest:

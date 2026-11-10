@@ -1161,7 +1161,12 @@ async fn plugin_list_refreshes_plugins_from_each_cwd(
     };
     let versions = ["1.1.0", "2.0.0"];
     for ((repo, name), version) in repos.iter().zip(names).zip(versions) {
-        for directory in [".git", ".inocode", ".agents/plugins", "sample/.codex-plugin"] {
+        for directory in [
+            ".git",
+            ".inocode",
+            ".agents/plugins",
+            "sample/.codex-plugin",
+        ] {
             std::fs::create_dir_all(repo.join(directory))?;
         }
         std::fs::write(
@@ -1893,7 +1898,10 @@ enabled = true
             repo_root.path().join(".agents/plugins/marketplace.json"),
             later_repo.path().join(".agents/plugins/marketplace.json"),
         )?;
-        std::fs::write(later_repo.path().join(".inocode/config.toml"), plugin_config)?;
+        std::fs::write(
+            later_repo.path().join(".inocode/config.toml"),
+            plugin_config,
+        )?;
         set_project_trust_level(codex_home.path(), later_repo.path(), TrustLevel::Trusted)?;
         cwds.push(AbsolutePathBuf::try_from(later_repo.path())?);
     }

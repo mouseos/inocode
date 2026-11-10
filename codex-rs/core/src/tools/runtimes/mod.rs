@@ -17,10 +17,10 @@ use codex_core_plugins::PLUGIN_METRICS_OUTPUT_ENV_VAR;
 use codex_file_system::WindowsSandboxSelection;
 #[cfg(unix)]
 use codex_install_context::InstallContext;
-#[cfg(target_os = "macos")]
-use codex_network_proxy::INOCODE_PROXY_GIT_SSH_COMMAND_MARKER;
 use codex_network_proxy::CREDENTIAL_BROKER_ACTIVE_ENV_KEY;
 use codex_network_proxy::CUSTOM_CA_ENV_KEYS;
+#[cfg(target_os = "macos")]
+use codex_network_proxy::INOCODE_PROXY_GIT_SSH_COMMAND_MARKER;
 use codex_network_proxy::PROXY_ACTIVE_ENV_KEY;
 use codex_network_proxy::PROXY_ENV_KEYS;
 #[cfg(target_os = "macos")]
@@ -40,7 +40,8 @@ pub(crate) mod apply_patch;
 pub(crate) mod unified_exec;
 
 const SNAPSHOT_ORIGINAL_BASH_ENV_ENV_KEY: &str = "INOCODE_NETWORK_PROXY_SNAPSHOT_ORIGINAL_BASH_ENV";
-const SNAPSHOT_ORIGINAL_POSIX_ENV_ENV_KEY: &str = "INOCODE_NETWORK_PROXY_SNAPSHOT_ORIGINAL_POSIX_ENV";
+const SNAPSHOT_ORIGINAL_POSIX_ENV_ENV_KEY: &str =
+    "INOCODE_NETWORK_PROXY_SNAPSHOT_ORIGINAL_POSIX_ENV";
 const SNAPSHOT_ORIGINAL_ZDOTDIR_ENV_KEY: &str = "INOCODE_NETWORK_PROXY_SNAPSHOT_ORIGINAL_ZDOTDIR";
 
 pub(crate) fn exec_env_for_sandbox_permissions(

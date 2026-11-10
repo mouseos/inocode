@@ -1,4 +1,4 @@
-//! Emits Codex lifecycle state through terminal status protocols.
+//! Emits InoCode lifecycle state through terminal status protocols.
 //!
 //! OSC 7501 reports lifecycle state and blocking reasons to terminal sessions.
 //! Direct iTerm2 sessions also receive OSC 21337 status, including bounded
@@ -185,7 +185,7 @@ pub(crate) fn clear_terminal_program_status() -> io::Result<()> {
 
 /// Forgets the cached state after another process has owned the terminal.
 ///
-/// The next active draw will re-emit Codex's current status even if its
+/// The next active draw will re-emit InoCode's current status even if its
 /// lifecycle state did not change during the handoff.
 pub(crate) fn invalidate_terminal_program_status() {
     SESSION_STATUS_STATE.invalidate();

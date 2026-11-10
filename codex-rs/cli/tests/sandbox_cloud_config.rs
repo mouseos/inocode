@@ -175,7 +175,7 @@ async fn run_cloud_sandbox(args: &[&str], bundle: Value) -> Result<Option<TempDi
     if !nested_macos_sandbox_unavailable {
         assert!(
             String::from_utf8(output.stdout)?.starts_with("codex"),
-            "expected the sandboxed Codex version command to run",
+            "expected the sandboxed InoCode version command to run",
         );
     }
 

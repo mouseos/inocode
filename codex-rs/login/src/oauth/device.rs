@@ -1,4 +1,4 @@
-//! Standard device authorization through `oauth2`, using Codex's configured HTTP transport.
+//! Standard device authorization through `oauth2`, using InoCode's configured HTTP transport.
 //! Callers own prompts, cancellation, and credential persistence. Issuer errors stay redacted.
 
 use std::fmt;

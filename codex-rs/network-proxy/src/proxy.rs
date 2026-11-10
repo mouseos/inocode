@@ -759,7 +759,9 @@ fn set_env_keys(env: &mut HashMap<String, String>, keys: &[&str], value: &str) {
 
 #[cfg(target_os = "macos")]
 fn codex_proxy_git_ssh_command(socks_addr: SocketAddr) -> String {
-    format!("{INOCODE_PROXY_GIT_SSH_COMMAND_PREFIX}{socks_addr}{INOCODE_PROXY_GIT_SSH_COMMAND_SUFFIX}")
+    format!(
+        "{INOCODE_PROXY_GIT_SSH_COMMAND_PREFIX}{socks_addr}{INOCODE_PROXY_GIT_SSH_COMMAND_SUFFIX}"
+    )
 }
 
 #[cfg(target_os = "macos")]

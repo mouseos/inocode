@@ -1,7 +1,7 @@
 //! Handshake and fresh-file-read coverage for shared custom trust configuration.
 
-use super::INOCODE_CA_CERT_ENV;
 use super::ConfiguredCaBundle;
+use super::INOCODE_CA_CERT_ENV;
 use super::build_rustls_client_config;
 use pretty_assertions::assert_eq;
 use rcgen::BasicConstraints;

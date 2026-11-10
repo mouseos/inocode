@@ -64,7 +64,7 @@ def main(configuration: bundle.ProfileConfiguration | None = None):
                     ["--identifier", identifier, "--entitlements", str(entitlements)]
                 )
             else:
-                command.extend(["--identifier", f"com.openai.codex.{name}"])
+                command.extend(["--identifier", f"com.mouseos.inocode.{name}"])
             subprocess.run(command, check=True)
             with (reports / f"{name}-signature.yaml").open("wb") as output:
                 subprocess.run(

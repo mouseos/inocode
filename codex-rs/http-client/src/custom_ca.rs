@@ -725,8 +725,8 @@ mod tests {
     use tempfile::TempDir;
 
     use super::BuildCustomCaTransportError;
-    use super::INOCODE_CA_CERT_ENV;
     use super::EnvSource;
+    use super::INOCODE_CA_CERT_ENV;
     use super::SSL_CERT_FILE_ENV;
     use super::maybe_build_rustls_client_config_with_env;
 

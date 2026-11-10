@@ -1300,7 +1300,10 @@ impl RemoteMarketplaceFixture {
             .env_remove("OPENAI_API_KEY")
             .env_remove("INOCODE_API_KEY")
             .env_remove("INOCODE_ACCESS_TOKEN")
-            .env("INOCODE_TEST_ALLOW_HTTP_REMOTE_PLUGIN_BUNDLE_DOWNLOADS", "1")
+            .env(
+                "INOCODE_TEST_ALLOW_HTTP_REMOTE_PLUGIN_BUNDLE_DOWNLOADS",
+                "1",
+            )
             .args(args)
             .output()
             .await?)

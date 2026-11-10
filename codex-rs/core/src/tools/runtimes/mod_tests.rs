@@ -5,12 +5,12 @@ use crate::sandboxing::ExecOptions;
 use crate::shell::ShellType;
 use crate::tools::sandboxing::SandboxAttempt;
 use crate::tools::sandboxing::managed_network_for_sandbox_permissions;
-#[cfg(target_os = "macos")]
-use codex_network_proxy::INOCODE_PROXY_GIT_SSH_COMMAND_MARKER;
 use codex_network_proxy::CUSTOM_CA_ENV_KEYS;
 use codex_network_proxy::ConfigReloader;
 use codex_network_proxy::ConfigReloaderFuture;
 use codex_network_proxy::ConfigState;
+#[cfg(target_os = "macos")]
+use codex_network_proxy::INOCODE_PROXY_GIT_SSH_COMMAND_MARKER;
 use codex_network_proxy::NetworkProxy;
 use codex_network_proxy::NetworkProxyConfig;
 use codex_network_proxy::NetworkProxyConstraints;
@@ -515,7 +515,10 @@ fn maybe_wrap_shell_lc_with_snapshot_restores_codex_metadata_from_env() {
     ];
     let env = HashMap::from([
         ("INOCODE_THREAD_ID".to_string(), "nested-thread".to_string()),
-        ("INOCODE_TOOL_CALL_ID".to_string(), "nested-call".to_string()),
+        (
+            "INOCODE_TOOL_CALL_ID".to_string(),
+            "nested-call".to_string(),
+        ),
         (
             "INOCODE_VERSION".to_string(),
             env!("CARGO_PKG_VERSION").to_string(),

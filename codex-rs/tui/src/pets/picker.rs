@@ -39,7 +39,7 @@ struct PetPickerEntry {
 /// Build the selection popup parameters for `/pets`.
 ///
 /// The picker preselects `DEFAULT_PET_ID` when no pet is configured so the UI
-/// has a sensible starting point without implying that Codex is already the
+/// has a sensible starting point without implying that InoCode is already the
 /// active ambient pet. Callers should treat the returned actions as the only
 /// supported mutation path; bypassing them would skip preview-loading and
 /// selection-specific event wiring.

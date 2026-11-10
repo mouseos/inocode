@@ -6,10 +6,10 @@ use std::process::Command;
 use std::process::Stdio;
 use std::time::Duration;
 
-use codex_exec_server::INOCODE_ARG0_EXEC_HELPER_ARG1;
-use codex_exec_server::INOCODE_FS_HELPER_ARG1;
 use codex_exec_server::ExecServerRuntimeOptions;
 use codex_exec_server::ExecServerTelemetry;
+use codex_exec_server::INOCODE_ARG0_EXEC_HELPER_ARG1;
+use codex_exec_server::INOCODE_FS_HELPER_ARG1;
 use codex_exec_server::RequestDispatchMode;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;

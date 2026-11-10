@@ -1321,7 +1321,8 @@ model_catalog_json = "models.json"
         &codex_config::NoopThreadConfigLoader,
     )
     .await?;
-    let expected_log_dir = AbsolutePathBuf::resolve_path_against_base("~/.inocode/logs", &codex_home);
+    let expected_log_dir =
+        AbsolutePathBuf::resolve_path_against_base("~/.inocode/logs", &codex_home);
     let requirements = layers.requirements_toml();
 
     assert_eq!(
@@ -3277,7 +3278,10 @@ async fn project_layers_prefer_closest_cwd() -> std::io::Result<()> {
         })
         .collect();
     assert_eq!(project_layers.len(), 2);
-    assert_eq!(project_layers[0].as_path(), nested.join(".inocode").as_path());
+    assert_eq!(
+        project_layers[0].as_path(),
+        nested.join(".inocode").as_path()
+    );
     assert_eq!(
         project_layers[1].as_path(),
         project_root.join(".inocode").as_path()
@@ -3455,7 +3459,11 @@ async fn malformed_untrusted_linked_worktree_does_not_read_root_hooks() -> std::
     tokio::fs::create_dir_all(worktree_root.join(".inocode")).await?;
     tokio::fs::create_dir_all(repo_root.join(".inocode")).await?;
     write_linked_worktree_pointer(&repo_root, &worktree_root).await?;
-    tokio::fs::write(worktree_root.join(".inocode").join(CONFIG_TOML_FILE), "foo =").await?;
+    tokio::fs::write(
+        worktree_root.join(".inocode").join(CONFIG_TOML_FILE),
+        "foo =",
+    )
+    .await?;
     tokio::fs::write(repo_root.join(".inocode").join(CONFIG_TOML_FILE), [0xff]).await?;
 
     let codex_home = tmp.path().join("home");
@@ -3605,7 +3613,9 @@ async fn nested_project_root_markers_do_not_redirect_regular_repo_hooks() -> std
     assert_eq!(project_layers.len(), 2);
     assert_eq!(
         project_layers[0].hooks_config_folder(),
-        Some(AbsolutePathBuf::from_absolute_path(nested.join(".inocode"))?)
+        Some(AbsolutePathBuf::from_absolute_path(
+            nested.join(".inocode")
+        )?)
     );
     assert_eq!(
         project_layers[1].hooks_config_folder(),
@@ -3655,7 +3665,11 @@ model_instructions_file = "root.txt"
     let nested_cfg = r#"
 model_instructions_file = "child.txt"
 "#;
-    tokio::fs::write(project_root.join(".inocode").join(CONFIG_TOML_FILE), root_cfg).await?;
+    tokio::fs::write(
+        project_root.join(".inocode").join(CONFIG_TOML_FILE),
+        root_cfg,
+    )
+    .await?;
     tokio::fs::write(nested.join(".inocode").join(CONFIG_TOML_FILE), nested_cfg).await?;
     tokio::fs::write(
         project_root.join(".inocode").join("root.txt"),
@@ -4542,7 +4556,10 @@ async fn project_root_markers_supports_alternate_markers() -> std::io::Result<()
         })
         .collect();
     assert_eq!(project_layers.len(), 2);
-    assert_eq!(project_layers[0].as_path(), nested.join(".inocode").as_path());
+    assert_eq!(
+        project_layers[0].as_path(),
+        nested.join(".inocode").as_path()
+    );
     assert_eq!(
         project_layers[1].as_path(),
         project_root.join(".inocode").as_path()

@@ -116,6 +116,6 @@ Neither gate can be skipped. To reproduce the focused integration locally:
 
 ```bash
 INOCODE_EXEC_PATH=/absolute/path/to/codex \
-  pnpm --filter @openai/codex-sdk test -- \
+  pnpm --filter @mouseos/inocode-sdk test -- \
   --runInBand tests/mcpConformance.test.ts
 ```

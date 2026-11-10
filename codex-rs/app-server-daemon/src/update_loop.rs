@@ -72,9 +72,11 @@ const RESTART_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 const INSTALLER_STDERR_TAIL_BYTES: usize = 2 * 1024;
 const INSTALLER_STDERR_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 #[cfg(unix)]
-const INSTALL_URL: &str = "https://raw.githubusercontent.com/mouseos/inocode/main/scripts/install/install.sh";
+const INSTALL_URL: &str =
+    "https://raw.githubusercontent.com/mouseos/inocode/main/scripts/install/install.sh";
 #[cfg(windows)]
-const INSTALL_URL: &str = "https://raw.githubusercontent.com/mouseos/inocode/main/scripts/install/install.ps1";
+const INSTALL_URL: &str =
+    "https://raw.githubusercontent.com/mouseos/inocode/main/scripts/install/install.ps1";
 
 pub(crate) async fn run(
     http_client_factory: HttpClientFactory,
@@ -354,7 +356,7 @@ async fn update_once(
     let codex_home = package_root
         .parent()
         .and_then(Path::parent)
-        .context("daemon package root has no Codex home")?;
+        .context("daemon package root has no InoCode home")?;
     let (installer_mode, installer_guard) =
         if let UpdateTrigger::RestoreProduction(expected) = trigger {
             anyhow::ensure!(
@@ -536,7 +538,7 @@ fn selected_release(daemon: &Daemon) -> Result<(std::path::PathBuf, std::path::P
         .settings_file
         .parent()
         .and_then(Path::parent)
-        .context("daemon settings path has no Codex home")?;
+        .context("daemon settings path has no InoCode home")?;
     let root = crate::managed_install::package_root(home);
     let release = std::fs::canonicalize(root.join("current"))?;
     let name = release
@@ -561,7 +563,7 @@ pub(crate) fn reexec_managed_updater(managed_codex_bin: &Path, state_dir: &Path)
     let err = command.exec();
     Err(err).with_context(|| {
         format!(
-            "failed to replace updater with managed Codex binary {}",
+            "failed to replace updater with managed InoCode binary {}",
             managed_codex_bin.display()
         )
     })
@@ -605,7 +607,7 @@ async fn run_installer_script(
             package_root
                 .parent()
                 .and_then(Path::parent)
-                .context("package root has no Codex home")?,
+                .context("package root has no InoCode home")?,
         )
         .env("INOCODE_INSTALL_DEFER_SELECTION", defer_selection)
         .env(
@@ -626,11 +628,11 @@ async fn run_installer_script(
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
-        .context("failed to invoke standalone Codex updater")?;
+        .context("failed to invoke standalone InoCode updater")?;
     let mut stderr = child
         .stderr
         .take()
-        .context("standalone Codex updater stderr was unavailable")?;
+        .context("standalone InoCode updater stderr was unavailable")?;
     let stderr_tail = Arc::new(Mutex::new(VecDeque::with_capacity(
         INSTALLER_STDERR_TAIL_BYTES,
     )));
@@ -667,7 +669,7 @@ async fn run_installer_script(
     let mut stdin = child
         .stdin
         .take()
-        .context("standalone Codex updater stdin was unavailable")?;
+        .context("standalone InoCode updater stdin was unavailable")?;
     #[cfg(unix)]
     let mut terminate = std::pin::pin!(terminate);
     #[cfg(unix)]
@@ -686,7 +688,7 @@ async fn run_installer_script(
     }
     if let Some(Err(err)) = write_result {
         stderr_task.abort();
-        return Err(err).context("failed to pass standalone Codex updater to shell");
+        return Err(err).context("failed to pass standalone InoCode updater to shell");
     }
     #[cfg(unix)]
     let status = tokio::select! {
@@ -702,7 +704,7 @@ async fn run_installer_script(
         Ok(status) => status,
         Err(err) => {
             stderr_task.abort();
-            return Err(err).context("failed to wait for standalone Codex updater");
+            return Err(err).context("failed to wait for standalone InoCode updater");
         }
     };
 
@@ -719,9 +721,9 @@ async fn run_installer_script(
         let detail = String::from_utf8_lossy(&bytes);
         let detail = detail.trim();
         if detail.is_empty() {
-            anyhow::bail!("standalone Codex updater exited with status {status}")
+            anyhow::bail!("standalone InoCode updater exited with status {status}")
         }
-        anyhow::bail!("standalone Codex updater exited with status {status}:\n{detail}")
+        anyhow::bail!("standalone InoCode updater exited with status {status}:\n{detail}")
     }
 }
 
@@ -750,7 +752,7 @@ async fn fetch_installer_script(http: &impl InstallerHttp) -> Result<Vec<u8>> {
     match http.get(INSTALL_URL).await? {
         InstallerResponse::Success(body) => Ok(body),
         InstallerResponse::Unsuccessful { status } => {
-            anyhow::bail!("standalone Codex updater request failed with status {status}")
+            anyhow::bail!("standalone InoCode updater request failed with status {status}")
         }
     }
 }
@@ -777,7 +779,7 @@ impl InstallerHttp for RouteAwareClientPool {
         let response = RouteAwareClientPool::get(self, url)
             .send()
             .await
-            .context("failed to fetch standalone Codex updater")?;
+            .context("failed to fetch standalone InoCode updater")?;
         if !response.status().is_success() {
             return Ok(InstallerResponse::Unsuccessful {
                 status: response.status().as_u16(),
@@ -786,7 +788,7 @@ impl InstallerHttp for RouteAwareClientPool {
         let body = response
             .bytes()
             .await
-            .context("failed to read standalone Codex updater")?
+            .context("failed to read standalone InoCode updater")?
             .to_vec();
         Ok(InstallerResponse::Success(body))
     }

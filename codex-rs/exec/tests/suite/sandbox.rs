@@ -391,7 +391,10 @@ async fn sandbox_blocks_first_time_dot_codex_creation() {
     .await
     .expect("should spawn command creating .inocode");
 
-    let status = child.wait().await.expect("should wait for .inocode command");
+    let status = child
+        .wait()
+        .await
+        .expect("should wait for .inocode command");
     assert!(
         !status.success(),
         "sandbox unexpectedly allowed first-time .inocode creation: {status:?}"

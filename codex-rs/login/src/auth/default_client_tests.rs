@@ -112,7 +112,7 @@ fn is_first_party_originator_matches_known_values() {
     assert_eq!(is_first_party_originator(DEFAULT_ORIGINATOR), true);
     assert_eq!(is_first_party_originator("codex-tui"), true);
     assert_eq!(is_first_party_originator("codex_vscode"), true);
-    assert_eq!(is_first_party_originator("Codex Something Else"), true);
+    assert_eq!(is_first_party_originator("InoCode Something Else"), true);
     assert_eq!(is_first_party_originator("codex_cli"), false);
     assert_eq!(is_first_party_originator("Other"), false);
 }

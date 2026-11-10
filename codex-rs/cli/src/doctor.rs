@@ -1,4 +1,4 @@
-//! Implements the `codex doctor` diagnostic report.
+//! Implements the `inocode doctor` diagnostic report.
 //!
 //! Doctor is intentionally read-mostly: checks inspect the current installation,
 //! configuration, authentication, terminal, state paths, and bounded reachability
@@ -52,9 +52,9 @@ use codex_install_context::InstallMethod;
 use codex_install_context::StandalonePlatform;
 use codex_login::AuthDotJson;
 use codex_login::AuthManager;
+use codex_login::CodexAuth;
 use codex_login::INOCODE_ACCESS_TOKEN_ENV_VAR;
 use codex_login::INOCODE_API_KEY_ENV_VAR;
-use codex_login::CodexAuth;
 use codex_login::OPENAI_API_KEY_ENV_VAR;
 use codex_login::default_client::create_client_without_request_logging;
 use codex_login::default_client::default_headers;
@@ -153,7 +153,7 @@ const REMOTE_TERMINAL_ENV_VARS: &[&str] = &[
 const NARROW_TERMINAL_COLUMNS: u16 = 80;
 const NARROW_TERMINAL_ROWS: u16 = 24;
 
-/// Options for building a local Codex diagnostic report.
+/// Options for building a local InoCode diagnostic report.
 ///
 /// The command runs the full diagnostic set unless `--network-only` is selected.
 /// Human output includes detailed diagnostics by default; --summary keeps the terminal output
@@ -324,7 +324,7 @@ impl DoctorCheck {
 
 /// Builds, renders, and exits according to the current doctor report.
 ///
-/// This is the CLI entry point for codex doctor. It does not repair issues;
+/// This is the CLI entry point for inocode doctor. It does not repair issues;
 /// failures are represented in the report and cause a non-zero process exit so
 /// scripts can distinguish a clean environment from one that needs attention.
 pub async fn run_doctor(
@@ -454,7 +454,7 @@ async fn build_report(
                         )
                         .detail(error.to_string())
                         .remediation(
-                            "Fix the reported authentication error, then rerun codex doctor.",
+                            "Fix the reported authentication error, then rerun inocode doctor.",
                         ),
                     })
                 },
@@ -601,7 +601,7 @@ fn config_load_failure(err: &anyhow::Error) -> DoctorCheck {
         CheckStatus::Fail,
         "config could not be loaded",
     )
-    .remediation("Fix the reported config error, then rerun codex doctor.");
+    .remediation("Fix the reported config error, then rerun inocode doctor.");
     // Error messages can echo config values. Report only typed metadata,
     // including errors wrapped by io::Error, whose source skips the wrapper.
     let config_error = err.chain().find_map(|cause| {
@@ -653,7 +653,7 @@ async fn load_config(
     .await?
     .build()
     .await
-    .context("failed to load Codex config")?;
+    .context("failed to load InoCode config")?;
     config.config_layer_stack.ensure_config_server_applied()?;
     Ok(config)
 }
@@ -689,7 +689,7 @@ fn config_overrides_from_interactive(
     }
 }
 
-/// JSON support report emitted by `codex doctor --json`.
+/// JSON support report emitted by `inocode doctor --json`.
 ///
 /// The report is keyed by check id so support tooling can fetch paths like
 /// `checks["terminal.metadata"]` without scanning arrays. Human rendering can
@@ -972,7 +972,7 @@ fn installation_check(show_details: bool) -> DoctorCheck {
             status = status.max(CheckStatus::Warning);
             summary = "npm-managed launch is missing package-root provenance".to_string();
             remediation = Some(
-                "Reinstall or update Codex so the JS shim provides INOCODE_MANAGED_PACKAGE_ROOT."
+                "Reinstall or update InoCode so the JS shim provides INOCODE_MANAGED_PACKAGE_ROOT."
                     .to_string(),
             );
         }
@@ -1298,8 +1298,8 @@ fn auth_check(config: &Config) -> DoctorCheck {
             let mut check =
                 DoctorCheck::new("auth.credentials", "auth", status, summary).details(details);
             if status == CheckStatus::Fail {
-                check =
-                    check.remediation("Run codex login again or provide a supported auth env var.");
+                check = check
+                    .remediation("Run inocode login again or provide a supported auth env var.");
             }
             check
         }
@@ -1314,10 +1314,10 @@ fn auth_check(config: &Config) -> DoctorCheck {
             "auth.credentials",
             "auth",
             CheckStatus::Fail,
-            "no Codex credentials were found",
+            "no InoCode credentials were found",
         )
         .details(details)
-        .remediation("Run codex login or provide an API key through a supported auth env var."),
+        .remediation("Run inocode login or provide an API key through a supported auth env var."),
         Err(err) => DoctorCheck::new(
             "auth.credentials",
             "auth",
@@ -1325,7 +1325,7 @@ fn auth_check(config: &Config) -> DoctorCheck {
             "stored credentials could not be read",
         )
         .detail(err.to_string())
-        .remediation("Fix auth storage access or run codex login again."),
+        .remediation("Fix auth storage access or run inocode login again."),
     }
 }
 
@@ -3763,7 +3763,7 @@ mod tests {
         let check = provider_specific_auth_check(
             /*requires_openai_auth*/ false,
             Some("PROVIDER_API_KEY"),
-            Some("Set PROVIDER_API_KEY before running Codex."),
+            Some("Set PROVIDER_API_KEY before running InoCode."),
             Vec::new(),
             |_| false,
         )
@@ -3776,7 +3776,7 @@ mod tests {
         );
         assert_eq!(
             check.remediation,
-            Some("Set PROVIDER_API_KEY before running Codex.".to_string())
+            Some("Set PROVIDER_API_KEY before running InoCode.".to_string())
         );
     }
 

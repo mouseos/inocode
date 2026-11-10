@@ -1190,7 +1190,7 @@ mod tests {
                         Line::from(vec![
                             "›".bold(),
                             " ".into(),
-                            "Ask Codex to do anything".dim(),
+                            "Ask InoCode to do anything".dim(),
                         ]),
                     ])
                     .render(frame.area(), frame.buffer_mut());

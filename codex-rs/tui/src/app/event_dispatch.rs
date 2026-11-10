@@ -1200,7 +1200,7 @@ impl App {
                     subtitle: Some("Quitting this TUI will stop its running sessions.".into()),
                     items: vec![
                         SelectionItem {
-                            name: "Stay in Codex".into(),
+                            name: "Stay in InoCode".into(),
                             dismiss_on_select: true,
                             ..Default::default()
                         },
@@ -2866,7 +2866,7 @@ impl App {
                                     Line::from(vec!["• ".dim(), "Sandbox ready".into()]),
                                     Line::from(vec![
                                         "  ".into(),
-                                        "Codex can now safely edit files and execute commands in your computer"
+                                        "InoCode can now safely edit files and execute commands in your computer"
                                             .dark_gray(),
                                     ]),
                                 ]);
