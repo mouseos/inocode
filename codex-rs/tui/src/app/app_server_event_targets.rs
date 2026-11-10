@@ -74,6 +74,9 @@ pub(super) fn server_notification_thread_target(
         ServerNotification::ThreadPredictionUpdated(notification) => {
             Some(notification.thread_id.as_str())
         }
+        ServerNotification::InocodeTeamUpdated(notification) => {
+            Some(notification.thread_id.as_str())
+        }
         ServerNotification::ThreadGoalCleared(notification) => {
             Some(notification.thread_id.as_str())
         }

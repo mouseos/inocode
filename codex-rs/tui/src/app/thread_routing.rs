@@ -1227,6 +1227,7 @@ impl App {
                         | ServerNotification::ThreadProjectUpdated(_)
                         | ServerNotification::ThreadQueueChanged(_)
                         | ServerNotification::ThreadPredictionUpdated(_)
+                        | ServerNotification::InocodeTeamUpdated(_)
                         | ServerNotification::ThreadAttachmentUpdated(_)
                         | ServerNotification::ThreadSettingsUpdated(_)
                         | ServerNotification::McpToolCallProgress(_)
