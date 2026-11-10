@@ -67,6 +67,49 @@ async fn streaming_output_harness() -> anyhow::Result<StreamingOutputHarness> {
     })
 }
 
+#[tokio::test(start_paused = true)]
+async fn observe_tracks_idle_time_and_output_tail() -> anyhow::Result<()> {
+    let StreamingOutputHarness {
+        process, stdout_tx, ..
+    } = streaming_output_harness().await?;
+    let collected = process.output_handles().output_notify.notified();
+    tokio::pin!(collected);
+    collected.as_mut().enable();
+    stdout_tx.send(b"Proceed [y/N] ".to_vec())?;
+    collected.await;
+
+    tokio::time::advance(Duration::from_secs(20)).await;
+    let observation = process.observe().await;
+    assert_eq!(observation.idle, Duration::from_secs(20));
+    assert_eq!(observation.total_bytes, 14);
+    assert_eq!(observation.tail, "Proceed [y/N] ");
+    let assessment = crate::unified_exec::monitor::assess(
+        crate::unified_exec::monitor::TerminalKind::Unknown,
+        &observation,
+        /*scale*/ 1,
+    );
+    assert_eq!(
+        assessment.health,
+        crate::unified_exec::monitor::Health::WaitingForInput
+    );
+    Ok(())
+}
+
+#[test]
+fn exit_wake_message_names_session_exit_code_and_output() {
+    let message = super::exit_wake_message(
+        7,
+        "cargo test",
+        "101",
+        Duration::from_secs(93),
+        "running 3 tests\nFAILED\n",
+    );
+    assert_eq!(
+        message,
+        "Background terminal session 7 (cargo test) finished with exit code 101 after 93s.\nLast output:\nrunning 3 tests\nFAILED"
+    );
+}
+
 #[test_case::test_case(b""; "no_late_output")]
 #[test_case::test_case(b"late\n"; "with_late_output")]
 #[tokio::test]

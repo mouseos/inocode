@@ -151,6 +151,36 @@ pub fn create_write_stdin_tool() -> ToolSpec {
     })
 }
 
+pub fn create_terminal_status_tool() -> ToolSpec {
+    let properties = BTreeMap::from([
+        (
+            "session_id".to_string(),
+            JsonSchema::number(Some(
+                "Identifier of the running unified exec session.".to_string(),
+            )),
+        ),
+        (
+            "kind".to_string(),
+            JsonSchema::string(Some(
+                "Optional declaration of what the command is: server, watch, build, test or one-shot. Servers and watchers are allowed to be quiet or repetitive.".to_string(),
+            )),
+        ),
+    ]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "terminal_status".to_string(),
+        description: "Returns immediately with the state of a background terminal session: running, waiting for input, stalled, looping or exited, plus elapsed time, seconds since the last output, total output size and the last lines of output. You are woken automatically when a session exits or looks stuck, so use this only when you need a look at progress.".to_string(),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::object(
+            properties,
+            Some(vec!["session_id".to_string()]),
+            Some(false.into()),
+        ),
+        output_schema: None,
+    })
+}
+
 pub fn create_request_permissions_tool(description: String) -> ToolSpec {
     let properties = BTreeMap::from([
         (

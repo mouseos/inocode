@@ -10,6 +10,9 @@ use tokio::time::Sleep;
 
 use super::SharedPluginMetricsSidecar;
 use super::UnifiedExecContext;
+use super::monitor::MONITOR_INTERVAL;
+use super::monitor::assess;
+use super::monitor::tail_lines;
 use super::process::OutputBuffers;
 use super::process::OutputHandles;
 use super::process::UnifiedExecProcess;
@@ -176,6 +179,16 @@ pub(crate) fn spawn_exit_watcher(
     let output_drained = process.output_drained_notify();
     let interaction_lock = process.interaction_lock();
 
+    process.with_monitor(|state| state.command = command.join(" "));
+    spawn_anomaly_monitor(
+        Arc::clone(&process),
+        Arc::clone(&session_ref),
+        process_id,
+    );
+    let wake_session = Arc::clone(&session_ref);
+    let wake_process = Arc::clone(&process);
+    let wake_command = command.join(" ");
+
     tokio::spawn(async move {
         exit_token.cancelled().await;
         output_drained.notified().await;
@@ -238,6 +251,85 @@ pub(crate) fn spawn_exit_watcher(
                 timed_out,
             )
             .await;
+        }
+        drop(_interaction_guard);
+        wake_model_after_exit(&wake_process, &wake_session, process_id, &wake_command, duration)
+            .await;
+    });
+}
+
+const WAKE_TAIL_LINES: usize = 30;
+
+/// Tell the model, once, that a background terminal finished while it was not looking.
+async fn wake_model_after_exit(
+    process: &UnifiedExecProcess,
+    session: &Arc<Session>,
+    process_id: i32,
+    command: &str,
+    duration: Duration,
+) {
+    // A kill (interrupt, shutdown, timeout) was requested by us; the model is not waiting on it.
+    if process.termination_requested.load(Ordering::Acquire)
+        || process.with_monitor(|state| state.exit_reported)
+    {
+        return;
+    }
+    let observation = process.observe().await;
+    let exit = process
+        .exit_code()
+        .map_or_else(|| "unknown".to_string(), |code| code.to_string());
+    let message = exit_wake_message(process_id, command, &exit, duration, &observation.tail);
+    session.wake_for_background_terminal(message).await;
+}
+
+fn exit_wake_message(
+    process_id: i32,
+    command: &str,
+    exit: &str,
+    duration: Duration,
+    tail: &str,
+) -> String {
+    format!(
+        "Background terminal session {process_id} ({command}) finished with exit code {exit} \
+         after {}s.\nLast output:\n{}",
+        duration.as_secs(),
+        tail_lines(tail, WAKE_TAIL_LINES)
+    )
+}
+
+/// Periodically classify a live terminal and wake the model only for a new anomaly.
+fn spawn_anomaly_monitor(
+    process: Arc<UnifiedExecProcess>,
+    session: Arc<Session>,
+    process_id: i32,
+) {
+    let exit_token = process.cancellation_token();
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = exit_token.cancelled() => break,
+                _ = tokio::time::sleep(MONITOR_INTERVAL) => {}
+            }
+            let observation = process.observe().await;
+            if observation.exited {
+                break;
+            }
+            let (kind, scale, command) =
+                process.with_monitor(|state| (state.kind(), state.scale(), state.command.clone()));
+            let assessment = assess(kind, &observation, scale);
+            if !process.with_monitor(|state| state.should_notify(&assessment)) {
+                continue;
+            }
+            let message = format!(
+                "Background terminal session {process_id} ({command}) looks {}: {}.\n\
+                 Call terminal_status with session_id {process_id} to look closer. If this is \
+                 expected, keep waiting and you will not be told about it again; otherwise use \
+                 write_stdin or terminate it.\nLast output:\n{}",
+                assessment.health.as_str(),
+                assessment.reason,
+                tail_lines(&observation.tail, WAKE_TAIL_LINES)
+            );
+            session.wake_for_background_terminal(message).await;
         }
     });
 }

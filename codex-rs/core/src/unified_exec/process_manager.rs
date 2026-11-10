@@ -1192,6 +1192,8 @@ impl UnifiedExecProcessManager {
             let Some(entry) = store.remove(process_id) else {
                 return ProcessStatus::Unknown;
             };
+            // The caller hands this exit to the model, so no wake-up is needed.
+            entry.process.with_monitor(|state| state.exit_reported = true);
             ProcessStatus::Exited {
                 exit_code,
                 entry: Box::new(entry),
