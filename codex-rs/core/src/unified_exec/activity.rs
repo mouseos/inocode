@@ -13,7 +13,9 @@ use super::monitor::ActivitySample;
 ///
 /// Blocking; call from `spawn_blocking`. Returns `None` once the root process is gone.
 pub(crate) fn sample_process_tree(pid: u32) -> Option<ActivitySample> {
-    let mut system = System::new();
+    let Ok(mut system) = System::new() else {
+        return None;
+    };
     system.refresh_processes_specifics(
         ProcessesToUpdate::All,
         /*remove_dead_processes*/ true,
