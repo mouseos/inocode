@@ -1,0 +1,27 @@
+[package]
+name = "bilibili-provider"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Bilibili (Android app protocol) search/detail provider: gRPC polymer SearchAll + viewunite View/RelatesFeed, app-generated buvid, guest (no login). Imported as `bilibili_provider`."
+repository = "https://github.com/mouseos/ZeroSearch_MCP"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+base64 = { workspace = true }
+rand = { workspace = true }
+bytes = "1"
+tokio-rustls = "0.26"
+rustls = { version = "0.23", features = ["ring", "tls12"] }
+webpki-roots = "0.26"
+tokio-socks = "0.5"
+hpack = "0.3"
+prost = "0.13"
+md-5 = "0.10"
+
+[[example]]
+name = "live_check"
+path = "examples/live_check.rs"

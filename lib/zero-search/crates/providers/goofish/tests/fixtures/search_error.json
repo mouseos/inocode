@@ -1,0 +1,1 @@
+{"_fixture_note":"SYNTHETIC fixture. Built only from JSON paths confirmed by static analysis (RemoteMtopCallback / MtopBaseReturn / ExceptionCode). Not a captured response.","api":"mtop.taobao.idlemtopsearch.search","data":{},"ret":["FAIL_BIZ_ITEM_ERROR::商品不存在||ITEM_NOT_FOUND"],"v":"1.0"}

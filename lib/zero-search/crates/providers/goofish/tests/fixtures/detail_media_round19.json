@@ -1,0 +1,60 @@
+{
+ "_fixture_note": "MEASURED-DERIVED (round 19). Structure and scalar types/values of mediaInfos are taken from the live anonymous detail response (send #5, mtop.taobao.idle.awesome.detail.unit 1.0, 2026-10-27). URLs are replaced with placeholder.invalid; item/seller identifiers and all other fields are dropped. See PROVENANCE.md in this directory.",
+ "flowData": {
+  "body": {
+   "sections": [
+    {
+     "layout": "list",
+     "components": [
+      {
+       "render": "Basic_Native_spn_image_group",
+       "key": "measured-image-group",
+       "data": {
+        "mediaInfos": [
+         {
+          "type": "0",
+          "width": "900",
+          "height": "1200",
+          "url": "https://placeholder.invalid/measured-media-0.jpg"
+         },
+         {
+          "type": "0",
+          "width": "900",
+          "height": "1200",
+          "url": "https://placeholder.invalid/measured-media-1.jpg"
+         },
+         {
+          "type": "0",
+          "width": "800",
+          "height": "1200",
+          "url": "https://placeholder.invalid/measured-media-2.jpg"
+         },
+         {
+          "type": "0",
+          "width": "900",
+          "height": "1200",
+          "url": "https://placeholder.invalid/measured-media-3.jpg"
+         },
+         {
+          "type": "0",
+          "width": "800",
+          "height": "1200",
+          "url": "https://placeholder.invalid/measured-media-4.jpg"
+         },
+         {
+          "type": "0",
+          "width": "792",
+          "height": "1052",
+          "url": "https://placeholder.invalid/measured-media-5.jpg"
+         }
+        ]
+       }
+      }
+     ]
+    }
+   ]
+  },
+  "context": {},
+  "trackParams": {}
+ }
+}

@@ -1,0 +1,20 @@
+[package]
+name = "shopping-mcp-amazon"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { workspace = true }
+# The transport is libcurl (via the curl crate), not reqwest:
+# this service answers the curl tool's requests but robot-checks
+# other HTTP client stacks, so the fetches must be libcurl's own.
+curl = "0.4"
+# Feature control for the libcurl build lives on curl-sys:
+# `static-curl` builds the bundled libcurl from source and links
+# it statically, so every platform build behaves the same without
+# depending on a system libcurl installation.
+curl-sys = { version = "0.4", features = ["static-curl"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+regex = { workspace = true }
+anyhow = { workspace = true }

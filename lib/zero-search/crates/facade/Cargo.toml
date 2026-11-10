@@ -1,0 +1,37 @@
+[package]
+name = "zero-search"
+version = "0.6.0"
+edition = "2021"
+license = "MIT"
+description = "Zero-config search library for AI harnesses: web search (Baidu, Yahoo! JAPAN, Bing, Naver, Yahoo US, Yandex), shopping search (AliExpress, Goofish, Mercari, Yahoo Auctions, Yahoo Flea Market, Rakuma, Rakuten, Qoo10, Yahoo Shopping, Amazon) and media platforms (YouTube, Bilibili, CSDN) behind one unified API. No API key, no configuration."
+repository = "https://github.com/mouseos/ZeroSearch_MCP"
+
+[lib]
+name = "zero_search"
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+
+baidu_search = { package = "baidu-mcp-provider", path = "../providers/baidu" }
+yahoo_search = { package = "yahoo-search-mcp-provider", path = "../providers/yahoo" }
+bing_search = { package = "bing-mcp-provider", path = "../providers/bing" }
+naver_search = { package = "naver-mcp-provider", path = "../providers/naver" }
+yahoo_us_search = { package = "yahoo-us-mcp-provider", path = "../providers/yahoo-us" }
+yandex_search = { package = "yandex-mcp-provider", path = "../providers/yandex" }
+shopping-mcp-aliexpress = { path = "../providers/aliexpress" }
+shopping-mcp-goofish = { path = "../providers/goofish" }
+shopping-mcp-mercari = { path = "../providers/mercari" }
+shopping-mcp-rakuma = { path = "../providers/rakuma" }
+shopping-mcp-yahoo-auctions = { path = "../providers/yahoo-auctions" }
+shopping-mcp-yahoo-flea = { path = "../providers/yahoo-flea" }
+shopping-mcp-rakuten = { path = "../providers/rakuten" }
+shopping-mcp-qoo10 = { path = "../providers/qoo10" }
+shopping-mcp-yahoo-shopping = { path = "../providers/yahoo-shopping" }
+shopping-mcp-amazon = { path = "../providers/amazon" }
+youtube_search = { package = "youtube-mcp-provider", path = "../providers/youtube" }
+bilibili_provider = { package = "bilibili-provider", path = "../providers/bilibili" }
+csdn_search = { package = "csdn-provider", path = "../providers/csdn" }

@@ -1,0 +1,213 @@
+{
+  "_fixture_note": "SYNTHETIC fixture for round-5 parser tests. Built only from JSON paths and Java types confirmed by static analysis of com.taobao.idlefish 7.28.70 (classes10 detail Builder/Model beans and bundled DinamicX templates). It is NOT a captured response; no real server payload has ever been observed for these APIs.",
+  "_note": "SYNTHETIC fixture for round-5 parser tests. Built only from JSON paths and Java types confirmed by static analysis of com.taobao.idlefish 7.28.70 (classes10 detail Builder/Model beans and bundled DinamicX templates). It is NOT a captured response; no real server payload has ever been observed for these APIs.",
+  "api": "mtop.taobao.idle.awesome.detail.unit",
+  "data": {
+    "flowData": {
+      "body": {
+        "sections": [
+          {
+            "components": [
+              {
+                "data": {
+                  "customText": "custom-text",
+                  "extraInfoList": [
+                    "12人想要",
+                    "345人浏览"
+                  ],
+                  "groupBuyInfo": {
+                    "desc": "2人拼单",
+                    "images": [
+                      "https://example.invalid/a.png"
+                    ]
+                  },
+                  "idlePromotionInfo": {
+                    "promotionDesc": "desc",
+                    "promotionName": "promo"
+                  },
+                  "itemId": "900001",
+                  "maxPrice": "128",
+                  "minPrice": "128",
+                  "price": "128",
+                  "priceEndText": "end-text",
+                  "priceSuffix": "起",
+                  "priceWithNote": {
+                    "iconUrl": "https://example.invalid/n.png",
+                    "text": "note-text"
+                  },
+                  "promotionQueryParams": {
+                    "k": "v"
+                  },
+                  "qualityUrl": "https://example.invalid/quality.png",
+                  "reduceInfoList": [
+                    {
+                      "text": "包邮"
+                    }
+                  ],
+                  "unit": "件"
+                },
+                "key": "price",
+                "render": "Basic_Native_spn_price"
+              },
+              {
+                "data": {
+                  "addUrl": "https://example.invalid/add",
+                  "cpvLabels": [
+                    {
+                      "propertyId": "11",
+                      "propertyName": "品牌",
+                      "url": "",
+                      "valueId": "21",
+                      "valueName": "BrandX",
+                      "valueObject": ""
+                    },
+                    {
+                      "propertyId": "12",
+                      "propertyName": "成色",
+                      "url": "",
+                      "valueId": "22",
+                      "valueName": "99新",
+                      "valueObject": ""
+                    }
+                  ],
+                  "itemId": "900001",
+                  "itemType": "1",
+                  "needShowAdd": true,
+                  "sellerId": "220001"
+                },
+                "key": "cpv",
+                "render": "Basic_Native_spn_cpv"
+              },
+              {
+                "data": {
+                  "avatarUrl": "https://example.invalid/avatar.png",
+                  "city": "上海",
+                  "creditInfoDesc": "卖出10件宝贝",
+                  "identityTitleTags": [
+                    {
+                      "text": "实人认证"
+                    }
+                  ],
+                  "lastComingStr": "1小时前来过",
+                  "nick": "personal-nick",
+                  "sellerId": "220001"
+                },
+                "key": "seller",
+                "render": "Basic_Native_spn_user_card"
+              },
+              {
+                "data": {
+                  "isNewUI": "true",
+                  "isSoldOutItem": "true",
+                  "itemId": "900001",
+                  "rateTitle": "宝贝评价"
+                },
+                "key": "comment",
+                "render": "Basic_Native_spn_comment"
+              }
+            ],
+            "layout": "list"
+          },
+          {
+            "components": [
+              {
+                "data": {
+                  "cpvModule": {
+                    "iconUrl": "https://example.invalid/c.png",
+                    "items": [
+                      {
+                        "cpvName": "品牌",
+                        "cpvValue": "BrandX"
+                      }
+                    ]
+                  },
+                  "deliveryModule": {
+                    "iconUrl": "https://example.invalid/d.png",
+                    "items": [
+                      {
+                        "text": "包邮",
+                        "type": 1
+                      },
+                      {
+                        "text": "48小时内发货",
+                        "type": 0
+                      }
+                    ]
+                  },
+                  "extraExplanationModule": {
+                    "iconUrl": "https://example.invalid/e.png",
+                    "textList": [
+                      {
+                        "isBold": true,
+                        "text": "说明文本",
+                        "textColor": "#222222"
+                      }
+                    ]
+                  },
+                  "guaranteeModule": {
+                    "bgColor": "#FFFFFF",
+                    "iconUrl": "https://example.invalid/g.png",
+                    "textList": [
+                      {
+                        "isBold": false,
+                        "text": "七天退货",
+                        "textColor": "#111111"
+                      }
+                    ]
+                  }
+                },
+                "key": "service",
+                "render": "Basic_Native_spn_dynamic_dx"
+              },
+              {
+                "data": {
+                  "avatarUrl": "https://example.invalid/fh-avatar.png",
+                  "city": "北京",
+                  "creditInfoDesc": "信用极好",
+                  "identityLabels": [
+                    {
+                      "text": "鱼小铺"
+                    }
+                  ],
+                  "lastComingStr": "刚刚来过",
+                  "nick": "fh-nick",
+                  "sellerId": "330002"
+                },
+                "key": "fh-seller",
+                "render": "Basic_Native_spn_fh_user_card"
+              },
+              {
+                "data": {
+                  "isSoldOutItem": "false",
+                  "itemId": "900001",
+                  "rateTitle": "一手评价"
+                },
+                "key": "fh-comment",
+                "render": "Basic_Native_spn_fh_comment"
+              },
+              {
+                "data": {
+                  "futureField": [
+                    1,
+                    2,
+                    3
+                  ]
+                },
+                "key": "mystery",
+                "render": "Basic_Native_spn_unknown_future"
+              }
+            ],
+            "layout": "flow"
+          }
+        ]
+      },
+      "trackParams": {
+        "channelCatId": "50023914"
+      }
+    }
+  },
+  "ret": [
+    "SUCCESS::调用成功"
+  ],
+  "v": "1.0"
+}

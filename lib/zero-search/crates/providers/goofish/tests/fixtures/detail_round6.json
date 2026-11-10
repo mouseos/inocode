@@ -1,0 +1,136 @@
+{
+  "_fixture_note": "SYNTHETIC fixture for round-6 parser tests. Built only from JSON paths and Java types confirmed by static analysis of com.taobao.idlefish 7.28.70 (classes10 MediaInfo / KunModel / ItemsModel beans, classes11 SpaceApi.TopicVO). It is NOT a captured response; no real server payload has ever been observed for these APIs.",
+  "_note": "SYNTHETIC fixture for round-6 parser tests. Built only from JSON paths and Java types confirmed by static analysis of com.taobao.idlefish 7.28.70 (classes10 MediaInfo / KunModel / ItemsModel beans, classes11 SpaceApi.TopicVO). It is NOT a captured response; no real server payload has ever been observed for these APIs.",
+  "api": "mtop.taobao.idle.awesome.detail.unit",
+  "data": {
+    "flowData": {
+      "body": {
+        "sections": [
+          {
+            "components": [
+              {
+                "data": {
+                  "infoList": [
+                    {
+                      "disable": false,
+                      "imageUrl": "https://example.invalid/tab-a.png",
+                      "major": true,
+                      "select": true,
+                      "targetId": "900001"
+                    },
+                    {
+                      "disable": false,
+                      "imageUrl": "https://example.invalid/tab-b.png",
+                      "major": false,
+                      "select": false,
+                      "targetId": "900002"
+                    }
+                  ],
+                  "selectText": "已选：红色"
+                },
+                "key": "items",
+                "render": "Basic_Native_spn_bundle_item_list"
+              },
+              {
+                "data": {
+                  "data": {
+                    "customPayload": {
+                      "nested": [
+                        1,
+                        2,
+                        3
+                      ]
+                    },
+                    "opaque": "kept-raw"
+                  },
+                  "kunModule": {
+                    "KunUrl": "https://example.invalid/kun/page",
+                    "itemId": "900001",
+                    "style": {
+                      "height": "320"
+                    }
+                  }
+                },
+                "key": "kun",
+                "render": "Basic_Native_spn_dynamic_kun"
+              }
+            ],
+            "layout": "flow"
+          },
+          {
+            "components": [
+              {
+                "data": {
+                  "mediaInfos": [
+                    {
+                      "coverUrl": "https://example.invalid/main-cover.jpg",
+                      "height": 600.0,
+                      "topicVOList": [
+                        {
+                          "alpha": 0.9,
+                          "customDataVO": {
+                            "prefixImageUrl": "https://example.invalid/icon.png"
+                          },
+                          "endColor": "#000000",
+                          "height": 40,
+                          "itemId": "900001",
+                          "labelType": 1,
+                          "prefixLottieHeight": 20,
+                          "prefixLottieUrl": "https://example.invalid/label.json",
+                          "prefixLottieWidth": 20,
+                          "priceString": "¥128",
+                          "showBorder": true,
+                          "startColor": "#FF4400",
+                          "style": 2,
+                          "targetUrl": "fleamarket://item?id=900001",
+                          "title": "同款",
+                          "trackParams": {
+                            "spm": "a.b"
+                          },
+                          "trailStyle": 1,
+                          "width": 120,
+                          "x": 10,
+                          "y": 24
+                        },
+                        {
+                          "title": "极简标签"
+                        }
+                      ],
+                      "type": 0,
+                      "url": "https://example.invalid/main.jpg",
+                      "width": 800.0
+                    },
+                    {
+                      "height": 360.0,
+                      "type": 1,
+                      "url": "https://example.invalid/movie.mp4",
+                      "videoId": "vid-1",
+                      "width": 640.0
+                    }
+                  ]
+                },
+                "key": "imgs",
+                "render": "Basic_Native_spn_image_group"
+              },
+              {
+                "data": {
+                  "futureField": {
+                    "nested": true
+                  }
+                },
+                "key": "future",
+                "render": "Basic_Native_spn_unknown_future"
+              }
+            ],
+            "layout": "list"
+          }
+        ]
+      },
+      "trackParams": {}
+    }
+  },
+  "ret": [
+    "SUCCESS::调用成功"
+  ],
+  "v": "1.0"
+}

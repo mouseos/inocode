@@ -1,0 +1,21 @@
+/target
+**/target
+dist/
+*.mcpb
+*.zip
+
+# Local scratch
+smoke_out.jsonl
+*.log
+.DS_Store
+Thumbs.db
+
+# Editor / agent state
+.idea/
+.vscode/
+.claude/worktrees/
+
+# Goofish payload build outputs (built by runtime/goofish/build-payload.sh)
+runtime/goofish/payload-dist/
+runtime/goofish/.jar-cache/
+runtime/goofish/.jre-cache/

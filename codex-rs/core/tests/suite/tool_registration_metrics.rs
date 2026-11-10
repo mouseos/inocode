@@ -136,7 +136,7 @@ async fn sampling_records_tool_registrations_once_across_stream_retry() -> Resul
         None
     );
     let tools = body["tools"].as_array().expect("request tools");
-    assert!(tools.iter().any(|tool| tool["type"] == "web_search"));
+    assert!(tools.iter().all(|tool| tool["type"] != "web_search"));
     assert!(
         tools
             .iter()

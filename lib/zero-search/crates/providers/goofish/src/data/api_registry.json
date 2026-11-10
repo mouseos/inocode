@@ -1,0 +1,1539 @@
+{
+  "registry_version": "1.0",
+  "round": 38,
+  "revision_note": "Round 16: audit fixes M-01..M-04, M-06, M-13 applied via ROUND16_OVERRIDES and the need_login default rule in this generator (see api-registry-audit-round16.md). Round 17: M-11 closed via ROUND17_OVERRIDES (nextnearby pagination_kind qualification) and the single_shot/unknown criteria recorded in pagination_criteria_note (M-14 closure); see api-registry-reconciliation-round17.md. Round 19: five APIs measured live (anonymous sends #2-#7, work/round19/send-log.md) via ROUND19_OVERRIDES — measured=true and measured classification notes; the packaged-client final confirmation exposed a missing x-pv header (FAIL_SYS_PROTOVER_MISSED), fixed in goofish-client 0.7.1. Round 20: the packaged client (0.7.2, wheel-installed in a clean venv) was verified end-to-end (work/round20/send-log.md) via ROUND20_OVERRIDES — the five round-19 APIs re-confirmed through the package, category.guide and home.nextfresh newly measured, and one spusimilar attempt rejected by a server-side app-version business gate (FAIL_BIZ_SERVER_NEED_UPGRADE_MSG2, still unmeasured). Round 21: fishpool api_name transcription errors corrected via ROUND21_OVERRIDES (evidence: classes11 Api enum literals + fishpond-browsing-trace.md S1); request builders added for fishpool.list / fishpool.id / fishpool.comment.list / video.play. Round 22: HTTP 419 root-cause isolation from the rounds 19-21 logs plus a staged live isolation (plain search accepted; sort-only search reproduced FAIL_SYS_USER_VALIDATE; the price-only step was not sent) via ROUND22_OVERRIDES; goofish-client 0.9.0 adds the restriction-response error taxonomy with a send-halt latch; goofish-parser 0.9.4 completes the rate.list typed fields and adds the CityFeed item-card view; the fishpool classifications were confirmed statically. Round 23: the sort/filter UI-to-MTOP dataflow was traced statically via ROUND23_OVERRIDES (work/round23/sort-filter-dataflow.md) - the in-app panel price form is propValueStr-only and the direct startPrice/endPrice form is the router entry (correcting the round-8 mapping note); no Python generator mismatch was found. goofish-parser 0.9.5 preserves all delivered rate cards as typed RateCards and completes the feed item-card views; goofish-client 0.9.1 adds the paginate condition-change guard and the video.play / filter input validation. No live sends were made in round 23. Row set and counting basis are unchanged from round 15. Round 24: the video.play videoid mapping was traced in code (all callers feed their model's videoId/videoid untransformed; realVideoId excluded; itemid=0 is a formal feed route) via ROUND24_OVERRIDES, correcting the round-22/23 'no videoid exists' note — measured feed cards carry videoInfo.videoId, but the app plays those cards from videoUrl directly and never sends the id, so video.play remains unmeasured; goofish-parser 0.9.6 types the feed-card video view and adds the read-only ItemCardView projection; goofish-client 0.9.2 completes the error taxonomy (app-version-gate category, signer failure phases, ResponseParseError wiring, livecheck classification unified onto classify_mtop_response, shareable SendHaltState) and adds the feed-card video.play plan builder. No live sends were made in round 24 (the HTTP 419 validation demand remains unresolved). Round 25: the video/image data paths were completed offline via ROUND25_OVERRIDES (work/round25/video-paths.md, image-paths.md, quality-audit.md) — ItemDetailVideoView's exclusive itemid/videoid branch was determined in bytecode, the imageInfos path was closed (the detail preload drops its videoId), image URL display-time rewriting (TaobaoImageUrlStrategy.decideUrl) was determined to be non-reproducible offline so delivered URLs are kept verbatim, and the measured video-card census was corrected from 6 to 7; goofish-parser 0.9.7 types the feed video cover, feed detail_params and search image_infos, extends ItemCardView (dimensions, video_url_present, seller display, field_notes) and adds the media resolver (resolve_media); goofish-client 0.9.3 adds the resolve_media passthrough and the offline media demo over a sanitised measured feed fixture. No live sends were made in round 25 (the HTTP 419 validation demand remains unresolved). Round 26: the media results were productised offline via ROUND26_OVERRIDES (work/round26/static-leftovers.md) - goofish-parser 0.9.8 adds the describe_media facade over resolve_media (has_video / cover / needs_detail_resolution / video_play_path_confirmed / missing codes), the item_images image layer with the display-URL conversion boundary recorded as data (DISPLAY_URL_CONVERSION), ItemCardView video-cover dimensions and group_item_views; goofish-client 0.9.4 adds the describe_media passthrough and the extended offline media demo. Static closure: the six video.play callers were re-verified complete over all 11 DEX, the ItemVideoBean caller was determined to have no construction path in this version, native-card wire forms were confirmed absent from all 27 saved measured files, and the Dart imageInfos question was taken to the AOT-recovery boundary. Coordinator verification refuted two bug claims in the implementation report (a videoInfo substring-matching bug and a cardList item_cards fallback) - neither exists in the shipped 0.9.7 sources and no such code changed; the round's real-bug count is 0. No live sends were made in round 26 (the HTTP 419 validation demand remains unresolved). Round 27: acceptance and artifact audit via ROUND27_OVERRIDES (work/round27/) - an artifact-audit tool (work/round27/artifact_audit.py) was built and verified against the round-26 refuted claims as positive controls (both correctly NOT_FOUND; all real round-26 changes CONFIRMED; no inconsistency in the shipped artifacts). The nine measured APIs were audited end-to-end offline (190 checks: 183 pass, 1 fail, 6 notes): the single failure was one real defect (D-1, see the detail row), fixed in goofish-parser 0.9.9 with regression tests; the round-15 contract test that pinned the old tolerance was updated accordingly. README defects found by a clean-room walkthrough (stale wheel filenames in both READMEs, a false 'no parser verified against a real response' statement, the missing round-26 API mentions, a feed-card snippet that failed on the bundled fixture, no client import example) were corrected. Send-halt and error classification were re-verified executably (17 checks, all pass: shared halt across instances and replacement clients/transports/signers, no auto-release, offline functions usable while halted). City page 2's request plan was rebuilt offline from the measured response and matches the round-23 shape; a mechanical scan of all 38 saved measured/fixture files found no evidence of comment-bearing items (comment.list remains measured only as empty results). goofish-client stays 0.9.4 (no client code change). No live sends were made in round 27 (the HTTP 419 validation demand remains unresolved). Round 28: runtime reproducibility and harness-coupling hardening (work/round28/) - the unidbg signing harness's environment dependencies, lifecycle and performance were measured in place (cold start avg 50.8s over 3 serve runs; warm signing avg 0.024s per request over 20 sequential requests; JVM RSS about 119 MB at ready, +1.4 MB after 20 signs; stdin-EOF shutdown, three start/stop cycles and kill -9 recovery all clean, oracle signature reproduced every time). Two environment findings: a nonexistent -Dapk path is silently tolerated - the operative APK dependency is the rootfs base.apk (SHA-256 identical to the target APK) - and JDK 21 also runs serve/signing although JDK 8 remains the official runtime. run.sh gained SGHARNESS_APK/SGHARNESS_SO overrides (defaults unchanged). goofish-client 0.9.5: UnidbgSigner now validates the harness ready line's initRc/appKey, so an SG init failure is a startup-phase error raised before any sign request instead of a deferred sign-time failure; a test proves a halted client never starts the harness process. The round-27 artifact audit was integrated into the standard verification pipeline (work/round28/verify_all.sh: source tests, RC build, round-27 E2E re-run at 184/0/6, round-28 claims audit, registry validation), and a clean-room reproduction (harness copy outside the workspace, supplied APK verified against the rootfs base.apk, fresh venv with the 0.9.9/0.9.5 wheels) reproduced the deterministic oracle signature through both the raw JSON-lines protocol and UnidbgSigner. Row set and API classifications unchanged. No live sends were made in round 28 (the HTTP 419 validation demand remains unresolved). Round 29: APK entity binding and standalone-demo timeout hardening (work/round29/) - the root cause of the silently tolerated -Dapk was determined in code: -Dapk only fed createDalvikVM, while the native SG library opens the package through the JNI Context.getPackageCodePath() callback, i.e. always the rootfs base.apk; a further finding was that the built-in default path is user.home-based and, under this VM's uid=0 shell (JVM user.home=/root), pointed at a nonexistent file even in default operation. SgHarness now validates the resolved APK before emulator creation (existence, regular readable file, ZIP containing AndroidManifest.xml, SHA-256 with an optional -DapkSha256 expectation) and the .so (existence plus SHA-256 diagnostic), stages the verified APK onto the rootfs base.apk location and verifies the staged SHA-256, records path/size/sha256 diagnostics on stderr, and aborts invalid inputs with exit code 2 before any ready line. run.sh passes SGHARNESS_APK_SHA256 through and, when SGHARNESS_APK is unset, supplies the workspace APK derived from the script location so the default no longer depends on user.home. A 12-case live matrix passed fully (explicit APK copy, tampered rootfs pre-state overridden by the specified APK, missing path, directory, empty file, non-ZIP, ZIP without manifest, SHA expectation match/mismatch, default, .so missing/copy), reproducing the deterministic oracle signature in every success case. The round-19 standalone demo sg_sign_client.py no longer blocks indefinitely: startup and response waits are separated and configurable (defaults 180 s / 60 s via arguments or SG_SIGN_STARTUP_TIMEOUT / SG_SIGN_RESPONSE_TIMEOUT), failures raise a phase-carrying SgHarnessError aligned with UnidbgSigner (including the round-28 ready-line initRc/appKey validation), failed instances are poisoned, and the child process is always reaped; 13 fake-harness tests pass and the demo was re-verified end-to-end against the real harness. goofish-parser and goofish-client sources are unchanged, so versions stay 0.9.9 / 0.9.5. Row set and API classifications unchanged. No live sends were made in round 29 (the HTTP 419 validation demand remains unresolved). Round 30: communication-equivalence audit of the search operation flow (work/round30/) - the Android side was pinned end to end (operation event -> single reused SearchResultReq -> refresh funnel -> updateOtherParams callbacks -> serialization -> PApiContext.send), and eight corrections to the round-23 dataflow document were recorded (corrections_round23.md: the first send is refreshAll, firstRequest=true is an inject default, and others). The Python audit found no stateful search session API: every public path built one-shot plans, so the round-21/22 419 requests were reconstructed byte-identically from the 0.9.5 builders and differed from the round-22 V1 SUCCESS plan only in the intended condition keys; the app's funnel accompaniments (fromFilter=true, fromCombo=\"Filter\", firstRequest key absent, server-returned extraFilterValue) were nonetheless absent, and their causal relation to the 419 remains undetermined. Client 0.9.6 adds SearchSession (the app-shaped operation layer: condition changes through the funnel, loadMore from pagination state, response-callback effects incl. the panel rebuild and the follow sort overwrite) and fixes: priceRange validated as the app's \"min,max\" form (the old \"100-200\" test example was not an app form), the sort pair must be set together, first_request accepts None to omit the key, page_number/rows_per_page are type-checked, SearchPagination accumulates resultListLastIndex/ relateResultListLastIndex and its reset() preserves the server-returned extraFilterValue as the app's refresh does. Parser unchanged (0.9.9). Row set and API classifications unchanged. No live sends were made in round 30 (the HTTP 419 validation demand remains unresolved). Round 31: pre-send inspection of the round-30 SearchSession against the equivalence matrix, driven by the measured round-20/22 responses (work/round31/). The live-verification start condition was judged NOT met - the HTTP 419 validation demand remains unresolved, no legitimate resolution is on record, and elapsed time alone is not a recovery criterion - so the round is recorded as not started for live sends and no probe was sent to test whether 419 persists. The offline inspection found one real bug: the wire stringifies scalars, and the SearchSession forceUseTppRepair carry-over read the measured string 'false' with a plain bool(), sending true on later plans; fixed in client 0.9.7 by applying the module's stringified-form rule, with regression tests over the measured response and all wire forms. This also corrects the round-30 matrix D-10 verdict (work/round31/corrections_round30.md): its match rested on a boolean double, not the measured string form. All other inspected checkpoints matched the matrix (initial form, funnel accompaniments, loadMore carry-over, empty-response safety, stale-plan guards). Parser unchanged (0.9.9). Row set and API classifications unchanged. No live sends were made in round 31. Round 32: limited live connection recheck under the revised policy (work/round32/) - two sends only, executed as an explicitly authorised recheck distinct from the send-halt mechanism, with unchanged egress/identity and a hard round budget. Send 1, a plain keyword search through the round-30 SearchSession initial_plan, was accepted (HTTP 200, SUCCESS, 11 items, hasNextPage true) - the plain search path is confirmed working again. Send 2, the SearchSession funnel sort send built from that live response (server-delivered create/desc candidate; fromFilter=true, fromCombo=Filter, firstRequest omitted, server-form extraFilterValue, the round-31 forceUseTppRepair fix confirmed against the live string 'false'), again received HTTP 419 FAIL_SYS_USER_VALIDATE, and all further sends were stopped (the P1 programme - city page 2, detail, comments, rates - was not sent). A field-by-field diff shows the round-32 sort plan differed from the round-22 V2 419 request ONLY in the funnel accompaniments, so their absence alone does not explain the validation demand; the cause remains undetermined (the sort pair itself and server-side history/state are not separable with the permitted observations). The round also fixed a work-area regression the round-29 hardening had introduced in serve_lowmem.sh (it bypassed run.sh and, with no -Dapk supplied, aborted with exit code 2 on the user.home-based default APK path; it now mirrors run.sh's APK supply and reproduces the oracle signature). No package source changed: parser stays 0.9.9, client stays 0.9.7, with three new live-driven regression tests in the client suite (457 client tests). Row set and API classifications unchanged. Round 33: full MTOP equivalence audit, offline only (work/round33/) - no live sends were made. The round-19 to round-32 search records were aggregated across all layers (9 search sends; 5 with full request data): in every record with a known key set, the successes carry no sort pair and all three 419 sends carry sortField=create / sortValue=desc, which remains the only condition field common to the 419 group. X-1 is resolved: PApiContext.send is implemented by classes9 MtopLauncher, and the request data is serialised at MtopSDKHandler.preProcess by a single-argument JSON.toJSONString call with no serializer configuration, over a Java-Serializable deep copy of the bean - no hidden final transform exists on the send path, the data is not encrypted, and the SecurityGuard INPUT composition matches signing.py exactly. D-12 is downgraded to no practical impact: the app's propValueStr order is LinkedHashMap insertion order (panel card order on a refreshAll rebuild, with priceRange at the 3085 card's position, second in all measured panels), the Python difference is confined to that one position, and every consumer parses the string into a map. D-13 is resolved on the app side (singleControl starts null and is omitted on the first send, then copied on every send from resultInfo; every measured value is false) and is recorded as a quantified known omission in SearchSession, constant across the measured Python successes and 419 sends alike, so it cannot explain their difference. Two round-30 equivalence-matrix descriptions (the singleControl row and the layer-C HashMap wording) and two mtop-protocol.md statements (the x-appkey header name and the lat/lng destination, which is the x-location header, never the form) were formally corrected without rewriting the originals (work/round33/corrections_prior_docs.md). goofish-client 0.9.8 corrects the build_form docstring's lat/lng description (the form itself was already data-only) and adds five wire-audit regression tests (462 client tests). Parser unchanged (0.9.9). Row set and API classifications unchanged. The 419 cause remains undetermined and the round-32 conclusion stands. Round 34: CPV navigator and singleControl implementation, offline only (work/round34/) - no live sends were made. SearchSession now models all three clientModifiedCpvNavigatorJson producers confirmed in the APK: the FilterBar panel construction (checked PvTerms collected by ElementData.copyChecked over the last response's resultInfo.sqiControlFields.cpvNavigatorDo inner map, with fromClient as the String \"true\"), the SelectCpvTool saved one-shot (saved by the Kun/H5 side, consumed exactly once by the refresh funnel, fromClient Boolean true - including the router selectedCpvList injection via parseSelectCpv), and the Kun quick-filter unconditional assignment (a pending saved value still wins for that send). The saved slot is scoped to the session rather than process-global. D-13 is implemented: singleControl starts omitted, is taken from resultInfo.singleControl on every successful non-empty refresh-type response (the measured wire form is the stringified \"false\", converted by the wire-boolean rule, never bool()), and is copied into every later send; the loadMore callback does not take it in. This closes a confirmed spec difference, not the 419 (the omission was constant across the measured Python successes and 419 sends alike). goofish-client 0.10.0 adds the CPV/singleControl session API and 28 regression tests (490 client tests). Parser unchanged (0.9.9). Row set and API classifications unchanged. The 419 cause remains undetermined and the round-32 conclusion stands. Round 35: quick-filter toggles and the singleControl display toggle, offline only (work/round35/) - no live sends were made. SearchSession now models the FilterBar status-button toggles confirmed in the APK (the flexFilter 'filter' group's SortStatusButton / FilterStatusButton elements): a toggle edits the 'quickFilter' value set of the current propValueStr with TransformUtil map semantics (insertion order, emptied set drops its key, all-empty nulls the field) and re-sends through the shared funnel, so a pending saved CPV selection is consumed first. Panel-only quick values and filterArea (whose selected state follows the area flow) are not bar toggles and are rejected. The singleControl display toggle is also modelled: the app's Client_SingleControlButton click flips the model value and re-renders locally with no send (presenter updateSingleControl), and the flipped value rides on later sends like any bean state; no measured response has delivered that element, so in-app availability is server-gated. goofish-client 0.11.0 adds the quick-filter / display-toggle session API and 18 regression tests (508 client tests). Parser unchanged (0.9.9). Row set and API classifications unchanged. The 419 cause remains undetermined and the round-32 conclusion stands. Round 36: request builders completed for the two statically confirmed APIs whose parsers already existed, offline only (work/round36/) - no live sends were made. goofish-client 0.12.0 adds build_city_nearby_request (mtop.taobao.idle.local.near.by.corner.info 1.0; classes11 CityNearbyInfoReq {city, latitude, longitude, selectCity}, all String, null fields omitted, values caller-supplied runtime location data) and build_fun_comment_list_request (mtop.taobao.idle.fun.general.comment.list 1.0; classes10 CommentProtocol.CommentListApi - the only request class whose @ApiConfig declares needLogin=false explicitly - with bean defaults pageSize=10 / rowsPerPage=10, cursor pagination via beginCursor carrying the previous response's lastCursor, and topCommentId omitted unless supplied), plus the client convenience methods city_nearby / fun_comments and 9 regression tests (517 client tests). Parser unchanged (0.9.9). APIs evaluated and NOT given builders: user.headinfo.get (request class exists but zero construction sites in all 11 DEX - a legacy fleamarket-layer definition with no call path in this version), fun.item.detail (request is a dynamic paramMap of page arguments, no fixed confirmed shape), user.publish.items (no target-user parameter in the confirmed request; not a public other-user listing API). Both new-builder APIs remain unmeasured over real HTTP. The 419 cause remains undetermined and the round-32 conclusion stands. Round 37: documentation and examples completion, offline only (work/round37/) - no live sends were made and no package code changed (parser stays 0.9.9, client stays 0.12.0). offline-sdk-user-guide.md was revised from its round-18 state: its premise (offline-only, live communication No-Go) had been overtaken by the rounds 19-32 measurements, so the guide now states the current positioning (offline by default; the nine measured anonymous APIs and the live-path conditions incl. the restriction halt rules and the unresolved sorted-search 419), and gained the SearchSession operation chapter (CPV, quick filters, singleControl, saved selections) and the round-36 builders. The client README gained the round 32-37 feature entries and its install line was corrected from the stale 0.9.7 wheel name to 0.12.0. New example examples/measured_apis_demo.py tours the nine measured APIs' saved responses through the registry parsers (repository tree only - measured payloads are not distributed - printing structural summaries, 9 of 9 parsed). Row set and API classifications unchanged. The 419 cause remains undetermined and the round-32 conclusion stands. Round 38: completion audit, offline only (work/round38/) - no live sends were made and no package code changed (parser stays 0.9.9, client stays 0.12.0). Every completion criterion of the autonomous-development instruction was checked against evidence: the target APK on disk re-verified at SHA-256 905718aff71859527c53b80c88a971fc47c7aa5e8c1a6d3d661b9e073b837530; the unidbg signing harness re-run once for this audit (ready line OK, appKey match, the deterministic round-28 oracle signature reproduced, clean stdin-EOF shutdown); the full verification pipeline re-run end to end (956 source tests, E2E 184/0/6, RC rebuild with clean install, audit claims all CONFIRMED, registry validation 0/0). Remaining gaps were confirmed to fall only into the permitted classes: server-side restriction (the unresolved sorted-search 419), implementations absent from the APK (Kun CPV generation), legitimate-input shortages (graph.recognition, cloudvideo.video.query) and runtime-data shortages (server-config-driven untyped APIs). Row set and API classifications unchanged. The 419 cause remains undetermined and the round-32 conclusion stands.",
+  "pagination_criteria_note": "single_shot vs unknown (round 17): 'single_shot' is used only when (i) the typed request carries no pagination parameter and (ii) the response model, as far as determined, contains no continuation field (nextPage / hasNextPage / cursor / clientRecycleParams). 'unknown' is used when the request/response structure is not determined enough to exclude pagination. Re-checked round 17: user.headinfo.get (response model fully typed, 75 fields, no continuation field), item.search.filter (typed request {catId: Long, inputWords, leafId: Long} cannot express client-driven paging), graph.recognition (round-16 workstream F confirmed neither Req nor Res carries pagination-equivalent fields).",
+  "transport_note": "The per-row 'transport' field is the common MTOP pipeline template assigned to every row by this generator; it is not per-row evidence. Individually traced routes are recorded in caller / request_source.",
+  "apk": "com.taobao.idlefish 7.28.70 (versionCode 524)",
+  "counting_basis": {
+    "browsing_features_rows": 43,
+    "anonymous_candidate_rows_client_declared": 40,
+    "l3_apis": 18,
+    "l3_s_rows": 10,
+    "l3_r_rows": 5,
+    "parser_functions": 19,
+    "note": "Round-9 reconciliation is canonical: inventory is 43 rows (not 42), anonymous candidates 40 rows (not 39). attention.list was never inside the 40 anonymous candidates; round 14 determined its needLogin=true from the Dart side, which removes the last undecided row without changing the counts."
+  },
+  "evidence_levels": {
+    "E0": "name only (enum / string catalog / constant); no caller confirmed",
+    "E1": "static reference exists (typed request/response class, or identified caller location) but send path not traced",
+    "E2": "send path traced from a browsing feature to the MTOP dispatch layer",
+    "E3": "response consumption traced (bean / ViewModel / UI)"
+  },
+  "pagination_kinds": {
+    "search_resultlist_nonempty": {
+      "description": "pageNumber (int, 1-based). Incremented only when the previous response's resultList was non-empty (SearchResultReq.updatePageNumberAndIndex).",
+      "continue_condition": "resultInfo.hasNextPage == true",
+      "stop_condition": "hasNextPage == false (or loadMore not attempted)",
+      "carryover": [
+        "sqiControlFieldsJson (from resultInfo.sqiControlFields)",
+        "extraFilterValue (response value may be carried to next request)"
+      ]
+    },
+    "home_recycle_carryover": {
+      "description": "pageNumber (int, 1-based) + lastResponseCount (int, cumulative += feedsCount). pageNumber incremented only when previous sections non-empty.",
+      "continue_condition": "nextPage == true",
+      "stop_condition": "nextPage == false; empty sections also stall page advance",
+      "carryover": [
+        "clientRecycleParams copied verbatim from previous response"
+      ]
+    },
+    "recommend_accumulate": {
+      "description": "pageNum (int, reset to 0 on refresh, ++ on load-more), pageSize=20, currentSize accumulates returned card count; historyItemIds regenerated each request.",
+      "continue_condition": "hasMore == true",
+      "stop_condition": "hasMore == false -> NO_MORE",
+      "carryover": [
+        "currentSize",
+        "historyItemIds (comma-joined item ids)"
+      ]
+    },
+    "flag_nextpage": {
+      "description": "pageNumber (int, 1-based) incremented on load-more while the response flag allows.",
+      "continue_condition": "nextPage == true",
+      "stop_condition": "nextPage == false",
+      "carryover": []
+    },
+    "flag_nextpage_pageno": {
+      "description": "pageNo (int, 1-based, initial 1) and pageSize (initial 10); used by search.spusimilar.itemlist, whose Dart request serialises pageNo/pageSize instead of pageNumber (round 16; audit M-05).",
+      "continue_condition": "nextPage == true",
+      "stop_condition": "nextPage == false",
+      "carryover": []
+    },
+    "rate_string_page": {
+      "description": "pageNumber is a String (\"1\", incremented as string), rowsPerPage=20 (int). The detail component auto-fetches further pages while nextPage is true until enough displayable rates are collected (2, or 1 in the AB variant).",
+      "continue_condition": "nextPage == true (component-level preview fetch)",
+      "stop_condition": "nextPage == false or displayable target reached",
+      "carryover": []
+    },
+    "city_string_accumulate": {
+      "description": "pageNumber is a String (\"1\" initial), lastResponseCount is a String cumulative count of feedsCount. Refresh resets pageNumber=1 / lastResponseCount=0.",
+      "continue_condition": "nextPage == true (falls back to hasNext when nextPage absent)",
+      "stop_condition": "nextPage/hasNext == false",
+      "carryover": [
+        "lastResponseCount"
+      ]
+    },
+    "cursor_lastcursor": {
+      "description": "Cursor pagination: request beginCursor, response lastCursor becomes the next beginCursor. pageSize=10 / rowsPerPage=10 defaults.",
+      "continue_condition": "PageBase.next == true",
+      "stop_condition": "next == false",
+      "carryover": [
+        "lastCursor -> beginCursor (verbatim)"
+      ]
+    },
+    "single_shot": {
+      "description": "No client-driven pagination (single request, or a fixed small number of phases).",
+      "continue_condition": null,
+      "stop_condition": "n/a",
+      "carryover": []
+    },
+    "unknown": {
+      "description": "Pagination not statically confirmed.",
+      "continue_condition": null,
+      "stop_condition": null,
+      "carryover": []
+    }
+  },
+  "apis": [
+    {
+      "feature_id": "A1",
+      "feature": "メイン検索",
+      "api_name": "mtop.taobao.idlemtopsearch.search",
+      "version": "1.0",
+      "enum_version": null,
+      "evidence_level": "E3",
+      "reach_level": "L3",
+      "round15_note": null,
+      "l3_subtype": "S",
+      "login_declaration_raw": "needLogin未指定(false)",
+      "need_login": {
+        "value": false,
+        "basis": "@ApiConfig none; ApiBusiness conversion yields needLogin=false (search-request-trace.md §4)"
+      },
+      "need_wua": {
+        "value": false,
+        "basis": "ApiBusiness conversion yields needWua=false"
+      },
+      "read_only": true,
+      "caller": "classes11 SearchResultModel.requestMtop -> PApiContext.send",
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": "classes11 protocol/SearchResultReq (fastjson: null reference fields omitted; primitive/initialised fields always emitted — completed round 16, parity P-01)",
+      "request_source": "search-request-trace.md §3 (full field table)",
+      "response_model": "SearchResultRespParameters -> resultList/resultInfo",
+      "parser_function": "parse_search_response",
+      "pagination_kind": "search_resultlist_nonempty",
+      "client_builder": "build_search_request",
+      "measured": true,
+      "excluded_reason": null,
+      "classification_note": "Round 19 measured (sends #3/#4): HTTP 200 / ret SUCCESS; pagination via resultInfo.hasNextPage (stringified 'true'), page 2 disjoint from page 1. The response carries no totalCount / hitnum key at all (hitnum=None is the normal outcome, not a parse failure). Scalars are stringified throughout data. Round 20: re-confirmed through the packaged client via client.paginate (sends #2/#3): page 1 and page 2, 11 items each, disjoint, has_next_page=True (bool) on both pages. Round 21: a filtered-search attempt (price range 100-500 + sortField=create/sortValue=desc, request-side reflection verified in the built plan) was stopped by FAIL_SYS_USER_VALIDATE (HTTP 419, proxy/VPN validation message) and was not retried per the round rules; whether the server reflects the filters in results therefore remains unverified live. Round 22 (staged isolation, work/round22/send-log.md): V1 plain search without filters was accepted (HTTP 200 / SUCCESS, 12 items); V2 with only the sort fields added (sortField=create/sortValue=desc, no price range) reproduced FAIL_SYS_USER_VALIDATE (HTTP 419); V3 (price range only) was not sent because the validation demand recurred and all sends were stopped per the round rules. Established: under an otherwise identical process/signer/egress, the validation demand correlates strongly with the sort-parameter request form; the trigger is not formally determined (single reproduction; a risk-score threshold crossing or residual app-flow differences cannot be excluded). The price-range variable remains unisolated. Round 23 (static trace, work/round23/sort-filter-dataflow.md; no live sends): the UI-to-MTOP dataflow was traced in the decompiled code. A single SearchResultReq instance is mutated in place for the activity's lifetime. A sort tap writes only sortField/sortValue (server-delivered flexFilter sorter values, passed through verbatim; the default candidate writes null/null), then the shared refreshFeeds funnel sets fromFilter=true and fromCombo='Filter' (only when empty), resets pageNumber/relateResultPageNumber/resultListLastIndex/relateResultListLastIndex and nulls sqiControlFieldsJson; requestMtop re-stamps the runtime location fields, abConfigs and singleControl on every send; updateOtherParams replaces extraFilterValue with the server-returned form after a response and nulls the one-shot fields (firstRequest, extraParams, searchResultPageActionType, redirectParam, idleUserFollowParam); a follow-new-arrival response can overwrite the sort to create/desc for subsequent sends. Price: the in-app filter panel never writes startPrice/endPrice (classes11 assigns them only in injectRouterParams); panel price travels solely as the propValueStr priceRange key in 'min,max' form - so the round-21/22 direct startPrice/endPrice form reproduces the router entry, not the panel flow (correcting the round-8 mapping note). Python parity: no generator mismatch was found - the builder reproduces both forms (from_filter flag for the funnel form; price_range_value for the panel form; SearchFilters now documents which form is which). The V2 difference set against the app funnel (no fromFilter/fromCombo, firstRequest still true, no propValueStr, default extraFilterValue) is documented, but whether any accompanying field influences the gateway validation cannot be determined statically; the 419 trigger remains undetermined. Round 25 (parser 0.9.7, no live sends): SearchItem now types detailParams.imageInfos as image_infos (DetailParamImage list: url, type, dimensions, major, videoCover, and each video element's videoId normalised to its decimal string). The round-25 trace closed the value's path: it is a detail-side value whose only Java consumer (the detail preload's buildMediaInfos) drops the videoId, so it is not a video.play input — ItemCardView keeps video_id unprojected (field_notes says not_projected) and the media resolver classifies such cards as undetermined. Census correction (Q16): the round-22 plain-search response adds a fourth search-side measured video card (7 measured video cards in total across all APIs). Round 26 (parser 0.9.8, no live sends): the media facade (describe_media) and the image layer (item_images: card-surface primary plus the detail_preload surface in delivered order, video elements surfaced as covers) now cover SearchItem; ItemCardView groups across sources via group_item_views without merging. Dart-side consumption of the detailParams.imageInfos string was investigated to the recovered-code boundary: in all recovered Dart code and attributable xrefs the string is never read by key (Dart-side imageInfos uses are proto-model serialisation and the publish flow only), but the DetailPreLoader library body and the idlefish/common_method handler are not recovered by DAE, so a Dart-side preload read cannot be definitively excluded; the Java conclusion (buildMediaInfos is the only consumer and drops videoId) is unaffected. No parser conversion changed; the round-25 typed values were re-verified against the raw payloads."
+    },
+    {
+      "feature_id": "A1内包",
+      "feature": "検索フィルター定義(応答内包)",
+      "api_name": "(専用APIなし; 検索応答内包)",
+      "version": "-",
+      "enum_version": null,
+      "evidence_level": "E3",
+      "reach_level": "L3",
+      "round15_note": null,
+      "l3_subtype": "S",
+      "login_declaration_raw": "-",
+      "need_login": {
+        "value": null,
+        "basis": "-"
+      },
+      "need_wua": {
+        "value": null,
+        "basis": "not recorded"
+      },
+      "read_only": null,
+      "caller": null,
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": null,
+      "request_source": null,
+      "response_model": null,
+      "parser_function": "parse_search_filter_response",
+      "pagination_kind": "unknown",
+      "client_builder": null,
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": ""
+    },
+    {
+      "feature_id": "A2",
+      "feature": "検索サジェスト",
+      "api_name": "mtop.taobao.idlemtopsearch.search.suggest",
+      "version": "4.0",
+      "enum_version": null,
+      "evidence_level": "E3",
+      "reach_level": "L3",
+      "round15_note": null,
+      "l3_subtype": "S",
+      "login_declaration_raw": "needLogin未指定(false)",
+      "need_login": {
+        "value": false,
+        "basis": "@ApiConfig needLogin unspecified (default false)"
+      },
+      "need_wua": {
+        "value": false,
+        "basis": "unspecified (default false)"
+      },
+      "read_only": true,
+      "caller": "classes11 SearchSugViewModel.request",
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": "classes11 SearchSugReq {inputWords: String, type: int=0, bucketId: int, searchReqFromPage: String, targetUserId: String}",
+      "request_source": "suggest-api-trace.md §2",
+      "response_model": "SearchSugResp {dynamicList, items, users, picTextEntryInfoVOList, bucketId, ...}",
+      "parser_function": "parse_suggest_response",
+      "pagination_kind": "single_shot",
+      "client_builder": "build_suggest_request",
+      "measured": true,
+      "excluded_reason": null,
+      "classification_note": "Round 19 measured (send #2): anonymous send accepted, HTTP 200 / ret SUCCESS; bucketId and showStaticUserSearch arrive stringified ('29' / 'true'). The round-19 final confirmation through the packaged client was rejected with FAIL_SYS_PROTOVER_MISSED because the packaged wire format omitted the x-pv header (fixed in goofish-client 0.7.1; packaged end-to-end re-verification not yet performed). Round 20 closed this: the packaged client (0.7.2, wheel-installed in a clean venv) completed the send with HTTP 200 / SUCCESS; bucket_id=29 (int), 22 suggestions parsed."
+    },
+    {
+      "feature_id": "A4",
+      "feature": "カテゴリ案内",
+      "api_name": "mtop.taobao.idle.category.guide",
+      "version": "2.1",
+      "enum_version": null,
+      "evidence_level": "E3",
+      "reach_level": "L3",
+      "round15_note": null,
+      "l3_subtype": "R",
+      "login_declaration_raw": "needLogin未指定(false)",
+      "need_login": {
+        "value": false,
+        "basis": "@ApiConfig needLogin unspecified (default false)"
+      },
+      "need_wua": {
+        "value": false,
+        "basis": "unspecified (default false)"
+      },
+      "read_only": true,
+      "caller": "classes10 CategoryPageActivity.loadData/loadRight",
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": "classes11 ApiCategorySearchRequest {name: String} (two phases: name unset -> left nav; name=<selected> -> right pane)",
+      "request_source": "category-api-trace.md §2.2",
+      "response_model": "ApiCategorySearchResponse data Map {cat2List, cardList, cardDataMap} (right pane raw)",
+      "parser_function": "parse_category_response",
+      "pagination_kind": "single_shot",
+      "client_builder": "build_category_request",
+      "measured": true,
+      "excluded_reason": null,
+      "classification_note": "サーバ配信テンプレートが必要(右ペインFishX) — Round 20 measured (send #7) via the packaged client 0.7.2: HTTP 200 / ret SUCCESS; 22 categories (cat2List) and 2 cards (cardList) parsed by parse_category_response; cardCount arrives stringified ('2') and is retained in raw_data (no typed field)."
+    },
+    {
+      "feature_id": "A6",
+      "feature": "同城フィード（精选タブ）",
+      "api_name": "mtop.taobao.idle.local.home",
+      "version": "tabConfig駆動",
+      "enum_version": null,
+      "evidence_level": "E3",
+      "reach_level": "L3",
+      "round15_note": null,
+      "l3_subtype": "R",
+      "login_declaration_raw": "needLogin未指定(false)",
+      "need_login": {
+        "value": false,
+        "basis": "needLogin unspecified (default false)"
+      },
+      "need_wua": {
+        "value": false,
+        "basis": "unspecified (default false)"
+      },
+      "read_only": true,
+      "caller": "classes11 CityNewTabsRequestHandler.buildRequestParam (paramMap)",
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": "paramMap {dataSourceId, pageNumber: String, lastResponseCount: String, keyWords (always present, '' default), customReqType='idle_local_feeds', spmPrefix='a2170.14016119.6802272.', trackName='Item', name='SAME_CITY', itemName, needFrontPage/needBanner/needMario: String, showAd='1', latitude/longitude: Double (key omitted when absent); handler adds gps/containerVersion/geo keys at send time} [always-present keys completed round 16, parity P-14/P-15]",
+      "request_source": "city-feed-api-trace.md §3",
+      "response_model": "data Map {cardList, headers, sections, feedsCount, nextPage|hasNext, extraParam} (raw components)",
+      "parser_function": "parse_city_feed_response",
+      "pagination_kind": "city_string_accumulate",
+      "client_builder": "build_city_feed_request",
+      "measured": true,
+      "excluded_reason": null,
+      "classification_note": "Round 21 measured (send #4) via the packaged client at the preset version 4.0 with dataSourceId=ALL_CITY_FEEDS and no coordinates: HTTP 200 / ret SUCCESS. feedsCount '25' converts to int 25 and equals the sections count; nextPage 'true' converts to True; sections are DinamicX template components (fish_home_* templates) kept raw by design; this variant returns sections, not cardList. Pagination (page 2) not measured: the round-21 session was stopped later by FAIL_SYS_USER_VALIDATE on another API and local.home page 2 was not re-attempted. Round 22: a typed item-card view (CityFeed.item_cards / CityFeedItemCard, grounded in the bundled DinamicX templates' data. root binding) now covers 23 of the 25 measured sections (20 common item cards + 3 ad cards); the GPS-header section has empty data and the marketing section stays raw. Item cards convert itemId/title/price/image/region; ad cards carry no data.itemId by design. The raw sections field is unchanged. Page 2 remains unmeasured (the round-22 sends were stopped by the recurring validation demand). Round 23 (parser 0.9.5): the FeedItemCard item_id fallback chain was extended (data.itemId -> detailParams.itemId -> clickParam.args.itemId/item_id), so the 3 measured ad cards' ids - which live only in clickParam.args - are now typed (round 22 left them raw-only); all measured sources agree where several are present. The two non-item sections are confirmed from the payload to carry no cardList at all (template_info only) and stay raw by design. The SearchItem correspondence was evaluated and deliberately NOT merged (wire shapes differ in kind; the search ad rule classifies none of the measured feed cards); FeedItemCard is the explicit conversion layer. Round 23 also verified the next-page request plan offline from the round-21 measured continuation state (pageNumber=2 plan with identical dataSourceId/tabId/version; the opaque continuation is server-side). Page 2 remains unmeasured live. Round 24 (parser 0.9.6): FeedItemCard gains the typed video view over data.videoInfo (video_id / has_video / video_url_present) — the one measured city video card's videoId is now typed (its mainPicInfo duplicate agrees; a disagreement would drop the typed id rather than invent a priority); the playback URL value and realVideoId stay untyped by design (work/round24/video-id-mapping.md). The read-only ItemCardView projection now covers this card family alongside SearchItem. No live sends in round 24; page 2 remains unmeasured. Round 25 (parser 0.9.7, no live sends): FeedItemCard now also types the video cover (video_cover_url + cover dimensions from data.videoInfo.url/widthSize/heightSize — the still image bound to the widget's cover attribute; the playback URL value and realVideoId stay untyped) and data.detailParams as a typed raw dict. ItemCardView projects pic dimensions, video_url_present, seller display and per-field absence reasons (field_notes). The media resolver classifies the one measured city video card as direct_url (delivered videoUrl present). A sanitised measured excerpt (plain + advertise + video sections of the round-21 response, placeholder URLs/ids, provenance recorded) is packaged as tests/fixtures_measured/feed_city_media_round25.json and drives the offline media demo. Page 2 remains unmeasured. Round 26 (parser 0.9.8, no live sends): the shared FeedItemCard gains media-facade and image-layer coverage (describe_media / item_images over the typed video cover and main picture), and ItemCardView now projects the video cover dimensions; group_item_views can group these views with search views by item_id without merging. The sanitised round-25 fixture drives the extended offline media demo. No parser conversion changed; typed values were re-verified against the raw payload. Page 2 remains unmeasured."
+    },
+    {
+      "feature_id": "A6/A7",
+      "feature": "同城フィード（カテゴリタブ）",
+      "api_name": "mtop.taobao.idle.local.home.feeds",
+      "version": "tabConfig駆動",
+      "enum_version": null,
+      "evidence_level": "E3",
+      "reach_level": "L3",
+      "round15_note": null,
+      "l3_subtype": "R",
+      "login_declaration_raw": "needLogin未指定(false)",
+      "need_login": {
+        "value": false,
+        "basis": "needLogin unspecified (default false)"
+      },
+      "need_wua": {
+        "value": false,
+        "basis": "unspecified (default false)"
+      },
+      "read_only": true,
+      "caller": "classes11 CityFeedsRequestHandler (paramMap)",
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": "paramMap (same handler family as local.home)",
+      "request_source": "city-feed-api-trace.md §3",
+      "response_model": "data Map (raw components), parse_city_feed_response",
+      "parser_function": "parse_city_feed_response",
+      "pagination_kind": "city_string_accumulate",
+      "client_builder": "build_city_feed_request",
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": "実レスポンスが必要(cardList内部)"
+    },
+    {
+      "feature_id": "A6",
+      "feature": "同城 近隣コーナー情報",
+      "api_name": "mtop.taobao.idle.local.near.by.corner.info",
+      "version": "1.0",
+      "enum_version": null,
+      "evidence_level": "E3",
+      "reach_level": "L3",
+      "round15_note": null,
+      "l3_subtype": "S",
+      "login_declaration_raw": "needLogin未指定(false)",
+      "need_login": {
+        "value": false,
+        "basis": "@ApiConfig needLogin unspecified (default false)"
+      },
+      "need_wua": {
+        "value": false,
+        "basis": "unspecified (default false)"
+      },
+      "read_only": true,
+      "caller": "classes11 CitySearchBar.requestNearbyData",
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": "classes11 CityNearbyInfoReq {city, latitude, longitude, selectCity} (all String)",
+      "request_source": "city-feed-api-trace.md §6",
+      "response_model": "typed response (city-feed-response-schema.md)",
+      "parser_function": "parse_city_nearby_response",
+      "pagination_kind": "single_shot",
+      "client_builder": "build_city_nearby_request",
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": "Round 36: client builder build_city_nearby_request added (classes11 CityNearbyInfoReq {city, latitude, longitude, selectCity}, all String; CitySearchBar.requestNearbyData copies from the cached Division, stringifying lon/lat, null when absent - null fields omitted by the builder; values are caller-supplied runtime location data, never invented). Parser parse_city_nearby_response existed since the city-feed round. Still unmeasured over real HTTP."
+    },
+    {
+      "feature_id": "A8",
+      "feature": "魚塘一覧",
+      "api_name": "com.taobao.idle.fishpool.list",
+      "version": "3.0",
+      "enum_version": null,
+      "evidence_level": "E3",
+      "reach_level": "L3",
+      "round15_note": null,
+      "l3_subtype": "S",
+      "login_declaration_raw": "needLogin未指定(false)",
+      "need_login": {
+        "value": false,
+        "basis": "needLogin unspecified (default false)"
+      },
+      "need_wua": {
+        "value": false,
+        "basis": "unspecified (default false)"
+      },
+      "read_only": true,
+      "caller": "classes10 FishPondParameter based flow",
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": "classes10 FishPondParameter {pageNumber: Integer, rowsPerPage, ...}",
+      "request_source": "fishpond-browsing-trace.md §3",
+      "response_model": "{items, itemUrls, nextPage: boolean, totalCount: int}",
+      "parser_function": "parse_fishpond_response",
+      "pagination_kind": "flag_nextpage",
+      "client_builder": "build_fishpond_list_request",
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": "Round 21: api_name corrected from the round-15 transcription 'mtop.taobao.idle.fishpool.list' to the Api-enum literal 'com.taobao.idle.fishpool.list' (3.0). Request builder added (FishPondParameter: pageNumber/rowsPerPage Integer, type=1 and the fixed asac initialiser always emitted by fastjson; lat/lang only from the pubList route, never invented). LIVE (round 21, sends #2/#3): both statically attested name forms (com.* enum literal and mtop.* correspondence form) returned FAIL_SYS_API_NOT_FOUNDED on the production gateway — the API is not registered for this appKey (consistent with the fish-pond feature wind-down). Not measured; no further name variants were tried. Round 22 static review (work/round22/round22-fishpool-analysis.md): classification stands as 'gateway registration absent, confirmed' - the sent names are the current APK's Api enum literals with live call sites (PondServiceImpl getFishPonds/getPondInfo) and typed models, so a wrong-name explanation is not supported; what is established is only that the API was not registered on the production gateway for this appKey scope at send time, not that the feature is retired server-side. Name/version brute-forcing is not warranted."
+    },
+    {
+      "feature_id": "A9",
+      "feature": "魚塘詳細",
+      "api_name": "mtop.taobao.idle.fishpool.id",
+      "version": "6.0",
+      "enum_version": null,
+      "evidence_level": "E3",
+      "reach_level": "L3",
+      "round15_note": null,
+      "l3_subtype": "S",
+      "login_declaration_raw": "needLogin未指定(false), needWua対象",
+      "need_login": {
+        "value": false,
+        "basis": "needLogin unspecified (default false)"
+      },
+      "need_wua": {
+        "value": true,
+        "basis": "listed as needWua target in round-10 correspondence (login_declaration note)"
+      },
+      "read_only": true,
+      "caller": "classes10 fishpond detail flow",
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": "poolId based (fishpond-response-schema.md)",
+      "request_source": "fishpond-browsing-trace.md",
+      "response_model": "FishPondInfo typed bean",
+      "parser_function": "parse_fishpond_info_response",
+      "pagination_kind": "single_shot",
+      "client_builder": "build_fishpond_info_request",
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": "Round 21: api_name corrected from the round-15 transcription 'com.taobao.idle.fishpool.id' to the Api-enum literal 'mtop.taobao.idle.fishpool.id' (6.0). Request builder added (FishPondParameter with fishPoolId Long + type=4 ID-designated query). needWua=true per the round-10 declaration. Not attempted live in round 21: no legitimate pool id could be obtained (fishpool.list is not registered on the gateway, and no measured response carries a pond id); fabricating an id was not an option. Round 22: classification 'not sent - no legitimate pool id' stands (see the fishpool.list note); the needWua=true question also remains open."
+    },
+    {
+      "feature_id": "A9",
+      "feature": "魚塘公開投稿（コメント）",
+      "api_name": "com.taobao.idle.fishpool.comment.list",
+      "version": "2.0",
+      "enum_version": null,
+      "evidence_level": "E3",
+      "reach_level": "L3",
+      "round15_note": null,
+      "l3_subtype": "S",
+      "login_declaration_raw": "needLogin未指定(false)",
+      "need_login": {
+        "value": false,
+        "basis": "needLogin unspecified (default false)"
+      },
+      "need_wua": {
+        "value": false,
+        "basis": "unspecified (default false)"
+      },
+      "read_only": true,
+      "caller": "classes11 ApiFishpoolCommentListRequest flow",
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": "classes11 ApiFishpoolCommentListRequest {poolId: Long, pageNumber: int=1, lat: Double, lang: Double}",
+      "request_source": "fishpond-browsing-trace.md §3",
+      "response_model": "{items, sysCommentList, nextPage, poolId, totalCount}",
+      "parser_function": "parse_fishpond_comments_response",
+      "pagination_kind": "flag_nextpage",
+      "client_builder": "build_fishpond_comments_request",
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": "Round 21: api_name corrected from the round-15 transcription 'mtop.taobao.idle.fishpool.comment.list' to the Api-enum literal 'com.taobao.idle.fishpool.comment.list' (2.0). Request builder added (ApiFishpoolCommentListRequest: poolId Long, pageNumber int=1; lat/lang Double omitted when no location, per the bean's null-omission). Not attempted live in round 21 for the same reason as fishpool.id (no legitimate pool id available). Round 22: classification 'not sent - no legitimate pool id' stands (see the fishpool.list note)."
+    },
+    {
+      "feature_id": "B1",
+      "feature": "商品詳細",
+      "api_name": "mtop.taobao.idle.awesome.detail.unit",
+      "version": "1.0",
+      "enum_version": null,
+      "evidence_level": "E3",
+      "reach_level": "L3",
+      "round15_note": null,
+      "l3_subtype": "S",
+      "login_declaration_raw": "needLogin未指定(false)",
+      "need_login": {
+        "value": false,
+        "basis": "no needLogin/needWua specification; anonymous confirmed (item-detail-trace.md §3)"
+      },
+      "need_wua": {
+        "value": false,
+        "basis": "no specification"
+      },
+      "read_only": true,
+      "caller": "classes10 DetailNetworkDataSource.sendDetailRequest -> PApiContext.send",
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": "classes10 DetailRequest {itemId: String (required), city, fishpoolTopicId, grouponId, enterType, needSimpleDetail: boolean (primitive, always emitted), extra, extraParam (from DetailRouterSwitch.getSkillAbInfo()), abInfo: String (DetailRouterSwitch.getAbInfo()), commerceAdPlanId, clientPartialRefreshScene, queryScene, superLinkItemIds, flowVersion='8.0', isOld=false, isBundleGroup: boolean=false, hitNativeDetail=true} [round-16 parity correction: isBundleGroup is boolean and abInfo is String in the bean; item-detail-trace.md recorded int/Object in error]",
+      "request_source": "item-detail-trace.md §3",
+      "response_model": "DetailResponse (JSONObject) -> sections / FCI models",
+      "parser_function": "parse_item_response",
+      "pagination_kind": "single_shot",
+      "client_builder": "build_item_detail_request",
+      "measured": true,
+      "excluded_reason": null,
+      "classification_note": "Round 19 measured (send #5): HTTP 200 / ret SUCCESS; fully parsed by parse_item_response (title / price / CPV / seller / 6 images / sections). mediaInfos type arrives stringified ('0'); CPV needShowAdd stringified ('false'). Round 20: re-confirmed through the packaged client (send #4) using the item id from the packaged search result; fully parsed (8 images for the round-20 item). Round 26 (static + parser 0.9.8, no live sends; work/round26/static-leftovers.md): the old-detail video caller ItemDetailVideoView was closed negatively - its ItemVideoBean input has no construction path in this version (see the video.play row), so the FCI media path (Aliyun VID / cloud.video.query) and the proto card-27 path remain the only live detail video systems. ItemDetail images are now covered by the image layer (item_images: delivered order preserved, video elements surfaced via their poster still, TopicVO overlays carried on the refs); MediaInfo.labels and the other round-25 Q13 fields stay raw by design. No parser conversion changed. Round 27 (acceptance audit, parser 0.9.9, no live sends; work/round27/e2e_results.md): the round-27 end-to-end audit found one real defect in this API's parser (D-1): parse_item_response only checked the MTOP envelope when data contained flowData, so a FAIL envelope with an empty data payload (e.g. the round-22 FAIL_SYS_USER_VALIDATE live response) silently produced an empty ItemDetail instead of raising MtopApiError like the other eight measured-API parsers. Fixed in parser 0.9.9: an envelope whose ret declares failure now raises regardless of flowData, while bare payloads and success envelopes without flowData keep the documented partial-payload tolerance (the one round-15 test that pinned the old tolerance was updated as a contract change; regression tests in test_round27_item_envelope.py). No typed conversion of successful responses changed."
+    },
+    {
+      "feature_id": "B7",
+      "feature": "公開コメント（商品詳細内）",
+      "api_name": "mtop.taobao.idle.comment.list",
+      "version": "5.0",
+      "enum_version": null,
+      "evidence_level": "E3",
+      "reach_level": "L3",
+      "round15_note": null,
+      "l3_subtype": "S",
+      "login_declaration_raw": "needLogin未指定(false)",
+      "need_login": {
+        "value": false,
+        "basis": "@ApiConfig needLogin unspecified (default false)"
+      },
+      "need_wua": {
+        "value": false,
+        "basis": "unspecified (default false)"
+      },
+      "read_only": true,
+      "caller": "classes10 CommentViewModel.fetchComments",
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": "classes10 CommentListRequest {itemId: String, rowsPerPage: int (default fallback 10)}; prefetch variant adds adItemId/fishAdCode",
+      "request_source": "public-comments-and-ratings.md §2.1",
+      "response_model": "CommentListResponse.Data {items, cardList, nextPage, totalCount: String, totalRateCount: String, type, ext, rateLabels}",
+      "parser_function": "parse_comment_response",
+      "pagination_kind": "single_shot",
+      "client_builder": "build_comment_list_request",
+      "measured": true,
+      "excluded_reason": null,
+      "classification_note": "Round 19 measured (send #6): HTTP 200 / ret SUCCESS; the measured item had zero comments (a normal empty result). nextPage arrives stringified ('false'); totalCount is a String bean field ('0'). Round 20: re-confirmed through the packaged client (send #5), again a normal empty result with next_page=False."
+    },
+    {
+      "feature_id": "B8",
+      "feature": "評価一覧（商品詳細内）",
+      "api_name": "mtop.taobao.idle.rate.list",
+      "version": "6.0",
+      "enum_version": null,
+      "evidence_level": "E3",
+      "reach_level": "L3",
+      "round15_note": null,
+      "l3_subtype": "S",
+      "login_declaration_raw": "needLogin未指定(false)",
+      "need_login": {
+        "value": false,
+        "basis": "@ApiConfig needLogin unspecified (default false). Note: caller skips the request when a detail-supplied flag notRequestRate=='1'; that is a display condition, not an API login declaration."
+      },
+      "need_wua": {
+        "value": false,
+        "basis": "unspecified (default false)"
+      },
+      "read_only": true,
+      "caller": "classes10 CommentViewModel.fetchRates",
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": "classes10 RateListRequest {itemId: String, ratedUid: String, rateType='0', pageNumber: String='1', foldFlag='0', raterType='0', rowsPerPage: int=20}",
+      "request_source": "public-comments-and-ratings.md §3.1",
+      "response_model": "CommentListResponse (actual returnClass) with cardList; displayable cards are cardType=='1040'",
+      "parser_function": "parse_rate_response",
+      "pagination_kind": "rate_string_page",
+      "client_builder": "build_rate_list_request",
+      "measured": true,
+      "excluded_reason": null,
+      "classification_note": "Round 21 measured (send #1) via the packaged client: HTTP 200 / ret SUCCESS for the round-20 item and its seller's public id. 6 cards, all cardType '1040', feedback converted into typed PublicComment fields; every cardData scalar arrives stringified; nextPage 'false' converts to False; totalCount/totalRateCount stay String ('6'); raterUserNick arrives server-encrypted (needDecryptKeys present) and is kept verbatim. No parser mismatch. Round 22 measured-fit review (parser 0.9.4): five typed-conversion omissions found against the measured payload and the classes10 CommentListResponse.Comment bean - ipAddress (region display), bizCode, rateStatus, itemId, tradeInfo - are now typed on PublicComment (ip_address/biz_code/rate_status/item_id/trade_info_raw); 14 further card fields were confirmed raw-only by design (no bean/Java consumption). Verification scope remains the single measured card type (1040); image-bearing and other card types are unverified. Round 23 (parser 0.9.5, measured-fit re-verification): all typed conversions for the 6 measured cards were re-verified against the measured JSON, including the round-22 five fields (ipAddress / itemId / bizCode / rateStatus / tradeInfo); no parser mismatch was found and the rate models were not changed (RateCard / RateList.cards predate this round). The delivered card order (gmtCreate descending) is preserved by the parser and to_dict() and is now pinned by a regression test. Verification scope remains the single measured card type (1040); other card types are unverified."
+    },
+    {
+      "feature_id": "B9",
+      "feature": "関連商品",
+      "api_name": "mtop.taobao.idle.item.recommend.list",
+      "version": "5.0",
+      "enum_version": null,
+      "evidence_level": "E3",
+      "reach_level": "L3",
+      "round15_note": null,
+      "l3_subtype": "S",
+      "login_declaration_raw": "needLogin未指定(false)",
+      "need_login": {
+        "value": false,
+        "basis": "@ApiConfig needLogin unspecified (default false)"
+      },
+      "need_wua": {
+        "value": false,
+        "basis": "unspecified (default false)"
+      },
+      "read_only": true,
+      "caller": "classes10 RecommendViewModel / FeedsModel.reqParams",
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": "classes10 RecommendReq {itemId, sellerId, categoryId, tabId, xyLeafCatIdList, historyItemIds (comma-joined String), pageNum: int, pageSize: int=20, currentSize: int, city/gps/latitude/longitude, extra, abConfigs, predictTrace, fishAdCode}. Most base conditions are supplied by the detail response's reqParams.",
+      "request_source": "recommendation-and-feed-apis.md §1.2",
+      "response_model": "RecommendResp {cardList, hasMore, serverTime, needDecryptKeys, windCard}",
+      "parser_function": "parse_item_recommend_response",
+      "pagination_kind": "recommend_accumulate",
+      "client_builder": "build_recommend_request",
+      "measured": true,
+      "excluded_reason": null,
+      "classification_note": "Round 19 measured (send #7): HTTP 200 / ret SUCCESS; cardList 24 entries parsed; hasMore arrives stringified ('false'). Round 20: re-confirmed through the packaged client (send #6) with reqParams from the packaged detail response; 24 cards, has_more=False. Round 25 (parser 0.9.7, no live sends): the shared SearchItem conversion now also types detailParams.imageInfos (SearchItem.image_infos, DetailParamImage); the two measured recommend video cards' ids are typed as detail-side values (detail-preload path, dropped before any video.play caller — see the search row's round-25 note) and classify as undetermined under the media resolver. Continuation pages (hasMore=true) remain unmeasured. Round 26 (parser 0.9.8, no live sends): the shared SearchItem media facade and image layer apply unchanged (describe_media delegates RecommendCard to its inner item; image_infos surface as the detail_preload surface). No parser conversion changed. Continuation pages remain unmeasured."
+    },
+    {
+      "feature_id": "B10",
+      "feature": "Fun 投稿詳細",
+      "api_name": "mtop.taobao.idle.fun.item.detail",
+      "version": "2.0",
+      "enum_version": null,
+      "evidence_level": "E3",
+      "reach_level": "L3",
+      "round15_note": null,
+      "l3_subtype": "R",
+      "login_declaration_raw": "needLogin未指定(false)",
+      "need_login": {
+        "value": false,
+        "basis": "needLogin unspecified (default false)"
+      },
+      "need_wua": {
+        "value": false,
+        "basis": "unspecified (default false)"
+      },
+      "read_only": true,
+      "caller": "classes10 NetworkDataSource.createDetailRequest (apiNameAndVersion dynamic)",
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": "ApiProtocol<PostContentResponse> {clientPartialRefreshScene, queryScene, superLinkItemIds} + dynamic paramMap from page args; itemId via route params",
+      "request_source": "fun-content-api-trace.md",
+      "response_model": "data raw JSON; typed boundary is the flowData frame only (L3-R)",
+      "parser_function": "parse_fun_response",
+      "pagination_kind": "single_shot",
+      "client_builder": null,
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": "動的モジュールが必要(data内部)"
+    },
+    {
+      "feature_id": "B10",
+      "feature": "Fun 公開コメント",
+      "api_name": "mtop.taobao.idle.fun.general.comment.list",
+      "version": "1.0",
+      "enum_version": null,
+      "evidence_level": "E3",
+      "reach_level": "L3",
+      "round15_note": null,
+      "l3_subtype": "S",
+      "login_declaration_raw": "needLogin=false明示",
+      "need_login": {
+        "value": false,
+        "basis": "needLogin=false explicitly declared"
+      },
+      "need_wua": {
+        "value": false,
+        "basis": "unspecified (default false)"
+      },
+      "read_only": true,
+      "caller": "classes10 fun comment flow",
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": "{beginCursor: String, namespace: String, pageSize: int=10, rowsPerPage: long=10, sourceId: String, targetId: String, targetType: String, topCommentId: String}",
+      "request_source": "fun-content-api-trace.md",
+      "response_model": "PageBase<IdleCommentDTO> {items, total, next, lastCursor, commentCnt}",
+      "parser_function": "parse_fun_comment_response",
+      "pagination_kind": "cursor_lastcursor",
+      "client_builder": "build_fun_comment_list_request",
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": "Round 36: client builder build_fun_comment_list_request added (classes10 CommentProtocol.CommentListApi; @ApiConfig declares needLogin=false explicitly; CommentListComponent.loadData copies targetId/targetType/namespace/sourceId from CommitCommonParams and carries the previous response lastCursor into beginCursor; bean defaults pageSize=10 int / rowsPerPage=10 long; topCommentId never set by the confirmed caller, omitted unless supplied). Parser parse_fun_comment_response existed. Still unmeasured over real HTTP."
+    },
+    {
+      "feature_id": "C2",
+      "feature": "出品一覧（確認済み消費者は自商品選択のみ。他者ページ用パラメータは未確認）",
+      "api_name": "mtop.taobao.idle.user.publish.items",
+      "version": "6.0",
+      "enum_version": "6.0",
+      "evidence_level": "E3",
+      "reach_level": "L3",
+      "round15_note": null,
+      "l3_subtype": "S",
+      "login_declaration_raw": "needLogin未指定(false)",
+      "need_login": {
+        "value": false,
+        "basis": "@ApiConfig needLogin unspecified (default false). CAUTION: no target-user parameter exists in the confirmed request; do not treat as a public other-user listing API."
+      },
+      "need_wua": {
+        "value": false,
+        "basis": "unspecified (default false)"
+      },
+      "read_only": true,
+      "caller": "classes10/11 message-screen own-item selection (only statically confirmed consumer)",
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": "generic paramMap {pageNumber: int=1, pageSize: int=20, ...} (no typed request class in the confirmed consumer)",
+      "request_source": "seller-public-items-trace.md / round-7 docs",
+      "response_model": "{cardList, nextPage: boolean, totalCount: int}",
+      "parser_function": "parse_seller_items_response",
+      "pagination_kind": "flag_nextpage",
+      "client_builder": null,
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": "他者指定の経路は利用経路が確認できない"
+    },
+    {
+      "feature_id": "D1",
+      "feature": "ホームフィード",
+      "api_name": "mtop.taobao.idlehome.home.nextfresh",
+      "version": "8.0",
+      "enum_version": null,
+      "evidence_level": "E3",
+      "reach_level": "L3",
+      "round15_note": null,
+      "l3_subtype": "R",
+      "login_declaration_raw": "needLogin未指定(false)",
+      "need_login": {
+        "value": false,
+        "basis": "@ApiConfig needLogin unspecified (default false)"
+      },
+      "need_wua": {
+        "value": false,
+        "basis": "unspecified (default false)"
+      },
+      "read_only": true,
+      "caller": "classes11 HomeResultModel / HomeRecommendReq",
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": "classes11 HomeRecommendReq {pageNumber: int=1, lastResponseCount: int, clientRecycleParams: String (carry-over), city, gps, fishAdCode, data, featureParams, actionContext, appAbParams, isWidePage, spmPrefix/trackName, dpaCustomData/luxuryCustomData}",
+      "request_source": "recommendation-and-feed-apis.md §2.2",
+      "response_model": "HomeRecommendResp {sections, feedsCount, nextPage, serverTime, clientRecycleParams, homeTopList} (sections raw)",
+      "parser_function": "parse_home_feed_response",
+      "pagination_kind": "home_recycle_carryover",
+      "client_builder": "build_home_feed_request",
+      "measured": true,
+      "excluded_reason": null,
+      "classification_note": "実レスポンスが必要(sections内部) — Round 20 measured (send #8) via the packaged client 0.7.2: HTTP 200 / ret SUCCESS; 31 sections parsed; feedsCount ('31') and nextPage ('true') arrive stringified and are converted by the measured-scalar helpers; clientRecycleParams is present for continuation; section payloads are template-driven and stay in raw_data as designed. Round 21 (sends #5/#6): pagination measured end-to-end through the packaged client — page 1 (29 sections) and page 2 (27 sections) fetched via client.paginate with the clientRecycleParams carry-over, section sets disjoint, nextPage still true on page 2. Round 22: the measured p1->p2 state transition was re-verified and pinned as regression tests - feedsCount equals the section count on both pages (29/27), clientRecycleParams is byte-identical across pages (and to round 20), data.currentPage advances '1'->'2', item ids are disjoint across pages, nextPage still true on page 2 (termination unmeasured). No parser mismatch. Round 23 (parser 0.9.5): the shared FeedItemCard view was extended to the measured home sections (same data.-root DinamicX template family as the city feed), with item ids verified disjoint across the measured pages 1/2; the end-of-feed state (nextPage=false, 28 sections) remains covered by the round-19 driver fixture. No state-machine change; pagination behaviour is unchanged and regression-pinned. Round 24 (parser 0.9.6): FeedItemCard gains the typed video view over data.videoInfo (video_id / has_video / video_url_present) — both measured home video cards' videoIds are now typed; the auth_key-bearing videoUrl value and realVideoId stay untyped by design (work/round24/video-id-mapping.md). No live sends in round 24. Round 25 (parser 0.9.7, no live sends): the shared FeedItemCard gains the typed video cover (video_cover_url + cover dimensions) and typed detail_params; ItemCardView projects pic dimensions, video_url_present, seller display and field_notes. Both measured home video cards classify as direct_url under the new media resolver (delivered auth_key-bearing videoUrl present; the value is still never typed or recorded). No live sends in round 25. Round 26 (parser 0.9.8, no live sends): the shared FeedItemCard media facade and image layer apply; ItemCardView projects the video cover dimensions. Coordinator verification: the typed video view reads data.videoInfo by exact key (the shipped behaviour since round 24) and the measured home video cards' typed ids were re-verified equal to their own raw videoInfo.videoId - no value changed. Page 2 remains unmeasured; no live sends in round 26."
+    },
+    {
+      "feature_id": "D10",
+      "feature": "動画再生情報",
+      "api_name": "com.taobao.idle.video.play",
+      "version": "5.0",
+      "enum_version": "5.0",
+      "evidence_level": "E3",
+      "reach_level": "L3",
+      "round15_note": null,
+      "l3_subtype": "S",
+      "login_declaration_raw": "needLogin未指定(false)",
+      "need_login": {
+        "value": false,
+        "basis": "@ApiConfig needLogin/needWua unspecified (default false) - ApiVideoPlayInfoRequest"
+      },
+      "need_wua": {
+        "value": false,
+        "basis": "unspecified (default false)"
+      },
+      "read_only": true,
+      "caller": "classes10 DetailVideoPlayer.requestVideoUrl etc. (6 call sites, all classes10)",
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": "{itemid: Long, videoid: Long}",
+      "request_source": "video-play-api-trace.md",
+      "response_model": "ResponseParameter<PondItem> {playUrl, ld320pUrl, sd480pUrl: String, mtsVideoid: long} - exactly 4 fields",
+      "parser_function": "parse_video_play_response",
+      "pagination_kind": "single_shot",
+      "client_builder": "build_video_play_request",
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": "Round 21: request builder added (ApiVideoPlayInfoRequest: itemid Long, videoid Long; videoid is the substantive key, itemid may be 0 from feed-card callers). Live measurement was scheduled after the video-item detail in the round-21 chain, but the session was stopped earlier by FAIL_SYS_USER_VALIDATE on the filtered-search attempt, so video.play remains unmeasured (no send was made). Round 22: still unmeasured and not sent - no legitimately obtained videoid exists in the accumulated measured data (every measured item carries isVideo=false), and the round-22 sends were stopped by the recurring validation demand on the sort-isolation step before any discovery chain could be considered. Round 23: offline readiness completed - builder typing re-verified against the classes11 bean (itemid/videoid Long; digit-string inputs are normalised to int, bools and non-numeric values rejected), with round-23 validation that a negative itemid and a non-positive videoid are refused before any send; client.video_play was exercised end-to-end against MockTransport (typed response model with all playback URL fields preserved, business errors surfacing as MtopApiError, restriction responses tripping the halt latch). Still unmeasured live. Round-23 correction to the round-22 note: legitimately obtained videoId values DO exist in the accumulated feed data (videoInfo.videoId on isVideo=true items in the round-20 home feed and the round-21 home/city feeds; a round-20 search result also carries a videoId inside imageInfos) - the round-22 statement was accurate only for detail/search items. The mapping between the feed videoInfo.videoId and the mVideoId the video.play callers pass is not yet traced (videoInfo also carries realVideoId/videoUrl); confirming that mapping statically, under recovered normal access conditions, is the precondition for a future live attempt with a real (itemid, videoid) pair. Round 24 (static trace + offline implementation, no live sends; work/round24/video-id-mapping.md): the videoid mapping was traced in the decompiled code for all six round-10 callers. Every caller feeds videoid from its model's videoId/videoid field with no transformation (proto ImageInfo.videoId: Long via DetailVideoPlayer; BaseItemInfo.videoid: String via stringToLong for card1003; CardBean61801.VideoInfo.videoId: Long via AVUrlFetchTask; CardBean10291.videoIdList: List<Long>); realVideoId is used by NO caller and is excluded as a videoid candidate. itemid=0 is a formal route (card10291 / AVUrlFetchTask / HoloCircularVideoCoverPlay fix it at 0; a real itemid appears only from DetailVideoPlayer and card1003-rent). Correction of the round-22/23 note: legitimately obtained video ids DO exist in the accumulated measured data — the measured home/city feed cards carry data.videoInfo.videoId (6 measured video items across home.nextfresh / local.home / search / item.recommend.list) — but for the measured DinamicX feed cards the app does NOT route to video.play: the DX template binds only videoInfo.videoUrl/url and the widget passes videoId=null, playing the delivered videoUrl directly (video.play is reached only when videoUrl is empty, on native-card and detail paths). Whether the gateway accepts a DX feed card's videoId as videoid is therefore still unmeasured. Python: parser 0.9.6 types FeedItemCard.video_id / has_video / video_url_present (the URL value and realVideoId stay untyped by design); goofish-client 0.9.2 adds build_video_play_request_from_feed_card / client.video_play_for_feed_card with strict validation (video-less cards refused, \"0\" refused as the models' no-video marker, a mismatched explicit item_id refused, no realVideoId/URL-derived input accepted). Still unmeasured live: the round-21/22 validation demand (HTTP 419) is unresolved, so no send was made in round 24. Round 25 (static trace + offline implementation, no live sends; work/round25/video-paths.md): the round-24 reservation about ItemDetailVideoView.loadVideo was settled at the bytecode level (baksmali + dexlib2, two independent extractions agree) — itemid and videoid are EXCLUSIVE there: a non-empty itemId sends itemid=stringToLong(itemId) with videoid=0, and only an empty itemId lets videoid=stringToLong(videoId) through (the round-10 trace's independent-defaults description was inaccurate). The search/recommend imageInfos path was also closed: detailParams.imageInfos travels as an unparsed string through the detail preload, and its only Java consumer (ExternalDataSource.buildMediaInfos) drops videoId, so that id never reaches a video.play caller; detail playback is always re-resolved from the detail response itself (FCI media via cloud.video.query / Aliyun VID, old detail cards via this API). A media resolver (goofish_parser.media.resolve_media, parser 0.9.7; client 0.9.3 passthrough) now classifies every typed model: no currently typed input legitimately maps to 'needs video.play' — measured feed video cards are direct_url, id-only feed/search inputs are undetermined, FCI detail video ids are a different API system. Census correction (round-25 audit Q16): the measured video-card total is 7, not 6 — the round-22 plain search (v1_plain_response.json items[3]) carries a fourth search-side video card. Still unmeasured live: the HTTP 419 validation demand is unresolved, so no send was made in round 25. Round 26 (static closure + offline facade, no live sends; work/round26/static-leftovers.md): caller completeness was re-verified over all 11 DEX binaries (type-reference scan) plus all jadx trees - the six round-10/24 callers are complete, and the API-name literal exists only in classes11 (the Api enum), so no string-built Java path exists. One caller's input was closed negatively: ItemDetailVideoView's ItemVideoBean has NO construction path in this version (zero 'new ItemVideoBean' in all jadx trees, no parser in ItemDetailCardPool emits its card type component_detail '7', and that XComponent registration's bind bean class is null, so even a server card of that type would arrive as a Map and fail the view's instanceof check) - the view, layout and registration remain without a data supply, and its exclusive itemid/videoid branch is now the spec of a caller that cannot fire in 7.28.70. The similarly named ApiVideoPlayInfoRequest2 was identified as mtop.taobao.cloudvideo.video.query 2.0 (classes8 Video265Handler, a Flutter H.265-support bridge) - a different API, not a seventh caller. Native-card wire forms (cardType 61801/10291, videoIdList keys) appear in none of the 27 saved measured files. The DX feed videoId's id-space identity with the native beans' videoId was recorded as a fixed boundary: no code relates the two, so only a live gateway-acceptance test could settle it. Python: parser 0.9.8 adds the describe_media facade over the resolver (video_play_path_confirmed is False for every currently typed model); no send was made in round 26 (the HTTP 419 validation demand remains unresolved)."
+    },
+    {
+      "feature_id": "D3",
+      "feature": "近隣フィード（同城タブ）",
+      "api_name": "mtop.taobao.idle.home.nextnearby",
+      "version": "2.0",
+      "enum_version": null,
+      "evidence_level": "E2",
+      "reach_level": "L1",
+      "round15_note": "Round 15 confirmed there is NO Dart-side call: the API name is absent from the full snapshot string table (101,262 strings), the 487-entry apiName getter index, r2flutter metadata and DAE output. The Java-side generic-handler path remains the only route. E2/L1 unchanged; item closed.",
+      "l3_subtype": null,
+      "login_declaration_raw": "宣言なし(汎用Request, 既定false)",
+      "need_login": {
+        "value": false,
+        "basis": "no declaration on the generic Request; default false. NOTE: server-delivered tab config normally takes precedence; whether the current server config points at this API is unmeasured."
+      },
+      "need_wua": {
+        "value": false,
+        "basis": "no declaration; default false"
+      },
+      "read_only": true,
+      "caller": "classes11 HomeFeedsRequestHandler (generic Request, apiName set at runtime from tab config; the bundled preset is the fallback and server-delivered config normally takes precedence)",
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": "generic paramMap (same handler family as nextfresh)",
+      "request_source": "home-nextnearby-assessment.md",
+      "response_model": "untyped Map {sections} consumed by the generic sections pipeline",
+      "parser_function": null,
+      "pagination_kind": "home_recycle_carryover",
+      "client_builder": null,
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": "実レスポンスが必要; サーバ配信タブ設定が名前を供給 [Round 17, audit M-11 closure: pagination_kind 'home_recycle_carryover' is inherited from the generic handler's tab family. For THIS api name, HomeFeedsRequestHandler (classes11) wires only pageNumber / lastResponseCount / nextPage through section properties — no clientRecycleParams processing exists on this path; the clientRecycleParams carryover member belongs to the typed fy25 HomeRecommendReq route (home.nextfresh).]"
+    },
+    {
+      "feature_id": "B9",
+      "feature": "関連商品タブ",
+      "api_name": "mtop.taobao.idle.item.recommend.tab",
+      "version": "1.0",
+      "enum_version": null,
+      "evidence_level": "E2",
+      "reach_level": "L1",
+      "round15_note": null,
+      "l3_subtype": null,
+      "login_declaration_raw": "needLogin未指定(false)",
+      "need_login": {
+        "value": false,
+        "basis": "needLogin未指定(false) (@ApiConfig default; structured value aligned round 16, audit M-01)"
+      },
+      "need_wua": {
+        "value": null,
+        "basis": "not recorded"
+      },
+      "read_only": null,
+      "caller": null,
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": "FeedsTabsReq",
+      "request_source": "api-registry-final.md (round 15); recommendation-and-feed-apis.md",
+      "response_model": "consumed by the shared recommend machinery (api-registry-final.md)",
+      "parser_function": null,
+      "pagination_kind": "unknown",
+      "client_builder": null,
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": ""
+    },
+    {
+      "feature_id": "B9",
+      "feature": "関連商品の追加読込制御",
+      "api_name": "mtop.taobao.idle.item.predict.loadmore",
+      "version": "1.0",
+      "enum_version": null,
+      "evidence_level": "E2",
+      "reach_level": "L1",
+      "round15_note": null,
+      "l3_subtype": null,
+      "login_declaration_raw": "needLogin未指定(false)",
+      "need_login": {
+        "value": false,
+        "basis": "needLogin未指定(false) (@ApiConfig default; structured value aligned round 16, audit M-01)"
+      },
+      "need_wua": {
+        "value": null,
+        "basis": "not recorded"
+      },
+      "read_only": null,
+      "caller": null,
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": "FeedsLoadControlReq",
+      "request_source": "api-registry-final.md (round 15); recommendation-and-feed-apis.md",
+      "response_model": "consumed by the shared recommend machinery (api-registry-final.md)",
+      "parser_function": null,
+      "pagination_kind": "unknown",
+      "client_builder": null,
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": ""
+    },
+    {
+      "feature_id": "C1関連",
+      "feature": "出品者ヘッダー情報（旧 fleamarket 層の残存定義の可能性）",
+      "api_name": "mtop.taobao.idle.user.headinfo.get",
+      "version": "4.0",
+      "enum_version": "4.0",
+      "evidence_level": "E1",
+      "reach_level": "L2",
+      "round15_note": null,
+      "l3_subtype": null,
+      "login_declaration_raw": "needLogin未指定(false)",
+      "need_login": {
+        "value": false,
+        "basis": "@ApiConfig api only; needLogin/needWua unspecified = default false; not in WUA_APIS_DEF"
+      },
+      "need_wua": {
+        "value": false,
+        "basis": "unspecified (default false)"
+      },
+      "read_only": true,
+      "caller": "no caller found in any DEX (reference scan, round 9)",
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": "ApiUserHeadinfoGetRequest {appKey: String, myUserId: Long, nick: String, userId: String}",
+      "request_source": "seller-headinfo-api-trace.md",
+      "response_model": "ResponseParameter<UserInfoBean> (75 own fields + nested IdentityInfo/Skill/TagBean)",
+      "parser_function": "parse_user_headinfo_response",
+      "pagination_kind": "single_shot",
+      "client_builder": null,
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": "現時点では利用経路が確認できない(呼出元なし)"
+    },
+    {
+      "feature_id": "C5",
+      "feature": "フォロー・ファン一覧",
+      "api_name": "mtop.taobao.idle.attention.list",
+      "version": "2.0",
+      "enum_version": "2.0",
+      "evidence_level": "E1",
+      "reach_level": "L1",
+      "round15_note": null,
+      "l3_subtype": null,
+      "login_declaration_raw": "Java層では確認不能(Flutter側)",
+      "need_login": {
+        "value": true,
+        "basis": "DETERMINED round 14: needLogin getter (selector 0x22dec) entry point 0x200b9c4 returns true constant (add x0, x22, #0x20; ret). Client-declared login required."
+      },
+      "need_wua": {
+        "value": false,
+        "basis": "needWua getter returns false constant (add x0, x22, #0x30; ret), round 14"
+      },
+      "read_only": true,
+      "caller": "Flutter user_attention_list_page / user_fans_list_page -> AttentionFansReq (cid 11163) -> fish_sdk wrapper -> MtopPlugin.sendRequest",
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": "AttentionFansReq params (page info etc.); response analysis NOT performed (login-required, out of scope)",
+      "request_source": "attention-needlogin-round14.md",
+      "response_model": "NOT ANALYSED (login-required API, excluded by project rule)",
+      "parser_function": null,
+      "pagination_kind": "unknown",
+      "client_builder": null,
+      "measured": false,
+      "excluded_reason": "login_required_determined_round14",
+      "classification_note": "Determined round 14: the Dart needLogin getter is true-fixed (classification B, login-required); closed as out of scope. version 2.0 is the Java enum value; the Dart implementation's apiVer is \"3.0\" (generation difference, determined round 14)."
+    },
+    {
+      "feature_id": "A8関連",
+      "feature": "フィルター定義取得（型付き定義のみ。検索の絞込適用は検索応答内包の定義 + propValueStr 経由）",
+      "api_name": "mtop.taobao.idle.item.search.filter",
+      "version": "3.0(型付き)/1.0(列挙型)",
+      "enum_version": "1.0",
+      "evidence_level": "E1",
+      "reach_level": "L1",
+      "round15_note": null,
+      "l3_subtype": null,
+      "login_declaration_raw": "needLogin未指定(false)",
+      "need_login": {
+        "value": false,
+        "basis": "@ApiConfig needLogin unspecified (default false)"
+      },
+      "need_wua": {
+        "value": false,
+        "basis": "unspecified (default false)"
+      },
+      "read_only": true,
+      "caller": "no caller found in any DEX (round 8/10)",
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": "ApiSearchFilterRequest {catId: Long, inputWords: String, leafId: Long} (note: Long here, unlike SearchResultReq's String category fields)",
+      "request_source": "category-api-trace.md §4",
+      "response_model": "untyped Map in the typed definition; no consumer exists. The filter definitions actually used are embedded in the search response (flexFilter / smartUiFilterPanelDO), parsed by parse_search_filter_response.",
+      "parser_function": null,
+      "pagination_kind": "single_shot",
+      "client_builder": null,
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": "現時点では利用経路が確認できない(消費者なし)"
+    },
+    {
+      "feature_id": "D7",
+      "feature": "類似商品（搜同款）",
+      "api_name": "mtop.taobao.idle.search.spusimilar.itemlist",
+      "version": "1.0",
+      "enum_version": "1.0",
+      "evidence_level": "E2",
+      "reach_level": "L3",
+      "round15_note": "Upgraded E1->E2 and L1->L2 in round 15 (Dart send path traced, needLogin=false determined, request/response top-level structure confirmed). L3 requires the SimilarCardInfo element schema.",
+      "l3_subtype": "S",
+      "login_declaration_raw": "Java層では確認不能(Flutter側)",
+      "need_login": {
+        "value": false,
+        "basis": "DETERMINED round 15: SpuSimilarListReq (cid 12048) constructor writes the False object (x22+0x30) as a constant into the needLogin field (imm 0x13) in MtopReq field layout; field-holding style class (not a dispatch target of executor B)."
+      },
+      "need_wua": {
+        "value": false,
+        "basis": "same constructor field layout (needWua field written alongside needLogin), round 15"
+      },
+      "read_only": true,
+      "caller": "Java entry SameController -> Flutter fwn_idlefish spusimilar page (SearchResultEffectBuilder.sendRequestAction @0x860fa8) -> SpuSimilarListReq ctor 0x860c0c -> fish_sdk executor -> MtopPlugin.sendRequest. Round 15: the API-name string has exactly this one code reference in the whole app.",
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": "Dart SpuSimilarListReq (cid 12048); params keys: itemId / conditions / pageNo / pageSize. apiVer '1.0' set in constructor (PP+0xbfc8).",
+      "request_source": "essay-and-similar-items.md; work/flutter_r15/discovery-notes.md §2",
+      "response_model": "Dart SpuSimilarListRes {cardList: [PCardInfo {cardType, cardData: PItemInfoPair {items: [PItemInfo]}}], nextPage: bool, serverTime, needDecryptKeys}. PItemInfo: 246 wire keys enumerated round 16 from PItemInfoInternal.toJson (work/flutter_r16/similar_cardinfo_fields.json).",
+      "parser_function": "parse_spusimilar_response",
+      "pagination_kind": "flag_nextpage_pageno",
+      "client_builder": "build_spusimilar_request",
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": "Round 16 (workstream E): the cardList element schema was determined from PItemInfoInternal.toJson (246 wire keys) and a dedicated parser, request builder and pageNo/pageSize pagination were implemented (L3, subtype S). The element is a flat PItemInfo, structurally different from the Java search DxCard exContent. cardType value range and real-response verification remain open. Round 20 attempt (send #9) via the packaged client: the request reached the server but was rejected with the business error FAIL_BIZ_SERVER_NEED_UPGRADE_MSG2 (server-side app-version gate). conditions were built from the search response's server-issued spuId (tabList SPU tab) because the detail response carries no spu identifier. Not measured; no retry performed."
+    },
+    {
+      "feature_id": "A11",
+      "feature": "画像認識（発行・写真選択文脈。公開閲覧ではない）",
+      "api_name": "mtop.taobao.idlemtopsearch.graph.recognition",
+      "version": "1.0",
+      "enum_version": null,
+      "evidence_level": "E2",
+      "reach_level": "L1",
+      "round15_note": "Upgraded E1->E2 in round 15 and version fixed to 1.0. The feature context is media production (scan/publish, photo selection), not anonymous public browsing, so it stays out of the client scope despite needLogin=false. Which of the two classes the A11 route (media_image_search_preview) connects to is undetermined.",
+      "l3_subtype": null,
+      "login_declaration_raw": "Java層では確認不能(Flutter側)",
+      "need_login": {
+        "value": false,
+        "basis": "DETERMINED round 15: for both classes the needLogin selector 0x22dec resolves to the shared false stub 0x20097f4 (add x0, x22, #0x30; ret), same method as round 14."
+      },
+      "need_wua": {
+        "value": false,
+        "basis": "same dispatch resolution, round 15"
+      },
+      "read_only": true,
+      "caller": "Dart only, two owning classes determined round 15 by dispatch inversion of the apiName getter stub @0x1584328: ObjectDetectionRecognitionReq (cid 10576, media_producer media_scan_publish) and RecognitionTagInfoReq (cid 10591, kun_fish multiple_selection); both construct -> set fields -> executor B @0x206870c (real send confirmed).",
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": "Dart MtopReq subclasses (cid 10576 / 10591); apiVer '1.0' DETERMINED round 15 (shared getter 0x1f39434 -> PP+0xbfc8); params forwarded through private selectors 0x19a2/0x19a3, key set not enumerated.",
+      "request_source": "live-video-image-search-inventory.md; work/flutter_r15/discovery-notes.md §3",
+      "response_model": "partial: ObjectDetection side builds a Map including picUrl / regionListStr; RecognitionTagInfoRes declares only errorCode (rest inherited). Not a public browsing response.",
+      "parser_function": null,
+      "pagination_kind": "single_shot",
+      "client_builder": null,
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": "Real sends from both owning classes confirmed and needLogin=false / version 1.0 determined in round 15 (E2). Remaining: the params key set and the response model (round-16 workstream F). Feature context is media production, not public browsing."
+    },
+    {
+      "feature_id": "D4",
+      "feature": "魚塘内商品一覧",
+      "api_name": "mtop.taobao.idle.fishpool.item.list",
+      "version": "4.0",
+      "enum_version": "4.0",
+      "evidence_level": "E0",
+      "reach_level": "L0",
+      "round15_note": null,
+      "l3_subtype": null,
+      "login_declaration_raw": "確認不能(呼出なし)",
+      "need_login": {
+        "value": null,
+        "basis": "確認不能(呼出なし)"
+      },
+      "need_wua": {
+        "value": null,
+        "basis": "not recorded"
+      },
+      "read_only": null,
+      "caller": null,
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": null,
+      "request_source": null,
+      "response_model": null,
+      "parser_function": null,
+      "pagination_kind": "unknown",
+      "client_builder": null,
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": "現時点では利用経路が確認できない"
+    },
+    {
+      "feature_id": "D4",
+      "feature": "魚塘内商品検索",
+      "api_name": "mtop.taobao.idle.fishpool.itemsearch",
+      "version": "5.0",
+      "enum_version": null,
+      "evidence_level": "E0",
+      "reach_level": "L0",
+      "round15_note": null,
+      "l3_subtype": null,
+      "login_declaration_raw": "確認不能(呼出なし)",
+      "need_login": {
+        "value": null,
+        "basis": "確認不能(呼出なし)"
+      },
+      "need_wua": {
+        "value": null,
+        "basis": "not recorded"
+      },
+      "read_only": null,
+      "caller": null,
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": null,
+      "request_source": null,
+      "response_model": null,
+      "parser_function": null,
+      "pagination_kind": "unknown",
+      "client_builder": null,
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": "現時点では利用経路が確認できない; ApiBusiness写像で idlemtopsearch.fishpool.itemsearch/6.0 へ(スイッチ有効時)"
+    },
+    {
+      "feature_id": "D4",
+      "feature": "魚塘検索(検索基盤名)",
+      "api_name": "mtop.taobao.idle.fishpool.search",
+      "version": "3.0",
+      "enum_version": null,
+      "evidence_level": "E0",
+      "reach_level": "L0",
+      "round15_note": null,
+      "l3_subtype": null,
+      "login_declaration_raw": "確認不能(呼出なし)",
+      "need_login": {
+        "value": null,
+        "basis": "確認不能(呼出なし)"
+      },
+      "need_wua": {
+        "value": null,
+        "basis": "not recorded"
+      },
+      "read_only": null,
+      "caller": null,
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": null,
+      "request_source": null,
+      "response_model": null,
+      "parser_function": null,
+      "pagination_kind": "unknown",
+      "client_builder": null,
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": "現時点では利用経路が確認できない; ApiBusiness写像で idlemtopsearch.main.fishpool.search/4.0 へ(スイッチ有効時)"
+    },
+    {
+      "feature_id": "D4",
+      "feature": "魚塘検索",
+      "api_name": "com.taobao.idle.fishpool.search",
+      "version": "2.0",
+      "enum_version": "2.0",
+      "evidence_level": "E0",
+      "reach_level": "L0",
+      "round15_note": null,
+      "l3_subtype": null,
+      "login_declaration_raw": "確認不能(呼出なし)",
+      "need_login": {
+        "value": null,
+        "basis": "確認不能(呼出なし)"
+      },
+      "need_wua": {
+        "value": null,
+        "basis": "not recorded"
+      },
+      "read_only": null,
+      "caller": null,
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": null,
+      "request_source": null,
+      "response_model": null,
+      "parser_function": null,
+      "pagination_kind": "unknown",
+      "client_builder": null,
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": "現時点では利用経路が確認できない"
+    },
+    {
+      "feature_id": "D4",
+      "feature": "魚塘ホーム一覧",
+      "api_name": "com.taobao.idle.fishpool.homeList",
+      "version": "3.0",
+      "enum_version": "3.0",
+      "evidence_level": "E0",
+      "reach_level": "L0",
+      "round15_note": null,
+      "l3_subtype": null,
+      "login_declaration_raw": "確認不能(呼出なし)",
+      "need_login": {
+        "value": null,
+        "basis": "確認不能(呼出なし)"
+      },
+      "need_wua": {
+        "value": null,
+        "basis": "not recorded"
+      },
+      "read_only": null,
+      "caller": null,
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": null,
+      "request_source": null,
+      "response_model": null,
+      "parser_function": null,
+      "pagination_kind": "unknown",
+      "client_builder": null,
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": "現時点では利用経路が確認できない"
+    },
+    {
+      "feature_id": "D5",
+      "feature": "Fun投稿詳細フィード",
+      "api_name": "mtop.taobao.idle.fun.post.detail.feeds",
+      "version": "1.0",
+      "enum_version": null,
+      "evidence_level": "E0",
+      "reach_level": "L0",
+      "round15_note": null,
+      "l3_subtype": null,
+      "login_declaration_raw": "確認不能(消費者なし)",
+      "need_login": {
+        "value": null,
+        "basis": "確認不能(消費者なし)"
+      },
+      "need_wua": {
+        "value": null,
+        "basis": "not recorded"
+      },
+      "read_only": null,
+      "caller": null,
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": null,
+      "request_source": null,
+      "response_model": null,
+      "parser_function": null,
+      "pagination_kind": "unknown",
+      "client_builder": null,
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": "現時点では利用経路が確認できない; IDetailFeedsNet定数のみ"
+    },
+    {
+      "feature_id": "D5",
+      "feature": "Funトピック詳細フィード",
+      "api_name": "mtop.taobao.idle.fun.topic.detail.feeds",
+      "version": "1.0",
+      "enum_version": null,
+      "evidence_level": "E0",
+      "reach_level": "L0",
+      "round15_note": null,
+      "l3_subtype": null,
+      "login_declaration_raw": "確認不能(消費者なし)",
+      "need_login": {
+        "value": null,
+        "basis": "確認不能(消費者なし)"
+      },
+      "need_wua": {
+        "value": null,
+        "basis": "not recorded"
+      },
+      "read_only": null,
+      "caller": null,
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": null,
+      "request_source": null,
+      "response_model": null,
+      "parser_function": null,
+      "pagination_kind": "unknown",
+      "client_builder": null,
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": "現時点では利用経路が確認できない; IDetailFeedsNet定数のみ"
+    },
+    {
+      "feature_id": "D6",
+      "feature": "技能(essay)詳細",
+      "api_name": "mtop.taobao.idle.essay.detail",
+      "version": "2.0",
+      "enum_version": "2.0",
+      "evidence_level": "E0",
+      "reach_level": "L0",
+      "round15_note": null,
+      "l3_subtype": null,
+      "login_declaration_raw": "確認不能(呼出なし)",
+      "need_login": {
+        "value": null,
+        "basis": "確認不能(呼出なし)"
+      },
+      "need_wua": {
+        "value": null,
+        "basis": "not recorded"
+      },
+      "read_only": null,
+      "caller": null,
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": null,
+      "request_source": null,
+      "response_model": null,
+      "parser_function": null,
+      "pagination_kind": "unknown",
+      "client_builder": null,
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": "現時点では利用経路が確認できない"
+    },
+    {
+      "feature_id": "D6",
+      "feature": "技能(essay)類似",
+      "api_name": "mtop.taobao.idle.essay.similar",
+      "version": "1.0",
+      "enum_version": "1.0",
+      "evidence_level": "E0",
+      "reach_level": "L0",
+      "round15_note": null,
+      "l3_subtype": null,
+      "login_declaration_raw": "確認不能(呼出なし)",
+      "need_login": {
+        "value": null,
+        "basis": "確認不能(呼出なし)"
+      },
+      "need_wua": {
+        "value": null,
+        "basis": "not recorded"
+      },
+      "read_only": null,
+      "caller": null,
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": null,
+      "request_source": null,
+      "response_model": null,
+      "parser_function": null,
+      "pagination_kind": "unknown",
+      "client_builder": null,
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": "現時点では利用経路が確認できない"
+    },
+    {
+      "feature_id": "C4",
+      "feature": "自分の技能一覧",
+      "api_name": "mtop.taobao.idle.user.publish.essays",
+      "version": "1.0",
+      "enum_version": null,
+      "evidence_level": "E0",
+      "reach_level": "L0",
+      "round15_note": null,
+      "l3_subtype": null,
+      "login_declaration_raw": "確認不能(呼出なし)",
+      "need_login": {
+        "value": null,
+        "basis": "確認不能(呼出なし)"
+      },
+      "need_wua": {
+        "value": null,
+        "basis": "not recorded"
+      },
+      "read_only": null,
+      "caller": null,
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": null,
+      "request_source": null,
+      "response_model": null,
+      "parser_function": null,
+      "pagination_kind": "unknown",
+      "client_builder": null,
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": "現時点では利用経路が確認できない; 説明上は自分の技能で公開閲覧ではない"
+    },
+    {
+      "feature_id": "A9関連",
+      "feature": "同城内キーワード検索",
+      "api_name": "mtop.taobao.idle.city.item.search",
+      "version": "1.0",
+      "enum_version": "1.0",
+      "evidence_level": "E0",
+      "reach_level": "L0",
+      "round15_note": null,
+      "l3_subtype": null,
+      "login_declaration_raw": "確認不能(呼出なし)",
+      "need_login": {
+        "value": null,
+        "basis": "確認不能(呼出なし)"
+      },
+      "need_wua": {
+        "value": null,
+        "basis": "not recorded"
+      },
+      "read_only": null,
+      "caller": null,
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": null,
+      "request_source": null,
+      "response_model": null,
+      "parser_function": null,
+      "pagination_kind": "unknown",
+      "client_builder": null,
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": "現時点では利用経路が確認できない"
+    },
+    {
+      "feature_id": "D9",
+      "feature": "テーマ特集(商品一覧)",
+      "api_name": "com.taobao.idle.fish.get.theme.data",
+      "version": "2.0",
+      "enum_version": "2.0",
+      "evidence_level": "E0",
+      "reach_level": "L0",
+      "round15_note": null,
+      "l3_subtype": null,
+      "login_declaration_raw": "確認不能(呼出なし)",
+      "need_login": {
+        "value": null,
+        "basis": "確認不能(呼出なし)"
+      },
+      "need_wua": {
+        "value": null,
+        "basis": "not recorded"
+      },
+      "read_only": null,
+      "caller": null,
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": null,
+      "request_source": null,
+      "response_model": null,
+      "parser_function": null,
+      "pagination_kind": "unknown",
+      "client_builder": null,
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": "現時点では利用経路が確認できない; サーバ駆動ページの可能性"
+    },
+    {
+      "feature_id": "D9",
+      "feature": "テーマ一覧",
+      "api_name": "get.theme.list",
+      "version": "1",
+      "enum_version": "1",
+      "evidence_level": "E0",
+      "reach_level": "L0",
+      "round15_note": null,
+      "l3_subtype": null,
+      "login_declaration_raw": "確認不能(呼出なし)",
+      "need_login": {
+        "value": null,
+        "basis": "確認不能(呼出なし)"
+      },
+      "need_wua": {
+        "value": null,
+        "basis": "not recorded"
+      },
+      "read_only": null,
+      "caller": null,
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": null,
+      "request_source": null,
+      "response_model": null,
+      "parser_function": null,
+      "pagination_kind": "unknown",
+      "client_builder": null,
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": "現時点では利用経路が確認できない; サーバ駆動ページの可能性"
+    },
+    {
+      "feature_id": "D9",
+      "feature": "テーマ詳細",
+      "api_name": "com.taobao.idle.theme.id",
+      "version": "1.0",
+      "enum_version": "1.0",
+      "evidence_level": "E0",
+      "reach_level": "L0",
+      "round15_note": null,
+      "l3_subtype": null,
+      "login_declaration_raw": "確認不能(呼出なし)",
+      "need_login": {
+        "value": null,
+        "basis": "確認不能(呼出なし)"
+      },
+      "need_wua": {
+        "value": null,
+        "basis": "not recorded"
+      },
+      "read_only": null,
+      "caller": null,
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": null,
+      "request_source": null,
+      "response_model": null,
+      "parser_function": null,
+      "pagination_kind": "unknown",
+      "client_builder": null,
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": "現時点では利用経路が確認できない; サーバ駆動ページの可能性"
+    },
+    {
+      "feature_id": "D9",
+      "feature": "テーマ情報",
+      "api_name": "com.taobao.idle.fish.get.theme.info",
+      "version": "2.0",
+      "enum_version": "2.0",
+      "evidence_level": "E0",
+      "reach_level": "L0",
+      "round15_note": null,
+      "l3_subtype": null,
+      "login_declaration_raw": "確認不能(呼出なし)",
+      "need_login": {
+        "value": null,
+        "basis": "確認不能(呼出なし)"
+      },
+      "need_wua": {
+        "value": null,
+        "basis": "not recorded"
+      },
+      "read_only": null,
+      "caller": null,
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": null,
+      "request_source": null,
+      "response_model": null,
+      "parser_function": null,
+      "pagination_kind": "unknown",
+      "client_builder": null,
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": "現時点では利用経路が確認できない; サーバ駆動ページの可能性"
+    },
+    {
+      "feature_id": "D8",
+      "feature": "直播ルーム取得",
+      "api_name": "mtop.alibaba.idle.joy.live.get",
+      "version": "不明(文字列カタログのみ)",
+      "enum_version": null,
+      "evidence_level": "E0",
+      "reach_level": "L0",
+      "round15_note": null,
+      "l3_subtype": null,
+      "login_declaration_raw": "確認不能",
+      "need_login": {
+        "value": null,
+        "basis": "確認不能"
+      },
+      "need_wua": {
+        "value": null,
+        "basis": "not recorded"
+      },
+      "read_only": null,
+      "caller": null,
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": null,
+      "request_source": null,
+      "response_model": null,
+      "parser_function": null,
+      "pagination_kind": "unknown",
+      "client_builder": null,
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": "Kun・動的モジュールが必要(yunlive); 現時点では利用経路が確認できない"
+    },
+    {
+      "feature_id": "D8",
+      "feature": "直播一覧",
+      "api_name": "mtop.alibaba.idle.joy.live.list",
+      "version": "不明(文字列カタログのみ)",
+      "enum_version": null,
+      "evidence_level": "E0",
+      "reach_level": "L0",
+      "round15_note": null,
+      "l3_subtype": null,
+      "login_declaration_raw": "確認不能",
+      "need_login": {
+        "value": null,
+        "basis": "確認不能"
+      },
+      "need_wua": {
+        "value": null,
+        "basis": "not recorded"
+      },
+      "read_only": null,
+      "caller": null,
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": null,
+      "request_source": null,
+      "response_model": null,
+      "parser_function": null,
+      "pagination_kind": "unknown",
+      "client_builder": null,
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": "Kun・動的モジュールが必要(yunlive); 現時点では利用経路が確認できない"
+    },
+    {
+      "feature_id": "対象外(メッセージ文脈)",
+      "feature": "動画URLセキュリティ確認",
+      "api_name": "mtop.taobao.cloudvideo.video.query",
+      "version": "3.0 (v3)",
+      "enum_version": null,
+      "evidence_level": "E3",
+      "reach_level": "L2",
+      "round15_note": null,
+      "l3_subtype": null,
+      "login_declaration_raw": "needLogin未指定(false)",
+      "need_login": {
+        "value": false,
+        "basis": "needLogin未指定(false) (@ApiConfig default; structured value aligned round 16, audit M-01)"
+      },
+      "need_wua": {
+        "value": null,
+        "basis": "not recorded"
+      },
+      "read_only": null,
+      "caller": "classes10 VideoUrlSecurityCheckHelper",
+      "transport": "mtop_papi (MtopLauncher -> MtopSend -> MtopSDKHandler -> mtopsdk ANet), POST https://acs.m.goofish.com/gw/{api}/{v}/ form-urlencoded, data=JSON",
+      "request_model": "typed Request3 / Res2 models; the 2.0 variant (Request2) has no caller (E1-equivalent)",
+      "request_source": "registry classification note (round-10 correspondence)",
+      "response_model": null,
+      "parser_function": null,
+      "pagination_kind": "unknown",
+      "client_builder": null,
+      "measured": false,
+      "excluded_reason": null,
+      "classification_note": "台帳43行の対象外。Request3/Res2 の型付きモデルと消費者 VideoUrlSecurityCheckHelper (classes10) を確認。2.0版(Request2)は呼出元なし (E1相当) Round 26 (static, no live sends; work/round26/static-leftovers.md): the typed request class for the 2.0 form (ApiVideoPlayInfoRequest2, field videoId: Long only) was traced to its sole user, classes8 com.idlefish.flutterbridge.Video265Handler (Flutter bridge method getSupport265, input key mtsVid; used only as a fallback when the remote PlayService2022 config is disabled) - an H.265 capability bridge, not an item-browsing path, so it adds no browsing coverage. The 3.0 form's user remains VideoUrlSecurityCheckHelper (message context). Not measured live."
+    }
+  ]
+}

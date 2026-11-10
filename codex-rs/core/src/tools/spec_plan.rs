@@ -51,8 +51,6 @@ use crate::tools::handlers::multi_agents_v2::SpawnAgentHandler as SpawnAgentHand
 use crate::tools::handlers::multi_agents_v2::WaitAgentHandler as WaitAgentHandlerV2;
 use crate::tools::handlers::tool_search_spec::ToolSearchSourceListing;
 use crate::tools::handlers::view_image_spec::ViewImageToolOptions;
-use crate::tools::hosted_spec::WebSearchToolOptions;
-use crate::tools::hosted_spec::create_web_search_tool;
 use crate::tools::multi_agent_tool::multi_agent_v2_handler;
 use crate::tools::registry::NativeReview;
 use crate::tools::registry::RegisteredTool;
@@ -167,7 +165,7 @@ pub(crate) fn build_tool_router(
         &registered_mcp_tools,
         &mut registry,
     );
-    let standalone_web_search_tool = append_extension_tool_executors(
+    append_extension_tool_executors(
         turn_context,
         model_info,
         extension_tool_executors(session, step_store),
@@ -197,16 +195,7 @@ pub(crate) fn build_tool_router(
         registry.remove(&ToolName::namespaced("web", "run"));
     }
     append_dynamic_tool_runtimes(dynamic_tools, &mut registry);
-    let hosted_specs = if let Some(mode) = native_mode {
-        hosted_model_tool_specs(
-            turn_context,
-            model_info,
-            mode,
-            standalone_web_search_tool.as_slice(),
-        )
-    } else {
-        Vec::new()
-    };
+    let hosted_specs = Vec::new();
 
     finalize_tool_router(
         turn_context,
@@ -363,19 +352,14 @@ pub(crate) fn append_source_tools(
     for tool in mcp_tools {
         registry.register_external_with_exposure(tool.runtime, tool.exposure);
     }
-    let standalone_web_search_tool = append_extension_tool_executors(
+    append_extension_tool_executors(
         turn_context,
         model_info,
         extension_tool_executors,
         registry,
     );
     append_dynamic_tool_runtimes(dynamic_tools, registry);
-    hosted_model_tool_specs(
-        turn_context,
-        model_info,
-        turn_context.config.web_search_mode.value(),
-        standalone_web_search_tool.as_slice(),
-    )
+    Vec::new()
 }
 
 #[instrument(level = "trace", skip_all)]
@@ -718,39 +702,6 @@ fn spec_for_model_request(
     } else {
         spec
     }
-}
-
-#[instrument(level = "trace", skip_all)]
-fn hosted_model_tool_specs(
-    turn_context: &TurnContext,
-    model_info: &ModelInfo,
-    mode: WebSearchMode,
-    registered_extension_tool_names: &[ToolName],
-) -> Vec<ToolSpec> {
-    // Responses Lite accepts schemas for client-executed tools, not hosted Responses tools.
-    if model_info.use_responses_lite {
-        return Vec::new();
-    }
-
-    let mut specs = Vec::new();
-    let standalone_web_search_available = standalone_web_search_enabled(turn_context, model_info)
-        && registered_extension_tool_names.contains(&ToolName::namespaced("web", "run"));
-    // `Some(Cached/Live/Disabled)` are the options for mode when standalone search is unavailable
-    // and the provider supports hosted search. `None` prevents emitting a hosted search tool.
-    let web_search_mode = (!standalone_web_search_available
-        && turn_context.provider.capabilities().web_search)
-        .then_some(mode);
-    let web_search_config = web_search_mode
-        .as_ref()
-        .and(turn_context.config.web_search_config.as_ref());
-    if let Some(hosted_web_search_tool) = create_web_search_tool(WebSearchToolOptions {
-        web_search_mode,
-        web_search_config,
-        web_search_tool_type: model_info.web_search_tool_type,
-    }) {
-        specs.push(hosted_web_search_tool);
-    }
-    specs
 }
 
 pub(crate) fn tool_suggest_enabled(turn_context: &TurnContext) -> bool {
@@ -1251,16 +1202,6 @@ fn add_core_tool_sources(context: &CoreToolPlanContext<'_>, registry: &mut ToolR
     add_collaboration_tools(context, registry);
 }
 
-fn standalone_web_search_enabled(turn_context: &TurnContext, model_info: &ModelInfo) -> bool {
-    turn_context.provider.capabilities().web_search
-        && (model_info.use_responses_lite
-            || turn_context
-                .config
-                .features
-                .get()
-                .enabled(Feature::StandaloneWebSearch))
-}
-
 fn tool_environment_mode(environments: &TurnEnvironmentSnapshot) -> ToolEnvironmentMode {
     // Keep environment selectors stable as selected attachments change readiness.
     ToolEnvironmentMode::from_count(environments.environments.len())
@@ -1701,15 +1642,16 @@ fn append_extension_tool_executors(
     model_info: &ModelInfo,
     executors: impl IntoIterator<Item = Arc<dyn for<'call> ToolExecutor<ExtensionToolCall<'call>>>>,
     registry: &mut ToolRegistry,
-) -> Option<ToolName> {
-    let standalone_web_search_enabled = standalone_web_search_enabled(turn_context, model_info);
+) {
+    // web_search = "disabled" turns every built-in network search tool off.
     let web_search_mode_on = turn_context.config.web_search_mode.value() != WebSearchMode::Disabled;
-    let mut standalone_web_search_tool = None;
-
     for executor in executors {
         let tool_name = executor.tool_name();
-        let is_standalone_web_search = tool_name == ToolName::namespaced("web", "run");
-        if is_standalone_web_search && (!standalone_web_search_enabled || !web_search_mode_on) {
+        if !web_search_mode_on
+            && ["web_search", "shopping_search", "media_search"]
+                .iter()
+                .any(|name| tool_name == ToolName::plain(*name))
+        {
             continue;
         }
         if tool_name == ToolName::namespaced(IMAGE_GEN_NAMESPACE, IMAGEGEN_TOOL_NAME)
@@ -1718,12 +1660,8 @@ fn append_extension_tool_executors(
             continue;
         }
         let runtime = Arc::new(ExtensionToolAdapter::new(executor));
-        if registry.register_external(runtime) && is_standalone_web_search {
-            standalone_web_search_tool = Some(tool_name);
-        }
+        registry.register_external(runtime);
     }
-
-    standalone_web_search_tool
 }
 
 fn compare_code_mode_tools(

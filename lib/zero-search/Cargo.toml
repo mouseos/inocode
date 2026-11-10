@@ -1,0 +1,58 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/facade",
+    "crates/providers/baidu",
+    "crates/providers/yahoo",
+    "crates/providers/bing",
+    "crates/providers/naver",
+    "crates/providers/yahoo-us",
+    "crates/providers/yandex",
+    "crates/providers/aliexpress",
+    "crates/providers/goofish",
+    "crates/providers/mercari",
+    "crates/providers/rakuma",
+    "crates/providers/yahoo-auctions",
+    "crates/providers/yahoo-flea",
+    "crates/providers/rakuten",
+    "crates/providers/qoo10",
+    "crates/providers/yahoo-shopping",
+    "crates/providers/amazon",
+    "crates/providers/youtube",
+    "crates/providers/bilibili",
+    "crates/providers/csdn",
+]
+# The Yahoo US image helper is deliberately NOT a workspace member:
+# its BoringSSL dependency must stay out of this workspace's build
+# graph entirely, or its libssl/libcrypto collide with OpenSSL in
+# workspace-wide links (binaries and doctests alike). It is a
+# standalone crate with its own lockfile and target directory,
+# built separately by CI and the release workflow.
+#
+# The Goofish signer (sgharness) is standalone for the same kind of
+# reason: its Unicorn build (cmake + bindgen over the bundled C
+# sources, libclang required) must not be able to break the
+# workspace build, and the emulation host wants a throughput
+# profile rather than the workspace's size/LTO profile.
+exclude = ["crates/helpers/yahoo-us-image", "crates/helpers/goofish-signer"]
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+# TLS is rustls with the OS root store everywhere; native-tls/OpenSSL must not be
+# pulled in, so the library builds the same on Linux, macOS and Windows.
+reqwest = { version = "0.12", default-features = false, features = ["json", "cookies", "gzip", "brotli", "socks", "system-proxy", "rustls-tls-native-roots"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+regex = "1"
+anyhow = "1"
+base64 = "0.22"
+uuid = { version = "1", features = ["v4"] }
+p256 = { version = "0.13", features = ["ecdsa"] }
+ecdsa = { version = "0.16", features = ["signing", "der"] }
+rand = "0.8"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true

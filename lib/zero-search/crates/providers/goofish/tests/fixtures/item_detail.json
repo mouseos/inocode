@@ -1,0 +1,100 @@
+{
+  "_fixture_note": "SYNTHETIC fixture: the detail API `data` payload. Built only from JSON paths confirmed by static analysis of FCIDetailParseHandler / ImageGroupModel / MediaInfo / DetailDataParser. Not a captured response.",
+  "flowData": {
+    "body": {
+      "sections": [
+        {
+          "components": [
+            {
+              "data": {},
+              "key": "appbar",
+              "render": "Basic_Native_spn_app_bar"
+            },
+            {
+              "data": {
+                "itemId": "1001",
+                "mediaInfos": [
+                  {
+                    "height": 600.0,
+                    "type": 0,
+                    "url": "https://example.invalid/img1.jpg",
+                    "width": 800.0
+                  },
+                  {
+                    "coverUrl": "https://example.invalid/cover1.jpg",
+                    "height": 720.0,
+                    "type": 1,
+                    "url": "https://example.invalid/video1.mp4",
+                    "videoId": "v1001",
+                    "width": 1280.0
+                  }
+                ],
+                "sellerId": "2002"
+              },
+              "key": "images",
+              "render": "Basic_Native_spn_image_group"
+            },
+            {
+              "data": {
+                "city": "上海",
+                "collectCnt": "45",
+                "cpvLabels": [
+                  {
+                    "propertyName": "成色",
+                    "valueName": "9成新"
+                  },
+                  {
+                    "propertyName": "品牌",
+                    "valueName": "示例品牌"
+                  },
+                  {
+                    "propertyName": "",
+                    "valueName": "不成对条目"
+                  }
+                ],
+                "creditInfoDesc": "卖出3件宝贝",
+                "desc": "示例商品描述",
+                "extraInfoList": [
+                  "12人想要",
+                  "345人浏览"
+                ],
+                "identityTitleTags": [
+                  {
+                    "text": "实人认证"
+                  }
+                ],
+                "price": "1280",
+                "reduceInfoList": [
+                  {
+                    "text": "包邮"
+                  }
+                ],
+                "reqParams": {
+                  "mainItemLeafCateId": "50012345",
+                  "title": "示例商品标题"
+                },
+                "userInfo": {
+                  "nick": "示例卖家甲",
+                  "userId": "2002"
+                }
+              },
+              "key": "main",
+              "render": "Basic_Native_spn_dynamic_dx"
+            }
+          ]
+        }
+      ]
+    },
+    "context": {
+      "channelStyle": {},
+      "itemId": "1001",
+      "userData": "{\"displayName\": \"备用显示名\", \"introduction\": \"卖出3件宝贝，信用良好\", \"tagInfo\": \"{\\\"tagText\\\": \\\"备用身份标签\\\"}\"}"
+    },
+    "floating": {
+      "components": []
+    },
+    "trackParams": {
+      "channelCatId": "50012345"
+    }
+  }
+}

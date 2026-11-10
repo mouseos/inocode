@@ -22,7 +22,6 @@ use codex_protocol::openai_models::ConfigShellToolType;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ToolMode;
-use codex_protocol::openai_models::WebSearchToolType;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
@@ -544,7 +543,6 @@ async fn allowed_tools_filter_sources_before_code_mode_and_discovery() {
                 /*defer_loading*/ false,
             )],
         );
-        assert!(!hosted.is_empty(), "exercise hosted tool filtering too");
         let router = ToolRouter::from_registry(
             &turn,
             turn.model_info(),
@@ -556,7 +554,7 @@ async fn allowed_tools_filter_sources_before_code_mode_and_discovery() {
         match allowed {
             None => {
                 plan.assert_registered_contains(&["update_plan", "extension_echo", "dynamic_echo"]);
-                plan.assert_visible_contains(&["web_search", "tool_search", "exec", "wait"]);
+                plan.assert_visible_contains(&["tool_search", "exec", "wait"]);
             }
             Some(allowed) if allowed.is_empty() => {
                 assert_eq!(plan.registered_names, Vec::<String>::new());
@@ -573,7 +571,6 @@ async fn allowed_tools_filter_sources_before_code_mode_and_discovery() {
                     vec![ToolName::namespaced("kept", "lookup")]
                 );
                 plan.assert_visible_lacks(&[
-                    "web_search",
                     "tool_search",
                     "update_plan",
                     "dynamic_echo",
@@ -3168,8 +3165,6 @@ async fn code_mode_only_can_expose_namespaced_multi_agent_v2_as_normal_tools() {
             "wait",
             "request_user_input",
             "agents",
-            // Hosted Responses tool.
-            "web_search",
         ]
     );
     assert!(
@@ -3197,37 +3192,7 @@ async fn code_mode_only_can_expose_namespaced_multi_agent_v2_as_normal_tools() {
 }
 
 #[tokio::test]
-async fn hosted_web_search_fallback_follows_winning_browser_runtime() {
-    let plan = probe_with(
-        |turn| {
-            set_feature(turn, Feature::StandaloneWebSearch, /*enabled*/ true);
-            set_web_search_mode(turn, WebSearchMode::Live);
-        },
-        ToolPlanInputs {
-            tool_runtimes: vec![mcp_runtime(
-                "browser_collision",
-                "web",
-                "run",
-                ToolExposure::Direct,
-            )],
-            extension_tool_executors: vec![Arc::new(TestNamespaceExtensionTool {
-                namespace: "web",
-                tool_name: "run",
-            })],
-            ..ToolPlanInputs::default()
-        },
-    )
-    .await;
-
-    let ToolSpec::Namespace(namespace) = plan.visible_spec("web") else {
-        panic!("expected the winning browser namespace");
-    };
-    assert_eq!(namespace.description, "Tools from browser_collision.");
-    plan.assert_visible_contains(&["web_search"]);
-}
-
-#[tokio::test]
-async fn hosted_web_search_and_standalone_image_generation_follow_runtime_gates() {
+async fn no_hosted_web_search_and_standalone_image_generation_follow_runtime_gates() {
     let image_generation_tool = Arc::new(TestNamespaceExtensionTool {
         namespace: "image_gen",
         tool_name: "imagegen",
@@ -3298,23 +3263,9 @@ async fn hosted_web_search_and_standalone_image_generation_follow_runtime_gates(
 
     let live_web_search = probe(|turn| {
         set_web_search_mode(turn, WebSearchMode::Live);
-        update_turn_settings_for_test(turn, |settings| {
-            Arc::make_mut(&mut settings.model_info).web_search_tool_type =
-                WebSearchToolType::TextAndImage;
-        });
     })
     .await;
-    assert_eq!(
-        live_web_search.visible_spec("web_search"),
-        &ToolSpec::WebSearch {
-            external_web_access: Some(true),
-            indexed_web_access: None,
-            filters: None,
-            user_location: None,
-            search_context_size: None,
-            search_content_types: Some(vec!["text".to_string(), "image".to_string()]),
-        }
-    );
+    live_web_search.assert_visible_lacks(&["web_search"]);
 
     let code_mode_only = probe(|turn| {
         use_chatgpt_auth(turn);
@@ -3334,99 +3285,8 @@ async fn hosted_web_search_and_standalone_image_generation_follow_runtime_gates(
             "request_user_input",
             // Multi-agent v2 tools.
             MULTI_AGENT_V2_NAMESPACE,
-            // Hosted Responses tools.
-            "web_search",
         ]
     );
-
-    let standalone_web_search_without_web_run = probe(|turn| {
-        set_feature(turn, Feature::StandaloneWebSearch, /*enabled*/ true);
-        set_web_search_mode(turn, WebSearchMode::Live);
-    })
-    .await;
-    standalone_web_search_without_web_run.assert_visible_contains(&["web_search"]);
-
-    let standalone_web_search_with_dynamic_web_run = probe_with(
-        |turn| {
-            set_feature(turn, Feature::StandaloneWebSearch, /*enabled*/ true);
-            set_web_search_mode(turn, WebSearchMode::Live);
-        },
-        ToolPlanInputs {
-            dynamic_tools: vec![dynamic_tool(
-                Some("web"),
-                "run",
-                /*defer_loading*/ false,
-            )],
-            ..Default::default()
-        },
-    )
-    .await;
-    standalone_web_search_with_dynamic_web_run.assert_visible_contains(&["web", "web_search"]);
-
-    let standalone_web_search_with_mcp_web_run = probe_with(
-        |turn| {
-            set_feature(turn, Feature::StandaloneWebSearch, /*enabled*/ true);
-            set_web_search_mode(turn, WebSearchMode::Live);
-        },
-        ToolPlanInputs {
-            tool_runtimes: vec![mcp_runtime(
-                "web_server",
-                "web",
-                "run",
-                ToolExposure::Direct,
-            )],
-            ..Default::default()
-        },
-    )
-    .await;
-    standalone_web_search_with_mcp_web_run.assert_visible_contains(&["web", "web_search"]);
-
-    let standalone_web_search = probe_with(
-        |turn| {
-            set_feature(turn, Feature::StandaloneWebSearch, /*enabled*/ true);
-            set_web_search_mode(turn, WebSearchMode::Live);
-        },
-        ToolPlanInputs {
-            extension_tool_executors: vec![Arc::new(TestNamespaceExtensionTool {
-                namespace: "web",
-                tool_name: "run",
-            })],
-            ..Default::default()
-        },
-    )
-    .await;
-    standalone_web_search.assert_visible_lacks(&["web_search"]);
-
-    let bedrock_cached_web_search = probe(|turn| {
-        use_bedrock_provider(turn);
-        update_turn_settings_for_test(turn, |settings| {
-            Arc::make_mut(&mut settings.model_info).web_search_tool_type = WebSearchToolType::Text;
-        });
-    })
-    .await;
-    assert_eq!(
-        bedrock_cached_web_search.visible_spec("web_search"),
-        &ToolSpec::WebSearch {
-            external_web_access: Some(false),
-            indexed_web_access: None,
-            filters: None,
-            user_location: None,
-            search_context_size: None,
-            search_content_types: None,
-        }
-    );
-
-    let bedrock_with_standalone_web_search = probe(|turn| {
-        set_feature(turn, Feature::StandaloneWebSearch, /*enabled*/ true);
-        set_web_search_mode(turn, WebSearchMode::Cached);
-        use_bedrock_provider(turn);
-        update_turn_settings_for_test(turn, |settings| {
-            Arc::make_mut(&mut settings.model_info).web_search_tool_type = WebSearchToolType::Text;
-        });
-    })
-    .await;
-    bedrock_with_standalone_web_search.assert_visible_contains(&["web_search"]);
-    bedrock_with_standalone_web_search.assert_visible_lacks(&["web"]);
 }
 
 #[path = "spec_plan_strict_third_party_tests.rs"]
