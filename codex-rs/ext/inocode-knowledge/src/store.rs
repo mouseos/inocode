@@ -242,6 +242,14 @@ impl Store {
             .collect()
     }
 
+    /// 再注入の対象(有効で重大度が `block` の rule)。
+    pub fn pinned_rules(&self) -> Vec<Record> {
+        self.live_rules()
+            .into_iter()
+            .filter(|r| r.severity == Some(Severity::Block))
+            .collect()
+    }
+
     pub fn pinned_rules_text(&self) -> String {
         let mut lines = Vec::new();
         for r in self.live_rules() {

@@ -1,4 +1,4 @@
-use crate::record::Severity;
+use crate::record::{Scope, Severity};
 use crate::store::Store;
 use globset::Glob;
 use regex::Regex;
@@ -18,6 +18,7 @@ pub struct GuardHit {
     pub title: String,
     pub severity: Severity,
     pub reason: String,
+    pub scope: Scope,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -54,6 +55,7 @@ pub fn check_action(store: &Store, action: &GuardAction) -> GuardVerdict {
                 .clone()
                 .filter(|r| !r.is_empty())
                 .unwrap_or_else(|| rule.title.clone()),
+            scope: rule.scope,
         };
         match h.severity {
             Severity::Block => verdict.blocked.push(h),

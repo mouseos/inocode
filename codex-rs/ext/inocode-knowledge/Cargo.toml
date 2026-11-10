@@ -20,6 +20,7 @@ regex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }

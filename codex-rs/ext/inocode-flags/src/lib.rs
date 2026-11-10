@@ -7,6 +7,10 @@
 //! The file is read directly with `toml`; writes use `toml_edit` so other
 //! content and comments are preserved.
 
+mod params;
+
+pub use params::*;
+
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
@@ -69,7 +73,7 @@ pub fn inocode_home() -> PathBuf {
     }
 }
 
-fn config_path(home: &Path) -> PathBuf {
+pub(crate) fn config_path(home: &Path) -> PathBuf {
     home.join("config.toml")
 }
 
@@ -186,7 +190,7 @@ pub fn write_flag_to(home: &Path, key: &str, value: bool) -> io::Result<()> {
     std::fs::write(&path, doc.to_string())
 }
 
-fn ensure_table<'a>(
+pub(crate) fn ensure_table<'a>(
     parent: &'a mut toml_edit::Table,
     key: &str,
 ) -> io::Result<&'a mut toml_edit::Table> {
