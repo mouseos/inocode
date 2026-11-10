@@ -2701,6 +2701,9 @@ impl Session {
                 .record_item_started(item_id.to_owned(), started_at_ms)
                 .await;
         }
+        if let EventMsg::TurnComplete(completed) = &msg {
+            crate::inocode_loop::record_turn_complete(self.thread_id, completed);
+        }
         if let EventMsg::TurnComplete(completed) = &msg
             && completed.error.is_some()
         {
@@ -5693,6 +5696,7 @@ impl Session {
             }),
         )
         .await;
+        crate::inocode_loop::record_tokens(self.thread_id, usage);
         crate::inocode_team::record_tokens(self.thread_id, usage);
         self.record_response_token_usage(turn_context, response_id, usage)
             .await;

@@ -75,11 +75,14 @@ members = [
     "ext/guardian-v3",
     "ext/history-notes",
     "ext/image-generation",
+    "ext/inocode-flags",
     "ext/inocode-evidence",
     "ext/inocode-knowledge",
+    "ext/inocode-advisor",
+    "ext/inocode-metrics",
+    "ext/inocode-protocol",
     "ext/inocode-team",
     "ext/inocode-tool-output",
-    "ext/inocode-flags",
     "ext/items",
     "ext/memories",
     "ext/mcp",
@@ -255,11 +258,14 @@ codex-guardian-v2 = { path = "ext/guardian-v2" }
 codex-guardian-v3 = { path = "ext/guardian-v3" }
 codex-history-notes-extension = { path = "ext/history-notes" }
 codex-image-generation-extension = { path = "ext/image-generation" }
+codex-inocode-flags = { path = "ext/inocode-flags" }
 codex-inocode-evidence = { path = "ext/inocode-evidence" }
 codex-inocode-knowledge = { path = "ext/inocode-knowledge" }
+codex-inocode-advisor = { path = "ext/inocode-advisor" }
+codex-inocode-metrics = { path = "ext/inocode-metrics" }
+codex-inocode-protocol = { path = "ext/inocode-protocol" }
 codex-inocode-team = { path = "ext/inocode-team" }
 codex-inocode-tool-output = { path = "ext/inocode-tool-output" }
-codex-inocode-flags = { path = "ext/inocode-flags" }
 codex-external-agent-migration = { path = "external-agent-migration" }
 codex-experimental-api-macros = { path = "codex-experimental-api-macros" }
 codex-features = { path = "features" }
