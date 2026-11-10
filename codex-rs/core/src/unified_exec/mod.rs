@@ -43,11 +43,15 @@ use crate::tools::handlers::unified_exec::preparation::PreparedExecCommand;
 use crate::tools::network_approval::DeferredNetworkApproval;
 use codex_core_plugins::PluginMetricsSidecar;
 
+mod activity;
 mod async_watcher;
 mod command_sessions;
 mod errors;
 mod oneshot;
+pub(crate) mod monitor;
 pub(crate) mod output;
+mod status;
+pub(crate) use status::terminal_status_report;
 mod process;
 mod process_manager;
 pub(crate) use process_manager::exec_env_policy_from_shell_policy;

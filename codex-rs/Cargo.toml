@@ -524,6 +524,7 @@ starlark = { version = "0.14.2", default-features = false }
 strum = "0.27.2"
 strum_macros = "0.28.0"
 supports-color = "3.0.2"
+sysinfo = { version = "0.40", default-features = false, features = ["system"] }
 syntect = "5"
 sys-locale = "0.3.2"
 system-configuration = "0.7"

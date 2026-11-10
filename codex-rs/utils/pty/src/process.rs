@@ -123,6 +123,7 @@ pub struct ProcessHandle {
     // Optional resize hook for driver-backed sessions that proxy PTY control to
     // another backend instead of owning local PTY handles.
     resizer: StdMutex<Option<ResizeFn>>,
+    process_id: std::sync::atomic::AtomicU32,
 }
 
 impl fmt::Debug for ProcessHandle {
@@ -156,7 +157,21 @@ impl ProcessHandle {
             exit_code,
             _pty_handles: StdMutex::new(pty_handles),
             resizer: StdMutex::new(resizer),
+            process_id: std::sync::atomic::AtomicU32::new(0),
         }
+    }
+
+    /// Operating-system process ID of the spawned child, when known.
+    pub fn process_id(&self) -> Option<u32> {
+        match self.process_id.load(std::sync::atomic::Ordering::Relaxed) {
+            0 => None,
+            pid => Some(pid),
+        }
+    }
+
+    pub(crate) fn set_process_id(&self, pid: Option<u32>) {
+        self.process_id
+            .store(pid.unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn stdout_reader(&self) -> Option<AbortHandle> {

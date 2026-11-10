@@ -83,6 +83,7 @@ pub(crate) use tool_search::ToolSearchHandlerCache;
 pub use unified_exec::ExecCommandHandler;
 pub(crate) use unified_exec::ExecCommandHandlerOptions;
 pub use unified_exec::WriteStdinHandler;
+pub use unified_exec::TerminalStatusHandler;
 pub use view_image::ViewImageHandler;
 pub(crate) use wait_for_environment::WaitForEnvironmentHandler;
 pub use wait_for_environment::WaitForEnvironmentToolConfig;

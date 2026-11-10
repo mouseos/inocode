@@ -35,6 +35,10 @@ use super::UNIFIED_EXEC_OUTPUT_MAX_BYTES;
 use super::UNIFIED_EXEC_OUTPUT_MAX_TOKENS;
 use super::UnifiedExecError;
 use super::process_state::ProcessState;
+use super::activity::sample_process_tree;
+use super::monitor::MonitorState;
+use super::monitor::Observation;
+use super::monitor::TAIL_BYTES;
 use crate::shell_snapshot::ShellSnapshotFile;
 
 const EARLY_EXIT_GRACE_PERIOD: Duration = Duration::from_millis(150);
@@ -46,12 +50,17 @@ const REMOTE_OUTPUT_DRAIN_GRACE: Duration = Duration::from_secs(5);
 pub(crate) struct OutputBuffers<const MAX_BYTES: usize = UNIFIED_EXEC_OUTPUT_MAX_BYTES> {
     pub(super) pending: HeadTailBuffer<MAX_BYTES>,
     pub(super) transcript: HeadTailBuffer<MAX_BYTES>,
+    /// When the last output chunk arrived; used by the terminal monitor.
+    pub(super) last_output_at: Option<tokio::time::Instant>,
 }
 
 impl<const MAX_BYTES: usize> OutputBuffers<MAX_BYTES> {
     pub(super) fn push_chunk(&mut self, _stream: ExecOutputStream, chunk: &[u8]) {
         self.pending.push_chunk(chunk);
         self.transcript.push_chunk(chunk);
+        if !chunk.is_empty() {
+            self.last_output_at = Some(tokio::time::Instant::now());
+        }
     }
 }
 
@@ -110,6 +119,8 @@ pub(crate) struct UnifiedExecProcess {
     timed_out: AtomicBool,
     /// Explicit termination overrides retention of remote output after exit.
     pub(super) termination_requested: AtomicBool,
+    started_at: tokio::time::Instant,
+    monitor: std::sync::Mutex<MonitorState>,
     // The shell may still need to replay this file after process startup returns.
     pub(crate) _shell_snapshot: Option<Arc<ShellSnapshotFile>>,
 }
@@ -155,7 +166,67 @@ impl UnifiedExecProcess {
             sandbox_type,
             timed_out: AtomicBool::new(false),
             termination_requested: AtomicBool::new(false),
+            started_at: tokio::time::Instant::now(),
+            monitor: std::sync::Mutex::new(MonitorState::default()),
             _shell_snapshot: None,
+        }
+    }
+
+    pub(super) fn with_monitor<R>(&self, f: impl FnOnce(&mut MonitorState) -> R) -> R {
+        let mut guard = self
+            .monitor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        f(&mut guard)
+    }
+
+    /// Snapshot what can be observed about this process without touching it.
+    pub(super) async fn observe(&self) -> Observation {
+        self.sample_activity().await;
+        let now = tokio::time::Instant::now();
+        let (activity, sample) =
+            self.with_monitor(|state| (state.activity(now), state.latest_sample()));
+        let guard = self.output.output_buffer.lock().await;
+        let idle_since = guard.last_output_at.unwrap_or(self.started_at);
+        let bytes = guard.transcript.to_bytes();
+        let mut start = bytes.len().saturating_sub(TAIL_BYTES);
+        // Start on a UTF-8 boundary so the lossy decode keeps whole characters.
+        while start < bytes.len() && (bytes[start] & 0xC0) == 0x80 {
+            start += 1;
+        }
+        Observation {
+            exited: self.has_exited(),
+            elapsed: now.saturating_duration_since(self.started_at),
+            idle: now.saturating_duration_since(idle_since),
+            total_bytes: guard.transcript.total_bytes() as u64,
+            tail: String::from_utf8_lossy(&bytes[start..]).into_owned(),
+            activity,
+            sample,
+        }
+    }
+
+    fn os_pid(&self) -> Option<u32> {
+        match &self.process_handle {
+            ProcessHandle::Local(process_handle) => process_handle.process_id(),
+            ProcessHandle::ExecServer(_) => None,
+        }
+    }
+
+    /// Read CPU time and memory of the process tree into the monitor state.
+    async fn sample_activity(&self) {
+        let Some(pid) = self.os_pid() else {
+            return;
+        };
+        if self.has_exited() {
+            return;
+        }
+        let sample = tokio::task::spawn_blocking(move || sample_process_tree(pid))
+            .await
+            .ok()
+            .flatten();
+        if let Some(sample) = sample {
+            let now = tokio::time::Instant::now();
+            self.with_monitor(|state| state.record_sample(now, sample));
         }
     }
 

@@ -216,6 +216,7 @@ async fn spawn_process_portable(
     let process_group_id = child.process_id();
     let killer = child.clone_killer();
 
+    let child_pid = child.process_id();
     let (writer_tx, writer_rx) = mpsc::channel::<Vec<u8>>(128);
     let (stdout_tx, stdout_rx) = mpsc::channel::<Vec<u8>>(128);
     let (_stderr_tx, stderr_rx) = mpsc::channel::<Vec<u8>>(1);
@@ -309,6 +310,7 @@ async fn spawn_process_portable(
         Some(handles),
         /*resizer*/ None,
     );
+    handle.set_process_id(child_pid);
 
     Ok(SpawnedProcess {
         session: handle,
@@ -468,6 +470,7 @@ async fn spawn_process_preserving_fds(
         Some(handles),
         /*resizer*/ None,
     );
+    handle.set_process_id(Some(process_group_id));
 
     Ok(SpawnedProcess {
         session: handle,

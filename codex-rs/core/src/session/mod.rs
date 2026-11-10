@@ -4618,6 +4618,27 @@ impl Session {
         }))
     }
 
+    /// Queue a system note from a background terminal and start a turn for it.
+    pub(crate) async fn wake_for_background_terminal(self: &Arc<Self>, content: String) {
+        let author = codex_protocol::AgentPath::root()
+            .join("terminal")
+            .unwrap_or_else(|_| codex_protocol::AgentPath::root());
+        let communication = codex_protocol::protocol::InterAgentCommunication::new(
+            author,
+            codex_protocol::AgentPath::root(),
+            Vec::new(),
+            content,
+            /*trigger_turn*/ true,
+        );
+        handlers::inter_agent_communication(
+            self,
+            Uuid::new_v4().to_string(),
+            crate::PendingAgentMessage::from(communication),
+            codex_protocol::turn_input::TurnStartOptions::default(),
+        )
+        .await;
+    }
+
     pub(crate) async fn record_inter_agent_communication(
         &self,
         turn_context: &TurnContext,
