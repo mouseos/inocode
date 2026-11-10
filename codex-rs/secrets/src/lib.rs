@@ -260,3 +260,12 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod isolation_tests {
+    /// Local secrets must not be stored under Codex's keyring service ("codex").
+    #[test]
+    fn keyring_service_name_is_inocode() {
+        assert_eq!(super::KEYRING_SERVICE, "inocode");
+    }
+}

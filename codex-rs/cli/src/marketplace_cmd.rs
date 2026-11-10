@@ -60,7 +60,7 @@ enum MarketplaceSubcommand {
 #[derive(Debug, Parser)]
 #[command(
     bin_name = "inocode plugin marketplace add",
-    after_help = "Examples:\n  codex plugin marketplace add ./path/to/marketplace\n  codex plugin marketplace add owner/repo --ref main\n  codex plugin marketplace add https://github.com/owner/repo --sparse plugins/foo"
+    after_help = "Examples:\n  inocode plugin marketplace add ./path/to/marketplace\n  inocode plugin marketplace add owner/repo --ref main\n  inocode plugin marketplace add https://github.com/owner/repo --sparse plugins/foo"
 )]
 struct AddMarketplaceArgs {
     /// Marketplace source: a local path, owner/repo[@ref], HTTPS Git URL, or SSH Git URL.

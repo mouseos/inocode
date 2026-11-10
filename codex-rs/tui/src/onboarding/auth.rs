@@ -1587,7 +1587,7 @@ mod tests {
             rows.pop();
         }
         insta::assert_snapshot!(rows.join("\n"), @r###"
-          Choose how you want to use Codex.
+          Choose how you want to use InoCode.
 
         > 1. Sign in with ChatGPT
              Usage included with Plus, Pro, Business, and Enterprise plans
@@ -1789,9 +1789,9 @@ mod tests {
         ✓ Signed in with your ChatGPT account
 
           You're in control
-          Learn about permissions and approvals in the Codex docs
+          Learn about permissions and approvals in the InoCode docs
 
-          Codex can make mistakes
+          InoCode can make mistakes
           Review the code it writes and commands it runs
 
           Included with your ChatGPT plan

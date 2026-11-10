@@ -1440,7 +1440,7 @@ mod tests {
         let exporter = InMemoryMetricExporter::default();
         let metrics = codex_otel::MetricsClient::new(MetricsConfig::in_memory(
             "test",
-            "codex-exec-server",
+            "inocode-exec-server",
             env!("CARGO_PKG_VERSION"),
             exporter.clone(),
         ))

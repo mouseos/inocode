@@ -134,7 +134,7 @@ impl Fixture {
     }
 
     async fn start(&self) -> Result<Login> {
-        let mut child = Command::new(codex_utils_cargo_bin::cargo_bin("codex")?)
+        let mut child = Command::new(codex_utils_cargo_bin::cargo_bin("inocode")?)
             .kill_on_drop(true)
             .current_dir(self.home.path())
             .env("INOCODE_HOME", self.home.path())
@@ -290,7 +290,7 @@ async fn add_persists_client_secret_for_subsequent_login_without_disclosure() ->
         .await;
     let output = timeout(
         TEST_TIMEOUT,
-        Command::new(codex_utils_cargo_bin::cargo_bin("codex")?)
+        Command::new(codex_utils_cargo_bin::cargo_bin("inocode")?)
             .kill_on_drop(true)
             .current_dir(fixture.home.path())
             .env("INOCODE_HOME", fixture.home.path())

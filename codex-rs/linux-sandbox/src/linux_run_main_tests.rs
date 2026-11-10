@@ -73,7 +73,7 @@ fn inserts_bwrap_argv0_before_command_separator() {
     let separator = argv.iter().position(|arg| arg == "--").unwrap();
     assert_eq!(
         &argv[separator - 2..],
-        ["--argv0", "codex-linux-sandbox", "--", "/bin/true"]
+        ["--argv0", "inocode-linux-sandbox", "--", "/bin/true"]
     );
 }
 
@@ -532,7 +532,7 @@ fn managed_proxy_inner_command_includes_route_spec() {
 #[test]
 fn managed_network_policy_alone_enables_proxy_mode() {
     let parsed = LinuxSandboxCommand::try_parse_from([
-        "codex-linux-sandbox",
+        "inocode-linux-sandbox",
         "--sandbox-policy-cwd",
         "/tmp",
         "--managed-network",
@@ -550,7 +550,7 @@ fn managed_network_policy_alone_enables_proxy_mode() {
 #[test]
 fn malformed_managed_network_policy_is_rejected() {
     let error = LinuxSandboxCommand::try_parse_from([
-        "codex-linux-sandbox",
+        "inocode-linux-sandbox",
         "--sandbox-policy-cwd",
         "/tmp",
         "--managed-network",

@@ -8,7 +8,7 @@ use serde_json::json;
 use tempfile::TempDir;
 
 fn codex_command(codex_home: &Path) -> Result<assert_cmd::Command> {
-    let mut cmd = assert_cmd::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?);
+    let mut cmd = assert_cmd::Command::new(codex_utils_cargo_bin::cargo_bin("inocode")?);
     cmd.env("INOCODE_HOME", codex_home)
         .env_remove("INOCODE_ACCESS_TOKEN")
         .env_remove("INOCODE_API_KEY")
@@ -311,7 +311,7 @@ async fn print_startup_config_is_independent_of_a_locked_history_database() -> R
 
     let home = TempDir::new()?;
     let sqlite = TempDir::new()?;
-    let binary = codex_utils_cargo_bin::cargo_bin("codex")?;
+    let binary = codex_utils_cargo_bin::cargo_bin("inocode")?;
     let mut command = Command::new(&binary);
     command
         .env("INOCODE_HOME", home.path())

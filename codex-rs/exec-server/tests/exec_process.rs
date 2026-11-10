@@ -1352,7 +1352,7 @@ async fn remote_tty_process_uses_configured_sandbox_helper_with_hostile_path() -
     let workspace = TempDir::new()?;
     let file = workspace.path().join("allowed.txt");
     std::fs::write(&file, b"allowed")?;
-    let hostile_helper = workspace.path().join("codex-linux-sandbox");
+    let hostile_helper = workspace.path().join("inocode-linux-sandbox");
     codex_utils_cargo_bin::write_executable(&hostile_helper, "#!/bin/sh\nprintf hostile")?;
     let path = std::env::var_os("PATH").context("PATH is not set")?;
     let hostile_path = std::env::join_paths(

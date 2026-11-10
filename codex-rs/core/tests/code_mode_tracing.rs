@@ -85,7 +85,7 @@ async fn stdio_callbacks_preserve_context_across_overlapping_yielded_cells() {
         .with(tracing_opentelemetry::layer().with_tracer(telemetry.tracer("code-mode-test")));
     let _subscriber = tracing::subscriber::set_default(subscriber);
     let provider = ProcessOwnedCodeModeSessionProvider::with_host_program(
-        codex_utils_cargo_bin::cargo_bin("codex-code-mode-host").unwrap(),
+        codex_utils_cargo_bin::cargo_bin("inocode-code-mode-host").unwrap(),
     );
     let session = provider.create_session().await.unwrap();
     let mut pending = Vec::new();

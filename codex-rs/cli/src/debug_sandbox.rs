@@ -470,7 +470,7 @@ async fn run_command_under_sandbox(
             spawn_debug_sandbox_child(
                 codex_linux_sandbox_exe,
                 args,
-                Some("codex-linux-sandbox"),
+                Some("inocode-linux-sandbox"),
                 cwd.to_path_buf(),
                 network_sandbox_policy,
                 env,

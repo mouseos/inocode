@@ -268,7 +268,7 @@ pub struct Thread {
     /// Originator recorded when the thread was created, independent of its current client or executor.
     /// Null when the recorded originator is unavailable.
     pub originator: Option<String>,
-    /// Origin of the thread (CLI, VSCode, codex exec, codex app-server, etc.).
+    /// Origin of the thread (CLI, VSCode, inocode exec, inocode app-server, etc.).
     pub source: SessionSource,
     /// Whether the app server accepts direct turn input for this loaded thread.
     /// `None` means the capability is unavailable, such as for an unloaded stored thread.

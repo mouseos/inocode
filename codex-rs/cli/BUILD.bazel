@@ -30,7 +30,7 @@ rust_test(
     crate_name = "app_server_daemon_package",
     crate_root = "tests/app_server_daemon/package.rs",
     data = [":codex"],
-    env = {"CARGO_BIN_EXE_codex": "$(rlocationpath :codex)"},
+    env = {"CARGO_BIN_EXE_inocode": "$(rlocationpath :codex)"},
     rustc_env = {"BAZEL_PACKAGE": "codex-rs/cli"},
     rustc_flags = MACOS_WEBRTC_RUSTC_LINK_FLAGS,
     tags = ["exclusive"],

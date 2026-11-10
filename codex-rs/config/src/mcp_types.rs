@@ -244,7 +244,7 @@ pub struct McpServerConfig {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
 
-    /// When `true`, `codex exec` exits with an error if this MCP server fails to initialize.
+    /// When `true`, `inocode exec` exits with an error if this MCP server fails to initialize.
     /// With `startup_readiness = "catalog"`, a valid cached catalog can satisfy startup;
     /// connection failures are then reported when a tool is invoked.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

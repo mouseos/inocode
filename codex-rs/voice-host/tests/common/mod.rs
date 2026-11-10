@@ -10,7 +10,7 @@ use codex_utils_cargo_bin::cargo_bin;
 use tokio::process::Command;
 
 pub(crate) fn voice_host_command() -> Result<Command> {
-    let command = Command::new(cargo_bin("codex-voice-host")?);
+    let command = Command::new(cargo_bin("inocode-voice-host")?);
     #[cfg(all(windows, target_env = "msvc"))]
     let mut command = command;
     #[cfg(all(windows, target_env = "msvc"))]

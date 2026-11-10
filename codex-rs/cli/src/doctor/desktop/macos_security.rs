@@ -99,7 +99,7 @@ fn classify_security_events(output: &str) -> Evidence {
             "codex.app",
             "chatgpt.app",
             ".plugin-appserver",
-            "codex-command-runner",
+            "inocode-command-runner",
         ]) || contains(&["not blocked", "not denied"])
         {
             continue;

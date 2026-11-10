@@ -59,7 +59,7 @@ use crate::winutil::to_wide;
 // Old services overwrite the parent value and delete its key on uninstall.
 // A child key preserves Core state and makes that old whole-key delete fail.
 pub const CORE_INSTALLATION_KEY: &str =
-    r"SOFTWARE\OpenAI\InoCode\WindowsSandboxService\RegisteredCore";
+    r"SOFTWARE\mouseos\InoCode\WindowsSandboxService\RegisteredCore";
 
 /// Written before registration so a service restart cannot lose cleanup ownership.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

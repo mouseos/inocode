@@ -13,7 +13,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SKIP_DIRS = {".git", "target", "node_modules", "third_party", ".venv"}
-SKIP_FILES = {"LICENSE", "NOTICE", "CHANGELOG.md", "UPSTREAM.md", "check_isolation.py"}
+SKIP_FILES = {"LICENSE", "NOTICE", "CHANGELOG.md", "UPSTREAM.md", "check_isolation.py", "smoke_isolation.py"}
 EXTS = {".rs", ".toml", ".py", ".js", ".ts", ".json", ".yml", ".yaml", ".sh", ".ps1", ".bzl", ".md", ".snap"}
 
 # Upstream Windows Filtering Platform keys (kernel-global objects).
@@ -36,6 +36,12 @@ RULES = [
     ("Codex npm package", re.compile(r"@openai/codex"), None),
     ("Codex binary name in [[bin]]", re.compile(r'^name = "codex"$', re.M), "Cargo.toml"),
 ]
+# (path, matched text) pairs that intentionally mention Codex: tests that assert InoCode does NOT
+# use the Codex directory, and case-insensitive MSIX package-family test data.
+ALLOW = {
+    ("codex-rs/utils/home-dir/src/lib.rs", ".codex"),
+    ("codex-rs/windows-sandbox-rs/src/runtime_ownership_tests.rs", "CODEX_"),
+}
 GUID_RE = re.compile("|".join(re.escape(g) for g in UPSTREAM_WFP_GUIDS), re.I)
 # Fixed loopback ports shared with Codex (OAuth callback) may only appear in the login server.
 PORT_RE = re.compile(r"\b(1455|1457)\b")
@@ -60,6 +66,8 @@ def main() -> int:
                     continue
                 for m in rx.finditer(text):
                     line = text.count("\n", 0, m.start()) + 1
+                    if (str(rel), m.group(0)) in ALLOW:
+                        continue
                     problems.append(f"{rel}:{line}: {label}: {m.group(0)!r}")
             for m in GUID_RE.finditer(text):
                 line = text.count("\n", 0, m.start()) + 1

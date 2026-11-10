@@ -4,7 +4,7 @@
 fn requires_an_existing_registry_without_creating_databases() -> anyhow::Result<()> {
     let directory = tempfile::tempdir()?;
     let output = codex_utils_process::background_command(codex_utils_cargo_bin::cargo_bin(
-        "codex-message-board-mcp",
+        "inocode-message-board-mcp",
     )?)
     .env("INOCODE_MESSAGE_BOARD_TOKEN", "startup-test-only-token")
     .arg("--sqlite-home")

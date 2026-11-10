@@ -130,7 +130,7 @@ fn translates_multiple_fd_mounts_for_legacy_system_bubblewrap() {
         "9".to_string(),
         "/tmp/second:with-colon".to_string(),
         "--".to_string(),
-        "codex-linux-sandbox".to_string(),
+        "inocode-linux-sandbox".to_string(),
         "--apply-seccomp-then-exec".to_string(),
         "--".to_string(),
         "true".to_string(),
@@ -149,7 +149,7 @@ fn translates_multiple_fd_mounts_for_legacy_system_bubblewrap() {
             "/proc/self/fd/9".to_string(),
             "/tmp/second:with-colon".to_string(),
             "--".to_string(),
-            "codex-linux-sandbox".to_string(),
+            "inocode-linux-sandbox".to_string(),
             "--verify-fd-mount".to_string(),
             "7:/tmp/first".to_string(),
             "--verify-fd-mount".to_string(),
@@ -174,7 +174,7 @@ fn rejects_malformed_legacy_bubblewrap_fd_mounts() {
             fd.to_string(),
             destination.to_string(),
             "--".to_string(),
-            "codex-linux-sandbox".to_string(),
+            "inocode-linux-sandbox".to_string(),
         ];
 
         assert!(translate_legacy_bwrap_fd_mounts(&mut argv).is_err());
@@ -208,7 +208,7 @@ fn rejects_duplicate_legacy_bubblewrap_fd_mounts() {
         "7".to_string(),
         "/tmp/second".to_string(),
         "--".to_string(),
-        "codex-linux-sandbox".to_string(),
+        "inocode-linux-sandbox".to_string(),
     ];
 
     assert!(translate_legacy_bwrap_fd_mounts(&mut argv).is_err());

@@ -115,7 +115,7 @@ const TRACE_DISABLED_MESSAGE: &str =
 #[command(author = "Codex", version, about = "Bootstrap Codex app-server", long_about = None)]
 struct Cli {
     /// Path to the `codex` CLI binary. When set, requests use stdio by
-    /// spawning `codex app-server` as a child process.
+    /// spawning `inocode app-server` as a child process.
     #[arg(long, env = "INOCODE_BIN", global = true)]
     codex_bin: Option<PathBuf>,
 
@@ -154,12 +154,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum CliCommand {
-    /// Start `codex app-server` on a websocket endpoint in the background.
+    /// Start `inocode app-server` on a websocket endpoint in the background.
     ///
     /// Logs are written to:
     ///   `/tmp/codex-app-server-test-client/`
     Serve {
-        /// WebSocket listen URL passed to `codex app-server --listen`.
+        /// WebSocket listen URL passed to `inocode app-server --listen`.
         #[arg(long, default_value = "ws://127.0.0.1:4222")]
         listen: String,
         /// Kill any process listening on the same port before starting.
@@ -648,7 +648,7 @@ fn serve(codex_bin: &Path, config_overrides: &[String], listen: &str, kill: bool
 
     let pid = child.id();
 
-    println!("started codex app-server");
+    println!("started inocode app-server");
     println!("listen: {listen}");
     println!("pid: {pid} (launcher process)");
     println!("log: {}", log_path.display());
@@ -1518,11 +1518,11 @@ impl CodexClient {
         let stdin = codex_app_server
             .stdin
             .take()
-            .context("codex app-server stdin unavailable")?;
+            .context("inocode app-server stdin unavailable")?;
         let stdout = codex_app_server
             .stdout
             .take()
-            .context("codex app-server stdout unavailable")?;
+            .context("inocode app-server stdout unavailable")?;
 
         Ok(Self {
             transport: ClientTransport::Stdio {
@@ -2156,10 +2156,10 @@ impl CodexClient {
                     writeln!(stdin, "{payload}")?;
                     stdin
                         .flush()
-                        .context("failed to flush payload to codex app-server")?;
+                        .context("failed to flush payload to inocode app-server")?;
                     return Ok(());
                 }
-                bail!("codex app-server stdin closed")
+                bail!("inocode app-server stdin closed")
             }
             ClientTransport::WebSocket { socket, url } => {
                 socket
@@ -2176,9 +2176,9 @@ impl CodexClient {
                 let mut response_line = String::new();
                 let bytes = stdout
                     .read_line(&mut response_line)
-                    .context("failed to read from codex app-server")?;
+                    .context("failed to read from inocode app-server")?;
                 if bytes == 0 {
-                    bail!("codex app-server closed stdout");
+                    bail!("inocode app-server closed stdout");
                 }
                 Ok(response_line)
             }
@@ -2293,14 +2293,14 @@ impl Drop for CodexClient {
         let _ = stdin.take();
 
         if let Ok(Some(status)) = child.try_wait() {
-            println!("[codex app-server exited: {status}]");
+            println!("[inocode app-server exited: {status}]");
             return;
         }
 
         let deadline = SystemTime::now() + APP_SERVER_GRACEFUL_SHUTDOWN_TIMEOUT;
         loop {
             if let Ok(Some(status)) = child.try_wait() {
-                println!("[codex app-server exited: {status}]");
+                println!("[inocode app-server exited: {status}]");
                 return;
             }
 

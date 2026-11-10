@@ -1878,3 +1878,12 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod isolation_tests {
+    /// MCP OAuth tokens must not be stored under Codex's keyring service.
+    #[test]
+    fn keyring_service_name_is_inocode() {
+        assert_eq!(super::KEYRING_SERVICE, "InoCode MCP Credentials");
+    }
+}

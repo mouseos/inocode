@@ -19,7 +19,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::RT_MANIFEST;
 /// The setup executable must expose an asInvoker manifest through the Windows resource API.
 #[test]
 fn setup_helper_embeds_as_invoker_manifest() -> Result<()> {
-    let setup_executable = cargo_bin("codex-windows-sandbox-setup")
+    let setup_executable = cargo_bin("inocode-windows-sandbox-setup")
         .context("locate the Windows sandbox setup executable")?;
     let setup_path = setup_executable
         .as_os_str()

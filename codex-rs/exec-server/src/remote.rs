@@ -699,7 +699,7 @@ impl RemoteEnvironmentConfig {
         Ok(Self {
             base_url,
             environment_id,
-            name: "codex-exec-server".to_string(),
+            name: "inocode-exec-server".to_string(),
             request_dispatch_mode: RequestDispatchMode::Inline,
             transport,
             auth_provider,

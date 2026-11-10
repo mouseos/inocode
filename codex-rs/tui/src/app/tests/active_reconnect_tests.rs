@@ -419,7 +419,7 @@ async fn reconnect_restores_history_permissions_and_resumes_unsent_input() -> Re
             .join("\n");
         if deferred_notice {
             assert_snapshot!(notices, @r###"
-⚠ A background Codex service is running v2.0.0, older than your Codex CLI
+⚠ A background InoCode service is running v2.0.0, older than your InoCode CLI
 "###);
         } else if edit_offline {
             assert!(notices.contains("unacknowledged prompt"));

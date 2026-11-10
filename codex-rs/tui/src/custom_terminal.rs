@@ -1213,7 +1213,7 @@ mod tests {
 
 
 
-        › Ask Codex to do anything
+        › Ask InoCode to do anything
         ");
     }
 

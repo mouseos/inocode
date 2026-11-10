@@ -93,7 +93,7 @@ async fn elevated_local_tui_uses_embedded_without_starting_daemon() -> Result<()
     for command in ["elevated", "elevated-resume", "elevated-fork"] {
         daemon_startup(command).await?;
     }
-    let codex = codex_utils_cargo_bin::cargo_bin("codex")?;
+    let codex = codex_utils_cargo_bin::cargo_bin("inocode")?;
     let home = tempfile::tempdir()?;
     for operation in ["start", "restart"] {
         let output = Command::new(&codex)
@@ -122,7 +122,7 @@ async fn restrictive_launcher_uses_embedded_if_daemon_cannot_start() -> Result<(
         // The PTY creates its own breakaway-permitted job. Add Cargo's
         // restriction *inside* the PTY so it is the CLI's innermost job.
         let job = codex_utils_pty::JobObject::create_without_breakaway()?;
-        let codex = codex_utils_cargo_bin::cargo_bin("codex")?;
+        let codex = codex_utils_cargo_bin::cargo_bin("inocode")?;
         let mut command = tokio::process::Command::new(codex);
         command
             .arg("--no-alt-screen")
@@ -158,7 +158,7 @@ async fn daemon_startup(command: &str) -> Result<()> {
     #[cfg(not(windows))]
     let elevated = false;
     let elevated_launch = command.starts_with("elevated");
-    let codex = codex_utils_cargo_bin::cargo_bin("codex")?.canonicalize()?;
+    let codex = codex_utils_cargo_bin::cargo_bin("inocode")?.canonicalize()?;
     let workspace = tempfile::tempdir()?;
     let workspace_path = workspace.path().canonicalize()?;
     #[cfg(unix)]

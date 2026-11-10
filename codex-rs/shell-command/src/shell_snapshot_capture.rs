@@ -106,7 +106,7 @@ fn capture_script(
             .replace(
                 "SNAPSHOT_STARTUP_ENVIRONMENT",
                 if options.declarations && options.environment {
-                    "printf '\\0CODEX_SNAPSHOT_POSIX_STARTUP\\0%s\\0' \"$__codex_env_file\"\n    SNAPSHOT_ENVIRONMENT\n    printf '\\0'"
+                    "printf '\\0INOCODE_SNAPSHOT_POSIX_STARTUP\\0%s\\0' \"$__codex_env_file\"\n    SNAPSHOT_ENVIRONMENT\n    printf '\\0'"
                 } else {
                     ""
                 },
@@ -305,7 +305,7 @@ impl<'a> CapturedSnapshot<'a> {
             return None;
         }
         let mut remaining = captured;
-        let startup_marker = b"\0CODEX_SNAPSHOT_POSIX_STARTUP\0";
+        let startup_marker = b"\0INOCODE_SNAPSHOT_POSIX_STARTUP\0";
         let startup_environment = if shell_type == ShellType::Sh
             && let Some(start) = remaining
                 .windows(startup_marker.len())

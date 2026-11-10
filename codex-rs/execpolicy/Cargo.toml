@@ -11,7 +11,7 @@ path = "src/lib.rs"
 doctest = false
 
 [[bin]]
-name = "codex-execpolicy"
+name = "inocode-execpolicy"
 path = "src/main.rs"
 
 [lints]

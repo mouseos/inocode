@@ -1241,7 +1241,7 @@ async fn build_exec_request_projects_workspace_roots_only_for_windows_sandbox() 
             profile,
             &cwd,
             roots,
-            &Some(temp_dir.path().join("codex-linux-sandbox")),
+            &Some(temp_dir.path().join("inocode-linux-sandbox")),
             /*codex_self_exe*/ &None,
             SandboxType::WindowsRestrictedToken,
             /*use_legacy_landlock*/ false,

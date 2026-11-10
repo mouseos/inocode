@@ -133,7 +133,7 @@ async fn run_cloud_sandbox(args: &[&str], bundle: Value) -> Result<Option<TempDi
         .mount(&server)
         .await;
 
-    let codex = codex_utils_cargo_bin::cargo_bin("codex")?;
+    let codex = codex_utils_cargo_bin::cargo_bin("inocode")?;
     let chatgpt_base_url_override = format!("chatgpt_base_url=\"{chatgpt_base_url}\"");
     let output = Command::new(&codex)
         .current_dir(codex_home.path())
@@ -174,7 +174,7 @@ async fn run_cloud_sandbox(args: &[&str], bundle: Value) -> Result<Option<TempDi
     );
     if !nested_macos_sandbox_unavailable {
         assert!(
-            String::from_utf8(output.stdout)?.starts_with("codex"),
+            String::from_utf8(output.stdout)?.starts_with("inocode"),
             "expected the sandboxed InoCode version command to run",
         );
     }

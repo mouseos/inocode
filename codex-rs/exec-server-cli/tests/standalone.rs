@@ -30,7 +30,7 @@ use wiremock::matchers::path;
 
 #[tokio::test]
 async fn registration_bearer_rejects_plaintext_remote_registry() -> anyhow::Result<()> {
-    let binary = cargo_bin("codex-exec-server")?;
+    let binary = cargo_bin("inocode-exec-server")?;
     let home = tempfile::tempdir()?;
     let mut child = tokio::process::Command::from(background_command(&binary))
         .args([
@@ -61,7 +61,7 @@ async fn registration_bearer_rejects_plaintext_remote_registry() -> anyhow::Resu
 
 #[tokio::test]
 async fn registration_uses_its_bearer_before_and_after_desktop_sign_in() -> anyhow::Result<()> {
-    let binary = cargo_bin("codex-exec-server")?;
+    let binary = cargo_bin("inocode-exec-server")?;
     let home = tempfile::tempdir()?;
     for (desktop_token, account_id) in [
         ("access_token_initial", None),
@@ -128,7 +128,7 @@ async fn registration_uses_its_bearer_before_and_after_desktop_sign_in() -> anyh
 
 #[tokio::test]
 async fn standalone_initializes_reports_version_and_runs_helpers() -> anyhow::Result<()> {
-    let binary = cargo_bin("codex-exec-server")?;
+    let binary = cargo_bin("inocode-exec-server")?;
     let directory = tempfile::tempdir()?;
     let cwd = url::Url::from_directory_path(directory.path())
         .map_err(|()| anyhow::anyhow!("file URI"))?;

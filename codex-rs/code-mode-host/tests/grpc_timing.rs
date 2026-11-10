@@ -117,7 +117,7 @@ async fn execution_timing_includes_javascript_but_excludes_delayed_reads() -> Re
 #[tokio::test]
 async fn stdio_execution_timing_includes_javascript_but_excludes_delayed_reads() -> Result<()> {
     let provider = ProcessOwnedCodeModeSessionProvider::with_host_program(
-        codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?,
+        codex_utils_cargo_bin::cargo_bin("inocode-code-mode-host")?,
     );
     let delegate = Arc::new(RecordingDelegate::default());
     let session = provider
@@ -183,7 +183,7 @@ async fn observation_timing_excludes_previous_requests_and_background_time() -> 
     let host = HostHarness::start("grpc://127.0.0.1:0").await?;
     let providers: [Arc<dyn CodeModeSessionProvider>; 2] = [
         Arc::new(ProcessOwnedCodeModeSessionProvider::with_host_program(
-            codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?,
+            codex_utils_cargo_bin::cargo_bin("inocode-code-mode-host")?,
         )),
         Arc::new(GrpcCodeModeSessionProvider::new(host.endpoint)),
     ];

@@ -25,9 +25,9 @@ fn winget_package_starts_and_reselects_daemon() -> Result<()> {
     for directory in ["bin", "codex-path", "codex-resources/voice"] {
         std::fs::create_dir_all(package.join(directory))?;
     }
-    copy_executable(&codex_utils_cargo_bin::cargo_bin("codex")?, &codex)?;
+    copy_executable(&codex_utils_cargo_bin::cargo_bin("inocode")?, &codex)?;
     for helper in [
-        "codex-code-mode-host.exe",
+        "inocode-code-mode-host.exe",
         "codex-path/rg.exe",
         "codex-resources/codex-command-runner.exe",
         "codex-resources/codex-windows-sandbox-setup.exe",
@@ -98,7 +98,7 @@ fn winget_package_starts_and_reselects_daemon() -> Result<()> {
         b"runtime fixture"
     );
     let selected = current.canonicalize()?;
-    std::fs::remove_file(package.join("codex-code-mode-host.exe"))?;
+    std::fs::remove_file(package.join("inocode-code-mode-host.exe"))?;
     let invalid = Command::new(&codex)
         .env("INOCODE_HOME", &home)
         .args(["app-server", "daemon", "update", "--from-cli", "--yes"])

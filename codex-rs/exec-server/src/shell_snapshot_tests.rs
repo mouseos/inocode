@@ -79,7 +79,7 @@ async fn snapshot_failure_retries_are_bounded_and_single_flight(
     let metrics = MetricsClient::new(
         MetricsConfig::in_memory(
             "test",
-            "codex-exec-server",
+            "inocode-exec-server",
             env!("CARGO_PKG_VERSION"),
             InMemoryMetricExporter::default(),
         )
@@ -331,7 +331,7 @@ fn snapshot_filters_profile_exports_after_capture() {
     };
     let snapshot = parse_snapshot(
         ShellType::Bash,
-        b"profile \xff noise\n# Snapshot file\nfunction profile_helper() { :; }\n\0alias profile_alias='profile_helper'\n\0PROFILE_DENIED\0export PROFILE_DENIED=denied\n\0NON_UTF8\0export NON_UTF8='\xff'\n\0\0PROFILE_ALLOWED=profile\0PROFILE_DENIED=denied\0PROFILE_SECRET=secret\0PWD=/tmp\0NON_UTF8=\xff\0CODEX_THREAD_ID=capture-thread\0CODEX_TOOL_CALL_ID=profile-call\0",
+        b"profile \xff noise\n# Snapshot file\nfunction profile_helper() { :; }\n\0alias profile_alias='profile_helper'\n\0PROFILE_DENIED\0export PROFILE_DENIED=denied\n\0NON_UTF8\0export NON_UTF8='\xff'\n\0\0PROFILE_ALLOWED=profile\0PROFILE_DENIED=denied\0PROFILE_SECRET=secret\0PWD=/tmp\0NON_UTF8=\xff\0INOCODE_THREAD_ID=capture-thread\0INOCODE_TOOL_CALL_ID=profile-call\0",
         Some(&policy),
         SnapshotReplay::Environment,
     )
@@ -382,7 +382,7 @@ fn snapshot_preserves_profile_exports_with_restrictive_inheritance() {
 fn snapshot_caches_only_unmanaged_proxy_state() {
     for (exports, expected) in [
         (
-            "PROFILE_ALLOWED=profile\0HTTP_PROXY=http://127.0.0.1:4321\0CODEX_NETWORK_PROXY_ACTIVE=1\0CODEX_NETWORK_PROXY_CREDENTIAL_BROKER_ACTIVE=1\0",
+            "PROFILE_ALLOWED=profile\0HTTP_PROXY=http://127.0.0.1:4321\0INOCODE_NETWORK_PROXY_ACTIVE=1\0INOCODE_NETWORK_PROXY_CREDENTIAL_BROKER_ACTIVE=1\0",
             HashMap::from([("PROFILE_ALLOWED".to_string(), "profile".to_string())]),
         ),
         (
@@ -397,7 +397,7 @@ fn snapshot_caches_only_unmanaged_proxy_state() {
         ),
     ] {
         let output = format!(
-            "# Snapshot file\n\0\0\0{exports}INOCODE_THREAD_ID=capture-thread\0CODEX_TOOL_CALL_ID=profile-call\0"
+            "# Snapshot file\n\0\0\0{exports}INOCODE_THREAD_ID=capture-thread\0INOCODE_TOOL_CALL_ID=profile-call\0"
         );
         let snapshot = parse_snapshot(
             ShellType::Bash,

@@ -9,7 +9,7 @@ use crate::ExecServerCli;
 
 fn exec_server_from_args(args: &[&str]) -> ExecServerCommand {
     let cli = ExecServerCli::try_parse_from(
-        ["codex-exec-server"]
+        ["inocode-exec-server"]
             .into_iter()
             .chain(args.iter().copied()),
     )
@@ -195,7 +195,7 @@ fn exec_server_rejects_missing_or_conflicting_remote_options() {
     ] {
         let error = ExecServerCli::try_parse_from(
             [
-                "codex-exec-server",
+                "inocode-exec-server",
                 "--remote",
                 "https://registry.example.com",
                 "--environment-id",
@@ -224,8 +224,9 @@ fn exec_server_transport_and_aws_options_require_registration_arguments() {
             "--aws-sigv4",
         ],
     ] {
-        let error = ExecServerCli::try_parse_from(["codex-exec-server"].into_iter().chain(options))
-            .expect_err("require remote URL and environment ID");
+        let error =
+            ExecServerCli::try_parse_from(["inocode-exec-server"].into_iter().chain(options))
+                .expect_err("require remote URL and environment ID");
         assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
     }
 }
@@ -309,7 +310,7 @@ async fn exec_server_direct_forwarding_remains_rejected() {
 #[test]
 fn exec_server_forward_parses_shared_remote_options() {
     let cli = ExecServerCli::try_parse_from([
-        "codex-exec-server",
+        "inocode-exec-server",
         "forward",
         "--connect",
         "ws://127.0.0.1:8765",

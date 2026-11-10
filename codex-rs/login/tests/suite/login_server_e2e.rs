@@ -671,7 +671,7 @@ async fn falls_back_to_registered_fallback_port_when_default_port_is_in_use() ->
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn cancels_previous_login_server_when_port_is_in_use() -> Result<()> {
+async fn does_not_cancel_login_server_already_listening_on_port() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let (issuer_addr, _issuer_handle) = start_mock_issuer(WORKSPACE_ID_ALLOWED);
@@ -721,23 +721,88 @@ async fn cancels_previous_login_server_when_port_is_in_use() -> Result<()> {
         login_success_page: LoginSuccessPage::Local,
     };
 
-    let second_server = run_login_server(second_opts)?;
-    assert_eq!(second_server.actual_port, login_port);
+    // A second InoCode login must never shut down whoever already owns the port
+    // (it could be a Codex login); it reports the port as busy instead.
+    let second_error = match run_login_server(second_opts) {
+        Ok(_) => panic!("binding an occupied port must fail"),
+        Err(err) => err,
+    };
+    assert_eq!(second_error.kind(), io::ErrorKind::AddrInUse);
 
+    let ignored = raw_http_get(login_port, "/cancel");
+    assert!(ignored.starts_with("HTTP/1.1 404"), "unexpected: {ignored}");
+
+    let cancelled = raw_http_get(login_port, "/cancel?inocode_cancel=1");
+    assert!(
+        cancelled.contains("Login cancelled"),
+        "unexpected: {cancelled}"
+    );
     let cancel_result = first_server_task
         .await
         .expect("first login server task panicked")
         .expect_err("login server should report cancellation");
     assert_eq!(cancel_result.kind(), io::ErrorKind::Interrupted);
+    Ok(())
+}
 
-    let client = HttpClientBuilder::new().build_direct()?;
-    let cancel_url = format!("http://127.0.0.1:{login_port}/cancel");
-    let resp = client.get(cancel_url).send().await?;
-    assert!(resp.status().is_success());
+fn raw_http_get(port: u16, path: &str) -> String {
+    use std::io::Read;
+    use std::io::Write;
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut out = String::new();
+    let _ = stream.read_to_string(&mut out);
+    out
+}
 
-    second_server
-        .block_until_done()
-        .await
-        .expect_err("second login server should report cancellation");
+/// A Codex client cancels a previous login server with a bare GET /cancel.
+/// InoCode's server must ignore that request and only honor its own explicit cancel.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plain_cancel_request_from_another_client_is_ignored() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let (issuer_addr, _issuer_handle) = start_mock_issuer(WORKSPACE_ID_ALLOWED);
+    let issuer = format!("http://{}:{}", issuer_addr.ip(), issuer_addr.port());
+    let tmp = tempdir()?;
+    let opts = ServerOptions {
+        codex_home: tmp.path().to_path_buf(),
+        cli_auth_credentials_store_mode: AuthCredentialsStoreMode::File,
+        auth_route_config: codex_login::test_support::transport_default_auth_route_config(),
+        client_id: codex_login::CLIENT_ID.to_string(),
+        issuer,
+        port: 0,
+        open_browser: false,
+        force_state: Some("state-cancel".to_string()),
+        workspace_login: None,
+        forced_chatgpt_workspace_id: None,
+        codex_streamlined_login: false,
+        auth_keyring_backend_kind: AuthKeyringBackendKind::Direct,
+        login_success_page: LoginSuccessPage::Local,
+    };
+    let server = run_login_server(opts)?;
+    let port = server.actual_port;
+
+    let ignored = raw_http_get(port, "/cancel");
+    assert!(ignored.starts_with("HTTP/1.1 404"), "unexpected: {ignored}");
+    let still_alive = raw_http_get(port, "/cancel");
+    assert!(
+        still_alive.starts_with("HTTP/1.1 404"),
+        "unexpected: {still_alive}"
+    );
+
+    let cancelled = raw_http_get(port, "/cancel?inocode_cancel=1");
+    assert!(
+        cancelled.contains("Login cancelled"),
+        "unexpected: {cancelled}"
+    );
+    let result = server.block_until_done().await;
+    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Interrupted);
     Ok(())
 }

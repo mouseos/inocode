@@ -106,7 +106,7 @@ commands that would enter the bubblewrap path.
   inside the sandbox can differ from those exposed by `/proc`. Default invocations
   send no new helper flags and remain compatible with older helpers.
 - Trusted provisioning of a dedicated environment can start
-  `codex exec-server --linux-sandbox-pid-namespace=inherit`. This startup-only
+  `inocode exec-server --linux-sandbox-pid-namespace=inherit`. This startup-only
   setting applies to both process and filesystem helpers; repository config and
   command environment variables cannot enable it. The helper receives the new
   `--inherit-pid-namespace` option, which requires an updated helper; deploy the
@@ -121,4 +121,4 @@ commands that would enter the bubblewrap path.
 
 **Notes**
 
-- The CLI surface is `codex sandbox`; the host OS selects the sandbox backend.
+- The CLI surface is `inocode sandbox`; the host OS selects the sandbox backend.

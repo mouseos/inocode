@@ -12,7 +12,7 @@ Codex supplies these entries in the request's `_meta` object:
 
 | Key                        | Value                                                                                                                    |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `codex/sandbox-state`      | Opaque policy to pass to `codex sandbox --sandbox-state-json`.                                                           |
+| `codex/sandbox-state`      | Opaque policy to pass to `inocode sandbox --sandbox-state-json`.                                                           |
 | `codex/sandbox-state-meta` | An identical copy of that policy under the deprecated name.                                                              |
 | `codex/sandbox-launcher`   | When available, an object with an absolute `codexExecutable` path to a verified full Codex CLI on the MCP server's host. |
 

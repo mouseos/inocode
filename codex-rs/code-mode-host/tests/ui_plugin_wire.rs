@@ -12,7 +12,7 @@ use serde_json::json;
 
 #[tokio::test]
 async fn child_initializes_invokes_and_closes_an_isolate() -> anyhow::Result<()> {
-    let program = codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?;
+    let program = codex_utils_cargo_bin::cargo_bin("inocode-code-mode-host")?;
     let mut child =
         PluginProcess::spawn(&program, &tokio_util::sync::CancellationToken::new()).await?;
     let result = async {
@@ -57,7 +57,7 @@ async fn receive(child: &mut PluginProcess) -> anyhow::Result<(u64, serde_json::
 
 #[tokio::test]
 async fn promise_errors_close_the_isolate_in_both_return_modes() -> anyhow::Result<()> {
-    let program = codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?;
+    let program = codex_utils_cargo_bin::cargo_bin("inocode-code-mode-host")?;
     let mut child =
         PluginProcess::spawn(&program, &tokio_util::sync::CancellationToken::new()).await?;
     let result = async {
@@ -114,7 +114,7 @@ async fn promise_errors_close_the_isolate_in_both_return_modes() -> anyhow::Resu
 
 #[tokio::test]
 async fn cancellation_closes_an_isolate_with_pending_work() -> anyhow::Result<()> {
-    let program = codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?;
+    let program = codex_utils_cargo_bin::cargo_bin("inocode-code-mode-host")?;
     let mut child =
         PluginProcess::spawn(&program, &tokio_util::sync::CancellationToken::new()).await?;
     let result = async {
@@ -150,7 +150,7 @@ async fn cancellation_closes_an_isolate_with_pending_work() -> anyhow::Result<()
 
 #[tokio::test]
 async fn sync_dispatch_settles_pending_invocations() -> anyhow::Result<()> {
-    let program = codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?;
+    let program = codex_utils_cargo_bin::cargo_bin("inocode-code-mode-host")?;
     let mut child =
         PluginProcess::spawn(&program, &tokio_util::sync::CancellationToken::new()).await?;
     let result = async {
@@ -219,7 +219,7 @@ async fn sync_dispatch_settles_pending_invocations() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn syntax_and_execution_failures_preserve_bounded_script_errors() -> anyhow::Result<()> {
-    let program = codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?;
+    let program = codex_utils_cargo_bin::cargo_bin("inocode-code-mode-host")?;
     let mut child =
         PluginProcess::spawn(&program, &tokio_util::sync::CancellationToken::new()).await?;
     let result = async {
@@ -278,7 +278,7 @@ async fn syntax_and_execution_failures_preserve_bounded_script_errors() -> anyho
 
 #[tokio::test]
 async fn loading_restrictions_close_the_isolate() -> anyhow::Result<()> {
-    let program = codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?;
+    let program = codex_utils_cargo_bin::cargo_bin("inocode-code-mode-host")?;
     let mut child =
         PluginProcess::spawn(&program, &tokio_util::sync::CancellationToken::new()).await?;
     let result = async {
@@ -361,7 +361,7 @@ async fn isolate_failures_do_not_affect_healthy_peers() -> anyhow::Result<()> {
     const REJECTING: u64 = 2;
     const LOOPING: u64 = 3;
 
-    let program = codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?;
+    let program = codex_utils_cargo_bin::cargo_bin("inocode-code-mode-host")?;
     let mut child =
         PluginProcess::spawn(&program, &tokio_util::sync::CancellationToken::new()).await?;
     let result = async {
@@ -478,7 +478,7 @@ async fn isolate_failures_do_not_affect_healthy_peers() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn closed_instance_can_be_replaced_at_capacity() -> anyhow::Result<()> {
-    let program = codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?;
+    let program = codex_utils_cargo_bin::cargo_bin("inocode-code-mode-host")?;
     let mut child =
         PluginProcess::spawn(&program, &tokio_util::sync::CancellationToken::new()).await?;
     let result = async {

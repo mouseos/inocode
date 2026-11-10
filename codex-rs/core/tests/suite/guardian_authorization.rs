@@ -171,7 +171,7 @@ async fn guardian_revalidates_owning_session_before_allow(
                     .expect("enable test feature");
             }
         })
-        .with_code_mode_host_program(codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?)
+        .with_code_mode_host_program(codex_utils_cargo_bin::cargo_bin("inocode-code-mode-host")?)
         .build_with_auto_env(&server)
         .await?;
     if review_mode == GuardianContextMode::Legacy {

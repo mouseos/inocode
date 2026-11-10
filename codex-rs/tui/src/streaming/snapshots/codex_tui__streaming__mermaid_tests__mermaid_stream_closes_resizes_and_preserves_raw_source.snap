@@ -1,6 +1,5 @@
 ---
 source: tui/src/streaming/mermaid_tests.rs
-assertion_line: 78
 expression: "stages.join(\"\\n\\n---\\n\\n\")"
 ---
 Before.
@@ -11,35 +10,35 @@ Before.
 Before.
 
 flowchart LR
-A["Codex reply<br/>completed"] --> B["Rendered in Ghostty"]
+A["InoCode reply<br/>completed"] --> B["Rendered in Ghostty"]
 
 ---
 
 Before.
 
-┌─────────────┐  ┌─────────────────────┐
-│ Codex reply │  │ Rendered in Ghostty │
-│ completed   │  │                     │
-└┬────────────┘  └┬────────────────────┘
- │                ▲
- │                │
- │                │
- │                │
- └────────────────┘
+┌───────────────┐  ┌─────────────────────┐
+│ InoCode reply │  │ Rendered in Ghostty │
+│ completed     │  │                     │
+└┬──────────────┘  └┬────────────────────┘
+ │                  ▲
+ │                  │
+ │                  │
+ │                  │
+ └──────────────────┘
 
 ---
 
 Before.
 
-┌─────────────┐  ┌─────────────────────┐
-│ Codex reply │  │ Rendered in Ghostty │
-│ completed   │  │                     │
-└┬────────────┘  └┬────────────────────┘
- │                ▲
- │                │
- │                │
- │                │
- └────────────────┘
+┌───────────────┐  ┌─────────────────────┐
+│ InoCode reply │  │ Rendered in Ghostty │
+│ completed     │  │                     │
+└┬──────────────┘  └┬────────────────────┘
+ │                  ▲
+ │                  │
+ │                  │
+ │                  │
+ └──────────────────┘
 
 After.
 
@@ -56,7 +55,7 @@ current
 terminal
 width.
 flowchart LR
-A["Codex reply<br/>completed"] --> B["Rendered in Ghostty"]
+A["InoCode reply<br/>completed"] --> B["Rendered in Ghostty"]
 
 After.
 
@@ -66,7 +65,7 @@ Before.
 
 ```mermaid
 flowchart LR
-A["Codex reply<br/>completed"] --> B["Rendered in Ghostty"]
+A["InoCode reply<br/>completed"] --> B["Rendered in Ghostty"]
 ```
 
 After.
@@ -75,14 +74,14 @@ After.
 
 Before.
 
-┌─────────────┐  ┌─────────────────────┐
-│ Codex reply │  │ Rendered in Ghostty │
-│ completed   │  │                     │
-└┬────────────┘  └┬────────────────────┘
- │                ▲
- │                │
- │                │
- │                │
- └────────────────┘
+┌───────────────┐  ┌─────────────────────┐
+│ InoCode reply │  │ Rendered in Ghostty │
+│ completed     │  │                     │
+└┬──────────────┘  └┬────────────────────┘
+ │                  ▲
+ │                  │
+ │                  │
+ │                  │
+ └──────────────────┘
 
 After.

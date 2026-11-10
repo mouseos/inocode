@@ -262,7 +262,7 @@ pub fn find_codex_linux_sandbox_exe() -> Result<PathBuf, CargoBinError> {
         return Ok(path);
     }
 
-    codex_utils_cargo_bin::cargo_bin("codex-linux-sandbox")
+    codex_utils_cargo_bin::cargo_bin("inocode-linux-sandbox")
 }
 
 pub async fn wait_for_event<F>(

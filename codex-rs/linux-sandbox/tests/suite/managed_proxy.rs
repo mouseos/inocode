@@ -182,7 +182,7 @@ fn linux_sandbox_command(
     args.extend(command.iter().map(|entry| (*entry).to_string()));
 
     let mut cmd =
-        Command::new(cargo_bin("codex-linux-sandbox").expect("sandbox helper should exist"));
+        Command::new(cargo_bin("inocode-linux-sandbox").expect("sandbox helper should exist"));
     cmd.args(args)
         .current_dir(cwd)
         .env_clear()
@@ -399,7 +399,7 @@ printf 'legacy proc fallback\n'
             protected_file.display().to_string(),
         );
         let mut command =
-            Command::new(cargo_bin("codex-linux-sandbox").expect("sandbox helper should exist"));
+            Command::new(cargo_bin("inocode-linux-sandbox").expect("sandbox helper should exist"));
         command
             .arg("--sandbox-policy-cwd")
             .arg(std::env::current_dir().expect("current directory should exist"))
@@ -476,9 +476,9 @@ async fn unsupported_system_bwrap_falls_back_to_bundled_bwrap() {
     };
 
     let tempdir = tempfile::tempdir().expect("create isolated sandbox installation");
-    let sandbox_executable = tempdir.path().join("codex-linux-sandbox");
+    let sandbox_executable = tempdir.path().join("inocode-linux-sandbox");
     let original_executable =
-        cargo_bin("codex-linux-sandbox").expect("sandbox helper should exist");
+        cargo_bin("inocode-linux-sandbox").expect("sandbox helper should exist");
     if std::fs::hard_link(&original_executable, &sandbox_executable).is_err() {
         codex_utils_cargo_bin::copy_executable(&original_executable, &sandbox_executable)
             .expect("copy sandbox executable");
@@ -800,7 +800,7 @@ async fn managed_proxy_mode_routes_through_bridge_and_blocks_direct_egress() {
     );
 
     // Bubblewrap re-executes the canonical binary, outside its Bazel runfiles alias.
-    let sandbox_helper = cargo_bin("codex-linux-sandbox")
+    let sandbox_helper = cargo_bin("inocode-linux-sandbox")
         .expect("sandbox helper should exist")
         .canonicalize()
         .expect("sandbox helper should resolve");

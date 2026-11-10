@@ -755,3 +755,12 @@ fn create_keyring_auth_storage(
 #[cfg(test)]
 #[path = "storage_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod isolation_tests {
+    /// The OS credential store entry must not be shared with InoCode ("InoCode Auth").
+    #[test]
+    fn keyring_service_name_is_inocode() {
+        assert_eq!(super::KEYRING_SERVICE, "InoCode Auth");
+    }
+}

@@ -20,7 +20,7 @@ pub const MCP_SANDBOX_STATE_META_CAPABILITY: &str = "codex/sandbox-state-meta";
 /// Tool-call metadata describing a sandbox launcher on the MCP server's host.
 pub const MCP_SANDBOX_LAUNCHER_META_KEY: &str = "codex/sandbox-launcher";
 
-/// Opaque policy forwarded unchanged to `codex sandbox --sandbox-state-json`.
+/// Opaque policy forwarded unchanged to `inocode sandbox --sandbox-state-json`.
 ///
 /// Servers advertise `codex/sandbox-state` (or its deprecated `-meta` alias) to
 /// receive the same object under both state keys. Consumers must preserve unknown

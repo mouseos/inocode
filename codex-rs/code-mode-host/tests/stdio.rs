@@ -237,7 +237,7 @@ async fn next_callback_event(
 #[tokio::test]
 async fn interrupt_yields_observations_without_stopping_the_cell() {
     let provider = ProcessOwnedCodeModeSessionProvider::with_host_program(
-        codex_utils_cargo_bin::cargo_bin("codex-code-mode-host").expect("host binary"),
+        codex_utils_cargo_bin::cargo_bin("inocode-code-mode-host").expect("host binary"),
     );
     let session = provider.create_session().await.expect("create session");
     let (delegate, mut events) = CancellationDelegate::new();
@@ -314,7 +314,7 @@ async fn interrupt_yields_observations_without_stopping_the_cell() {
 async fn session_execution_limits_are_isolated_on_a_shared_process_host() {
     let provider: Arc<dyn CodeModeSessionProvider> =
         Arc::new(ProcessOwnedCodeModeSessionProvider::with_host_program(
-            codex_utils_cargo_bin::cargo_bin("codex-code-mode-host").expect("host binary"),
+            codex_utils_cargo_bin::cargo_bin("inocode-code-mode-host").expect("host binary"),
         ));
     let limited = provider
         .create_session_with_limits(CodeModeSessionCellExecutionLimits {
@@ -386,7 +386,7 @@ async fn session_execution_limits_are_isolated_on_a_shared_process_host() {
 #[tokio::test]
 async fn remote_session_persists_values_forwards_delegates_and_controls_cells() {
     let provider = ProcessOwnedCodeModeSessionProvider::with_host_program(
-        codex_utils_cargo_bin::cargo_bin("codex-code-mode-host").expect("host binary"),
+        codex_utils_cargo_bin::cargo_bin("inocode-code-mode-host").expect("host binary"),
     );
     let delegate = Arc::new(RecordingDelegate::default());
     let first_delegate = Arc::new(RecordingDelegate::default());
@@ -541,7 +541,7 @@ text(result.value);
 #[tokio::test]
 async fn dropping_long_wait_releases_observer_before_next_wait() {
     let provider = ProcessOwnedCodeModeSessionProvider::with_host_program(
-        codex_utils_cargo_bin::cargo_bin("codex-code-mode-host").expect("host binary"),
+        codex_utils_cargo_bin::cargo_bin("inocode-code-mode-host").expect("host binary"),
     );
     let session = provider
         .create_session()
@@ -618,7 +618,7 @@ async fn dropping_long_wait_releases_observer_before_next_wait() {
 #[tokio::test]
 async fn unawaited_slow_tool_is_cancelled_after_parallel_tools_complete() {
     let provider = ProcessOwnedCodeModeSessionProvider::with_host_program(
-        codex_utils_cargo_bin::cargo_bin("codex-code-mode-host").expect("host binary"),
+        codex_utils_cargo_bin::cargo_bin("inocode-code-mode-host").expect("host binary"),
     );
     let (delegate, mut events_rx) = CancellationDelegate::new();
     let session = provider
@@ -743,7 +743,7 @@ return;
 #[tokio::test]
 async fn oversized_execute_request_does_not_close_the_shared_host() {
     let provider = ProcessOwnedCodeModeSessionProvider::with_host_program(
-        codex_utils_cargo_bin::cargo_bin("codex-code-mode-host").expect("host binary"),
+        codex_utils_cargo_bin::cargo_bin("inocode-code-mode-host").expect("host binary"),
     );
     let session = provider
         .create_session()
@@ -787,7 +787,7 @@ async fn oversized_execute_request_does_not_close_the_shared_host() {
 #[tokio::test]
 async fn oversized_delegate_payloads_fail_only_the_tool_call() {
     let provider = ProcessOwnedCodeModeSessionProvider::with_host_program(
-        codex_utils_cargo_bin::cargo_bin("codex-code-mode-host").expect("host binary"),
+        codex_utils_cargo_bin::cargo_bin("inocode-code-mode-host").expect("host binary"),
     );
     let session = provider
         .create_session()
@@ -887,7 +887,7 @@ try {
 #[tokio::test]
 async fn oversized_initial_response_does_not_close_the_shared_host() {
     let provider = ProcessOwnedCodeModeSessionProvider::with_host_program(
-        codex_utils_cargo_bin::cargo_bin("codex-code-mode-host").expect("host binary"),
+        codex_utils_cargo_bin::cargo_bin("inocode-code-mode-host").expect("host binary"),
     );
     let session = provider
         .create_session()
@@ -967,7 +967,7 @@ async fn oversized_initial_response_does_not_close_the_shared_host() {
 #[tokio::test]
 async fn child_process_loss_cleans_up_and_rebuilds_the_shared_host() {
     let host_program =
-        codex_utils_cargo_bin::cargo_bin("codex-code-mode-host").expect("host binary");
+        codex_utils_cargo_bin::cargo_bin("inocode-code-mode-host").expect("host binary");
     let proxy_dir = tempfile::tempdir().expect("create host proxy directory");
     let proxy_program = proxy_dir.path().join("host-proxy.sh");
     let pid_path = proxy_dir.path().join("host.pid");

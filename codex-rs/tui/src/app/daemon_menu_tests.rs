@@ -56,9 +56,9 @@ async fn daemon_version_notice_preserves_manual_update_guidance() {
         );
     }
     insta::assert_snapshot!(notices.join("\n"), @"
-    Service v0.155.0-alpha.22 < Codex CLI v0.155.0-alpha.23 · /daemon
-    Service v0.156.0 ≠ Codex CLI v0.155.0-alpha.23 · /daemon
-    Service v0.156.0 ≠ Codex CLI v0.0.0 · /daemon
+    Service v0.155.0-alpha.22 < InoCode CLI v0.155.0-alpha.23 · /daemon
+    Service v0.156.0 ≠ InoCode CLI v0.155.0-alpha.23 · /daemon
+    Service v0.156.0 ≠ InoCode CLI v0.0.0 · /daemon
     ");
 }
 

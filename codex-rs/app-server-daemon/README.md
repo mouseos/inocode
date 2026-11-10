@@ -3,7 +3,7 @@
 > `codex-app-server-daemon` is experimental and its lifecycle contract may
 > change while the remote-management flow is still being developed.
 
-`codex-app-server-daemon` backs the machine-readable `codex app-server`
+`codex-app-server-daemon` backs the machine-readable `inocode app-server`
 lifecycle commands used by remote clients such as the desktop and mobile apps.
 It is intended for Codex instances launched over SSH, including fresh developer
 machines that should expose app-server with `remote_control` enabled.
@@ -30,14 +30,14 @@ initialize the connection, the TUI starts an embedded server instead. Explicit
 ## Commands
 
 ```sh
-codex app-server daemon start
-codex app-server daemon restart
-codex app-server daemon update
-codex app-server daemon enable-remote-control
-codex app-server daemon disable-remote-control
-codex app-server daemon stop
-codex app-server daemon version
-codex app-server daemon bootstrap --remote-control
+inocode app-server daemon start
+inocode app-server daemon restart
+inocode app-server daemon update
+inocode app-server daemon enable-remote-control
+inocode app-server daemon disable-remote-control
+inocode app-server daemon stop
+inocode app-server daemon version
+inocode app-server daemon bootstrap --remote-control
 ```
 
 On success, every command writes exactly one JSON object to stdout. Consumers
@@ -58,7 +58,7 @@ default. Edit `INOCODE_HOME/app-server-daemon/settings.json` to change this:
 
 Positive minute intervals have no configured cap. `daemon restart` applies the
 enabled state; the next updater wait reads a new interval. The preference does
-not affect an explicit `codex update` command or `daemon update`.
+not affect an explicit `inocode update` command or `daemon update`.
 
 `daemon update` selects the latest stable release, even with automatic updates
 disabled. It also returns pinned or local managed packages to production update
@@ -81,7 +81,7 @@ For a new Linux or macOS machine:
 
 ```sh
 curl -fsSL https://chatgpt.com/codex/install.sh | sh
-$HOME/.inocode/packages/standalone/current/codex app-server daemon bootstrap --remote-control
+$HOME/.inocode/packages/standalone/current/inocode app-server daemon bootstrap --remote-control
 ```
 
 On Windows, use a non-elevated PowerShell terminal whose host allows breakaway:
@@ -156,7 +156,7 @@ other tool updates the managed binary path:
   once that replacement starts successfully
 - if the updater was absent during a same-version binary replacement, a later
   managed start recovers it but cannot infer the running server's previous
-  executable identity; use `codex app-server daemon restart` to refresh the server
+  executable identity; use `inocode app-server daemon restart` to refresh the server
 
 ## Lifecycle semantics
 
@@ -169,11 +169,11 @@ JSON-RPC initialize handshake on the Unix control socket.
 for future starts. If a managed app-server is already running, they restart it
 so the new setting takes effect immediately.
 
-Top-level `codex remote-control start` enables and persists remote control for
+Top-level `inocode remote-control start` enables and persists remote control for
 the managed daemon, overriding a saved disabled value. It starts or bootstraps
-the daemon as needed. Plain `codex remote-control` uses the managed daemon when
-eligible; `codex remote-control --no-daemon` runs a separate foreground server.
-`codex remote-control stop` stops the managed daemon without clearing its saved
+the daemon as needed. Plain `inocode remote-control` uses the managed daemon when
+eligible; `inocode remote-control --no-daemon` runs a separate foreground server.
+`inocode remote-control stop` stops the managed daemon without clearing its saved
 remote-control preference.
 `daemon start` and `daemon restart` use that saved preference. `daemon bootstrap`
 sets it according to `--remote-control` (disabled when omitted).

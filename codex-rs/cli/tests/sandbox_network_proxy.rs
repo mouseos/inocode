@@ -36,7 +36,7 @@ mode = "full"
     )?;
 
     let url = format!("http://127.0.0.2:{port}/");
-    let output = std::process::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?)
+    let output = std::process::Command::new(codex_utils_cargo_bin::cargo_bin("inocode")?)
         .env("INOCODE_HOME", codex_home.path())
         .args([
             "sandbox",
@@ -108,7 +108,7 @@ allow_local_binding = false
     )?;
 
     let url = format!("http://127.0.0.2:{port}/");
-    let output = tokio::process::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?)
+    let output = tokio::process::Command::new(codex_utils_cargo_bin::cargo_bin("inocode")?)
         .env("INOCODE_HOME", codex_home.path())
         .args([
             "sandbox",

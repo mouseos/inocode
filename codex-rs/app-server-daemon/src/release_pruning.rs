@@ -214,7 +214,7 @@ pub(crate) async fn prune(daemon: &Daemon, root: &Path, settings: &DaemonSetting
             || local.is_some_and(|digest| blake3::Hash::from_hex(digest).is_ok()))
             || !matches!(
                 manifest.entrypoint.as_str(),
-                "bin/inocode" | "bin/codex.exe"
+                "bin/inocode" | "bin/inocode.exe"
             )
         {
             continue;

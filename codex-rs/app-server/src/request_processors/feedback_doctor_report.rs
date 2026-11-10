@@ -2,7 +2,7 @@
 //!
 //! Feedback upload should never depend on doctor succeeding. This module runs
 //! the configured Codex executable as a subprocess, accepts only valid JSON from
-//! `codex doctor --json --feedback`, derives a small set of Sentry tags, and otherwise
+//! `inocode doctor --json --feedback`, derives a small set of Sentry tags, and otherwise
 //! skips the attachment with a warning. Keeping the report generation out of the
 //! app-server process avoids sharing doctor internals across crates while still
 //! using the CLI's JSON report format with bounded database scans.

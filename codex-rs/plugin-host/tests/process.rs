@@ -15,7 +15,7 @@ static PROCESS_FIXTURES: tokio::sync::Semaphore =
 async fn owns_a_separate_process_group_and_reaps_the_helper()
 -> Result<(), Box<dyn std::error::Error>> {
     let _fixture = PROCESS_FIXTURES.acquire().await?;
-    let program = codex_utils_cargo_bin::cargo_bin("codex-plugin-test-helper")?;
+    let program = codex_utils_cargo_bin::cargo_bin("inocode-plugin-test-helper")?;
     let mut child = PluginProcess::spawn(&program, &CancellationToken::new()).await?;
     let (input, output) = child.pipes();
     #[cfg(unix)]
@@ -48,7 +48,7 @@ async fn owns_a_separate_process_group_and_reaps_the_helper()
 async fn already_canceled_startup_does_not_launch_the_helper()
 -> Result<(), Box<dyn std::error::Error>> {
     let _fixture = PROCESS_FIXTURES.acquire().await?;
-    let program = codex_utils_cargo_bin::cargo_bin("codex-plugin-test-helper")?;
+    let program = codex_utils_cargo_bin::cargo_bin("inocode-plugin-test-helper")?;
     let stop = CancellationToken::new();
     stop.cancel();
     let error = PluginProcess::spawn(&program, &stop)
@@ -71,7 +71,7 @@ async fn dropping_the_helper_also_closes_descendant_pipes() -> Result<(), Box<dy
     let socket = directory.path().join("descendant.sock");
     let listener = tokio::net::UnixListener::bind(&socket)?;
 
-    let program = codex_utils_cargo_bin::cargo_bin("codex-plugin-test-helper")?;
+    let program = codex_utils_cargo_bin::cargo_bin("inocode-plugin-test-helper")?;
     let mut child = PluginProcess::spawn(&program, &CancellationToken::new()).await?;
     let (input, output) = child.pipes();
     let _group = output.next().await.expect("expected frame")?;
@@ -92,7 +92,7 @@ async fn caller_can_cancel_a_stalled_handshake_and_reap_the_helper()
     let directory = tempfile::tempdir()?;
     let program = directory.path().join("unready-plugin-probe");
     std::fs::copy(
-        codex_utils_cargo_bin::cargo_bin("codex-plugin-test-helper")?,
+        codex_utils_cargo_bin::cargo_bin("inocode-plugin-test-helper")?,
         &program,
     )?;
     let listener = tokio::net::UnixListener::bind(program.with_extension("sock"))?;
@@ -134,7 +134,7 @@ async fn preserves_exit_status_and_bounded_stderr_from_startup_and_runtime_failu
         "failing-plugin-probe{}",
         std::env::consts::EXE_SUFFIX
     ));
-    let program = codex_utils_cargo_bin::cargo_bin("codex-plugin-test-helper")?;
+    let program = codex_utils_cargo_bin::cargo_bin("inocode-plugin-test-helper")?;
     std::fs::copy(&program, &failing)?;
     for executable in [&failing, &program] {
         let exit = if executable == &failing {

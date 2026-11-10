@@ -188,7 +188,7 @@ async fn assert_shared_capacity(
 #[tokio::test]
 async fn stdio_shared_sessions_complete_thousands_of_callbacks() {
     let provider = ProcessOwnedCodeModeSessionProvider::with_host_program(
-        codex_utils_cargo_bin::cargo_bin("codex-code-mode-host").expect("host binary"),
+        codex_utils_cargo_bin::cargo_bin("inocode-code-mode-host").expect("host binary"),
     );
     assert_shared_capacity(&provider, /*cells*/ 256, /*calls_per_cell*/ 16).await;
 }

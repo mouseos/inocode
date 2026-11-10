@@ -72,7 +72,7 @@ async fn pipes_stdin_and_stdout_through_socket() -> anyhow::Result<()> {
     let child_task = tokio::task::spawn_blocking(move || -> anyhow::Result<ChildOutput> {
         let stdin =
             std::fs::File::open(&request_path).context("failed to open child stdin fixture")?;
-        let mut child = Command::new(codex_utils_cargo_bin::cargo_bin("codex-stdio-to-uds")?)
+        let mut child = Command::new(codex_utils_cargo_bin::cargo_bin("inocode-stdio-to-uds")?)
             .arg(&socket_path)
             .stdin(Stdio::from(stdin))
             .stdout(Stdio::piped())

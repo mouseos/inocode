@@ -137,7 +137,7 @@ fn stage_windows_sandbox_helpers() -> anyhow::Result<()> {
                 .with_context(|| format!("create resources dir {}", resources_dir.display()));
         }
     }
-    for helper_name in ["codex-windows-sandbox-setup", "codex-command-runner"] {
+    for helper_name in ["inocode-windows-sandbox-setup", "inocode-command-runner"] {
         let helper = codex_utils_cargo_bin::cargo_bin(helper_name)?;
         let file_name = Path::new(helper_name).with_extension("exe");
         let destination = resources_dir.join(file_name);
@@ -169,18 +169,18 @@ fn stage_windows_sandbox_cli(fixture_bin: &Path) -> anyhow::Result<(PathBuf, Pat
     let resources_dir = fixture_bin.join("codex-resources");
     std::fs::create_dir_all(&resources_dir)?;
 
-    let codex_source = codex_utils_cargo_bin::cargo_bin("codex")?;
-    let codex = fixture_bin.join("codex.exe");
+    let codex_source = codex_utils_cargo_bin::cargo_bin("inocode")?;
+    let codex = fixture_bin.join("inocode.exe");
     codex_utils_cargo_bin::copy_executable(&codex_source, &codex)
         .with_context(|| format!("copy {} to {}", codex_source.display(), codex.display()))?;
-    for helper_name in ["codex-windows-sandbox-setup", "codex-command-runner"] {
+    for helper_name in ["inocode-windows-sandbox-setup", "inocode-command-runner"] {
         let helper = codex_utils_cargo_bin::cargo_bin(helper_name)?;
         let destination = resources_dir.join(Path::new(helper_name).with_extension("exe"));
         codex_utils_cargo_bin::copy_executable(&helper, &destination)
             .with_context(|| format!("copy {} to {}", helper.display(), destination.display()))?;
     }
 
-    let probe_source = codex_utils_cargo_bin::cargo_bin("codex-windows-managed-deny-probe")?;
+    let probe_source = codex_utils_cargo_bin::cargo_bin("inocode-windows-managed-deny-probe")?;
     let probe = fixture_bin.join("managed-deny-probe.exe");
     codex_utils_cargo_bin::copy_executable(&probe_source, &probe)
         .with_context(|| format!("copy {} to {}", probe_source.display(), probe.display()))?;

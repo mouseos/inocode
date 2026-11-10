@@ -85,7 +85,7 @@ fn accepts_dynamic_domain_socket_and_hook_matcher_keys() {
 
 #[test]
 fn strict_flag_controls_config_parsing() {
-    let base = ["codex-network-proxy", "--config", "policy.json"];
+    let base = ["inocode-network-proxy", "--config", "policy.json"];
     let lenient = super::Args::try_parse_from(base).unwrap();
     let strict = super::Args::try_parse_from(base.into_iter().chain(["--strict"])).unwrap();
     for bytes in [

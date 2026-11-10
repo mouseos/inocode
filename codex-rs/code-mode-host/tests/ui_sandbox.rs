@@ -1,6 +1,6 @@
 #[test]
 fn plugin_arguments_are_parsed_before_startup() -> Result<(), Box<dyn std::error::Error>> {
-    let program = codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?;
+    let program = codex_utils_cargo_bin::cargo_bin("inocode-code-mode-host")?;
     for arguments in [
         ["--help", "--codex-ui-plugin-process"],
         ["--codex-ui-plugin-process", "--help"],

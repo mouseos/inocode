@@ -610,7 +610,7 @@ fn keyring_auth_storage_compute_store_key_for_home_directory() -> anyhow::Result
 
     let key = compute_store_key(codex_home.as_path())?;
 
-    assert_eq!(key, "cli|940db7b1d0e4eb40");
+    assert_eq!(key, "cli|11e892c4afcb950a");
     Ok(())
 }
 

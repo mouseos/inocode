@@ -20,7 +20,7 @@ use wiremock::matchers::method;
 use wiremock::matchers::path;
 
 fn codex_command(codex_home: &Path) -> Result<assert_cmd::Command> {
-    let mut cmd = assert_cmd::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?);
+    let mut cmd = assert_cmd::Command::new(codex_utils_cargo_bin::cargo_bin("inocode")?);
     cmd.env("INOCODE_HOME", codex_home);
     Ok(cmd)
 }
@@ -415,7 +415,7 @@ fn no_daemon_rejects_queue_and_explicit_remote_targets() -> Result<()> {
         let args = args.split_whitespace().collect::<Vec<_>>();
         let home = TempDir::new()?;
         let expected = if args.contains(&"queue") && !args.contains(&"--remote") {
-            "--no-daemon cannot be used with codex queue."
+            "--no-daemon cannot be used with inocode queue."
         } else {
             "--no-daemon cannot be used with --remote."
         };

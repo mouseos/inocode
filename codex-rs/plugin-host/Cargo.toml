@@ -10,7 +10,7 @@ doctest = false
 test = false
 
 [[bin]]
-name = "codex-plugin-test-helper"
+name = "inocode-plugin-test-helper"
 path = "tests/fixtures/plugin_process.rs"
 test = false
 bench = false

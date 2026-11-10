@@ -11,7 +11,7 @@ test = false
 doctest = false
 
 [[bin]]
-name = "codex-message-board-mcp"
+name = "inocode-message-board-mcp"
 path = "src/main.rs"
 test = false
 

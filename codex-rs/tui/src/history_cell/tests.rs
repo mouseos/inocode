@@ -806,7 +806,7 @@ async fn session_info_preserves_styled_tooltip_links() {
         &session_configured_event("gpt-5"),
         /*is_first_event*/ false,
         Some(
-            "Use **/copy** or `ctrl+y`; visit the [Codex community forum](https://example.com)."
+            "Use **/copy** or `ctrl+y`; visit the [InoCode community forum](https://example.com)."
                 .to_string(),
         ),
         Some(PlanType::Free),
@@ -1037,7 +1037,7 @@ fn error_event_bedrock_expired_signature_snapshot() {
         user_message: Some(
             "Amazon Bedrock rejected the request because its AWS signature has expired. \
 Refresh your AWS credentials and retry. If `AWS_BEARER_TOKEN_BEDROCK` is set, update or \
-unset it, then restart Codex"
+unset it, then restart InoCode"
                 .to_string(),
         ),
         url: Some("https://bedrock-mantle.us-east-2.api.aws/openai/v1/responses".to_string()),

@@ -267,7 +267,7 @@ async fn stdin_token_startup(
         .expect(u64::from(matches!(expected, SkipPolicy | LoadPolicy)))
         .mount_as_scoped(&registry)
         .await;
-    let mut child = tokio::process::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?)
+    let mut child = tokio::process::Command::new(codex_utils_cargo_bin::cargo_bin("inocode")?)
         .current_dir(home.path())
         .env("INOCODE_HOME", home.path())
         .env("INOCODE_CA_CERTIFICATE", ca)

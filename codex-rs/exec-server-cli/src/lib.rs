@@ -15,7 +15,11 @@ mod exec_server_telemetry;
 pub use command::ExecServerCommand;
 
 #[derive(Debug, Parser)]
-#[command(name = "codex-exec-server", bin_name = "codex-exec-server", version)]
+#[command(
+    name = "inocode-exec-server",
+    bin_name = "inocode-exec-server",
+    version
+)]
 struct ExecServerCli {
     #[command(flatten)]
     config_overrides: CliConfigOverrides,

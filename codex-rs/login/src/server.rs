@@ -1091,3 +1091,17 @@ mod tests {
         assert!(!body.contains("missing_codex_entitlement"));
     }
 }
+
+#[cfg(test)]
+mod isolation_tests {
+    use super::DEFAULT_PORT;
+    use super::FALLBACK_PORT;
+
+    /// InoCode prefers 1455 and falls back to 1457. InoCode prefers the other registered
+    /// port first so that two concurrent logins do not take the same listener.
+    #[test]
+    fn callback_port_preference_differs_from_codex() {
+        assert_eq!(DEFAULT_PORT, 1457);
+        assert_eq!(FALLBACK_PORT, 1455);
+    }
+}

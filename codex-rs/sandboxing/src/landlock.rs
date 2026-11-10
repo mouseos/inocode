@@ -4,7 +4,7 @@ use std::path::Path;
 
 /// Basename used when the Codex executable self-invokes as the Linux sandbox
 /// helper.
-pub const INOCODE_LINUX_SANDBOX_ARG0: &str = "codex-linux-sandbox";
+pub const INOCODE_LINUX_SANDBOX_ARG0: &str = "inocode-linux-sandbox";
 
 pub fn allow_network_for_proxy(enforce_managed_network: bool) -> bool {
     // When managed network requirements are active, request proxy-only

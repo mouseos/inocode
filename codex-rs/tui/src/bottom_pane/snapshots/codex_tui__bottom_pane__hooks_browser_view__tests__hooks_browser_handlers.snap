@@ -12,7 +12,7 @@ expression: "render_lines(&view, 112)"
   Event     PreToolUse                                                                                          
   Matcher   Bash                                                                                                
   Source    Plugin - superpowers@openai-curated                                                                 
-  Command   ${INOCODE_PLUGIN_ROOT}/hooks/pre-tool-use-check.sh                                                    
+  Command   ${INOCODE_PLUGIN_ROOT}/hooks/pre-tool-use-check.sh                                                  
   Mode      Sync                                                                                                
   Timeout   30s                                                                                                 
   Trust     Trusted                                                                                             

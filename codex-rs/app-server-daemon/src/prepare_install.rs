@@ -158,7 +158,7 @@ async fn prepare_from_package(
     let target = platform_target()?;
     let mut metadata: serde_json::Value = serde_json::from_slice(&manifest_bytes)?;
     let entrypoint = if cfg!(windows) {
-        "bin/codex.exe"
+        "bin/inocode.exe"
     } else {
         "bin/inocode"
     };
@@ -254,7 +254,7 @@ async fn prepare_from_package(
         for (from, to) in [
             (staged_exe, Path::new(entrypoint)),
             (
-                Path::new("codex-code-mode-host.exe"),
+                Path::new("inocode-code-mode-host.exe"),
                 Path::new("bin/codex-code-mode-host.exe"),
             ),
         ] {
@@ -506,9 +506,9 @@ fn stable_version(value: &str) -> Option<semver::Version> {
 
 fn validate_package(root: &Path, entrypoint: &str) -> Result<()> {
     let code_mode_host = Path::new(entrypoint).with_file_name(if cfg!(windows) {
-        "codex-code-mode-host.exe"
+        "inocode-code-mode-host.exe"
     } else {
-        "codex-code-mode-host"
+        "inocode-code-mode-host"
     });
     let code_mode_host = code_mode_host.to_string_lossy();
     let mut names = vec![

@@ -44,7 +44,7 @@ async fn local_provider() -> Result<(MockServer, TempDir)> {
 }
 
 fn local_command(home: &TempDir) -> Result<Command> {
-    let mut command = Command::new(codex_utils_cargo_bin::cargo_bin("codex")?);
+    let mut command = Command::new(codex_utils_cargo_bin::cargo_bin("inocode")?);
     command
         .current_dir(home.path())
         .env("INOCODE_HOME", home.path())
@@ -311,7 +311,7 @@ trust_level = "trusted"
             .mount(&server)
             .await;
 
-        let output = Command::new(codex_utils_cargo_bin::cargo_bin("codex")?)
+        let output = Command::new(codex_utils_cargo_bin::cargo_bin("inocode")?)
             .current_dir(codex_home.path())
             .env("INOCODE_HOME", codex_home.path())
             .env("NO_PROXY", "127.0.0.1,localhost")
@@ -388,7 +388,7 @@ async fn invalid_custom_ca_falls_back_to_system_roots() -> Result<()> {
         ),
     )?;
     for sandbox in [None, Some("seatbelt")] {
-        let mut command = Command::new(codex_utils_cargo_bin::cargo_bin("codex")?);
+        let mut command = Command::new(codex_utils_cargo_bin::cargo_bin("inocode")?);
         command
             .args(["doctor", "--json"])
             .env("INOCODE_HOME", codex_home.path())
@@ -452,7 +452,7 @@ fn doctor_reports_macos_system_proxy_configuration_and_policy() -> Result<()> {
 
 #[cfg(target_os = "macos")]
 fn doctor_report(codex_home: &Path) -> Result<Value> {
-    let output = Command::new(codex_utils_cargo_bin::cargo_bin("codex")?)
+    let output = Command::new(codex_utils_cargo_bin::cargo_bin("inocode")?)
         .args(["doctor", "--json"])
         .env("INOCODE_HOME", codex_home)
         .stdin(Stdio::null())

@@ -71,7 +71,7 @@ async fn sandbox_blocks_terminal_input_injection() -> anyhow::Result<()> {
     )
     .await?;
 
-    let codex = codex_utils_cargo_bin::cargo_bin("codex")?;
+    let codex = codex_utils_cargo_bin::cargo_bin("inocode")?;
     run_probe(
         &codex.to_string_lossy(),
         vec![

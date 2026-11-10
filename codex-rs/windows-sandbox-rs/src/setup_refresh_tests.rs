@@ -33,7 +33,7 @@ fn refresh_helper_has_no_console() -> Result<()> {
     codex_utils_cargo_bin::copy_executable(&executable, &detached)?;
     codex_utils_cargo_bin::copy_executable(
         &executable,
-        &temporary.path().join("codex-windows-sandbox-setup.exe"),
+        &temporary.path().join("inocode-windows-sandbox-setup.exe"),
     )?;
     let output = Command::new(detached)
         .args(["--exact", DETACHED_TEST, "--nocapture"])

@@ -174,7 +174,7 @@ async fn queue_does_not_fallback_from_unsupported_explicit_remote() -> Result<()
 
 #[test]
 fn queue_rejects_empty_message() -> Result<()> {
-    let output = std::process::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?)
+    let output = std::process::Command::new(codex_utils_cargo_bin::cargo_bin("inocode")?)
         .args(["queue", "--thread", THREAD_ID, "--message", ""])
         .output()?;
     assert!(!output.status.success());
@@ -203,7 +203,7 @@ fn queue_rejects_unsupported_options() -> Result<()> {
         ("-C . queue --remote unix://", "`--cd` with `--remote`"),
         ("--remote unix:// queue -C .", "`--cd` with `--remote`"),
     ] {
-        let output = std::process::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?)
+        let output = std::process::Command::new(codex_utils_cargo_bin::cargo_bin("inocode")?)
             .env("INOCODE_HOME", codex_home.path())
             .args(args.split_whitespace())
             .args(["--thread", THREAD_ID, "--message", "do the thing"])
@@ -247,7 +247,7 @@ async fn run_remote_queue_command(response: QueueResponse) -> Result<(Output, Va
             "INOCODE_REMOTE_TOKEN",
         ]
     };
-    let output = tokio::process::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?)
+    let output = tokio::process::Command::new(codex_utils_cargo_bin::cargo_bin("inocode")?)
         .env("INOCODE_HOME", codex_home.path())
         .env("INOCODE_REMOTE_TOKEN", "test-token")
         .args(remote_args)
@@ -296,7 +296,7 @@ async fn remote_session_commands_with_workload_identity_use_server_auth() -> Res
     use wiremock::matchers::path;
 
     let codex_home = socket_test_home()?;
-    let codex = codex_utils_cargo_bin::cargo_bin("codex")?;
+    let codex = codex_utils_cargo_bin::cargo_bin("inocode")?;
     let model = responses::start_mock_server().await;
     let model_requests = Mock::given(method("POST"))
         .and(path("/v1/responses"))
@@ -601,7 +601,7 @@ fn remote_session_commands_validate_config() -> Result<()> {
         for &(args, config_file, config) in cases {
             let codex_home = TempDir::new()?;
             std::fs::write(codex_home.path().join(config_file), config)?;
-            let output = std::process::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?)
+            let output = std::process::Command::new(codex_utils_cargo_bin::cargo_bin("inocode")?)
                 .env("INOCODE_HOME", codex_home.path())
                 .current_dir(codex_home.path())
                 .args(args)
@@ -644,7 +644,7 @@ async fn queue_rejects_local_daemon_that_does_not_support_queueing() -> Result<(
         .await
     });
 
-    let output = tokio::process::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?)
+    let output = tokio::process::Command::new(codex_utils_cargo_bin::cargo_bin("inocode")?)
         .env("INOCODE_HOME", codex_home.path())
         .args(["queue", "--thread", THREAD_ID, "--message", "do the thing"])
         .output()
@@ -678,7 +678,7 @@ async fn queue_rejects_overrides_that_bypass_local_daemon() -> Result<()> {
         Ok::<_, std::io::Error>(())
     });
 
-    let output = tokio::process::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?)
+    let output = tokio::process::Command::new(codex_utils_cargo_bin::cargo_bin("inocode")?)
         .env("INOCODE_HOME", codex_home.path())
         .args([
             "queue",

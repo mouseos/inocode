@@ -75,7 +75,7 @@ beneath the host profile.
 The request uses launcher-only environment chunks to leave Windows' command-line
 budget to the workload. Payloads are limited to 1,000,000 UTF-8 bytes and chunks
 to 4096 bytes; the helper removes them before native process creation. Use
-`codex sandbox windows` to debug through the same preparation path as execution.
+`inocode sandbox windows` to debug through the same preparation path as execution.
 
 ## Limits and Windows validation
 

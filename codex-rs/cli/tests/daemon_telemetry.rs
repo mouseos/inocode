@@ -16,7 +16,7 @@ async fn foreground_update_honors_metrics_exporter_and_reports_unconfirmed() -> 
         ("analytics.enabled = false\n", true, true),
         ("analytics.enabled = true\n", true, false),
     ] {
-        let codex = codex_utils_cargo_bin::cargo_bin("codex")?;
+        let codex = codex_utils_cargo_bin::cargo_bin("inocode")?;
         let server = MockServer::start().await;
         Mock::given(wiremock::matchers::path("/metrics"))
             .respond_with(ResponseTemplate::new(200))

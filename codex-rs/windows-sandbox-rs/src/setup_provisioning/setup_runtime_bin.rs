@@ -97,7 +97,10 @@ pub(super) fn ensure_codex_app_runtime_paths_readable(
         }
     }
     if let Some(local_app_data) = local_app_data {
-        let runtime_root = local_app_data.join("OpenAI").join("Codex").join("runtimes");
+        let runtime_root = local_app_data
+            .join("mouseos")
+            .join("InoCode")
+            .join("runtimes");
         if let Err(err) = ensure_runtime_tree_readable(&runtime_root, sandbox_group_psid) {
             let message = format!("runtime read/execute validation failed: {err:#}");
             super::log_line(log, &message)?;
@@ -189,7 +192,7 @@ fn ensure_runtime_tree_readable(
 fn runtime_paths(local_app_data: Option<PathBuf>, user_profile: Option<PathBuf>) -> Vec<PathBuf> {
     let mut runtime_paths = Vec::new();
     if let Some(local_app_data) = local_app_data {
-        let codex_root = local_app_data.join("OpenAI").join("Codex");
+        let codex_root = local_app_data.join("mouseos").join("InoCode");
         runtime_paths.push(codex_root);
     }
     // The managed primary runtime is installed outside the LocalAppData runtime roots.

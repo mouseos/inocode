@@ -312,7 +312,7 @@ impl TestAppServer {
                 .is_err_and(|error| error.kind() == std::io::ErrorKind::ExecutableFileBusy)
                 || retries == 2
             {
-                break process.context("codex app-server proc should start")?;
+                break process.context("inocode app-server proc should start")?;
             }
             retries += 1;
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -2121,14 +2121,14 @@ impl TestAppServerBuilder {
         let custom_program = program.is_some();
         let mut program = match program {
             Some(program) => program,
-            None => codex_utils_cargo_bin::cargo_bin("codex-app-server")
+            None => codex_utils_cargo_bin::cargo_bin("inocode-app-server")
                 .context("should find binary for codex-app-server")?,
         };
         let mut owned_install_dir = None;
         if !custom_program
             && codex_utils_cargo_bin::runfiles_available()
             && let Ok(code_mode_host_program) =
-                codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")
+                codex_utils_cargo_bin::cargo_bin("inocode-code-mode-host")
         {
             // Bazel keeps binary targets in separate package directories.
             // Recreate the installed sibling layout without a path override.

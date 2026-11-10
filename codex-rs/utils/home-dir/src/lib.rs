@@ -132,3 +132,23 @@ mod tests {
         assert_eq!(resolved, expected);
     }
 }
+
+#[cfg(test)]
+mod isolation_tests {
+    use super::find_codex_home_from_env;
+
+    /// InoCode must never fall back to the directory used by a side-by-side Codex install.
+    #[test]
+    fn default_home_is_dot_inocode_and_not_dot_codex() {
+        let home = find_codex_home_from_env(/*codex_home_env*/ None).expect("default home");
+        let name = home.as_path().file_name().expect("file name").to_owned();
+        assert_eq!(name, std::ffi::OsString::from(".inocode"));
+        assert!(
+            !home
+                .as_path()
+                .components()
+                .any(|c| c.as_os_str() == ".codex"),
+            "default home must not live under a .codex directory: {home:?}"
+        );
+    }
+}

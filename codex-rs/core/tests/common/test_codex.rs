@@ -877,7 +877,7 @@ impl TestCodexBuilder {
         let code_mode_host_program = self
             .code_mode_host_program
             .take()
-            .or_else(|| codex_utils_cargo_bin::cargo_bin("codex-code-mode-host").ok());
+            .or_else(|| codex_utils_cargo_bin::cargo_bin("inocode-code-mode-host").ok());
         let factory =
             match &self.models_manager {
                 Some(models) => codex_core::test_support::fixed_model_catalog(Arc::clone(models)),
@@ -1043,9 +1043,9 @@ impl TestCodexBuilder {
         config.model = Some("gpt-5.5".to_string());
         config.cwd = cwd_override;
         config.model_provider = model_provider;
-        if let Ok(path) = codex_utils_cargo_bin::cargo_bin("codex") {
+        if let Ok(path) = codex_utils_cargo_bin::cargo_bin("inocode") {
             config.codex_self_exe = Some(path);
-        } else if let Ok(path) = codex_utils_cargo_bin::cargo_bin("codex-exec") {
+        } else if let Ok(path) = codex_utils_cargo_bin::cargo_bin("inocode-exec") {
             // `codex-exec` also supports `--codex-run-as-apply-patch`, so use it
             // when the multitool binary is not available in test builds.
             config.codex_self_exe = Some(path);

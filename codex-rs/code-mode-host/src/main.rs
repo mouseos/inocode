@@ -108,7 +108,7 @@ fn build_trace_provider(endpoint: &str) -> anyhow::Result<OtelProvider> {
             codex_http_client::OutboundProxyPolicy::ReqwestDefault,
         ),
         environment: "code-mode-host".to_string(),
-        service_name: "codex-code-mode-host".to_string(),
+        service_name: "inocode-code-mode-host".to_string(),
         service_version: env!("CARGO_PKG_VERSION").to_string(),
         codex_home: PathBuf::from("/tmp"),
         exporter: OtelExporter::None,

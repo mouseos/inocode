@@ -41,7 +41,7 @@ async fn http_board_is_shared_with_children(mode: BoardMode) -> anyhow::Result<(
         connection
     } else {
         let _state = codex_state::StateRuntime::init(sqlite.clone(), "openai".into()).await?;
-        let command = codex_utils_cargo_bin::cargo_bin("codex-message-board-mcp")?;
+        let command = codex_utils_cargo_bin::cargo_bin("inocode-message-board-mcp")?;
         let mut child =
             tokio::process::Command::from(codex_utils_process::background_command(command))
                 .arg("--sqlite-home")
