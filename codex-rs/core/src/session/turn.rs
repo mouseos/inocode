@@ -488,6 +488,8 @@ pub(crate) async fn run_turn(
 
     sess.merge_connector_selection(explicitly_enabled_connectors.clone())
         .await;
+    let inocode_extra_items =
+        crate::compact_inocode::turn_extras(&sess, &turn_context, &user_input).await;
     sess.set_previous_turn_settings(Some(PreviousTurnSettings {
         model: turn_context.model_info().slug.clone(),
         cyber_access_program: turn_context.cyber_access_program,
@@ -495,7 +497,7 @@ pub(crate) async fn run_turn(
         realtime_active: Some(turn_context.realtime_active),
     }))
     .await;
-    for response_item in injection_items {
+    for response_item in injection_items.into_iter().chain(inocode_extra_items) {
         sess.record_conversation_items(
             &turn_context,
             &first_step_context.settings.model_info,

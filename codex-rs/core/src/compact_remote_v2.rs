@@ -131,7 +131,14 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
         CompactionImplementation::ResponsesCompactionV2,
         phase,
     );
-    run_remote_compact_task_inner(
+    let thread_key = sess.thread_id.to_string();
+    if crate::compact_inocode::auto_compact_tripped(&thread_key) {
+        return Err(codex_protocol::error::CodexErr::Fatal(format!(
+            "automatic compaction stopped for this session after {} consecutive failures; run /compact to retry manually",
+            crate::compact_inocode::MAX_CONSECUTIVE_COMPACT_FAILURES
+        )));
+    }
+    let result = run_remote_compact_task_inner(
         &sess,
         &step_context,
         &replacement_step_context,
@@ -141,7 +148,9 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
         candidate,
         fallback,
     )
-    .await
+    .await;
+    crate::compact_inocode::record_compact_result(&thread_key, result.is_ok());
+    result
 }
 
 pub(crate) async fn run_remote_compact_task(

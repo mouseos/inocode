@@ -54,7 +54,9 @@ codex-guardian-reviewer = { workspace = true }
 codex-history = { workspace = true }
 codex-hooks = { workspace = true }
 codex-inocode-knowledge = { workspace = true }
+codex-inocode-flags = { workspace = true }
 codex-inocode-team = { workspace = true }
+codex-inocode-tool-output = { workspace = true }
 codex-http-client = { workspace = true }
 codex-install-context = { workspace = true }
 codex-network-proxy = { workspace = true }

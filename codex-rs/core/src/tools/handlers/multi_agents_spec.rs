@@ -664,7 +664,7 @@ fn spawn_agent_common_properties_v2(agent_type_description: &str) -> BTreeMap<St
         (
             "fork_turns".to_string(),
             JsonSchema::string(Some(
-                "Parent history to inherit. Defaults to `all`; use `none` to start without parent history. Only `all` and `none` are supported.".to_string(),
+                "Parent history to inherit. Defaults to `none` (start with an empty context; put what the agent needs in `message`); use `all` only when the agent needs the parent's context. Only `all` and `none` are supported.".to_string(),
             )),
         ),
         (
@@ -805,7 +805,7 @@ The spawned agent will have the same tools as you and the ability to spawn its o
 It will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes.
 The new agent's canonical task name will be provided to it along with the message.
 
-Note that passing `fork_turns="none"` will not pass any surrounding context to the spawned subagent, which may cause the agent to lack the context it needs to complete its task, whereas `fork_turns="all"` will provide the subagent with all surrounding context."#
+Note that passing `fork_turns="none"` will not pass any surrounding context to the spawned subagent, which may cause the agent to lack the context it needs to complete its task, whereas `fork_turns="all"` will provide the subagent with all surrounding context. The default is `none`: research and independent tasks start from an empty context, so state the task fully in the message."#
         )
     };
 

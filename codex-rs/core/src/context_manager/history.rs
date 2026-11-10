@@ -60,6 +60,7 @@ use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
+use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ImageDetail;
 use codex_protocol::models::ImageReference;
 use codex_protocol::models::ResponseItem;
@@ -652,6 +653,21 @@ impl ContextManager {
         }
     }
 
+    fn tool_name_for_call(&self, call_id: &str) -> Option<String> {
+        self.items
+            .iter()
+            .rev()
+            .find_map(|envelope| match &envelope.item {
+                ResponseItem::FunctionCall {
+                    call_id: id, name, ..
+                } if id == call_id => Some(name.clone()),
+                ResponseItem::CustomToolCall {
+                    call_id: id, name, ..
+                } if id == call_id => Some(name.clone()),
+                _ => None,
+            })
+    }
+
     fn record_item_with_metadata(
         &mut self,
         item: &ResponseItem,
@@ -666,6 +682,12 @@ impl ContextManager {
             metadata: metadata.cloned(),
         };
         self.sampling.record(&mut processed);
+        let call_id = match &processed.item {
+            ResponseItem::FunctionCallOutput { call_id, .. } => call_id.clone().unwrap_or_default(),
+            ResponseItem::CustomToolCallOutput { call_id, .. } => call_id.clone(),
+            _ => String::new(),
+        };
+        let tool_name = self.tool_name_for_call(&call_id);
         if let ResponseItem::FunctionCallOutput { output, .. }
         | ResponseItem::CustomToolCallOutput { output, .. } = &mut processed.item
         {
@@ -674,6 +696,7 @@ impl ContextManager {
                 .and_then(|metadata| metadata.history_truncation_token_limit)
                 .map(TruncationPolicy::Tokens)
                 .unwrap_or_else(|| with_serialization_allowance(policy));
+            inocode_persist_or_placeholder(output, policy, tool_name.as_deref());
             truncate_function_output_payload(output, policy, estimate_audio_token_count);
         }
         if let Some(review_history) = &mut self.review_history
@@ -1573,6 +1596,41 @@ fn estimate_audio_reference_bytes(
             i64::try_from(approx_bytes_for_tokens(audio_durations.tokens(file_id)))
                 .unwrap_or(i64::MAX)
         }
+    }
+}
+
+/// InoCode: replace an empty result with a placeholder and spill an oversized text
+/// result to `INOCODE_HOME/tool-results/` (`compaction.persist_large_output`),
+/// leaving only a preview and the path in history. Anything not replaced here
+/// falls through to the normal truncation.
+fn inocode_persist_or_placeholder(
+    output: &mut FunctionCallOutputPayload,
+    policy: TruncationPolicy,
+    tool_name: Option<&str>,
+) {
+    let FunctionCallOutputBody::Text(text) = &mut output.body else {
+        return;
+    };
+    if text.trim().is_empty() {
+        *text = codex_inocode_tool_output::empty_output_placeholder(tool_name.unwrap_or("tool"));
+        return;
+    }
+    let threshold = policy.token_budget();
+    // Cheap pre-check so the flag file is only read for genuinely large outputs.
+    if text.len() <= threshold {
+        return;
+    }
+    let flags = codex_inocode_flags::InocodeFlags::load();
+    if !flags.compaction_persist_large_output {
+        return;
+    }
+    let config = codex_inocode_tool_output::PersistConfig::new(
+        true,
+        threshold,
+        &codex_inocode_flags::inocode_home(),
+    );
+    if let Some(replacement) = codex_inocode_tool_output::persist_if_large(text, &config) {
+        *text = replacement;
     }
 }
 

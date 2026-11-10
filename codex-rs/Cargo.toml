@@ -78,6 +78,7 @@ members = [
     "ext/inocode-evidence",
     "ext/inocode-knowledge",
     "ext/inocode-team",
+    "ext/inocode-tool-output",
     "ext/inocode-flags",
     "ext/items",
     "ext/memories",
@@ -257,6 +258,7 @@ codex-image-generation-extension = { path = "ext/image-generation" }
 codex-inocode-evidence = { path = "ext/inocode-evidence" }
 codex-inocode-knowledge = { path = "ext/inocode-knowledge" }
 codex-inocode-team = { path = "ext/inocode-team" }
+codex-inocode-tool-output = { path = "ext/inocode-tool-output" }
 codex-inocode-flags = { path = "ext/inocode-flags" }
 codex-external-agent-migration = { path = "external-agent-migration" }
 codex-experimental-api-macros = { path = "codex-experimental-api-macros" }

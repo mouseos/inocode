@@ -92,7 +92,12 @@ pub(crate) async fn build_compaction_replacement_history(
         .build_initial_context_with_world_state(step_context, world_state)
         .await;
     let (prefix, context) = split_prefix_updates(updates);
-    let context = merge_world_state_updates(context);
+    let mut context = merge_world_state_updates(context);
+    // Re-inject the pinned prohibition rules after compaction (remote path).
+    if let Some(item) = crate::compact_inocode::pinned_rules_item(&crate::compact_inocode::local_cwd(&step_context.turn))
+    {
+        context.push(item);
+    }
     (
         assemble_compaction_history(compacted_history, prefix, context),
         snapshot,
@@ -116,6 +121,35 @@ fn assemble_compaction_history(
 }
 
 pub(crate) async fn run_inline_auto_compact_task(
+    sess: Arc<Session>,
+    turn_context: Arc<TurnContext>,
+    replacement_step_context: Arc<StepContext>,
+    world_state: Arc<WorldState>,
+    reason: CompactionReason,
+    phase: CompactionPhase,
+) -> CodexResult<()> {
+    // Circuit breaker: stop automatic compaction after repeated consecutive failures.
+    let thread_key = sess.thread_id.to_string();
+    if crate::compact_inocode::auto_compact_tripped(&thread_key) {
+        return Err(CodexErr::Fatal(format!(
+            "automatic compaction stopped for this session after {} consecutive failures; run /compact to retry manually",
+            crate::compact_inocode::MAX_CONSECUTIVE_COMPACT_FAILURES
+        )));
+    }
+    let result = run_inline_auto_compact_task_unguarded(
+        Arc::clone(&sess),
+        turn_context,
+        replacement_step_context,
+        world_state,
+        reason,
+        phase,
+    )
+    .await;
+    crate::compact_inocode::record_compact_result(&thread_key, result.is_ok());
+    result
+}
+
+async fn run_inline_auto_compact_task_unguarded(
     sess: Arc<Session>,
     turn_context: Arc<TurnContext>,
     replacement_step_context: Arc<StepContext>,
@@ -391,7 +425,22 @@ async fn run_compact_task_inner_impl(
     } else {
         get_last_assistant_message_from_turn(history_snapshot.raw_items()).unwrap_or_default()
     };
-    let summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}");
+    let mut summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}");
+    let local_cwd = Some(crate::compact_inocode::local_cwd(&turn_context));
+    if let Some(cwd) = &local_cwd {
+        // Re-attach the files touched most recently (up to 5, 50k tokens in total).
+        let raw: Vec<ResponseItem> = history_snapshot.raw_items().cloned().collect();
+        let candidates = crate::compact_inocode::recent_file_paths(
+            raw.iter(),
+            cwd,
+            crate::compact_inocode::MAX_REATTACHED_FILES,
+        );
+        let attached = crate::compact_inocode::render_reattached_files(&candidates);
+        if !attached.is_empty() {
+            summary_text.push_str("\n\n");
+            summary_text.push_str(&attached);
+        }
+    }
     let user_messages = collect_annotated_user_messages(history_items);
 
     let mut new_history = build_compacted_history(Vec::new(), &user_messages, &summary_text);
@@ -434,8 +483,15 @@ async fn run_compact_task_inner_impl(
         .assemble_initial_context(&replacement_step_context, rendered)
         .await;
     let (prefix, context) = split_prefix_updates(updates);
-    let new_history =
-        assemble_compaction_history(new_history, prefix, merge_world_state_updates(context));
+    let mut context = merge_world_state_updates(context);
+    // Re-inject the pinned prohibition rules after compaction.
+    if let Some(item) = local_cwd
+        .as_deref()
+        .and_then(crate::compact_inocode::pinned_rules_item)
+    {
+        context.push(item);
+    }
+    let new_history = assemble_compaction_history(new_history, prefix, context);
     sess.replace_compacted_history(
         new_history,
         replacement_step_context.to_turn_context_item(),
