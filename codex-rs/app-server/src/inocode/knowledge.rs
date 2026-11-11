@@ -6,8 +6,11 @@ use super::unknown_method;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_params;
 use codex_app_server_protocol::ClientRequest;
+use codex_app_server_protocol::InocodeKnowledgeHandoffPreviewResponse;
 use codex_app_server_protocol::InocodeKnowledgeKind;
 use codex_app_server_protocol::InocodeKnowledgeListResponse;
+use codex_app_server_protocol::InocodeKnowledgePinnedResponse;
+use codex_app_server_protocol::InocodeKnowledgePinnedRule;
 use codex_app_server_protocol::InocodeKnowledgeReadResponse;
 use codex_app_server_protocol::InocodeKnowledgeScope;
 use codex_app_server_protocol::InocodeKnowledgeSearchResponse;
@@ -184,6 +187,38 @@ pub(crate) async fn handle(request: ClientRequest) -> InocodeResult {
                 }
                 .into(),
             ))
+        }
+        ClientRequest::InocodeKnowledgePinned { params, .. } => {
+            let cwd = PathBuf::from(&params.cwd);
+            let rules = kb::pinned_rules(&cwd)
+                .into_iter()
+                .map(|r| InocodeKnowledgePinnedRule {
+                    id: r.id,
+                    title: r.title,
+                    reason: r.reason.filter(|s| !s.is_empty()),
+                    scope: match r.scope {
+                        kb::Scope::Project => InocodeKnowledgeScope::Project,
+                        kb::Scope::Global => InocodeKnowledgeScope::Global,
+                    },
+                    status: match r.status {
+                        kb::Status::Unverified => InocodeKnowledgeStatus::Unverified,
+                        kb::Status::Verified => InocodeKnowledgeStatus::Verified,
+                        kb::Status::Superseded => InocodeKnowledgeStatus::Superseded,
+                        kb::Status::Retracted => InocodeKnowledgeStatus::Retracted,
+                    },
+                })
+                .collect();
+            Ok(Some(
+                InocodeKnowledgePinnedResponse {
+                    rules,
+                    text: kb::pinned_rules_text(&cwd),
+                }
+                .into(),
+            ))
+        }
+        ClientRequest::InocodeKnowledgeHandoffPreview { params, .. } => {
+            let text = kb::build_handoff_pack(&PathBuf::from(&params.cwd), &params.task);
+            Ok(Some(InocodeKnowledgeHandoffPreviewResponse { text }.into()))
         }
         other => Err(unknown_method(other.method_name())),
     }

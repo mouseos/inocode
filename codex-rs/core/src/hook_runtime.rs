@@ -203,6 +203,7 @@ pub(crate) async fn run_pre_tool_use_hooks(
     target_environments: &[&str],
 ) -> PreToolUseHookResult {
     let turn_context = &step_context.turn;
+    let guard_tool_use_id = tool_use_id.clone();
     let request = PreToolUseRequest {
         session_id: sess.session_id().into(),
         turn_id: turn_context.sub_id.clone(),
@@ -242,6 +243,20 @@ pub(crate) async fn run_pre_tool_use_hooks(
         let guard_cwd = tool_hook_cwd(&step_context.environments, turn_context);
         let action = codex_inocode_knowledge::action_from_tool_input(tool_name.name(), tool_input);
         let verdict = codex_inocode_knowledge::guard_check(guard_cwd.as_path(), &action);
+        codex_inocode_knowledge::record_guard_hits(
+            &verdict,
+            &codex_inocode_knowledge::GuardTarget {
+                thread_id: sess.thread_id.to_string(),
+                turn_id: Some(turn_context.sub_id.clone()),
+                tool_use_id: Some(guard_tool_use_id),
+                tool: tool_name.name().to_string(),
+                target: action
+                    .command
+                    .clone()
+                    .unwrap_or_else(|| action.paths.join(", ")),
+                cwd: guard_cwd.as_path().to_string_lossy().into_owned(),
+            },
+        );
         if let Some(message) = codex_inocode_knowledge::guard_message(&verdict) {
             if !verdict.blocked.is_empty() {
                 return PreToolUseHookResult::Blocked(message);
