@@ -56,6 +56,13 @@ jobs:
           -p codex-zero-search-extension
           -p codex-utils-pty
 
+      - name: Provider adapters (chat/completions, Claude Messages) and the wire client
+        working-directory: codex-rs
+        run: >
+          cargo test --no-fail-fast
+          -p codex-provider-adapters
+          -p codex-api --test chat_wire_end_to_end
+
       - name: Core unit tests for terminal monitor, tool list and exec policy
         working-directory: codex-rs
         run: cargo test --no-fail-fast -p codex-core --lib -- unified_exec tools::spec_plan exec_policy

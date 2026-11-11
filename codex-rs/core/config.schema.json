@@ -7679,6 +7679,13 @@
             "responses"
           ],
           "type": "string"
+        },
+        {
+          "description": "OpenAI-compatible `chat/completions` (`wire_api = \"chat_completions\"`). Requests and streams are translated by `codex-provider-adapters`.",
+          "enum": [
+            "chat_completions"
+          ],
+          "type": "string"
         }
       ]
     },

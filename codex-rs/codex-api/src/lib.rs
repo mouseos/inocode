@@ -79,6 +79,8 @@ pub use crate::endpoint::ResponsesWebsocketClient;
 pub use crate::endpoint::ResponsesWebsocketClose;
 pub use crate::endpoint::ResponsesWebsocketConnection;
 pub use crate::endpoint::ResponsesWebsocketProbe;
+pub use crate::endpoint::WireClient;
+pub use crate::endpoint::WireKind;
 pub use crate::endpoint::ResponsesWebsocketProbeError;
 pub use crate::endpoint::ResponsesWebsocketProbeFailureStage;
 pub use crate::endpoint::SearchClient;
