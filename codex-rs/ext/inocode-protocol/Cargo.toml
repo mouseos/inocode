@@ -16,7 +16,9 @@ workspace = true
 codex-inocode-metrics = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
 pretty_assertions = { workspace = true }
 tempfile = { workspace = true }

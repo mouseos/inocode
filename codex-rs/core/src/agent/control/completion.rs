@@ -106,6 +106,13 @@ impl LocalAgentControl {
         let Some(message) = message else {
             return;
         };
+        crate::inocode_loop::log_agent_message(
+            parent_thread_id,
+            child_agent_path.as_str(),
+            parent_agent_path.as_str(),
+            "final",
+            &message,
+        );
         // `communication` owns the message. Keep a second copy only when the
         // recorder will actually need it after parent delivery succeeds.
         let trace_message = trace.is_enabled().then(|| message.clone());

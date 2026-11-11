@@ -288,9 +288,74 @@ pub fn read_log(inocode_home: &Path, thread_id: &str) -> Vec<LoggedMessage> {
         .collect()
 }
 
-/// Convenience using `INOCODE_HOME`.
+/// Convenience using `INOCODE_HOME`. `thread_id` is resolved to the root of its agent tree
+/// (see [`link_thread`]) so every message of one conversation lands in one log; the message
+/// is also sent to [`subscribe_messages`] listeners.
 pub fn log_message_global(thread_id: &str, message: &LoggedMessage) {
-    let _ = log_message(&codex_inocode_metrics::inocode_home(), thread_id, message);
+    let root = root_of(thread_id);
+    let _ = log_message(&codex_inocode_metrics::inocode_home(), &root, message);
+    let _ = message_feed().send((root, message.clone()));
+}
+
+fn parents() -> &'static std::sync::Mutex<std::collections::HashMap<String, String>> {
+    static M: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> =
+        std::sync::OnceLock::new();
+    M.get_or_init(Default::default)
+}
+
+/// Records that `child` was spawned by `parent` (both thread ids).
+pub fn link_thread(child: &str, parent: &str) {
+    if child == parent {
+        return;
+    }
+    parents()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(child.to_string(), parent.to_string());
+}
+
+/// The root of the agent tree `thread_id` belongs to (itself when it has no recorded parent).
+pub fn root_of(thread_id: &str) -> String {
+    let map = parents().lock().unwrap_or_else(|e| e.into_inner());
+    let mut current = thread_id.to_string();
+    // Bounded walk: a cycle cannot loop forever.
+    for _ in 0..64 {
+        match map.get(&current) {
+            Some(parent) => current = parent.clone(),
+            None => break,
+        }
+    }
+    current
+}
+
+fn message_feed() -> &'static tokio::sync::broadcast::Sender<(String, LoggedMessage)> {
+    static S: std::sync::OnceLock<tokio::sync::broadcast::Sender<(String, LoggedMessage)>> =
+        std::sync::OnceLock::new();
+    S.get_or_init(|| tokio::sync::broadcast::channel(128).0)
+}
+
+/// Live feed of `(root_thread_id, message)` for every message logged with [`log_message_global`].
+pub fn subscribe_messages() -> tokio::sync::broadcast::Receiver<(String, LoggedMessage)> {
+    message_feed().subscribe()
+}
+
+/// A parsed telegraphic message, for display: kind, confidence, and the key/value fields.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedView {
+    pub kind: Kind,
+    pub conf: Confidence,
+    pub fields: Vec<(String, String)>,
+}
+
+/// Breaks a verbatim message into kind, confidence and fields; `None` when it is not a valid
+/// telegraphic message.
+pub fn parse_view(text: &str) -> Option<ParsedView> {
+    let m = Message::parse(text).ok()?;
+    Some(ParsedView {
+        kind: m.kind,
+        conf: m.conf,
+        fields: m.fields,
+    })
 }
 
 #[cfg(test)]
@@ -363,6 +428,43 @@ mod tests {
         assert!(SYSTEM_PROMPT_SECTION.contains("conf: high|med|low"));
         assert!(SYSTEM_PROMPT_SECTION.lines().count() <= 16);
         assert!(append_to_instructions(Some("base")).starts_with("base\n\n"));
+    }
+
+    #[test]
+    fn root_of_follows_links_and_parse_view_decomposes() {
+        link_thread("c1", "root-x");
+        link_thread("c2", "c1");
+        assert_eq!(root_of("c2"), "root-x");
+        assert_eq!(root_of("lonely"), "lonely");
+        let v = parse_view("ASK
+q: which crate?
+conf: med").unwrap();
+        assert_eq!(v.kind, Kind::Ask);
+        assert_eq!(v.conf, Confidence::Med);
+        assert_eq!(v.fields, vec![("q".to_string(), "which crate?".to_string())]);
+        assert_eq!(parse_view("just text"), None);
+    }
+
+    #[tokio::test]
+    async fn global_log_uses_the_root_and_broadcasts() {
+        let mut rx = subscribe_messages();
+        link_thread("kid-g", "root-g");
+        let msg = LoggedMessage {
+            ts_ms: 5,
+            from: "/root/a".into(),
+            to: "/root".into(),
+            delivery: "final".into(),
+            text: "done".into(),
+        };
+        log_message_global("kid-g", &msg);
+        let (root, got) = loop {
+            let (r, m) = rx.recv().await.unwrap();
+            if r == "root-g" {
+                break (r, m);
+            }
+        };
+        assert_eq!(root, "root-g");
+        assert_eq!(got, msg);
     }
 
     #[test]
