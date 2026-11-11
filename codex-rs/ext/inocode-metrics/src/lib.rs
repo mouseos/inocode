@@ -169,6 +169,53 @@ impl MetricsStore {
     pub fn summary(&self, since_ms: u64) -> MetricsSummary {
         summarize(&self.read(since_ms))
     }
+
+    /// Records at or after `since_ms`, optionally limited to one thread.
+    pub fn read_thread(&self, since_ms: u64, thread_id: Option<&str>) -> Vec<MetricRecord> {
+        let mut records = self.read(since_ms);
+        if let Some(id) = thread_id {
+            records.retain(|r| r.thread_id == id);
+        }
+        records
+    }
+
+    /// Time series of the counters, oldest first.
+    pub fn history(
+        &self,
+        since_ms: u64,
+        width_ms: u64,
+        thread_id: Option<&str>,
+    ) -> Vec<MetricsBucket> {
+        bucketize(&self.read_thread(since_ms, thread_id), width_ms)
+    }
+}
+
+/// One time bucket of the history: records whose `ts_ms` falls in `[start_ms, start_ms + width)`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetricsBucket {
+    pub start_ms: u64,
+    pub counters: MetricCounters,
+}
+
+pub const HOUR_MS: u64 = 3_600_000;
+pub const DAY_MS: u64 = 24 * HOUR_MS;
+
+/// Groups records into fixed-width buckets (aligned to the epoch), oldest first.
+/// Buckets without records are omitted.
+pub fn bucketize(records: &[MetricRecord], width_ms: u64) -> Vec<MetricsBucket> {
+    let width = width_ms.max(1);
+    let mut buckets: BTreeMap<u64, MetricCounters> = BTreeMap::new();
+    for r in records {
+        buckets
+            .entry(r.ts_ms - r.ts_ms % width)
+            .or_default()
+            .apply(&r.event);
+    }
+    buckets
+        .into_iter()
+        .map(|(start_ms, counters)| MetricsBucket { start_ms, counters })
+        .collect()
 }
 
 pub fn summarize(records: &[MetricRecord]) -> MetricsSummary {
@@ -256,6 +303,32 @@ mod tests {
         let since = store.summary(13);
         assert_eq!(since.counters.wait_agent_calls, 1);
         assert_eq!(since.counters.wall_clock_ms, 0);
+    }
+
+    #[test]
+    fn history_buckets_by_width_and_filters_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = MetricsStore::at(dir.path());
+        store.record_at(HOUR_MS + 5, "a", MetricEvent::WaitAgentCall).unwrap();
+        store.record_at(HOUR_MS + 9, "b", MetricEvent::WaitAgentCall).unwrap();
+        store
+            .record_at(
+                3 * HOUR_MS,
+                "a",
+                MetricEvent::StallDetected {
+                    trigger: "same_failure".into(),
+                },
+            )
+            .unwrap();
+        let all = store.history(0, HOUR_MS, None);
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].start_ms, HOUR_MS);
+        assert_eq!(all[0].counters.wait_agent_calls, 2);
+        assert_eq!(all[1].start_ms, 3 * HOUR_MS);
+        assert_eq!(all[1].counters.stalls_detected, 1);
+        let only_a = store.history(0, DAY_MS, Some("a"));
+        assert_eq!(only_a.len(), 1);
+        assert_eq!(only_a[0].counters.wait_agent_calls, 1);
     }
 
     #[test]
