@@ -106,11 +106,17 @@ pub fn guard_check_with(
 mod event_tests {
     use super::*;
 
+    /// 全テストで同じ INOCODE_HOME を使う(環境変数はプロセス共通)。
+    fn shared_home() {
+        static H: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+        let d = H.get_or_init(|| tempfile::tempdir().unwrap());
+        // SAFETY: 値は常に同じ。
+        unsafe { std::env::set_var("INOCODE_HOME", d.path()) };
+    }
+
     #[test]
     fn guard_hits_are_logged_and_broadcast() {
-        let home = tempfile::tempdir().unwrap();
-        // SAFETY: テストはこの環境変数を設定するこのテストだけ。
-        unsafe { std::env::set_var("INOCODE_HOME", home.path()) };
+        shared_home();
         let mut rx = subscribe_guard();
         let verdict = GuardVerdict {
             blocked: vec![GuardHit {
@@ -137,5 +143,24 @@ mod event_tests {
         assert_eq!(list[0].result, GuardOutcome::Blocked);
         assert!(next.is_none());
         assert!(list_guard_events(Some("/other"), None, 10, 0).0.is_empty());
+    }
+
+    #[test]
+    fn failure_case_is_recorded_once_notified_and_in_handoff() {
+        shared_home();
+        let cwd = tempfile::tempdir().unwrap();
+        let mut rx = subscribe_recorded();
+        let id = record_failure_case(cwd.path(), "same_failure:cargo test", "E0432", None, None, None, "advisor")
+            .unwrap()
+            .expect("recorded");
+        let again = record_failure_case(cwd.path(), "same_failure:cargo test", "E0432", None, None, None, "advisor")
+            .unwrap();
+        assert_eq!(again.as_deref(), Some(id.as_str()));
+        let note = rx.try_recv().unwrap();
+        assert_eq!(note.id, id);
+        assert_eq!(note.kind, Kind::FailureCase);
+        let pack = build_handoff_pack(cwd.path(), "cargo test");
+        assert!(pack.contains("引き継ぎパック"));
+        assert!(pack.contains("same_failure:cargo test") || pack.contains(&id));
     }
 }
