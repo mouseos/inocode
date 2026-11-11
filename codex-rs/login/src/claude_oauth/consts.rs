@@ -30,6 +30,25 @@ pub fn client_id() -> String {
         .unwrap_or_default()
 }
 
+/// Endpoint overrides, so tests (and local experiments) can point at a mock server.
+pub const TOKEN_URL_ENV: &str = "INOCODE_CLAUDE_OAUTH_TOKEN_URL";
+pub const PROFILE_URL_ENV: &str = "INOCODE_CLAUDE_OAUTH_PROFILE_URL";
+
+fn overridden(env: &str, default: &str) -> String {
+    match std::env::var(env) {
+        Ok(value) if !value.trim().is_empty() => value.trim().to_string(),
+        _ => default.to_string(),
+    }
+}
+
+pub fn token_url() -> String {
+    overridden(TOKEN_URL_ENV, TOKEN_URL)
+}
+
+pub fn profile_url() -> String {
+    overridden(PROFILE_URL_ENV, PROFILE_URL)
+}
+
 pub fn callback_redirect_uri() -> String {
     format!("http://localhost:{CALLBACK_PORT}{CALLBACK_PATH}")
 }

@@ -786,6 +786,18 @@ client_request_definitions! {
         serialization: None,
         response: v2::InocodeAccountsLoginStartResponse,
     },
+    #[experimental("inocode/accounts/login/complete")]
+    InocodeAccountsLoginComplete => "inocode/accounts/login/complete" {
+        params: v2::InocodeAccountsLoginCompleteParams,
+        serialization: None,
+        response: v2::InocodeAccountsLoginCompleteResponse,
+    },
+    #[experimental("inocode/providers/list")]
+    InocodeProvidersList => "inocode/providers/list" {
+        params: v2::InocodeProvidersListParams,
+        serialization: None,
+        response: v2::InocodeProvidersListResponse,
+    },
     #[experimental("inocode/accounts/login/cancel")]
     InocodeAccountsLoginCancel => "inocode/accounts/login/cancel" {
         params: v2::InocodeAccountsLoginCancelParams,

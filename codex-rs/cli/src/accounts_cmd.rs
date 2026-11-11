@@ -69,6 +69,14 @@ pub struct AddArgs {
     /// Larger is used earlier.
     #[arg(long)]
     pub priority: Option<i32>,
+
+    /// `openai` (default) or `claude`.
+    #[arg(long, default_value = "openai")]
+    pub provider: String,
+
+    /// Claude sign-in: paste the code Anthropic shows instead of using the local listener.
+    #[arg(long = "code")]
+    pub paste_code: bool,
 }
 
 pub async fn run_accounts(command: AccountsCommand) -> anyhow::Result<()> {
@@ -79,12 +87,13 @@ pub async fn run_accounts(command: AccountsCommand) -> anyhow::Result<()> {
     let config = Config::load_with_cli_overrides(cli_overrides).await?;
     let primary = AuthManager::shared_from_config(&config, /*enable_codex_api_key_env*/ false).await?;
     let pool = codex_app_server::open_account_pool(&config, primary).await;
+    let claude = codex_app_server::open_claude_account_pool(&config).await;
 
     match command.action {
-        AccountsAction::List => print_list(&pool),
+        AccountsAction::List => print_list(&[&pool, &claude]),
         AccountsAction::Status => {
             pool.refresh_usage().await;
-            print_list(&pool);
+            print_list(&[&pool, &claude]);
             let policy = pool.policy();
             println!();
             println!(
@@ -97,15 +106,19 @@ pub async fn run_accounts(command: AccountsCommand) -> anyhow::Result<()> {
                 if policy.auto_switch { "on" } else { "off" },
             );
         }
-        AccountsAction::Add(args) => add(&pool, &config, args).await?,
+        AccountsAction::Add(args) => match args.provider.as_str() {
+            "openai" => add(&pool, &config, args).await?,
+            "claude" => add_claude(&claude, &config, args).await?,
+            other => anyhow::bail!("unknown provider `{other}` (openai or claude)"),
+        },
         AccountsAction::Remove { account } => {
-            let view = find(&pool, &account)?;
-            pool.remove(&view.id).await?;
+            let (owner, view) = find(&[&pool, &claude], &account)?;
+            owner.remove(&view.id).await?;
             println!("Removed {}", view.alias);
         }
         AccountsAction::Use { account } => {
-            let view = find(&pool, &account)?;
-            let event = pool.use_account(&view.id, /*thread_id*/ None)?;
+            let (owner, view) = find(&[&pool, &claude], &account)?;
+            let event = owner.use_account(&view.id, /*thread_id*/ None)?;
             debug_assert_eq!(event.reason, SwitchReason::Manual);
             println!("Now using {}", view.alias);
         }
@@ -113,13 +126,64 @@ pub async fn run_accounts(command: AccountsCommand) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn find(pool: &AccountPool, account: &str) -> anyhow::Result<AccountView> {
-    let list = pool.list();
-    list.iter()
-        .find(|view| view.id == account)
-        .or_else(|| list.iter().find(|view| view.alias == account))
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("no account with id or alias `{account}`"))
+fn find<'a>(
+    pools: &[&'a Arc<AccountPool>],
+    account: &str,
+) -> anyhow::Result<(&'a Arc<AccountPool>, AccountView)> {
+    for by_id in [true, false] {
+        for pool in pools {
+            if let Some(view) = pool
+                .list()
+                .into_iter()
+                .find(|view| if by_id { view.id == account } else { view.alias == account })
+            {
+                return Ok((*pool, view));
+            }
+        }
+    }
+    anyhow::bail!("no account with id or alias `{account}`")
+}
+
+/// Adds a Claude sign-in (OAuth) or Claude API key to the `claude` group.
+async fn add_claude(pool: &Arc<AccountPool>, config: &Config, args: AddArgs) -> anyhow::Result<()> {
+    if args.with_api_key {
+        let key = crate::read_api_key_from_stdin();
+        let view = pool.add_api_key(&args.alias, &key, args.priority).await?;
+        println!("Added Claude API key {} ({})", view.alias, view.id);
+        return Ok(());
+    }
+    let pending = codex_login::claude_oauth::begin(args.paste_code);
+    eprintln!("Open this URL in a browser and sign in:\n{}", pending.url);
+    let code = if args.paste_code {
+        eprintln!("Then paste the code Anthropic shows (code#state) and press Enter:");
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line)?;
+        line
+    } else {
+        eprintln!("Waiting for the browser to return to localhost:{} ...", codex_login::claude_oauth::CALLBACK_PORT);
+        codex_login::claude_oauth::wait_for_callback(
+            pending.state.clone(),
+            std::time::Duration::from_secs(600),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .await?
+    };
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+    let credentials = codex_login::claude_oauth::exchange(
+        &pending,
+        &code,
+        &config.auth_route_config(),
+        now_ms,
+    )
+    .await?;
+    let view = pool.add_claude_oauth(&args.alias, credentials).await?;
+    if let Some(priority) = args.priority {
+        pool.set_priority(&view.id, priority)?;
+    }
+    println!("Added Claude sign-in {} ({})", view.alias, view.id);
+    Ok(())
 }
 
 async fn add(pool: &Arc<AccountPool>, config: &Config, args: AddArgs) -> anyhow::Result<()> {
@@ -178,8 +242,8 @@ async fn add(pool: &Arc<AccountPool>, config: &Config, args: AddArgs) -> anyhow:
     }
 }
 
-fn print_list(pool: &AccountPool) {
-    let list = pool.list();
+fn print_list(pools: &[&Arc<AccountPool>]) {
+    let list: Vec<AccountView> = pools.iter().flat_map(|pool| pool.list()).collect();
     if list.is_empty() {
         println!("No accounts. Add one with `inocode accounts add <alias>` or sign in with `inocode login`.");
         return;
@@ -189,6 +253,7 @@ fn print_list(pool: &AccountPool) {
         let kind = match view.kind {
             AccountKind::Chatgpt => view.plan.clone().unwrap_or_else(|| "chatgpt".to_string()),
             AccountKind::ApiKey => "api key".to_string(),
+            AccountKind::ClaudeOauth => view.plan.clone().unwrap_or_else(|| "claude".to_string()),
         };
         let usage = view
             .usage
@@ -210,8 +275,8 @@ fn print_list(pool: &AccountPool) {
         };
         let default = if view.is_default { " [default login]" } else { "" };
         println!(
-            "{marker} {}  {}  ({kind})  {usage}  {state}  priority {}{default}",
-            view.id, view.alias, view.priority
+            "{marker} {}  {}  [{}] ({kind})  {usage}  {state}  priority {}{default}",
+            view.id, view.alias, view.provider, view.priority
         );
     }
 }

@@ -15,6 +15,8 @@ use serde::Serialize;
 pub enum InocodeAccountKind {
     Chatgpt,
     ApiKey,
+    /// A Claude (Pro/Max) OAuth sign-in.
+    ClaudeOauth,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
@@ -99,6 +101,8 @@ pub struct InocodeAccountUsage {
 pub struct InocodeAccount {
     pub id: String,
     pub kind: InocodeAccountKind,
+    /// Provider group the entry belongs to: `openai` or `claude`.
+    pub provider: String,
     /// User-chosen name.
     pub alias: String,
     /// Plan name for ChatGPT accounts (for example `plus`, `pro`); `null` for API keys.
@@ -161,6 +165,10 @@ pub struct InocodeAccountsListResponse {
 pub struct InocodeAccountsAddApiKeyParams {
     pub alias: String,
     pub api_key: String,
+    /// `openai` (default) or `claude`.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub provider: Option<String>,
     #[serde(default)]
     #[ts(optional = nullable)]
     pub priority: Option<i32>,
@@ -247,6 +255,8 @@ pub struct InocodeAccountsUseResponse {}
 pub enum InocodeAccountLoginMethod {
     Browser,
     DeviceCode,
+    /// Claude only: the provider shows `code#state`; hand it back with `login/complete`.
+    OauthCode,
 }
 
 /// Adds a ChatGPT account (never replaces the current login). Same flow as `account/login/start`.
@@ -255,6 +265,10 @@ pub enum InocodeAccountLoginMethod {
 #[ts(export_to = "v2/")]
 pub struct InocodeAccountsLoginStartParams {
     pub alias: String,
+    /// `openai` (default) or `claude`.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub provider: Option<String>,
     #[serde(default)]
     #[ts(optional = nullable)]
     pub method: Option<InocodeAccountLoginMethod>,
@@ -270,6 +284,55 @@ pub struct InocodeAccountsLoginStartResponse {
     /// Device-code method.
     pub verification_url: Option<String>,
     pub user_code: Option<String>,
+    /// True when the client must show a code box and call `login/complete`.
+    pub code_entry: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct InocodeAccountsLoginCompleteParams {
+    pub login_id: String,
+    /// What the user pasted: `code#state`, the final redirect URL, or the bare code.
+    pub code: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct InocodeAccountsLoginCompleteResponse {}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase", export_to = "v2/")]
+pub enum InocodeProviderWire {
+    Responses,
+    Chat,
+    Anthropic,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct InocodeProvider {
+    pub id: String,
+    pub name: String,
+    pub wire: InocodeProviderWire,
+    /// Which kinds of account can be added.
+    pub auth_kinds: Vec<InocodeAccountKind>,
+    pub account_count: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct InocodeProvidersListParams {}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct InocodeProvidersListResponse {
+    pub providers: Vec<InocodeProvider>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]

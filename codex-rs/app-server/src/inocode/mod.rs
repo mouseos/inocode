@@ -25,6 +25,7 @@ use codex_app_server_protocol::JSONRPCErrorError;
 pub(crate) type InocodeResult = Result<Option<ClientResponsePayload>, JSONRPCErrorError>;
 
 pub(crate) use accounts::start as start_account_pool;
+pub use accounts::open_claude_pool as open_claude_account_pool;
 pub use accounts::open_pool as open_account_pool;
 pub(crate) use guard::spawn_notifier as spawn_guard_notifier;
 pub(crate) use team::spawn_notifier as spawn_team_notifier;
@@ -43,7 +44,7 @@ pub(crate) fn spawn_agent_notifiers(
 pub(crate) async fn handle(request: ClientRequest) -> InocodeResult {
     let method = request.method_name();
     match method.strip_prefix("inocode/").and_then(|m| m.split('/').next()) {
-        Some("accounts") => accounts::handle(request).await,
+        Some("accounts" | "providers") => accounts::handle(request).await,
         Some("knowledge") => knowledge::handle(request).await,
         Some("evidence") => evidence::handle(request).await,
         Some("team") => team::handle(request).await,

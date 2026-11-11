@@ -137,9 +137,10 @@ fn credentials_from(response: TokenResponse, refresh_fallback: Option<&str>, now
 }
 
 async fn post_token(route: &AuthRouteConfig, body: Value) -> io::Result<TokenResponse> {
-    let client = create_raw_auth_client(consts::TOKEN_URL, route).map_err(io::Error::other)?;
+    let url = consts::token_url();
+    let client = create_raw_auth_client(&url, route).map_err(io::Error::other)?;
     let request = client
-        .post(consts::TOKEN_URL)
+        .post(&url)
         .header("Content-Type", "application/json")
         .header("Accept", "application/json")
         .body(body.to_string())
@@ -165,9 +166,10 @@ async fn post_token(route: &AuthRouteConfig, body: Value) -> io::Result<TokenRes
 
 /// Best effort: the account's plan, from the profile endpoint.
 async fn fetch_plan(route: &AuthRouteConfig, access: &str, timeout: Duration) -> Option<String> {
-    let client = create_raw_auth_client(consts::PROFILE_URL, route).ok()?;
+    let url = consts::profile_url();
+    let client = create_raw_auth_client(&url, route).ok()?;
     let request = client
-        .get(consts::PROFILE_URL)
+        .get(&url)
         .header("Authorization", format!("Bearer {access}"))
         .header("Accept", "application/json")
         .header("anthropic-beta", consts::OAUTH_BETA)

@@ -1254,6 +1254,8 @@ impl MessageProcessor {
             | ClientRequest::InocodeAccountsUse { .. }
             | ClientRequest::InocodeAccountsLoginStart { .. }
             | ClientRequest::InocodeAccountsLoginCancel { .. }
+            | ClientRequest::InocodeAccountsLoginComplete { .. }
+            | ClientRequest::InocodeProvidersList { .. }
             | ClientRequest::InocodeAccountsPolicyRead { .. }
             | ClientRequest::InocodeAccountsPolicyWrite { .. }
             | ClientRequest::InocodeFlagsWrite { .. }) => crate::inocode::handle(request).await,

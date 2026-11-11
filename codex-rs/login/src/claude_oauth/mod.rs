@@ -9,6 +9,9 @@ mod flow;
 mod manager;
 mod store;
 
+#[cfg(test)]
+mod tests;
+
 pub use consts::CALLBACK_PORT;
 pub use consts::CODE_REDIRECT_URI;
 pub use flow::Pending;
