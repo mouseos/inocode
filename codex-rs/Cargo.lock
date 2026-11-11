@@ -2229,11 +2229,15 @@ dependencies = [
  "codex-hooks",
  "codex-http-client",
  "codex-image-generation-extension",
+ "codex-inocode-advisor",
+ "codex-inocode-compaction",
  "codex-inocode-evidence",
  "codex-inocode-flags",
  "codex-inocode-knowledge",
  "codex-inocode-metrics",
+ "codex-inocode-protocol",
  "codex-inocode-team",
+ "codex-inocode-tool-output",
  "codex-login",
  "codex-mcp",
  "codex-mcp-extension",
@@ -3154,6 +3158,7 @@ dependencies = [
  "codex-http-client",
  "codex-image-generation-extension",
  "codex-inocode-advisor",
+ "codex-inocode-compaction",
  "codex-inocode-flags",
  "codex-inocode-knowledge",
  "codex-inocode-metrics",
@@ -4116,6 +4121,18 @@ version = "0.0.0"
 dependencies = [
  "pretty_assertions",
  "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "codex-inocode-compaction"
+version = "0.0.0"
+dependencies = [
+ "codex-inocode-flags",
+ "pretty_assertions",
+ "serde",
  "tokio",
 ]
 
@@ -4157,6 +4174,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -4179,6 +4197,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -4198,6 +4217,8 @@ version = "0.0.0"
 dependencies = [
  "codex-utils-string",
  "pretty_assertions",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 

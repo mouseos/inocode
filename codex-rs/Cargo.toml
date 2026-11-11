@@ -79,6 +79,7 @@ members = [
     "ext/inocode-evidence",
     "ext/inocode-knowledge",
     "ext/inocode-advisor",
+    "ext/inocode-compaction",
     "ext/inocode-metrics",
     "ext/inocode-protocol",
     "ext/inocode-team",
@@ -262,6 +263,7 @@ codex-inocode-flags = { path = "ext/inocode-flags" }
 codex-inocode-evidence = { path = "ext/inocode-evidence" }
 codex-inocode-knowledge = { path = "ext/inocode-knowledge" }
 codex-inocode-advisor = { path = "ext/inocode-advisor" }
+codex-inocode-compaction = { path = "ext/inocode-compaction" }
 codex-inocode-metrics = { path = "ext/inocode-metrics" }
 codex-inocode-protocol = { path = "ext/inocode-protocol" }
 codex-inocode-team = { path = "ext/inocode-team" }

@@ -77,6 +77,15 @@ pub(super) fn server_notification_thread_target(
         ServerNotification::InocodeTeamUpdated(notification) => {
             Some(notification.thread_id.as_str())
         }
+        ServerNotification::InocodeAdvisorEvent(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::InocodeMessagesAppended(notification) => {
+            Some(notification.thread_id.as_str())
+        }
+        ServerNotification::InocodeCompactionEvent(notification) => {
+            Some(notification.thread_id.as_str())
+        }
         ServerNotification::ThreadGoalCleared(notification) => {
             Some(notification.thread_id.as_str())
         }
@@ -229,6 +238,8 @@ pub(super) fn server_notification_thread_target(
         | ServerNotification::WindowsWorldWritableWarning(_)
         | ServerNotification::WindowsSandboxSetupCompleted(_)
         | ServerNotification::AccountLoginCompleted(_)
+        | ServerNotification::InocodeGuardFired(_)
+        | ServerNotification::InocodeKnowledgeRecorded(_)
         | ServerNotification::InocodeAccountsUpdated(_)
         | ServerNotification::InocodeAccountsSwitched(_)
         | ServerNotification::InocodeAccountsLoginCompleted(_) => None,

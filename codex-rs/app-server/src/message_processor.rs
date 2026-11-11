@@ -321,6 +321,8 @@ impl MessageProcessor {
         let thread_state_manager = ThreadStateManager::new();
         outgoing.watch_user_verification_auth(Arc::clone(&auth_manager));
         crate::inocode::spawn_team_notifier(Arc::clone(&outgoing));
+        crate::inocode::spawn_agent_notifiers(Arc::clone(&outgoing));
+        crate::inocode::spawn_guard_notifier(Arc::clone(&outgoing));
         crate::inocode::start_account_pool(Arc::clone(&outgoing), Arc::clone(&auth_manager), config.as_ref());
         // The thread store is intentionally process-scoped. Config reloads can
         // affect per-thread behavior, but they must not move newly started,
@@ -1222,7 +1224,23 @@ impl MessageProcessor {
             | ClientRequest::InocodeEvidenceVerifyDocument { .. }
             | ClientRequest::InocodeTeamStatus { .. }
             | ClientRequest::InocodeMetricsSummary { .. }
+            | ClientRequest::InocodeMetricsHistory { .. }
+            | ClientRequest::InocodeMetricsMarkFalsePositive { .. }
+            | ClientRequest::InocodeAdvisorEvents { .. }
+            | ClientRequest::InocodeMessagesList { .. }
+            | ClientRequest::InocodeCompactionState { .. }
+            | ClientRequest::InocodeToolOutputList { .. }
+            | ClientRequest::InocodeToolOutputRead { .. }
             | ClientRequest::InocodeFlagsRead { .. }
+            | ClientRequest::InocodeGuardList { .. }
+            | ClientRequest::InocodeKnowledgePinned { .. }
+            | ClientRequest::InocodeKnowledgeHandoffPreview { .. }
+            | ClientRequest::InocodeParamsRead { .. }
+            | ClientRequest::InocodeParamsWrite { .. }
+            | ClientRequest::InocodeEvidenceImportSource { .. }
+            | ClientRequest::InocodeEvidenceAddQuote { .. }
+            | ClientRequest::InocodeEvidenceAddClaim { .. }
+            | ClientRequest::InocodeEvidenceSetClaimStatus { .. }
             | ClientRequest::InocodeAccountsList { .. }
             | ClientRequest::InocodeAccountsAddApiKey { .. }
             | ClientRequest::InocodeAccountsRemove { .. }

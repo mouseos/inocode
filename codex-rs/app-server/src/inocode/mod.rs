@@ -5,11 +5,17 @@
 //! responses until their owners replace them.
 
 mod accounts;
+mod advisor;
+mod compaction;
 mod evidence;
 mod flags;
+mod guard;
 mod knowledge;
+mod messages;
 mod metrics;
+mod params;
 mod team;
+mod tooloutput;
 
 use crate::error_code::method_not_found;
 use codex_app_server_protocol::ClientRequest;
@@ -18,9 +24,19 @@ use codex_app_server_protocol::JSONRPCErrorError;
 
 pub(crate) type InocodeResult = Result<Option<ClientResponsePayload>, JSONRPCErrorError>;
 
-pub use accounts::open_pool as open_account_pool;
 pub(crate) use accounts::start as start_account_pool;
+pub use accounts::open_pool as open_account_pool;
+pub(crate) use guard::spawn_notifier as spawn_guard_notifier;
 pub(crate) use team::spawn_notifier as spawn_team_notifier;
+
+/// Starts the forwarders for advisor events, agent messages and compaction events.
+pub(crate) fn spawn_agent_notifiers(
+    outgoing: std::sync::Arc<crate::outgoing_message::OutgoingMessageSender>,
+) {
+    advisor::spawn_notifier(std::sync::Arc::clone(&outgoing));
+    messages::spawn_notifier(std::sync::Arc::clone(&outgoing));
+    compaction::spawn_notifier(outgoing);
+}
 
 /// Routes an `inocode/*` request to its area handler. Any other method gets
 /// the same "method not found" error as an unknown official method.
@@ -31,8 +47,14 @@ pub(crate) async fn handle(request: ClientRequest) -> InocodeResult {
         Some("knowledge") => knowledge::handle(request).await,
         Some("evidence") => evidence::handle(request).await,
         Some("team") => team::handle(request).await,
+        Some("advisor") => advisor::handle(request).await,
+        Some("messages") => messages::handle(request).await,
+        Some("compaction") => compaction::handle(request).await,
+        Some("toolOutput") => tooloutput::handle(request).await,
         Some("metrics") => metrics::handle(request).await,
         Some("flags") => flags::handle(request).await,
+        Some("guard") => guard::handle(request).await,
+        Some("params") => params::handle(request).await,
         _ => Err(unknown_method(method)),
     }
 }
@@ -53,6 +75,7 @@ mod tests {
             request_id: RequestId::Integer(1),
             params: InocodeMetricsSummaryParams {
                 since: "2026-11-11T00:00:00Z".to_string(),
+                thread_id: None,
             },
         };
         assert!(handle(req).await.expect("ok").is_some());

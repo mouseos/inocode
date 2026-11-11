@@ -606,6 +606,102 @@ client_request_definitions! {
         serialization: None,
         response: v2::InocodeMetricsSummaryResponse,
     },
+    #[experimental("inocode/metrics/history")]
+    InocodeMetricsHistory => "inocode/metrics/history" {
+        params: v2::InocodeMetricsHistoryParams,
+        serialization: None,
+        response: v2::InocodeMetricsHistoryResponse,
+    },
+    #[experimental("inocode/metrics/markFalsePositive")]
+    InocodeMetricsMarkFalsePositive => "inocode/metrics/markFalsePositive" {
+        params: v2::InocodeMetricsMarkFalsePositiveParams,
+        serialization: None,
+        response: v2::InocodeMetricsMarkFalsePositiveResponse,
+    },
+    #[experimental("inocode/advisor/events")]
+    InocodeAdvisorEvents => "inocode/advisor/events" {
+        params: v2::InocodeAdvisorEventsParams,
+        serialization: None,
+        response: v2::InocodeAdvisorEventsResponse,
+    },
+    #[experimental("inocode/messages/list")]
+    InocodeMessagesList => "inocode/messages/list" {
+        params: v2::InocodeMessagesListParams,
+        serialization: None,
+        response: v2::InocodeMessagesListResponse,
+    },
+    #[experimental("inocode/compaction/state")]
+    InocodeCompactionState => "inocode/compaction/state" {
+        params: v2::InocodeCompactionStateParams,
+        serialization: None,
+        response: v2::InocodeCompactionStateResponse,
+    },
+    #[experimental("inocode/toolOutput/list")]
+    InocodeToolOutputList => "inocode/toolOutput/list" {
+        params: v2::InocodeToolOutputListParams,
+        serialization: None,
+        response: v2::InocodeToolOutputListResponse,
+    },
+    #[experimental("inocode/toolOutput/read")]
+    InocodeToolOutputRead => "inocode/toolOutput/read" {
+        params: v2::InocodeToolOutputReadParams,
+        serialization: None,
+        response: v2::InocodeToolOutputReadResponse,
+    },
+    #[experimental("inocode/guard/list")]
+    InocodeGuardList => "inocode/guard/list" {
+        params: v2::InocodeGuardListParams,
+        serialization: None,
+        response: v2::InocodeGuardListResponse,
+    },
+    #[experimental("inocode/knowledge/pinned")]
+    InocodeKnowledgePinned => "inocode/knowledge/pinned" {
+        params: v2::InocodeKnowledgePinnedParams,
+        serialization: None,
+        response: v2::InocodeKnowledgePinnedResponse,
+    },
+    #[experimental("inocode/knowledge/handoffPreview")]
+    InocodeKnowledgeHandoffPreview => "inocode/knowledge/handoffPreview" {
+        params: v2::InocodeKnowledgeHandoffPreviewParams,
+        serialization: None,
+        response: v2::InocodeKnowledgeHandoffPreviewResponse,
+    },
+    #[experimental("inocode/params/read")]
+    InocodeParamsRead => "inocode/params/read" {
+        params: v2::InocodeParamsReadParams,
+        serialization: None,
+        response: v2::InocodeParamsReadResponse,
+    },
+    #[experimental("inocode/params/write")]
+    InocodeParamsWrite => "inocode/params/write" {
+        params: v2::InocodeParamsWriteParams,
+        serialization: None,
+        response: v2::InocodeParamsWriteResponse,
+    },
+    #[experimental("inocode/evidence/importSource")]
+    InocodeEvidenceImportSource => "inocode/evidence/importSource" {
+        params: v2::InocodeEvidenceImportSourceParams,
+        serialization: None,
+        response: v2::InocodeEvidenceImportSourceResponse,
+    },
+    #[experimental("inocode/evidence/addQuote")]
+    InocodeEvidenceAddQuote => "inocode/evidence/addQuote" {
+        params: v2::InocodeEvidenceAddQuoteParams,
+        serialization: None,
+        response: v2::InocodeEvidenceAddQuoteResponse,
+    },
+    #[experimental("inocode/evidence/addClaim")]
+    InocodeEvidenceAddClaim => "inocode/evidence/addClaim" {
+        params: v2::InocodeEvidenceAddClaimParams,
+        serialization: None,
+        response: v2::InocodeEvidenceAddClaimResponse,
+    },
+    #[experimental("inocode/evidence/setClaimStatus")]
+    InocodeEvidenceSetClaimStatus => "inocode/evidence/setClaimStatus" {
+        params: v2::InocodeEvidenceSetClaimStatusParams,
+        serialization: None,
+        response: v2::InocodeEvidenceSetClaimStatusResponse,
+    },
     #[experimental("inocode/flags/read")]
     InocodeFlagsRead => "inocode/flags/read" {
         params: v2::InocodeFlagsReadParams,
@@ -2209,6 +2305,16 @@ server_notification_definitions! {
     ThreadGoalUpdated => "thread/goal/updated" (v2::ThreadGoalUpdatedNotification),
     #[experimental("inocode/team/updated")]
     InocodeTeamUpdated => "inocode/team/updated" (v2::InocodeTeamUpdatedNotification),
+    #[experimental("inocode/guard/fired")]
+    InocodeGuardFired => "inocode/guard/fired" (v2::InocodeGuardFiredNotification),
+    #[experimental("inocode/knowledge/recorded")]
+    InocodeKnowledgeRecorded => "inocode/knowledge/recorded" (v2::InocodeKnowledgeRecordedNotification),
+    #[experimental("inocode/advisor/event")]
+    InocodeAdvisorEvent => "inocode/advisor/event" (v2::InocodeAdvisorEventNotification),
+    #[experimental("inocode/messages/appended")]
+    InocodeMessagesAppended => "inocode/messages/appended" (v2::InocodeMessagesAppendedNotification),
+    #[experimental("inocode/compaction/event")]
+    InocodeCompactionEvent => "inocode/compaction/event" (v2::InocodeCompactionEventNotification),
     #[experimental("inocode/accounts/updated")]
     InocodeAccountsUpdated => "inocode/accounts/updated" (v2::InocodeAccountsUpdatedNotification),
     #[experimental("inocode/accounts/switched")]
