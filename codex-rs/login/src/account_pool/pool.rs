@@ -165,6 +165,9 @@ impl AccountPool {
         );
         providers.insert(AccountKind::ApiKey, Arc::new(OpenAiApiKeyProvider));
         let policy = store.load_policy();
+        let pinned = store
+            .load_pinned()
+            .filter(|id| entries.iter().any(|e| &e.meta.id == id) || id == DEFAULT_ID);
         let pool = Arc::new(Self {
             env,
             store,
@@ -173,7 +176,7 @@ impl AccountPool {
                 entries,
                 policy,
                 current: None,
-                pinned: None,
+                pinned,
             }),
             providers: RwLock::new(providers),
             events,
@@ -404,6 +407,7 @@ impl AccountPool {
             let _ = self.store.save_meta(&meta);
             if inner.pinned.as_deref() == Some(current.as_str()) {
                 inner.pinned = None;
+                let _ = self.store.save_pinned(None);
             }
             if !inner.policy.auto_switch {
                 drop(inner);
@@ -469,6 +473,7 @@ impl AccountPool {
             let from_alias = inner.current.as_deref().and_then(|c| inner.alias_of(c));
             inner.current = Some(id.to_string());
             inner.pinned = Some(id.to_string());
+            let _ = self.store.save_pinned(Some(id));
             SwitchEvent {
                 from_alias,
                 to_alias: meta.alias,
@@ -653,6 +658,7 @@ impl AccountPool {
             }
             if inner.pinned.as_deref() == Some(id) {
                 inner.pinned = None;
+                let _ = self.store.save_pinned(None);
             }
         }
         Ok(())
@@ -798,6 +804,7 @@ impl AccountPool {
             }
             if inner.pinned.as_deref() == Some(id) {
                 inner.pinned = None;
+                let _ = self.store.save_pinned(None);
             }
         }
         self.emit(PoolEvent::Updated);

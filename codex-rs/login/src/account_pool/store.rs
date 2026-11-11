@@ -29,6 +29,7 @@ pub const DEFAULT_ID: &str = "default";
 const POLICY_FILE: &str = "policy.json";
 const DEFAULT_META_FILE: &str = "_default.json";
 const META_FILE: &str = "meta.json";
+const STATE_FILE: &str = "state.json";
 /// Where a login that is still in progress writes, before it is renamed to its real id.
 pub const PENDING_PREFIX: &str = "_pending-";
 
@@ -149,6 +150,21 @@ impl AccountStore {
         write_json(&self.root.join(POLICY_FILE), policy)
     }
 
+    /// The account chosen by hand (`use`), which survives a restart.
+    pub fn load_pinned(&self) -> Option<String> {
+        let state: PersistedState = read_json(&self.root.join(STATE_FILE))?;
+        state.pinned
+    }
+
+    pub fn save_pinned(&self, pinned: Option<&str>) -> io::Result<()> {
+        write_json(
+            &self.root.join(STATE_FILE),
+            &PersistedState {
+                pinned: pinned.map(str::to_string),
+            },
+        )
+    }
+
     /// Stores an API key as its own entry (same shape as the legacy `auth.json`).
     pub fn save_api_key(&self, id: &str, api_key: &str) -> io::Result<()> {
         if !valid_id(id) {
@@ -206,6 +222,12 @@ impl AccountStore {
     pub fn kind_of(&self, id: &str) -> Option<AccountKind> {
         self.load_meta(id).map(|meta| meta.kind)
     }
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct PersistedState {
+    #[serde(default)]
+    pinned: Option<String>,
 }
 
 fn read_json<T: DeserializeOwned>(path: &Path) -> Option<T> {

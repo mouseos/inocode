@@ -316,3 +316,22 @@ async fn invalid_policy_values_are_rejected() {
     policy.threshold_percent = 120.0;
     assert!(f.pool.set_policy(policy).is_err());
 }
+
+#[tokio::test]
+async fn a_manual_choice_survives_a_restart() {
+    let f = fixture().await;
+    f.pool
+        .add_api_key("予備キー", "sk-test-FAKE-pool-0003", None)
+        .await
+        .expect("add key");
+    let id = api_key_account_id("sk-test-FAKE-pool-0003");
+    f.pool.use_account(&id, None).expect("use");
+    let primary = AuthManager::from_auth_for_testing_with_home(
+        CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+        f.home.path().to_path_buf(),
+    );
+    let reopened =
+        AccountPool::open_with_clock(env(f.home.path()), primary, Arc::new(|| NOW)).await;
+    reopened.active_auth_manager().expect("manager");
+    assert_eq!(in_use(&reopened), "予備キー");
+}

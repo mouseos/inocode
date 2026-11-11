@@ -4,6 +4,7 @@
 //! `flags` is implemented; the others return fixture-shaped placeholder
 //! responses until their owners replace them.
 
+mod accounts;
 mod evidence;
 mod flags;
 mod knowledge;
@@ -17,6 +18,8 @@ use codex_app_server_protocol::JSONRPCErrorError;
 
 pub(crate) type InocodeResult = Result<Option<ClientResponsePayload>, JSONRPCErrorError>;
 
+pub use accounts::open_pool as open_account_pool;
+pub(crate) use accounts::start as start_account_pool;
 pub(crate) use team::spawn_notifier as spawn_team_notifier;
 
 /// Routes an `inocode/*` request to its area handler. Any other method gets
@@ -24,6 +27,7 @@ pub(crate) use team::spawn_notifier as spawn_team_notifier;
 pub(crate) async fn handle(request: ClientRequest) -> InocodeResult {
     let method = request.method_name();
     match method.strip_prefix("inocode/").and_then(|m| m.split('/').next()) {
+        Some("accounts") => accounts::handle(request).await,
         Some("knowledge") => knowledge::handle(request).await,
         Some("evidence") => evidence::handle(request).await,
         Some("team") => team::handle(request).await,
