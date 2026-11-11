@@ -756,6 +756,18 @@ impl AccountPool {
         login_id: &str,
         alias: &str,
     ) -> Result<AccountView, std::io::Error> {
+        self.finish_chatgpt_login_expecting(login_id, alias, None)
+            .await
+    }
+
+    /// Like [`Self::finish_chatgpt_login`]; with `expected` the sign-in must be that very account
+    /// (re-authentication), otherwise it is refused and nothing is stored.
+    pub async fn finish_chatgpt_login_expecting(
+        &self,
+        login_id: &str,
+        alias: &str,
+        expected: Option<&str>,
+    ) -> Result<AccountView, std::io::Error> {
         let alias = alias.trim();
         if alias.is_empty() {
             return Err(io_err("alias must not be empty"));
@@ -772,6 +784,14 @@ impl AccountPool {
             .identify(&auth)
             .ok_or_else(|| io_err("the sign-in carries no account identity"))?;
         drop(pending);
+        if let Some(expected) = expected
+            && expected != identity.id
+        {
+            let _ = std::fs::remove_dir_all(self.store.pending_dir(login_id));
+            return Err(io_err(
+                "signed in as a different account; sign in to the account being re-authenticated",
+            ));
+        }
         self.sync_default();
         let duplicate_of_default = self
             .primary
@@ -871,6 +891,17 @@ impl AccountPool {
         alias: &str,
         credentials: ClaudeCredentials,
     ) -> Result<AccountView, std::io::Error> {
+        self.add_claude_oauth_expecting(alias, credentials, None)
+            .await
+    }
+
+    /// Like [`Self::add_claude_oauth`]; with `expected` the sign-in must be that very account.
+    pub async fn add_claude_oauth_expecting(
+        &self,
+        alias: &str,
+        credentials: ClaudeCredentials,
+        expected: Option<&str>,
+    ) -> Result<AccountView, std::io::Error> {
         let alias = alias.trim();
         if alias.is_empty() {
             return Err(io_err("alias must not be empty"));
@@ -880,6 +911,13 @@ impl AccountPool {
             .clone()
             .unwrap_or_else(|| credentials.refresh.clone());
         let id = claude_account_id(&seed);
+        if let Some(expected) = expected
+            && expected != id
+        {
+            return Err(io_err(
+                "signed in as a different account; sign in to the account being re-authenticated",
+            ));
+        }
         let dir = self.store.account_dir(&id);
         let existing = lock(&self.inner).position(&id).is_some();
         let claude = Arc::new(ClaudeAuthManager::create(

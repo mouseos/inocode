@@ -342,8 +342,15 @@ impl<T: HttpTransport> WireClient<T> {
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
         let registry = ToolRegistry::new(&tools);
+        // Claude reports the subscription window usage in response headers.
+        let limits = matches!(self.kind, WireKind::AnthropicMessages { .. })
+            .then(|| anthropic_rate_limits(&response.headers))
+            .flatten();
         let (tx_event, rx_event) = mpsc::channel::<Result<ResponseEvent, ApiError>>(1600);
         tokio::spawn(async move {
+            if let Some(snapshot) = limits {
+                let _ = tx_event.send(Ok(ResponseEvent::RateLimits(snapshot))).await;
+            }
             pump(response.bytes, tx_event, idle_timeout, registry, parser).await;
         });
         Ok(ResponseStream {
@@ -353,6 +360,47 @@ impl<T: HttpTransport> WireClient<T> {
             interrupt: None,
         })
     }
+}
+
+/// `anthropic-ratelimit-unified-{5h,7d}-{utilization,reset}`: utilization is a 0-1 fraction,
+/// reset is epoch seconds. `None` when the response carries neither window.
+pub(crate) fn anthropic_rate_limits(headers: &HeaderMap) -> Option<codex_protocol::protocol::RateLimitSnapshot> {
+    let number = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .filter(|n| n.is_finite())
+    };
+    let window = |wire: &str, minutes: i64| {
+        let used = number(&format!("anthropic-ratelimit-unified-{wire}-utilization"))
+            .filter(|fraction| (0.0..=1.0).contains(fraction))?;
+        let resets_at = number(&format!("anthropic-ratelimit-unified-{wire}-reset"))
+            .filter(|seconds| *seconds > 0.0)
+            .map(|seconds| seconds as i64);
+        Some(codex_protocol::protocol::RateLimitWindow {
+            used_percent: (used * 10_000.0).round() / 100.0,
+            window_minutes: Some(minutes),
+            resets_at,
+        })
+    };
+    let primary = window("5h", 300);
+    let secondary = window("7d", 10_080);
+    if primary.is_none() && secondary.is_none() {
+        return None;
+    }
+    Some(codex_protocol::protocol::RateLimitSnapshot {
+        limit_id: Some("claude".to_string()),
+        limit_name: None,
+        normal_model_slug: None,
+        primary,
+        secondary,
+        credits: None,
+        individual_limit: None,
+        spend_control_reached: None,
+        plan_type: None,
+        rate_limit_reached_type: None,
+    })
 }
 
 async fn pump(
@@ -515,5 +563,33 @@ fn failure_error(failure: AdapterFailure) -> ApiError {
             Err(_) => ApiError::Stream(message),
         },
         None => ApiError::Stream(message),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claude_window_usage_comes_from_the_unified_ratelimit_headers() {
+        let mut headers = HeaderMap::new();
+        for (name, value) in [
+            ("anthropic-ratelimit-unified-5h-utilization", "0.42"),
+            ("anthropic-ratelimit-unified-5h-reset", "1794398400"),
+            ("anthropic-ratelimit-unified-7d-utilization", "0.1875"),
+            ("anthropic-ratelimit-unified-7d-reset", "1794744000"),
+        ] {
+            headers.insert(name, HeaderValue::from_static(value));
+        }
+        let snapshot = anthropic_rate_limits(&headers).expect("snapshot");
+        let primary = snapshot.primary.expect("5h");
+        assert_eq!((primary.used_percent, primary.window_minutes, primary.resets_at), (42.0, Some(300), Some(1_794_398_400)));
+        let secondary = snapshot.secondary.expect("7d");
+        assert_eq!((secondary.used_percent, secondary.window_minutes), (18.75, Some(10_080)));
+        // Out-of-range values and responses without the headers carry no usage.
+        let mut bad = HeaderMap::new();
+        bad.insert("anthropic-ratelimit-unified-5h-utilization", HeaderValue::from_static("42"));
+        assert!(anthropic_rate_limits(&bad).is_none());
+        assert!(anthropic_rate_limits(&HeaderMap::new()).is_none());
     }
 }

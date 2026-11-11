@@ -83,10 +83,17 @@ pub(crate) async fn recover_from_limit(
 }
 
 /// Rate-limit headers describe the account that served the request.
-pub(crate) fn record_rate_limits(snapshot: &RateLimitSnapshot) {
-    if let Some(pool) = account_pool::global() {
+pub(crate) fn record_rate_limits(turn_context: &TurnContext, snapshot: &RateLimitSnapshot) {
+    if let Some(pool) = pool_for(turn_context) {
         pool.record_usage_for_current(AccountUsage::from_snapshot(snapshot, now()));
     }
+}
+
+/// Alias of the account serving this turn's provider (never an e-mail address).
+pub(crate) fn current_alias(turn_context: &TurnContext) -> Option<String> {
+    let pool = pool_for(turn_context)?;
+    let id = pool.current_id()?;
+    pool.list().into_iter().find(|a| a.id == id).map(|a| a.alias)
 }
 
 fn now() -> i64 {

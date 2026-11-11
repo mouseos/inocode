@@ -390,3 +390,47 @@ async fn the_claude_group_is_its_own_pool_with_failover_and_survives_a_restart()
         .expect("token");
     assert!(token.starts_with("access-FAKE-"));
 }
+
+#[tokio::test]
+async fn re_authenticating_requires_the_same_account_and_keeps_its_settings() {
+    use crate::claude_oauth::ClaudeCredentials;
+    let home = tempfile::tempdir().expect("tempdir");
+    let pool = AccountPool::open_group(env(home.path()), "claude", "accounts-claude").await;
+    let creds = |n: u32| ClaudeCredentials {
+        access: format!("access-FAKE-{n}"),
+        refresh: format!("refresh-FAKE-{n}"),
+        expires_at_ms: i64::MAX,
+        account_uuid: Some(format!("uuid-{n}")),
+        plan: None,
+    };
+    let one = pool.add_claude_oauth("クロード", creds(1)).await.expect("add");
+    pool.set_priority(&one.id, 7).expect("priority");
+
+    // Signing in as someone else is refused and changes nothing.
+    assert!(
+        pool.add_claude_oauth_expecting("別人", creds(2), Some(one.id.as_str()))
+            .await
+            .is_err()
+    );
+    assert_eq!(pool.list().len(), 1);
+
+    let renewed = ClaudeCredentials {
+        access: "access-FAKE-NEW".to_string(),
+        ..creds(1)
+    };
+    let again = pool
+        .add_claude_oauth_expecting("無視される別名", renewed, Some(one.id.as_str()))
+        .await
+        .expect("the same account");
+    assert_eq!(again.id, one.id);
+    assert_eq!(again.alias, "クロード");
+    assert_eq!(again.priority, 7);
+    assert_eq!(pool.list().len(), 1);
+    let token = pool
+        .active_claude_manager()
+        .expect("a manager")
+        .access_token()
+        .await
+        .expect("token");
+    assert_eq!(token, "access-FAKE-NEW");
+}

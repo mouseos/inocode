@@ -34,6 +34,8 @@ use codex_app_server_protocol::InocodeAccountsLoginStartParams;
 use codex_app_server_protocol::InocodeAccountsLoginStartResponse;
 use codex_app_server_protocol::InocodeAccountsPolicyReadResponse;
 use codex_app_server_protocol::InocodeAccountsPolicyWriteResponse;
+use codex_app_server_protocol::InocodeAccountsReauthParams;
+use codex_app_server_protocol::InocodeAccountsReauthResponse;
 use codex_app_server_protocol::InocodeAccountsRemoveResponse;
 use codex_app_server_protocol::InocodeAccountsRenameResponse;
 use codex_app_server_protocol::InocodeAccountsSetEnabledResponse;
@@ -96,6 +98,7 @@ enum PendingLogin {
     ClaudeCode {
         pending: claude_oauth::Pending,
         alias: String,
+        expected: Option<String>,
     },
 }
 
@@ -338,7 +341,12 @@ pub(crate) async fn handle(request: ClientRequest) -> InocodeResult {
             Ok(Some(InocodeAccountsUseResponse {}.into()))
         }
         ClientRequest::InocodeAccountsLoginStart { params, .. } => {
-            Ok(Some(login_start(params).await?.into()))
+            Ok(Some(login_start(params, None).await?.into()))
+        }
+        ClientRequest::InocodeAccountsReauth { params, .. } => {
+            Ok(Some(
+                InocodeAccountsReauthResponse::from(reauth(params).await?).into(),
+            ))
         }
         ClientRequest::InocodeAccountsLoginComplete { params, .. } => {
             login_complete(params).await?;
@@ -428,8 +436,43 @@ fn now_ms() -> i64 {
 
 /// Adds an account without touching the current login: the sign-in writes into a pending
 /// directory (ChatGPT) or is held in memory (Claude) until it succeeds.
+/// Signs in again to an existing account; the new sign-in must be the same account.
+async fn reauth(
+    params: InocodeAccountsReauthParams,
+) -> Result<InocodeAccountsLoginStartResponse, JSONRPCErrorError> {
+    let view = pool_with(&params.id)?
+        .list()
+        .into_iter()
+        .find(|view| view.id == params.id)
+        .ok_or_else(|| invalid_request("unknown account"))?;
+    let provider = match view.kind {
+        _ if view.is_default => {
+            return Err(invalid_request(
+                "the default login is re-authenticated with account/login/start",
+            ));
+        }
+        AccountKind::Chatgpt => OPENAI,
+        AccountKind::ClaudeOauth => CLAUDE,
+        AccountKind::ApiKey => {
+            return Err(invalid_request(
+                "an API key cannot be re-authenticated; remove it and add the new key",
+            ));
+        }
+    };
+    login_start(
+        InocodeAccountsLoginStartParams {
+            alias: view.alias,
+            provider: Some(provider.to_string()),
+            method: params.method,
+        },
+        Some(view.id),
+    )
+    .await
+}
+
 async fn login_start(
     params: InocodeAccountsLoginStartParams,
+    expected: Option<String>,
 ) -> Result<InocodeAccountsLoginStartResponse, JSONRPCErrorError> {
     let runtime = runtime()?;
     let alias = params.alias.trim().to_string();
@@ -439,7 +482,7 @@ async fn login_start(
     let login_id = uuid::Uuid::new_v4().to_string();
 
     if group_of(params.provider.as_deref())? == CLAUDE {
-        return claude_login_start(runtime, login_id, alias, params.method).await;
+        return claude_login_start(runtime, login_id, alias, params.method, expected).await;
     }
 
     let pool = pool()?;
@@ -477,7 +520,7 @@ async fn login_start(
                         Err("Login timed out".to_string())
                     }
                 };
-                finish(id, alias, result).await;
+                finish(id, alias, result, expected).await;
             });
             Ok(InocodeAccountsLoginStartResponse {
                 login_id,
@@ -503,7 +546,7 @@ async fn login_start(
                         done.map_err(|err| err.to_string())
                     }
                 };
-                finish(id, alias, result).await;
+                finish(id, alias, result, expected).await;
             });
             Ok(InocodeAccountsLoginStartResponse {
                 login_id,
@@ -524,6 +567,7 @@ async fn claude_login_start(
     login_id: String,
     alias: String,
     method: Option<InocodeAccountLoginMethod>,
+    expected: Option<String>,
 ) -> Result<InocodeAccountsLoginStartResponse, JSONRPCErrorError> {
     let code_mode = match method.unwrap_or(InocodeAccountLoginMethod::Browser) {
         InocodeAccountLoginMethod::Browser => false,
@@ -535,7 +579,15 @@ async fn claude_login_start(
     let pending = claude_oauth::begin(code_mode);
     let auth_url = pending.url.clone();
     if code_mode {
-        register(runtime, &login_id, PendingLogin::ClaudeCode { pending, alias });
+        register(
+            runtime,
+            &login_id,
+            PendingLogin::ClaudeCode {
+                pending,
+                alias,
+                expected,
+            },
+        );
         return Ok(InocodeAccountsLoginStartResponse {
             login_id,
             auth_url: Some(auth_url),
@@ -555,7 +607,7 @@ async fn claude_login_start(
         )
         .await
         {
-            Ok(code) => claude_finish(&pending, &alias, &code).await,
+            Ok(code) => claude_finish(&pending, &alias, &code, expected.as_deref()).await,
             Err(err) => Err(err.to_string()),
         };
         finish_claude(id, result).await;
@@ -574,6 +626,7 @@ async fn claude_finish(
     pending: &claude_oauth::Pending,
     alias: &str,
     code: &str,
+    expected: Option<&str>,
 ) -> Result<String, String> {
     let pool = pool_of(CLAUDE).map_err(|_| "the account pool is not ready yet".to_string())?;
     let credentials = claude_oauth::exchange(
@@ -584,7 +637,7 @@ async fn claude_finish(
     )
     .await
     .map_err(|err| err.to_string())?;
-    pool.add_claude_oauth(alias, credentials)
+    pool.add_claude_oauth_expecting(alias, credentials, expected)
         .await
         .map(|view| view.id)
         .map_err(|err| err.to_string())
@@ -597,10 +650,15 @@ async fn login_complete(params: InocodeAccountsLoginCompleteParams) -> Result<()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .remove(&params.login_id);
-    let Some(PendingLogin::ClaudeCode { pending, alias }) = entry else {
+    let Some(PendingLogin::ClaudeCode {
+        pending,
+        alias,
+        expected,
+    }) = entry
+    else {
         return Err(invalid_request("this login is not waiting for a code"));
     };
-    let result = claude_finish(&pending, &alias, &params.code).await;
+    let result = claude_finish(&pending, &alias, &params.code, expected.as_deref()).await;
     let failed = result.clone().err();
     finish_claude(params.login_id, result).await;
     match failed {
@@ -645,7 +703,12 @@ async fn notify_login(runtime: &Runtime, login_id: String, result: Result<String
         .await;
 }
 
-async fn finish(login_id: String, alias: String, result: Result<(), String>) {
+async fn finish(
+    login_id: String,
+    alias: String,
+    result: Result<(), String>,
+    expected: Option<String>,
+) {
     let Ok(runtime) = runtime() else { return };
     runtime
         .logins
@@ -655,7 +718,7 @@ async fn finish(login_id: String, alias: String, result: Result<(), String>) {
     let Ok(pool) = pool() else { return };
     let outcome = match result {
         Ok(()) => pool
-            .finish_chatgpt_login(&login_id, &alias)
+            .finish_chatgpt_login_expecting(&login_id, &alias, expected.as_deref())
             .await
             .map(|view| view.id)
             .map_err(|err| err.to_string()),

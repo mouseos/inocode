@@ -786,6 +786,12 @@ client_request_definitions! {
         serialization: None,
         response: v2::InocodeAccountsLoginStartResponse,
     },
+    #[experimental("inocode/accounts/reauth")]
+    InocodeAccountsReauth => "inocode/accounts/reauth" {
+        params: v2::InocodeAccountsReauthParams,
+        serialization: None,
+        response: v2::InocodeAccountsReauthResponse,
+    },
     #[experimental("inocode/accounts/login/complete")]
     InocodeAccountsLoginComplete => "inocode/accounts/login/complete" {
         params: v2::InocodeAccountsLoginCompleteParams,

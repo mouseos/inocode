@@ -259,6 +259,42 @@ pub enum InocodeAccountLoginMethod {
     OauthCode,
 }
 
+/// Signs in again to an account whose credentials expired or were refused. Answered like
+/// `login/start`; completion arrives as `inocode/accounts/loginCompleted`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct InocodeAccountsReauthParams {
+    pub id: String,
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub method: Option<InocodeAccountLoginMethod>,
+}
+
+/// The same shape as [`InocodeAccountsLoginStartResponse`].
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct InocodeAccountsReauthResponse {
+    pub login_id: String,
+    pub auth_url: Option<String>,
+    pub verification_url: Option<String>,
+    pub user_code: Option<String>,
+    pub code_entry: bool,
+}
+
+impl From<InocodeAccountsLoginStartResponse> for InocodeAccountsReauthResponse {
+    fn from(value: InocodeAccountsLoginStartResponse) -> Self {
+        Self {
+            login_id: value.login_id,
+            auth_url: value.auth_url,
+            verification_url: value.verification_url,
+            user_code: value.user_code,
+            code_entry: value.code_entry,
+        }
+    }
+}
+
 /// Adds a ChatGPT account (never replaces the current login). Same flow as `account/login/start`.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
