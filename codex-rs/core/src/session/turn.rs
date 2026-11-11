@@ -1937,6 +1937,7 @@ async fn run_sampling_request(
         // Running code-mode cells can request review while this response is in flight.
         // Keep the latest received ID until response.created replaces it.
         let first_attempt = initial_input.is_some();
+        crate::account_pool_hook::before_sampling(&sess, &turn_context, first_attempt).await;
         let history = if let Some(input) = initial_input.take() {
             input
         } else {
@@ -2036,7 +2037,27 @@ async fn run_sampling_request(
                     if let Some(rate_limits) = rate_limits {
                         sess.update_rate_limits(&turn_context, *rate_limits).await;
                     }
+                    if crate::account_pool_hook::recover_from_limit(&sess, &turn_context, &err).await {
+                        continue;
+                    }
                     return Err(err);
+                }
+                CodexErrorDetails::QuotaExceeded | CodexErrorDetails::UsageNotIncluded
+                    if crate::account_pool_hook::recover_from_limit(&sess, &turn_context, &err)
+                        .await =>
+                {
+                    continue;
+                }
+                CodexErrorDetails::RetryLimit(limit)
+                    if limit.status.as_u16() == 429
+                        && crate::account_pool_hook::recover_from_limit(
+                            &sess,
+                            &turn_context,
+                            &err,
+                        )
+                        .await =>
+                {
+                    continue;
                 }
                 CodexErrorDetails::SessionBudgetExceeded | CodexErrorDetails::Fatal(_) => {
                     return Err(err);

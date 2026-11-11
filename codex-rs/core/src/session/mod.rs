@@ -5856,6 +5856,7 @@ impl Session {
         turn_context: &TurnContext,
         new_rate_limits: RateLimitSnapshot,
     ) {
+        crate::account_pool_hook::record_rate_limits(&new_rate_limits);
         self.record_rate_limits_info(new_rate_limits).await;
         self.send_token_count_event(turn_context).await;
     }

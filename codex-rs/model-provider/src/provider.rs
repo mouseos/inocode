@@ -471,6 +471,7 @@ struct ConfiguredModelProvider {
     gateway_auth_manager: Option<Result<Arc<GatewayAuthManager>, String>>,
     runtime_auth: Option<(Arc<RuntimeAuthManager>, RuntimeAuthMode)>,
     catalog_runtime_auth: Option<(Arc<RuntimeAuthManager>, RuntimeAuthMode)>,
+    pooled: bool,
 }
 
 impl ConfiguredModelProvider {
@@ -486,6 +487,7 @@ impl ConfiguredModelProvider {
                 .ok_or_else(|| "gateway_oauth requires auth runtime configuration".to_string())?;
             GatewayAuthManager::new(&info, config, manager).map(Arc::new)
         });
+        let pooled = info.requires_openai_auth && provider_uses_first_party_auth_path(&info);
         let auth_manager = auth_manager_for_provider(auth_manager, &info);
         let runtime_for_destination = |destination: Option<&str>| {
             runtime_auth.clone().filter(|_| {
@@ -509,7 +511,20 @@ impl ConfiguredModelProvider {
             gateway_auth_manager,
             runtime_auth: inference_runtime_auth,
             catalog_runtime_auth,
+            pooled,
         }
+    }
+
+    /// The account pool (when installed) picks which account's manager serves this request.
+    /// Only the first-party sign-in path is pooled; providers with their own credentials
+    /// (API key env var, command auth, cloud auth) keep theirs.
+    fn current_auth_manager(&self) -> Option<Arc<AuthManager>> {
+        if self.pooled {
+            if let Some(manager) = codex_login::account_pool::active_auth_manager() {
+                return Some(manager);
+            }
+        }
+        self.auth_manager.clone()
     }
 
     async fn resolve_auth(
@@ -518,7 +533,7 @@ impl ConfiguredModelProvider {
     ) -> codex_protocol::error::Result<ResolvedProviderAuth> {
         let resolved = resolve_request_auth(
             self.info.clone(),
-            self.auth_manager.clone(),
+            self.current_auth_manager(),
             self.runtime_auth.clone(),
             scope,
             self.info.base_url.clone(),
@@ -554,8 +569,7 @@ impl ModelProvider for ConfiguredModelProvider {
 
     fn approval_review_preferred_model(&self) -> &'static str {
         if self
-            .auth_manager
-            .as_ref()
+            .current_auth_manager()
             .and_then(|auth_manager| auth_manager.auth_cached())
             .is_some_and(|auth| auth.is_api_key_auth())
         {
@@ -566,7 +580,7 @@ impl ModelProvider for ConfiguredModelProvider {
     }
 
     fn auth_manager(&self) -> Option<Arc<AuthManager>> {
-        self.auth_manager.clone()
+        self.current_auth_manager()
     }
 
     fn gateway_auth_manager(&self) -> std::io::Result<Option<Arc<GatewayAuthManager>>> {
@@ -588,15 +602,14 @@ impl ModelProvider for ConfiguredModelProvider {
     }
 
     fn supports_attestation(&self) -> bool {
-        self.auth_manager
-            .as_ref()
+        self.current_auth_manager()
             .and_then(|auth_manager| auth_manager.auth_cached())
             .is_some_and(|auth| auth.is_chatgpt_auth())
     }
 
     fn auth(&self) -> ModelProviderFuture<'_, Option<CodexAuth>> {
         Box::pin(async move {
-            match self.auth_manager.as_ref() {
+            match self.current_auth_manager() {
                 Some(auth_manager) => auth_manager.auth().await,
                 None => None,
             }

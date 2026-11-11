@@ -110,6 +110,20 @@ impl AccountUsage {
         usage
     }
 
+    /// From the backend's rate-limit snapshot (response headers or the usage endpoint).
+    pub fn from_snapshot(snapshot: &codex_protocol::protocol::RateLimitSnapshot, now: i64) -> Self {
+        let window = |w: &codex_protocol::protocol::RateLimitWindow| UsageWindow {
+            used_percent: w.used_percent,
+            window_minutes: w.window_minutes,
+            resets_at: w.resets_at,
+        };
+        Self::from_windows(
+            snapshot.primary.as_ref().map(window),
+            snapshot.secondary.as_ref().map(window),
+            now,
+        )
+    }
+
     /// The percentage the policy cares about, or `None` when nothing is known.
     pub fn effective_percent(&self, window: WindowKind, now: i64) -> Option<f64> {
         let five = self.five_hour.as_ref().map(|w| w.effective_percent(now));
