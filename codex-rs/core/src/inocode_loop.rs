@@ -108,36 +108,16 @@ fn detectors() -> &'static Mutex<HashMap<ThreadId, ThreadStall>> {
     DETECTORS.get_or_init(Default::default)
 }
 
-fn advisor_table() -> Option<toml::Table> {
-    let text =
-        std::fs::read_to_string(codex_inocode_flags::inocode_home().join("config.toml")).ok()?;
-    let table = text.parse::<toml::Table>().ok()?;
-    table
-        .get("inocode")?
-        .as_table()?
-        .get("advisor")?
-        .as_table()
-        .cloned()
-}
-
-fn stall_config(table: Option<&toml::Table>) -> StallConfig {
-    let mut config = StallConfig::default();
-    let get = |key: &str| {
-        table
-            .and_then(|t| t.get(key))
-            .and_then(toml::Value::as_integer)
-            .and_then(|v| usize::try_from(v).ok())
-    };
-    if let Some(v) = get("same_failure_k") {
-        config.same_failure_k = v;
+/// Stall thresholds from `advisor.*` parameters, read each time a detector is created.
+fn stall_config() -> StallConfig {
+    use codex_inocode_flags::int_param;
+    let get = |key: &str| usize::try_from(int_param(key)).unwrap_or(usize::MAX);
+    StallConfig {
+        same_failure_k: get("advisor.same_failure_k"),
+        repeat_n: get("advisor.repeat_n"),
+        alternation_len: get("advisor.alternation_len"),
+        no_progress_turns: get("advisor.no_progress_turns"),
     }
-    if let Some(v) = get("repeat_n") {
-        config.repeat_n = v;
-    }
-    if let Some(v) = get("no_progress_turns") {
-        config.no_progress_turns = v;
-    }
-    config
 }
 
 fn truncate(text: &str, max: usize) -> String {
@@ -215,7 +195,7 @@ pub(crate) fn observe_tool_result(
             return;
         };
         let entry = map.entry(session.thread_id).or_insert_with(|| ThreadStall {
-            detector: StallDetector::new(stall_config(advisor_table().as_ref())),
+            detector: StallDetector::new(stall_config()),
             recent: VecDeque::new(),
             last_error: String::new(),
         });
@@ -237,6 +217,15 @@ pub(crate) fn observe_tool_result(
         )
     };
     let Some(stall) = stall else { return };
+    codex_inocode_advisor::record_global(
+        &codex_inocode_flags::inocode_home(),
+        codex_inocode_advisor::AdvisorEvent::stall(
+            &session.thread_id.to_string(),
+            stall.trigger,
+            &stall.signature,
+            tried.clone(),
+        ),
+    );
     if flags.metrics_enabled {
         record(
             session.thread_id,
@@ -244,6 +233,28 @@ pub(crate) fn observe_tool_result(
                 trigger: stall.trigger.as_str().to_string(),
             },
         );
+    }
+    // Failure case (knowledge DB): the repeated failure signature is recorded once; the
+    // store returns the existing id when a live case with the same signature exists.
+    // No-op when `knowledge.enabled` is off.
+    {
+        let symptom = if last_error.is_empty() {
+            tried.last().cloned().unwrap_or_default()
+        } else {
+            last_error.clone()
+        };
+        let cwd = crate::compact_inocode::local_cwd(turn);
+        if let Err(err) = codex_inocode_knowledge::record_failure_case(
+            &cwd,
+            &stall.signature,
+            &symptom,
+            None,
+            None,
+            None,
+            "advisor",
+        ) {
+            tracing::warn!("recording failure case failed: {err}");
+        }
     }
     let session = Arc::clone(session);
     let turn = Arc::clone(turn);
@@ -295,15 +306,43 @@ async fn run_consultation(
             vec![last_error]
         },
     };
-    let model =
-        advisor_table().and_then(|t| t.get("model").and_then(|v| v.as_str().map(str::to_string)));
+    let model = codex_inocode_flags::string_param("advisor.model");
+    let model_for_log = Some(
+        model
+            .clone()
+            .unwrap_or_else(|| turn.model_info().slug.clone()),
+    );
     let advice = codex_inocode_advisor::consult(&state, &stall, |prompt| {
         ask_advisor_model(Arc::clone(&session), Arc::clone(&turn), prompt, model)
     })
     .await;
+    let thread_id = session.thread_id.to_string();
+    let home = codex_inocode_flags::inocode_home();
     match advice {
-        Ok(text) => deliver_advice(&session, text).await,
-        Err(err) => tracing::warn!("advisor consultation failed: {err}"),
+        Ok(text) => {
+            codex_inocode_advisor::record_global(
+                &home,
+                codex_inocode_advisor::AdvisorEvent::advice(
+                    &thread_id,
+                    stall.trigger,
+                    model_for_log.as_deref(),
+                    &text,
+                ),
+            );
+            deliver_advice(&session, text).await
+        }
+        Err(err) => {
+            tracing::warn!("advisor consultation failed: {err}");
+            codex_inocode_advisor::record_global(
+                &home,
+                codex_inocode_advisor::AdvisorEvent::error(
+                    &thread_id,
+                    stall.trigger,
+                    model_for_log.as_deref(),
+                    &err.to_string(),
+                ),
+            );
+        }
     }
 }
 

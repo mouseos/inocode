@@ -9,6 +9,16 @@
 //! hypotheses, suspicious assumptions and distinguishing experiments (never for an
 //! implementation). The answer is fed back to the main agent as hypotheses.
 
+mod events;
+
+pub use events::AdvisorEvent;
+pub use events::AdvisorEventKind;
+pub use events::append_event;
+pub use events::page_events;
+pub use events::read_events;
+pub use events::record_global;
+pub use events::subscribe;
+
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::VecDeque;
