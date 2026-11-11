@@ -10,6 +10,8 @@ use serde::Serialize;
 pub enum AccountKind {
     Chatgpt,
     ApiKey,
+    /// A Claude (Pro/Max) OAuth sign-in.
+    ClaudeOauth,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -187,10 +189,17 @@ pub struct AccountMeta {
     pub usage: Option<AccountUsage>,
     #[serde(default)]
     pub added_at: i64,
+    /// Which provider group the entry belongs to (`openai`, `claude`).
+    #[serde(default = "default_provider")]
+    pub provider: String,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_provider() -> String {
+    "openai".to_string()
 }
 
 /// What a client sees of one entry.
@@ -207,6 +216,7 @@ pub struct AccountView {
     pub last_used_at: Option<i64>,
     pub in_use: bool,
     pub is_default: bool,
+    pub provider: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

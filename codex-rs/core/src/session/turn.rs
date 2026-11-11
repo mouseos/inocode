@@ -2042,7 +2042,9 @@ async fn run_sampling_request(
                     }
                     return Err(err);
                 }
-                CodexErrorDetails::QuotaExceeded | CodexErrorDetails::UsageNotIncluded
+                CodexErrorDetails::QuotaExceeded
+                | CodexErrorDetails::UsageNotIncluded
+                | CodexErrorDetails::RateLimitExceeded(_)
                     if crate::account_pool_hook::recover_from_limit(&sess, &turn_context, &err)
                         .await =>
                 {

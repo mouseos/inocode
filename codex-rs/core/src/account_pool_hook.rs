@@ -8,7 +8,10 @@ use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use codex_login::account_pool;
 use codex_login::account_pool::AccountUsage;
+use codex_login::account_pool::AccountPool;
 use codex_login::account_pool::SwitchEvent;
+use codex_model_provider_info::WireApi;
+use std::sync::Arc;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::EventMsg;
@@ -25,10 +28,19 @@ async fn announce(sess: &Session, turn_context: &TurnContext, event: &SwitchEven
     .await;
 }
 
+/// The pool that serves this turn's provider.
+fn pool_for(turn_context: &TurnContext) -> Option<Arc<AccountPool>> {
+    let group = match turn_context.config.model_provider.wire_api {
+        WireApi::AnthropicMessages => crate::claude_auth::CLAUDE_GROUP,
+        _ => "openai",
+    };
+    account_pool::global_for(group)
+}
+
 /// Before each sampling request: move to another account when the current one is about to
 /// cross the threshold. `turn_start` is true for the first request of a turn.
 pub(crate) async fn before_sampling(sess: &Session, turn_context: &TurnContext, turn_start: bool) {
-    let Some(pool) = account_pool::global() else {
+    let Some(pool) = pool_for(turn_context) else {
         return;
     };
     let thread_id = sess.thread_id.to_string();
@@ -44,7 +56,7 @@ pub(crate) async fn recover_from_limit(
     turn_context: &TurnContext,
     err: &CodexErr,
 ) -> bool {
-    let Some(pool) = account_pool::global() else {
+    let Some(pool) = pool_for(turn_context) else {
         return false;
     };
     let resets_at = match err.details() {
@@ -54,7 +66,9 @@ pub(crate) async fn recover_from_limit(
             }
             limit.resets_at.map(|at| at.timestamp())
         }
-        CodexErrorDetails::QuotaExceeded | CodexErrorDetails::UsageNotIncluded => None,
+        CodexErrorDetails::QuotaExceeded
+        | CodexErrorDetails::UsageNotIncluded
+        | CodexErrorDetails::RateLimitExceeded(_) => None,
         CodexErrorDetails::RetryLimit(limit) if limit.status.as_u16() == 429 => None,
         _ => return false,
     };

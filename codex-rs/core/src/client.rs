@@ -2104,14 +2104,17 @@ impl ResponsesHttpExecutor<'_> {
                     client.stream_request(request, options).await
                 }
                 WireApi::AnthropicMessages => {
+                    // No key of its own: sign in through the pool's Claude group.
+                    let pooled = crate::claude_auth::pooled_auth(self.client.state.provider.info());
+                    let oauth = pooled.as_ref().is_some_and(|(_, oauth)| *oauth);
                     let kind = codex_api::anthropic_wire_kind(
                         &client_setup.api_provider.base_url,
-                        /*oauth*/ false,
+                        oauth,
                     );
                     codex_api::WireClient::new(
                         transport,
                         client_setup.api_provider,
-                        client_setup.api_auth,
+                        pooled.map_or(client_setup.api_auth, |(auth, _)| auth),
                         kind,
                     )
                     .with_telemetry(Some(request_telemetry))

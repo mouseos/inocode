@@ -36,6 +36,8 @@ pub use responses_websocket_probe::ResponsesWebsocketProbe;
 pub use responses_websocket_probe::ResponsesWebsocketProbeError;
 pub use responses_websocket_probe::ResponsesWebsocketProbeFailureStage;
 pub use search::SearchClient;
+pub use wire::BearerSource;
+pub use wire::BearerSourceAuth;
 pub use wire::WireClient;
 pub use wire::WireKind;
 pub use wire::anthropic_wire_kind;

@@ -27,6 +27,9 @@ use crate::AuthCredentialsStoreMode;
 use crate::AuthKeyringBackendKind;
 use crate::AuthManager;
 use crate::AuthRouteConfig;
+use crate::claude_oauth::ClaudeAuthManager;
+use crate::claude_oauth::ClaudeCredentials;
+use crate::claude_oauth::claude_account_id;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -36,6 +39,13 @@ use std::sync::RwLock;
 use std::sync::Weak;
 use std::time::Duration;
 use tokio::sync::broadcast;
+
+/// What a Claude request authenticates with.
+#[derive(Clone)]
+pub enum ClaudeCredential {
+    Oauth(Arc<ClaudeAuthManager>),
+    ApiKey(Arc<AuthManager>),
+}
 
 /// Where and how the pool builds its per-account `AuthManager`s.
 #[derive(Clone, Debug)]
@@ -50,6 +60,8 @@ pub struct PoolEnv {
 struct Entry {
     meta: AccountMeta,
     manager: Arc<AuthManager>,
+    /// Set for Claude OAuth entries (`manager` is then an unused placeholder).
+    claude: Option<Arc<ClaudeAuthManager>>,
     /// Percentage points one sampling typically adds.
     pace: f64,
     is_default: bool,
@@ -66,8 +78,9 @@ type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
 
 pub struct AccountPool {
     env: PoolEnv,
+    group: String,
     store: AccountStore,
-    primary: Arc<AuthManager>,
+    primary: Option<Arc<AuthManager>>,
     inner: Mutex<Inner>,
     providers: RwLock<HashMap<AccountKind, Arc<dyn AccountProvider>>>,
     events: broadcast::Sender<PoolEvent>,
@@ -144,15 +157,40 @@ impl AccountPool {
         clock: Clock,
     ) -> Arc<Self> {
         let store = AccountStore::new(&env.codex_home, env.mode, env.keyring);
+        Self::open_inner(env, "openai", store, Some(primary), clock).await
+    }
+
+    /// Opens the pool of another provider group (`claude`) under `INOCODE_HOME/<dir_name>/`.
+    /// There is no legacy default login in such a group.
+    pub async fn open_group(env: PoolEnv, group: &str, dir_name: &str) -> Arc<Self> {
+        let store = AccountStore::in_dir(&env.codex_home, dir_name, env.mode, env.keyring);
+        Self::open_inner(env, group, store, None, Arc::new(system_now)).await
+    }
+
+    async fn open_inner(
+        env: PoolEnv,
+        group: &str,
+        store: AccountStore,
+        primary: Option<Arc<AuthManager>>,
+        clock: Clock,
+    ) -> Arc<Self> {
         let mut entries = Vec::new();
         for id in store.ids() {
-            let Some(meta) = store.load_meta(&id) else {
+            let Some(mut meta) = store.load_meta(&id) else {
                 continue;
             };
+            meta.provider = group.to_string();
             let manager = make_manager(&env, store.account_dir(&id)).await;
+            let claude = (meta.kind == AccountKind::ClaudeOauth).then(|| {
+                Arc::new(ClaudeAuthManager::open(
+                    store.account_dir(&id),
+                    env.auth_route_config.clone(),
+                ))
+            });
             entries.push(Entry {
                 meta,
                 manager,
+                claude,
                 pace: 0.0,
                 is_default: false,
             });
@@ -170,6 +208,7 @@ impl AccountPool {
             .filter(|id| entries.iter().any(|e| &e.meta.id == id) || id == DEFAULT_ID);
         let pool = Arc::new(Self {
             env,
+            group: group.to_string(),
             store,
             primary,
             inner: Mutex::new(Inner {
@@ -226,7 +265,10 @@ impl AccountPool {
     /// Keeps the "default" entry in step with the legacy login: present while `auth.json` has a
     /// login, gone after it was removed.
     fn sync_default(&self) {
-        let auth = self.primary.auth_cached();
+        let Some(primary) = self.primary.as_ref() else {
+            return;
+        };
+        let auth = primary.auth_cached();
         let mut inner = lock(&self.inner);
         let position = inner.position(DEFAULT_ID);
         match (auth, position) {
@@ -248,6 +290,7 @@ impl AccountPool {
                     last_used_at: None,
                     usage: None,
                     added_at: self.now(),
+                    provider: self.group.clone(),
                 });
                 let plan = self
                     .provider(kind)
@@ -262,7 +305,8 @@ impl AccountPool {
                     0,
                     Entry {
                         meta,
-                        manager: Arc::clone(&self.primary),
+                        manager: Arc::clone(primary),
+                        claude: None,
                         pace: 0.0,
                         is_default: true,
                     },
@@ -611,6 +655,7 @@ impl AccountPool {
                     last_used_at: e.meta.last_used_at,
                     in_use: inner.current.as_deref() == Some(e.meta.id.as_str()),
                     is_default: e.is_default,
+                    provider: self.group.clone(),
                 }
             })
             .collect()
@@ -690,12 +735,14 @@ impl AccountPool {
             last_used_at: None,
             usage: None,
             added_at: self.now(),
+            provider: self.group.clone(),
         };
         self.store.save_meta(&meta)?;
         let manager = make_manager(&self.env, self.store.account_dir(&id)).await;
         lock(&self.inner).entries.push(Entry {
             meta,
             manager,
+            claude: None,
             pace: 0.0,
             is_default: false,
         });
@@ -728,7 +775,8 @@ impl AccountPool {
         self.sync_default();
         let duplicate_of_default = self
             .primary
-            .auth_cached()
+            .as_ref()
+            .and_then(|primary| primary.auth_cached())
             .and_then(|auth| provider.identify(&auth))
             .is_some_and(|other| other.id == identity.id);
         if duplicate_of_default {
@@ -760,11 +808,13 @@ impl AccountPool {
                 last_used_at: None,
                 usage: None,
                 added_at: self.now(),
+                provider: self.group.clone(),
             };
             self.store.save_meta(&meta)?;
             lock(&self.inner).entries.push(Entry {
                 meta,
                 manager,
+                claude: None,
                 pace: 0.0,
                 is_default: false,
             });
@@ -811,11 +861,110 @@ impl AccountPool {
         Ok(())
     }
 
+    pub fn group(&self) -> &str {
+        &self.group
+    }
+
+    /// Registers a finished Claude sign-in as a pool entry.
+    pub async fn add_claude_oauth(
+        &self,
+        alias: &str,
+        credentials: ClaudeCredentials,
+    ) -> Result<AccountView, std::io::Error> {
+        let alias = alias.trim();
+        if alias.is_empty() {
+            return Err(io_err("alias must not be empty"));
+        }
+        let seed = credentials
+            .account_uuid
+            .clone()
+            .unwrap_or_else(|| credentials.refresh.clone());
+        let id = claude_account_id(&seed);
+        let dir = self.store.account_dir(&id);
+        let existing = lock(&self.inner).position(&id).is_some();
+        let claude = Arc::new(ClaudeAuthManager::create(
+            dir.clone(),
+            self.env.auth_route_config.clone(),
+            credentials.clone(),
+        )?);
+        let manager = make_manager(&self.env, dir).await;
+        if existing {
+            let mut inner = lock(&self.inner);
+            if let Some(index) = inner.position(&id) {
+                inner.entries[index].claude = Some(claude);
+                inner.entries[index].meta.plan.clone_from(&credentials.plan);
+                inner.entries[index].meta.cooldown_until = None;
+                let meta = inner.entries[index].meta.clone();
+                drop(inner);
+                self.store.save_meta(&meta)?;
+            }
+        } else {
+            let meta = AccountMeta {
+                id: id.clone(),
+                kind: AccountKind::ClaudeOauth,
+                alias: alias.to_string(),
+                plan: credentials.plan.clone(),
+                priority: 0,
+                enabled: true,
+                cooldown_until: None,
+                last_used_at: None,
+                usage: None,
+                added_at: self.now(),
+                provider: self.group.clone(),
+            };
+            self.store.save_meta(&meta)?;
+            lock(&self.inner).entries.push(Entry {
+                meta,
+                manager,
+                claude: Some(claude),
+                pace: 0.0,
+                is_default: false,
+            });
+        }
+        self.emit(PoolEvent::Updated);
+        self.view(&id)
+    }
+
+    /// The Claude sign-in requests should use right now (selects on first use).
+    pub fn active_claude_manager(&self) -> Option<Arc<ClaudeAuthManager>> {
+        match self.active_claude_credential()? {
+            ClaudeCredential::Oauth(manager) => Some(manager),
+            ClaudeCredential::ApiKey(_) => None,
+        }
+    }
+
+    /// The credential of the Claude entry in use: an OAuth sign-in or an API key.
+    pub fn active_claude_credential(&self) -> Option<ClaudeCredential> {
+        let mut inner = lock(&self.inner);
+        if inner.current.is_none() {
+            let now = self.now();
+            let chosen = select(&SelectInput {
+                candidates: &inner.candidates(),
+                policy: &inner.policy,
+                now,
+                current: None,
+                pinned: inner.pinned.as_deref(),
+                rr_after: None,
+                advance: true,
+            });
+            inner.current = chosen;
+        }
+        let id = inner.current.clone()?;
+        let index = inner.position(&id)?;
+        let entry = &inner.entries[index];
+        match (&entry.claude, entry.meta.kind) {
+            (Some(claude), _) => Some(ClaudeCredential::Oauth(Arc::clone(claude))),
+            (None, AccountKind::ApiKey) => Some(ClaudeCredential::ApiKey(Arc::clone(&entry.manager))),
+            _ => None,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn insert_for_test(&self, meta: AccountMeta, manager: Arc<AuthManager>) {
         lock(&self.inner).entries.push(Entry {
             meta,
             manager,
+            claude: None,
             pace: 0.0,
             is_default: false,
         });

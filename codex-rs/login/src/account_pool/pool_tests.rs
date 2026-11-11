@@ -52,6 +52,7 @@ fn meta(id: &str, alias: &str, priority: i32, five: f64) -> AccountMeta {
         last_used_at: None,
         usage: Some(usage(five, 10.0)),
         added_at: NOW,
+        provider: "openai".to_string(),
     }
 }
 
@@ -334,4 +335,58 @@ async fn a_manual_choice_survives_a_restart() {
         AccountPool::open_with_clock(env(f.home.path()), primary, Arc::new(|| NOW)).await;
     reopened.active_auth_manager().expect("manager");
     assert_eq!(in_use(&reopened), "予備キー");
+}
+
+#[tokio::test]
+async fn the_claude_group_is_its_own_pool_with_failover_and_survives_a_restart() {
+    use crate::claude_oauth::ClaudeCredentials;
+    let home = tempfile::tempdir().expect("tempdir");
+    let pool = AccountPool::open_group(env(home.path()), "claude", "accounts-claude").await;
+    let creds = |n: u32| ClaudeCredentials {
+        access: format!("access-FAKE-{n}"),
+        refresh: format!("refresh-FAKE-{n}"),
+        expires_at_ms: i64::MAX,
+        account_uuid: Some(format!("uuid-{n}")),
+        plan: Some("max".to_string()),
+    };
+    let one = pool.add_claude_oauth("クロード1", creds(1)).await.expect("add one");
+    let two = pool.add_claude_oauth("クロード2", creds(2)).await.expect("add two");
+    assert_eq!(one.kind, AccountKind::ClaudeOauth);
+    assert_eq!(one.provider, "claude");
+    assert_eq!(pool.group(), "claude");
+    assert!(pool.list().iter().all(|v| !v.is_default));
+
+    let first = pool.active_claude_manager().expect("a manager");
+    let first_token = first.access_token().await.expect("token");
+    let first_alias = in_use(&pool);
+    // A usage limit moves to the other sign-in.
+    let event = pool
+        .report_limit_reached(Some("t"), Some(i64::MAX / 2))
+        .expect("another sign-in takes over");
+    assert_ne!(event.to_alias, first_alias);
+    let second_token = pool
+        .active_claude_manager()
+        .expect("a manager")
+        .access_token()
+        .await
+        .expect("token");
+    assert_ne!(first_token, second_token);
+
+    // Credentials are in claude.json beside the entry, not in the metadata or the views.
+    let dir = home.path().join("accounts-claude").join(&one.id);
+    assert!(dir.join("claude.json").exists());
+    let meta = std::fs::read_to_string(dir.join("meta.json")).expect("meta");
+    assert!(!meta.contains("access-FAKE") && !meta.contains("refresh-FAKE"));
+    assert!(!format!("{:?}", pool.list()).contains("access-FAKE"));
+
+    let reopened = AccountPool::open_group(env(home.path()), "claude", "accounts-claude").await;
+    assert_eq!(reopened.list().len(), 2);
+    assert!(reopened.list().iter().any(|v| v.id == two.id));
+    let token = reopened
+        .active_claude_manager()
+        .expect("a manager")
+        .access_token()
+        .await
+        .expect("token");
+    assert!(token.starts_with("access-FAKE-"));
 }

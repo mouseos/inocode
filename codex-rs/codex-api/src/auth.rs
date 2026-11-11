@@ -102,6 +102,8 @@ pub trait AuthProvider: Send + Sync {
 pub type AuthProviderFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Request, AuthError>> + Send + 'a>>;
 
+pub type AuthProviderFutureOf<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
 pub type AuthHeadersFuture<'a> =
     Pin<Box<dyn Future<Output = Result<HeaderMap, AuthError>> + Send + 'a>>;
 

@@ -33,6 +33,7 @@ pub use responses_metadata::CodexResponsesMetadata;
 pub use turn_metadata::detached_memory_responses_metadata;
 mod codex_thread;
 mod account_pool_hook;
+mod claude_auth;
 mod inocode_loop;
 mod thread_input;
 pub use thread_input::InputWaitOutcome;

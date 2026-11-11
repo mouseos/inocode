@@ -82,6 +82,54 @@ pub fn anthropic_wire_kind(base_url: &str, oauth: bool) -> WireKind {
     }
 }
 
+/// A bearer token that is produced asynchronously (and may need refreshing), such as a Claude
+/// OAuth access token.
+pub trait BearerSource: Send + Sync {
+    fn token(&self) -> crate::auth::AuthProviderFutureOf<'_, Result<String, String>>;
+    /// After a 401: obtain a new token. `true` when the caller may retry.
+    fn refresh(&self) -> crate::auth::AuthRefreshFuture<'_>;
+}
+
+/// Authenticates requests with a [`BearerSource`].
+pub struct BearerSourceAuth(pub Arc<dyn BearerSource>);
+
+impl crate::auth::AuthProvider for BearerSourceAuth {
+    fn add_auth_headers(&self, _headers: &mut HeaderMap) -> Result<(), crate::auth::AuthError> {
+        // The token is fetched asynchronously, in `apply_auth_headers`.
+        Err(crate::auth::AuthError::Build(
+            "the bearer token is resolved asynchronously".to_string(),
+        ))
+    }
+
+    fn auth_header_telemetry(
+        &self,
+    ) -> Result<crate::auth::AuthHeaderTelemetry, crate::auth::AuthError> {
+        Ok(crate::auth::AuthHeaderTelemetry {
+            attached: true,
+            name: Some("authorization"),
+        })
+    }
+
+    fn apply_auth_headers(&self, mut headers: HeaderMap) -> crate::auth::AuthHeadersFuture<'_> {
+        Box::pin(async move {
+            let token = self
+                .0
+                .token()
+                .await
+                .map_err(|_| crate::auth::AuthError::Transient("no usable sign-in".to_string()))?;
+            let mut value = HeaderValue::from_str(&format!("Bearer {token}"))
+                .map_err(|_| crate::auth::AuthError::Build("invalid bearer token".to_string()))?;
+            value.set_sensitive(true);
+            headers.insert(http::header::AUTHORIZATION, value);
+            Ok(headers)
+        })
+    }
+
+    fn refresh_after_unauthorized(&self, _rejected: HeaderMap) -> crate::auth::AuthRefreshFuture<'_> {
+        self.0.refresh()
+    }
+}
+
 /// Moves the bearer an auth provider adds into the `x-api-key` header Anthropic expects for keys.
 struct XApiKeyAuth(SharedAuthProvider);
 
@@ -102,6 +150,30 @@ impl crate::auth::AuthProvider for XApiKeyAuth {
         }
         headers.extend(inner);
         Ok(())
+    }
+
+    fn auth_header_telemetry(
+        &self,
+    ) -> Result<crate::auth::AuthHeaderTelemetry, crate::auth::AuthError> {
+        self.0.auth_header_telemetry()
+    }
+
+    fn apply_auth_headers(&self, headers: HeaderMap) -> crate::auth::AuthHeadersFuture<'_> {
+        Box::pin(async move {
+            let mut headers = self.0.apply_auth_headers(headers).await?;
+            if let Some(value) = headers.remove(http::header::AUTHORIZATION) {
+                let key = value
+                    .to_str()
+                    .ok()
+                    .and_then(|v| v.strip_prefix("Bearer "))
+                    .and_then(|v| HeaderValue::from_str(v.trim()).ok());
+                if let Some(mut key) = key {
+                    key.set_sensitive(true);
+                    headers.insert("x-api-key", key);
+                }
+            }
+            Ok(headers)
+        })
     }
 
     fn refresh_after_unauthorized(

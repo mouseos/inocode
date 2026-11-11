@@ -552,6 +552,7 @@ mod tests {
             last_used_at: None,
             in_use: false,
             is_default: false,
+            provider: "openai".to_string(),
         };
         let json = serde_json::to_string(&to_account(view)).expect("json");
         assert!(!json.contains("sk-") && !json.contains('@'), "{json}");
