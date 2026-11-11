@@ -13,12 +13,30 @@ use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_output_truncation::approx_token_count;
 use codex_utils_output_truncation::truncate_text;
 
-/// Files re-attached after a local compaction.
-pub(crate) const MAX_REATTACHED_FILES: usize = 5;
+/// Team estimate settings from `team.*` parameters, read at the point of use.
+pub(crate) fn estimate_config() -> codex_inocode_team::EstimateConfig {
+    use codex_inocode_flags::float_param;
+    codex_inocode_team::EstimateConfig {
+        threshold: float_param("team.speedup_threshold"),
+        split_overhead_secs: float_param("team.split_overhead_secs"),
+        integrate_overhead_secs: float_param("team.integrate_overhead_secs"),
+        default_task_secs: float_param("team.task_secs"),
+        ..Default::default()
+    }
+}
+
+/// Files re-attached after a local compaction (`compaction.reattach_files`).
+pub(crate) fn max_reattached_files() -> usize {
+    usize::try_from(codex_inocode_flags::int_param("compaction.reattach_files")).unwrap_or(usize::MAX)
+}
 /// Total token budget for all re-attached files.
-pub(crate) const MAX_REATTACHED_TOKENS: usize = 50_000;
+pub(crate) fn max_reattached_tokens() -> usize {
+    usize::try_from(codex_inocode_flags::int_param("compaction.reattach_tokens")).unwrap_or(usize::MAX)
+}
 /// Consecutive auto-compaction failures after which the session stops auto-compacting.
-pub(crate) const MAX_CONSECUTIVE_COMPACT_FAILURES: u32 = 3;
+pub(crate) fn max_consecutive_compact_failures() -> u32 {
+    codex_inocode_compaction::max_consecutive_failures()
+}
 
 /// Working directory of the turn, as a local path.
 #[allow(deprecated)]
@@ -39,7 +57,7 @@ fn failures() -> &'static Mutex<HashMap<String, u32>> {
 pub(crate) fn auto_compact_tripped(thread_id: &str) -> bool {
     let map = failures().lock().unwrap_or_else(|e| e.into_inner());
     map.get(thread_id)
-        .is_some_and(|n| *n >= MAX_CONSECUTIVE_COMPACT_FAILURES)
+        .is_some_and(|n| *n >= max_consecutive_compact_failures())
 }
 
 pub(crate) fn record_compact_result(thread_id: &str, ok: bool) {
@@ -49,6 +67,62 @@ pub(crate) fn record_compact_result(thread_id: &str, ok: bool) {
     } else {
         *map.entry(thread_id.to_string()).or_insert(0) += 1;
     }
+}
+
+fn failure_count(thread_id: &str) -> u32 {
+    failures()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(thread_id)
+        .copied()
+        .unwrap_or(0)
+}
+
+/// Reports one finished compaction (`inocode/compaction/event`). Call after
+/// [`record_compact_result`] for automatic runs. A failure that reaches the limit is followed
+/// by a `breakerTripped` event.
+pub(crate) fn emit_compaction_result<E: std::fmt::Debug>(
+    thread_id: &str,
+    auto: bool,
+    reason: &str,
+    result: &Result<(), E>,
+) {
+    use codex_inocode_compaction::CompactionEventKind;
+    let failures = failure_count(thread_id);
+    match result {
+        Ok(()) => {
+            codex_inocode_compaction::emit(thread_id, CompactionEventKind::Completed, auto, reason, failures);
+        }
+        Err(err) => {
+            tracing::warn!("compaction failed ({reason}): {err:?}");
+            codex_inocode_compaction::emit(thread_id, CompactionEventKind::Failed, auto, reason, failures);
+            if auto && failures >= max_consecutive_compact_failures() {
+                codex_inocode_compaction::emit(
+                    thread_id,
+                    CompactionEventKind::BreakerTripped,
+                    auto,
+                    reason,
+                    failures,
+                );
+            }
+        }
+    }
+}
+
+/// Reports that an automatic compaction was refused because the breaker is open.
+pub(crate) fn emit_breaker_open(thread_id: &str, reason: &str) {
+    codex_inocode_compaction::emit(
+        thread_id,
+        codex_inocode_compaction::CompactionEventKind::BreakerTripped,
+        true,
+        reason,
+        failure_count(thread_id),
+    );
+}
+
+/// Ids of the pinned rules that would be re-injected for `cwd`.
+pub(crate) fn pinned_rule_ids(cwd: &Path) -> Vec<String> {
+    codex_inocode_compaction::rule_ids_in_text(&codex_inocode_knowledge::pinned_rules_text(cwd))
 }
 
 // ---------------------------------------------------------------------------
@@ -165,13 +239,20 @@ pub(crate) fn recent_file_paths<'a>(
     out
 }
 
-/// Reads up to `MAX_REATTACHED_FILES` of the candidate files within the token budget and renders
+/// Reads up to `compaction.reattach_files` of the candidate files within the token budget and renders
 /// them as a block appended to the compaction summary. Empty if nothing could be read.
+#[cfg(test)]
 pub(crate) fn render_reattached_files(candidates: &[PathBuf]) -> String {
-    let mut remaining = MAX_REATTACHED_TOKENS;
+    render_reattached_files_with_paths(candidates).0
+}
+
+/// Like [`render_reattached_files`], also returning the files that were actually attached.
+pub(crate) fn render_reattached_files_with_paths(candidates: &[PathBuf]) -> (String, Vec<String>) {
+    let mut remaining = max_reattached_tokens();
     let mut blocks = Vec::new();
+    let mut attached = Vec::new();
     for path in candidates {
-        if blocks.len() >= MAX_REATTACHED_FILES || remaining == 0 {
+        if blocks.len() >= max_reattached_files() || remaining == 0 {
             break;
         }
         let Ok(meta) = std::fs::metadata(path) else {
@@ -191,13 +272,17 @@ pub(crate) fn render_reattached_files(candidates: &[PathBuf]) -> String {
         };
         remaining = remaining.saturating_sub(approx_token_count(&body));
         blocks.push(format!("--- {} ---\n{body}", path.display()));
+        attached.push(path.display().to_string());
     }
     if blocks.is_empty() {
-        return String::new();
+        return (String::new(), Vec::new());
     }
-    format!(
-        "Recently accessed files (re-attached after compaction; current content):\n\n{}",
-        blocks.join("\n\n")
+    (
+        format!(
+            "Recently accessed files (re-attached after compaction; current content):\n\n{}",
+            blocks.join("\n\n")
+        ),
+        attached,
     )
 }
 
@@ -249,7 +334,7 @@ pub(crate) async fn turn_extras(
 ");
         if let Some((estimate, rec)) = codex_inocode_team::recommend_for_input(
             &text,
-            &codex_inocode_team::EstimateConfig::default(),
+            &estimate_config(),
         ) {
             codex_inocode_team::roster_for(&sess.thread_id.to_string()).set_estimate(estimate);
             items.push(user_text_item(rec));
@@ -257,9 +342,23 @@ pub(crate) async fn turn_extras(
     }
     if let Some(previous) = sess.previous_turn_settings().await
         && previous.model != turn.model_info().slug
-        && let Some(item) = pinned_rules_item(&local_cwd(turn))
     {
-        items.push(item);
+        let cwd = local_cwd(turn);
+        if let Some(item) = pinned_rules_item(&cwd) {
+            items.push(item);
+        }
+        let task: String = user_input
+            .iter()
+            .filter_map(|u| match u {
+                codex_protocol::user_input::UserInput::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        let pack = codex_inocode_knowledge::build_handoff_pack(&cwd, &task);
+        if !pack.trim().is_empty() {
+            items.push(user_text_item(pack));
+        }
     }
     items
 }
@@ -338,6 +437,6 @@ mod tests {
         let big = d.path().join("big.txt");
         std::fs::write(&big, "word ".repeat(400_000)).unwrap();
         let text = render_reattached_files(&[big]);
-        assert!(approx_token_count(&text) <= MAX_REATTACHED_TOKENS + 200);
+        assert!(approx_token_count(&text) <= max_reattached_tokens() + 200);
     }
 }

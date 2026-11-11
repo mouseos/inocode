@@ -132,10 +132,12 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
         phase,
     );
     let thread_key = sess.thread_id.to_string();
+    let reason_text = format!("{reason:?}");
     if crate::compact_inocode::auto_compact_tripped(&thread_key) {
+        crate::compact_inocode::emit_breaker_open(&thread_key, &reason_text);
         return Err(codex_protocol::error::CodexErr::Fatal(format!(
             "automatic compaction stopped for this session after {} consecutive failures; run /compact to retry manually",
-            crate::compact_inocode::MAX_CONSECUTIVE_COMPACT_FAILURES
+            crate::compact_inocode::max_consecutive_compact_failures()
         )));
     }
     let result = run_remote_compact_task_inner(
@@ -150,6 +152,12 @@ pub(crate) async fn run_inline_remote_auto_compact_task(
     )
     .await;
     crate::compact_inocode::record_compact_result(&thread_key, result.is_ok());
+    crate::compact_inocode::emit_compaction_result(
+        &thread_key,
+        true,
+        &reason_text,
+        &result.as_ref().map(|_| ()),
+    );
     result
 }
 
@@ -164,7 +172,7 @@ pub(crate) async fn run_remote_compact_task(
         CompactionImplementation::ResponsesCompactionV2,
         CompactionPhase::StandaloneTurn,
     );
-    run_remote_compact_task_inner(
+    let result = run_remote_compact_task_inner(
         &sess,
         &step_context,
         &step_context,
@@ -175,7 +183,14 @@ pub(crate) async fn run_remote_compact_task(
         CompactionFallback::Foreground,
     )
     .await
-    .map(|_| ())
+    .map(|_| ());
+    crate::compact_inocode::emit_compaction_result(
+        &sess.thread_id.to_string(),
+        false,
+        "UserRequested",
+        &result,
+    );
+    result
 }
 
 #[allow(clippy::too_many_arguments)]

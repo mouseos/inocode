@@ -696,7 +696,7 @@ impl ContextManager {
                 .and_then(|metadata| metadata.history_truncation_token_limit)
                 .map(TruncationPolicy::Tokens)
                 .unwrap_or_else(|| with_serialization_allowance(policy));
-            inocode_persist_or_placeholder(output, policy, tool_name.as_deref());
+            inocode_persist_or_placeholder(output, policy, tool_name.as_deref(), &call_id);
             truncate_function_output_payload(output, policy, estimate_audio_token_count);
         }
         if let Some(review_history) = &mut self.review_history
@@ -1607,6 +1607,7 @@ fn inocode_persist_or_placeholder(
     output: &mut FunctionCallOutputPayload,
     policy: TruncationPolicy,
     tool_name: Option<&str>,
+    call_id: &str,
 ) {
     let FunctionCallOutputBody::Text(text) = &mut output.body else {
         return;
@@ -1624,12 +1625,24 @@ fn inocode_persist_or_placeholder(
     if !flags.compaction_persist_large_output {
         return;
     }
-    let config = codex_inocode_tool_output::PersistConfig::new(
+    let mut config = codex_inocode_tool_output::PersistConfig::new(
         true,
         threshold,
         &codex_inocode_flags::inocode_home(),
     );
-    if let Some(replacement) = codex_inocode_tool_output::persist_if_large(text, &config) {
+    config.preview_bytes = usize::try_from(codex_inocode_flags::int_param(
+        "compaction.preview_bytes",
+    ))
+    .unwrap_or(usize::MAX);
+    // The history has no thread identity; the tool name and call id are what it knows.
+    let meta = codex_inocode_tool_output::PersistMeta {
+        tool: tool_name.map(str::to_string),
+        thread_id: None,
+        call_id: (!call_id.is_empty()).then(|| call_id.to_string()),
+    };
+    if let Some(replacement) =
+        codex_inocode_tool_output::persist_if_large_with(text, &config, &meta)
+    {
         *text = replacement;
     }
 }

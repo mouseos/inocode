@@ -94,8 +94,12 @@ pub(crate) async fn build_compaction_replacement_history(
     let (prefix, context) = split_prefix_updates(updates);
     let mut context = merge_world_state_updates(context);
     // Re-inject the pinned prohibition rules after compaction (remote path).
-    if let Some(item) = crate::compact_inocode::pinned_rules_item(&crate::compact_inocode::local_cwd(&step_context.turn))
-    {
+    let remote_cwd = crate::compact_inocode::local_cwd(&step_context.turn);
+    if let Some(item) = crate::compact_inocode::pinned_rules_item(&remote_cwd) {
+        codex_inocode_compaction::note_pinned(
+            &sess.thread_id.to_string(),
+            crate::compact_inocode::pinned_rule_ids(&remote_cwd),
+        );
         context.push(item);
     }
     (
@@ -130,10 +134,12 @@ pub(crate) async fn run_inline_auto_compact_task(
 ) -> CodexResult<()> {
     // Circuit breaker: stop automatic compaction after repeated consecutive failures.
     let thread_key = sess.thread_id.to_string();
+    let reason_text = format!("{reason:?}");
     if crate::compact_inocode::auto_compact_tripped(&thread_key) {
+        crate::compact_inocode::emit_breaker_open(&thread_key, &reason_text);
         return Err(CodexErr::Fatal(format!(
             "automatic compaction stopped for this session after {} consecutive failures; run /compact to retry manually",
-            crate::compact_inocode::MAX_CONSECUTIVE_COMPACT_FAILURES
+            crate::compact_inocode::max_consecutive_compact_failures()
         )));
     }
     let result = run_inline_auto_compact_task_unguarded(
@@ -146,6 +152,7 @@ pub(crate) async fn run_inline_auto_compact_task(
     )
     .await;
     crate::compact_inocode::record_compact_result(&thread_key, result.is_ok());
+    crate::compact_inocode::emit_compaction_result(&thread_key, true, &reason_text, &result);
     result
 }
 
@@ -192,7 +199,8 @@ pub(crate) async fn run_compact_task(
     world_state: Arc<WorldState>,
     input: Vec<UserInput>,
 ) -> CodexResult<()> {
-    run_compact_task_inner(
+    let thread_key = sess.thread_id.to_string();
+    let result = run_compact_task_inner(
         sess.clone(),
         Arc::clone(&step_context.turn),
         step_context,
@@ -205,8 +213,10 @@ pub(crate) async fn run_compact_task(
             CompactionPhase::StandaloneTurn,
         ),
     )
-    .await?;
-    Ok(())
+    .await
+    .map(|_| ());
+    crate::compact_inocode::emit_compaction_result(&thread_key, false, "UserRequested", &result);
+    result
 }
 
 async fn run_compact_task_inner(
@@ -433,9 +443,11 @@ async fn run_compact_task_inner_impl(
         let candidates = crate::compact_inocode::recent_file_paths(
             raw.iter(),
             cwd,
-            crate::compact_inocode::MAX_REATTACHED_FILES,
+            crate::compact_inocode::max_reattached_files(),
         );
-        let attached = crate::compact_inocode::render_reattached_files(&candidates);
+        let (attached, attached_paths) =
+            crate::compact_inocode::render_reattached_files_with_paths(&candidates);
+        codex_inocode_compaction::note_reattached(&sess.thread_id.to_string(), attached_paths);
         if !attached.is_empty() {
             summary_text.push_str("\n\n");
             summary_text.push_str(&attached);
@@ -489,6 +501,12 @@ async fn run_compact_task_inner_impl(
         .as_deref()
         .and_then(crate::compact_inocode::pinned_rules_item)
     {
+        if let Some(cwd) = local_cwd.as_deref() {
+            codex_inocode_compaction::note_pinned(
+                &sess.thread_id.to_string(),
+                crate::compact_inocode::pinned_rule_ids(cwd),
+            );
+        }
         context.push(item);
     }
     let new_history = assemble_compaction_history(new_history, prefix, context);
