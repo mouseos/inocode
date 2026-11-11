@@ -152,6 +152,26 @@ impl Store {
             rec.created_at = now.clone();
         }
         rec.updated_at = now;
+        // 内部の値は利用者に決めさせない: 署名は症状から、適用方法は対象の有無から決める。
+        if rec.created_by.is_none() {
+            rec.created_by = Some("user".to_string());
+        }
+        if rec.kind == Kind::FailureCase && rec.signature.as_deref().is_none_or(str::is_empty) {
+            let src = rec
+                .symptom
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or(&rec.title);
+            let line = src.lines().next().unwrap_or("").trim();
+            rec.signature = Some(line.chars().take(80).collect());
+        }
+        if rec.kind == Kind::Rule && rec.enforced_by.as_deref().is_none_or(str::is_empty) {
+            let has_match = rec
+                .match_spec
+                .as_ref()
+                .is_some_and(|m| !m.paths.is_empty() || !m.commands.is_empty());
+            rec.enforced_by = Some(if has_match { "hook" } else { "prompt" }.to_string());
+        }
         // supersedes 指定で新規作成した場合も、古い方に印を付ける。
         if let Some(prev) = rec.supersedes.clone()
             && let Some(mut p) = self.read(rec.scope, &prev)
@@ -163,6 +183,31 @@ impl Store {
         }
         self.save(&rec)?;
         Ok(rec.id)
+    }
+
+    /// レコードのファイルを消す。
+    pub fn delete(&self, scope: Scope, id: &str) -> io::Result<()> {
+        let rec = self
+            .read(scope, id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("not found: {id}")))?;
+        let path = self
+            .file_path(scope, rec.kind, &rec.id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no project directory"))?;
+        std::fs::remove_file(path)
+    }
+
+    /// 種類ごと・状態ごとの件数(`kind` と `status` の名前をそのままキーにする)。
+    pub fn counts(&self, scope: Option<Scope>) -> std::collections::BTreeMap<String, u32> {
+        let mut m = std::collections::BTreeMap::new();
+        for r in self.all(scope) {
+            *m.entry(r.kind.as_str().to_string()).or_insert(0) += 1;
+            let st = serde_json::to_value(r.status)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default();
+            *m.entry(st).or_insert(0) += 1;
+        }
+        m
     }
 
     pub fn set_status(&self, scope: Scope, id: &str, status: Status) -> io::Result<()> {

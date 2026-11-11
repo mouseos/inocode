@@ -88,6 +88,9 @@ pub struct InocodeKnowledgeSummary {
     pub status: InocodeKnowledgeStatus,
     pub confidence: InocodeKnowledgeConfidence,
     pub updated_at: String,
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub created_by: Option<String>,
 }
 
 /// A full knowledge record (front-matter plus body). Kind-specific fields are
@@ -241,6 +244,9 @@ pub struct InocodeKnowledgeListResponse {
     pub records: Vec<InocodeKnowledgeSummary>,
     #[ts(optional = nullable)]
     pub next_cursor: Option<String>,
+    /// Counts per kind (`rule`, `failure_case`, ...) and per status (`unverified`, ...) in the scope.
+    #[serde(default)]
+    pub counts: HashMap<String, u32>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -378,6 +384,9 @@ pub struct InocodeEvidenceClaim {
     pub span_ids: Vec<String>,
     pub premise_ids: Vec<String>,
     pub created_by: String,
+    /// The quoted text behind each cited span, with its source title.
+    #[serde(default)]
+    pub evidence: Vec<InocodeEvidenceClaimEvidence>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -1216,7 +1225,13 @@ pub struct InocodeParamsWriteResponse {}
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct InocodeEvidenceImportSourceParams {
-    pub title: String,
+    /// Omitted: `fileName`, else the first line of `text`.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub title: Option<String>,
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub file_name: Option<String>,
     pub kind: String,
     #[ts(optional = nullable)]
     pub text: Option<String>,
@@ -1288,3 +1303,92 @@ pub struct InocodeEvidenceSetClaimStatusParams {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct InocodeEvidenceSetClaimStatusResponse {}
+
+// ------------------------------------------- knowledge/evidence UX additions (doc 19)
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct InocodeEvidenceSpan {
+    pub id: String,
+    pub source_id: String,
+    pub quote: String,
+    /// Character offsets into the source text; `end` is exclusive.
+    pub start: u32,
+    pub end: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct InocodeEvidenceListSpansParams {
+    pub cwd: String,
+    #[ts(optional = nullable)]
+    pub source_id: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct InocodeEvidenceListSpansResponse {
+    pub spans: Vec<InocodeEvidenceSpan>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct InocodeEvidenceRemoveQuoteParams {
+    pub span_id: String,
+    #[ts(optional = nullable)]
+    pub cwd: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct InocodeEvidenceRemoveQuoteResponse {}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct InocodeEvidenceUpdateSourceParams {
+    pub id: String,
+    #[ts(optional = nullable)]
+    pub title: Option<String>,
+    #[ts(optional = nullable)]
+    pub kind: Option<String>,
+    #[ts(optional = nullable)]
+    pub version: Option<String>,
+    #[ts(optional = nullable)]
+    pub cwd: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct InocodeEvidenceUpdateSourceResponse {
+    pub source: InocodeEvidenceSource,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct InocodeKnowledgeDeleteParams {
+    pub id: String,
+    pub scope: InocodeKnowledgeScope,
+    pub cwd: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct InocodeKnowledgeDeleteResponse {}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct InocodeEvidenceClaimEvidence {
+    pub span_id: String,
+    pub source_title: String,
+    pub quote: String,
+}

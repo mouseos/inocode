@@ -16,7 +16,11 @@ use codex_app_server_protocol::InocodeEvidenceImportSourceParams;
 use codex_app_server_protocol::InocodeEvidenceImportSourceResponse;
 use codex_app_server_protocol::InocodeEvidenceListClaimsResponse;
 use codex_app_server_protocol::InocodeEvidenceListSourcesResponse;
+use codex_app_server_protocol::InocodeEvidenceListSpansResponse;
 use codex_app_server_protocol::InocodeEvidenceReadSourceResponse;
+use codex_app_server_protocol::InocodeEvidenceRemoveQuoteResponse;
+use codex_app_server_protocol::InocodeEvidenceSpan;
+use codex_app_server_protocol::InocodeEvidenceUpdateSourceResponse;
 use codex_app_server_protocol::InocodeEvidenceSetClaimStatusResponse;
 use codex_app_server_protocol::InocodeEvidenceTextPosition;
 use codex_app_server_protocol::InocodeEvidenceVerifyDocumentResponse;
@@ -85,12 +89,35 @@ pub(crate) async fn handle(request: ClientRequest) -> InocodeResult {
         ClientRequest::InocodeEvidenceListClaims { params, .. } => {
             let claims = store.list_claims(params.status.as_deref());
             let (claims, next_cursor) = page(claims, params.limit, params.cursor);
+            let titles: std::collections::HashMap<String, String> = store
+                .list_sources()
+                .into_iter()
+                .map(|s| (s.id, s.title))
+                .collect();
+            let spans: std::collections::HashMap<String, ev::Span> = store
+                .list_spans()
+                .into_iter()
+                .map(|s| (s.id.clone(), s))
+                .collect();
             let claims = claims
                 .iter()
                 .map(|c| {
+                    let evidence: Vec<Value> = c
+                        .span_ids
+                        .iter()
+                        .filter_map(|id| spans.get(id))
+                        .map(|s| {
+                            serde_json::json!({
+                                "spanId": s.id,
+                                "sourceTitle": titles.get(&s.source_id).cloned().unwrap_or_default(),
+                                "quote": s.text,
+                            })
+                        })
+                        .collect();
                     convert(c, |m| {
                         m.entry("confidence")
                             .or_insert(Value::String("medium".into()));
+                        m.insert("evidence".into(), Value::Array(evidence));
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -149,6 +176,43 @@ pub(crate) async fn handle(request: ClientRequest) -> InocodeResult {
                 InocodeEvidenceVerifyDocumentResponse { findings }.into(),
             ))
         }
+        ClientRequest::InocodeEvidenceListSpans { params, .. } => {
+            let spans = store
+                .list_spans()
+                .into_iter()
+                .filter(|s| params.source_id.as_deref().is_none_or(|id| s.source_id == id))
+                .map(|s| InocodeEvidenceSpan {
+                    id: s.id,
+                    source_id: s.source_id,
+                    quote: s.text,
+                    start: s.start as u32,
+                    end: s.end as u32,
+                })
+                .collect();
+            Ok(Some(InocodeEvidenceListSpansResponse { spans }.into()))
+        }
+        ClientRequest::InocodeEvidenceRemoveQuote { params, .. } => {
+            store
+                .remove_span(&params.span_id)
+                .map_err(|e| invalid_params(format!("evidence removeQuote failed: {e}")))?;
+            Ok(Some(InocodeEvidenceRemoveQuoteResponse {}.into()))
+        }
+        ClientRequest::InocodeEvidenceUpdateSource { params, .. } => {
+            let src = store
+                .update_source(
+                    &params.id,
+                    params.title.as_deref(),
+                    params.kind.as_deref(),
+                    params.version.as_deref(),
+                )
+                .map_err(|e| invalid_params(format!("evidence updateSource failed: {e}")))?;
+            Ok(Some(
+                InocodeEvidenceUpdateSourceResponse {
+                    source: convert(&src, |_| {})?,
+                }
+                .into(),
+            ))
+        }
         ClientRequest::InocodeEvidenceImportSource { params, .. } => {
             Ok(Some(import_source(&store, params)?.into()))
         }
@@ -173,11 +237,26 @@ fn import_source(
     p: InocodeEvidenceImportSourceParams,
 ) -> Result<InocodeEvidenceImportSourceResponse, JSONRPCErrorError> {
     let version = p.version.as_deref();
+    let explicit = p.title.as_deref().filter(|t| !t.trim().is_empty());
     let src = match (p.text.as_deref(), p.path.as_deref()) {
-        (Some(text), _) => store.import_text(&p.title, &p.kind, text, version),
+        (Some(text), _) => {
+            let title = explicit
+                .map(str::to_string)
+                .or_else(|| p.file_name.clone().filter(|n| !n.trim().is_empty()))
+                .unwrap_or_else(|| {
+                    text.lines()
+                        .find(|l| !l.trim().is_empty())
+                        .unwrap_or("")
+                        .trim()
+                        .chars()
+                        .take(40)
+                        .collect()
+                });
+            store.import_text(&title, &p.kind, text, version)
+        }
         (None, Some(path)) => store.import_file(
             std::path::Path::new(path),
-            Some(p.title.as_str()).filter(|t| !t.is_empty()),
+            explicit.or(p.file_name.as_deref().filter(|n| !n.trim().is_empty())),
             &p.kind,
             version,
         ),
@@ -197,8 +276,19 @@ fn add_quote(
     p: InocodeEvidenceAddQuoteParams,
 ) -> Result<InocodeEvidenceAddQuoteResponse, JSONRPCErrorError> {
     let span = match (p.quote.as_deref(), p.start, p.end) {
+        (quote, Some(start), Some(end)) => store
+            .add_span(&p.source_id, start as usize, end as usize)
+            .and_then(|span| match quote {
+                Some(q) if !q.is_empty() && q != span.text => {
+                    store.remove_span(&span.id)?;
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "quote does not match the text at start..end",
+                    ))
+                }
+                _ => Ok(span),
+            }),
         (Some(quote), _, _) => store.add_quote(&p.source_id, quote),
-        (None, Some(start), Some(end)) => store.add_span(&p.source_id, start as usize, end as usize),
         _ => {
             return Err(invalid_params(
                 "addQuote needs `quote`, or `start` and `end`".to_string(),
@@ -242,7 +332,8 @@ mod tests {
         let src = import_source(
             &store,
             InocodeEvidenceImportSourceParams {
-                title: "法令".into(),
+                title: Some("法令".into()),
+                file_name: None,
                 kind: "text".into(),
                 text: Some("第一条 目的は安全である。".into()),
                 path: None,

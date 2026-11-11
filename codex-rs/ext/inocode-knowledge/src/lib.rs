@@ -163,4 +163,39 @@ mod event_tests {
         assert!(pack.contains("引き継ぎパック"));
         assert!(pack.contains("same_failure:cargo test") || pack.contains(&id));
     }
+
+    #[test]
+    fn write_fills_internal_values_counts_and_delete() {
+        let home = tempfile::tempdir().unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+        let store = Store::new(Some(cwd.path().to_path_buf()), home.path().to_path_buf());
+        let mut f = Record::new(Kind::FailureCase, "ロック失敗");
+        f.symptom = Some("database is locked\n詳細".into());
+        let fid = store.write(f).unwrap();
+        let f = store.read(Scope::Project, &fid).unwrap();
+        assert_eq!(f.signature.as_deref(), Some("database is locked"));
+        assert_eq!(f.created_by.as_deref(), Some("user"));
+        let mut r = Record::new(Kind::Rule, "rm 禁止");
+        r.match_spec = Some(MatchSpec {
+            commands: vec!["rm -rf".into()],
+            ..Default::default()
+        });
+        let rid = store.write(r).unwrap();
+        assert_eq!(
+            store.read(Scope::Project, &rid).unwrap().enforced_by.as_deref(),
+            Some("hook")
+        );
+        let rid2 = store.write(Record::new(Kind::Rule, "注意")).unwrap();
+        assert_eq!(
+            store.read(Scope::Project, &rid2).unwrap().enforced_by.as_deref(),
+            Some("prompt")
+        );
+        let counts = store.counts(Some(Scope::Project));
+        assert_eq!(counts["rule"], 2);
+        assert_eq!(counts["failure_case"], 1);
+        assert_eq!(counts["unverified"], 3);
+        store.delete(Scope::Project, &rid2).unwrap();
+        assert!(store.read(Scope::Project, &rid2).is_none());
+        assert!(store.delete(Scope::Project, &rid2).is_err());
+    }
 }

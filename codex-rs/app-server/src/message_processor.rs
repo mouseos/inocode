@@ -1232,6 +1232,10 @@ impl MessageProcessor {
             | ClientRequest::InocodeToolOutputList { .. }
             | ClientRequest::InocodeToolOutputRead { .. }
             | ClientRequest::InocodeFlagsRead { .. }
+            | ClientRequest::InocodeEvidenceListSpans { .. }
+            | ClientRequest::InocodeEvidenceRemoveQuote { .. }
+            | ClientRequest::InocodeEvidenceUpdateSource { .. }
+            | ClientRequest::InocodeKnowledgeDelete { .. }
             | ClientRequest::InocodeGuardList { .. }
             | ClientRequest::InocodeKnowledgePinned { .. }
             | ClientRequest::InocodeKnowledgeHandoffPreview { .. }

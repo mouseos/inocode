@@ -6,6 +6,7 @@ use super::unknown_method;
 use crate::error_code::internal_error;
 use crate::error_code::invalid_params;
 use codex_app_server_protocol::ClientRequest;
+use codex_app_server_protocol::InocodeKnowledgeDeleteResponse;
 use codex_app_server_protocol::InocodeKnowledgeHandoffPreviewResponse;
 use codex_app_server_protocol::InocodeKnowledgeKind;
 use codex_app_server_protocol::InocodeKnowledgeListResponse;
@@ -124,6 +125,10 @@ pub(crate) async fn handle(request: ClientRequest) -> InocodeResult {
                 InocodeKnowledgeListResponse {
                     records,
                     next_cursor,
+                    counts: store(&params.cwd)
+                        .counts(Some(scope(params.scope)))
+                        .into_iter()
+                        .collect(),
                 }
                 .into(),
             ))
@@ -187,6 +192,12 @@ pub(crate) async fn handle(request: ClientRequest) -> InocodeResult {
                 }
                 .into(),
             ))
+        }
+        ClientRequest::InocodeKnowledgeDelete { params, .. } => {
+            store(&params.cwd)
+                .delete(scope(params.scope), &params.id)
+                .map_err(|e| invalid_params(format!("knowledge delete failed: {e}")))?;
+            Ok(Some(InocodeKnowledgeDeleteResponse {}.into()))
         }
         ClientRequest::InocodeKnowledgePinned { params, .. } => {
             let cwd = PathBuf::from(&params.cwd);

@@ -212,6 +212,42 @@ impl Store {
         self.load_all("spans")
     }
 
+    /// 引用箇所を捨てる。使っていた主張は、そのまま残り「根拠なし」に戻る
+    /// (`claim_support` は存在しない引用箇所を数えない)。
+    pub fn remove_span(&self, span_id: &str) -> io::Result<()> {
+        let path = self.dir("spans").join(format!("{span_id}.json"));
+        if !path.exists() {
+            return Err(err(format!("span not found: {span_id}")));
+        }
+        std::fs::remove_file(path)
+    }
+
+    /// 原資料の題名・種別・版を直す(原文と hash は変えない)。
+    pub fn update_source(
+        &self,
+        id: &str,
+        title: Option<&str>,
+        kind: Option<&str>,
+        version: Option<&str>,
+    ) -> io::Result<Source> {
+        let mut src = self
+            .list_sources()
+            .into_iter()
+            .find(|s| s.id == id)
+            .ok_or_else(|| err(format!("source not found: {id}")))?;
+        if let Some(t) = title {
+            src.title = t.to_string();
+        }
+        if let Some(k) = kind {
+            src.kind = k.to_string();
+        }
+        if let Some(v) = version {
+            src.version = (!v.is_empty()).then(|| v.to_string());
+        }
+        self.write_json("sources", id, &src)?;
+        Ok(src)
+    }
+
     // ---- 主張 ----
 
     pub fn add_claim(&self, n: NewClaim<'_>) -> io::Result<Claim> {
@@ -482,5 +518,33 @@ mod tests {
         assert!(!g.nodes.iter().find(|n| n.id == chained.id).unwrap().supported);
         s.set_claim_status(&fact.id, "refuted").unwrap();
         assert!(!s.claim_support()[&fact.id]);
+    }
+
+    #[test]
+    fn removed_quote_leaves_claim_unsupported_and_source_is_editable() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = Store::new(dir.path().to_path_buf());
+        let src = st.import_text("t", "text", "あいうあいう", None).unwrap();
+        let span = st.add_span(&src.id, 3, 6).unwrap();
+        assert_eq!(span.start, 3);
+        let claim = st
+            .add_claim(NewClaim {
+                text: "c",
+                claim_type: ClaimType::Fact,
+                status: "unverified",
+                confidence: None,
+                span_ids: vec![span.id.clone()],
+                premise_ids: vec![],
+                created_by: "user",
+            })
+            .unwrap();
+        assert!(st.claim_support()[&claim.id]);
+        st.remove_span(&span.id).unwrap();
+        assert!(!st.claim_support()[&claim.id]);
+        assert!(st.remove_span(&span.id).is_err());
+        let up = st.update_source(&src.id, Some("新題"), Some("law"), Some("2")).unwrap();
+        assert_eq!((up.title.as_str(), up.kind.as_str()), ("新題", "law"));
+        assert_eq!(st.list_sources()[0].version.as_deref(), Some("2"));
+        assert_eq!(st.list_sources()[0].hash, src.hash);
     }
 }

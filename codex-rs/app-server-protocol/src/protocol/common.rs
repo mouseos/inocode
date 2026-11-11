@@ -702,6 +702,30 @@ client_request_definitions! {
         serialization: None,
         response: v2::InocodeEvidenceSetClaimStatusResponse,
     },
+    #[experimental("inocode/evidence/listSpans")]
+    InocodeEvidenceListSpans => "inocode/evidence/listSpans" {
+        params: v2::InocodeEvidenceListSpansParams,
+        serialization: None,
+        response: v2::InocodeEvidenceListSpansResponse,
+    },
+    #[experimental("inocode/evidence/removeQuote")]
+    InocodeEvidenceRemoveQuote => "inocode/evidence/removeQuote" {
+        params: v2::InocodeEvidenceRemoveQuoteParams,
+        serialization: None,
+        response: v2::InocodeEvidenceRemoveQuoteResponse,
+    },
+    #[experimental("inocode/evidence/updateSource")]
+    InocodeEvidenceUpdateSource => "inocode/evidence/updateSource" {
+        params: v2::InocodeEvidenceUpdateSourceParams,
+        serialization: None,
+        response: v2::InocodeEvidenceUpdateSourceResponse,
+    },
+    #[experimental("inocode/knowledge/delete")]
+    InocodeKnowledgeDelete => "inocode/knowledge/delete" {
+        params: v2::InocodeKnowledgeDeleteParams,
+        serialization: None,
+        response: v2::InocodeKnowledgeDeleteResponse,
+    },
     #[experimental("inocode/flags/read")]
     InocodeFlagsRead => "inocode/flags/read" {
         params: v2::InocodeFlagsReadParams,
