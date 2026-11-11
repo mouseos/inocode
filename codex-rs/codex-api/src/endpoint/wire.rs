@@ -26,6 +26,10 @@ use codex_provider_adapters::chat::ChatRequest;
 use codex_provider_adapters::chat::ChatStream;
 use codex_provider_adapters::events::Assembler;
 use codex_provider_adapters::history::turns_from_items;
+use codex_provider_adapters::messages::CacheRetention;
+use codex_provider_adapters::messages::MessagesCompat;
+use codex_provider_adapters::messages::MessagesRequest;
+use codex_provider_adapters::messages::MessagesStream;
 use codex_provider_adapters::ir::AdapterEvent;
 use codex_provider_adapters::ir::AdapterFailure;
 use codex_provider_adapters::ir::Out;
@@ -50,6 +54,90 @@ use tracing::debug;
 pub enum WireKind {
     /// `POST {base_url}/chat/completions`.
     ChatCompletions(ChatCompat),
+    /// `POST {base_url}/v1/messages`, the Claude Messages API. The key goes in `x-api-key`
+    /// (`bearer: false`) or, for OAuth credentials, as the bearer the auth provider supplies.
+    AnthropicMessages { compat: MessagesCompat, bearer: bool },
+}
+
+/// The Claude wire for a base URL: the official host gets automatic prompt caching (1 h); any
+/// other Anthropic-compatible endpoint a 5-minute cache. OAuth credentials travel as a bearer.
+pub fn anthropic_wire_kind(base_url: &str, oauth: bool) -> WireKind {
+    let native = base_url
+        .split("://")
+        .nth(1)
+        .and_then(|rest| rest.split('/').next())
+        .is_some_and(|host| host.eq_ignore_ascii_case("api.anthropic.com"));
+    WireKind::AnthropicMessages {
+        compat: MessagesCompat {
+            oauth,
+            native_endpoint: native,
+            cache: if native {
+                CacheRetention::Long
+            } else {
+                CacheRetention::Short
+            },
+            ..MessagesCompat::default()
+        },
+        bearer: oauth,
+    }
+}
+
+/// Moves the bearer an auth provider adds into the `x-api-key` header Anthropic expects for keys.
+struct XApiKeyAuth(SharedAuthProvider);
+
+impl crate::auth::AuthProvider for XApiKeyAuth {
+    fn add_auth_headers(&self, headers: &mut HeaderMap) -> Result<(), crate::auth::AuthError> {
+        let mut inner = HeaderMap::new();
+        self.0.add_auth_headers(&mut inner)?;
+        if let Some(value) = inner.remove(http::header::AUTHORIZATION) {
+            let key = value
+                .to_str()
+                .ok()
+                .and_then(|v| v.strip_prefix("Bearer "))
+                .and_then(|v| HeaderValue::from_str(v.trim()).ok());
+            if let Some(mut key) = key {
+                key.set_sensitive(true);
+                headers.insert("x-api-key", key);
+            }
+        }
+        headers.extend(inner);
+        Ok(())
+    }
+
+    fn refresh_after_unauthorized(
+        &self,
+        rejected_headers: HeaderMap,
+    ) -> crate::auth::AuthRefreshFuture<'_> {
+        self.0.refresh_after_unauthorized(rejected_headers)
+    }
+}
+
+enum Parser {
+    Chat(ChatStream),
+    Messages(MessagesStream),
+}
+
+impl Parser {
+    fn feed(&mut self, data: &str) -> Vec<AdapterEvent> {
+        match self {
+            Self::Chat(p) => p.feed(data),
+            Self::Messages(p) => p.feed(data),
+        }
+    }
+
+    fn eof(&mut self) -> Vec<AdapterEvent> {
+        match self {
+            Self::Chat(p) => p.eof(),
+            Self::Messages(p) => p.eof(),
+        }
+    }
+
+    fn is_done(&self) -> bool {
+        match self {
+            Self::Chat(p) => p.is_done(),
+            Self::Messages(p) => p.is_done(),
+        }
+    }
 }
 
 pub struct WireClient<T: HttpTransport> {
@@ -60,6 +148,10 @@ pub struct WireClient<T: HttpTransport> {
 
 impl<T: HttpTransport> WireClient<T> {
     pub fn new(transport: T, provider: Provider, auth: SharedAuthProvider, kind: WireKind) -> Self {
+        let auth: SharedAuthProvider = match &kind {
+            WireKind::AnthropicMessages { bearer: false, .. } => Arc::new(XApiKeyAuth(auth)),
+            _ => auth,
+        };
         Self {
             session: EndpointSession::new(transport, provider, auth),
             kind,
@@ -97,7 +189,49 @@ impl<T: HttpTransport> WireClient<T> {
             .and_then(|r| r.effort.as_ref())
             .map(ToString::to_string);
 
-        let (path, body) = match &self.kind {
+        let mut extra_headers = HeaderMap::new();
+        let (path, body, parser) = match &self.kind {
+            WireKind::AnthropicMessages { compat, .. } => {
+                extra_headers.insert(
+                    "anthropic-version",
+                    HeaderValue::from_static(codex_provider_adapters::messages::ANTHROPIC_VERSION),
+                );
+                if compat.oauth {
+                    extra_headers.insert(
+                        "anthropic-beta",
+                        HeaderValue::from_static(codex_provider_adapters::messages::OAUTH_BETA),
+                    );
+                }
+                // `.../v1` and bare origins both end up at `{origin}/v1/messages`.
+                let messages_path = if self
+                    .session
+                    .provider()
+                    .base_url
+                    .trim_end_matches('/')
+                    .ends_with("/v1")
+                {
+                    "/messages"
+                } else {
+                    "/v1/messages"
+                };
+                (
+                    messages_path,
+                    codex_provider_adapters::messages::build_body(
+                        &MessagesRequest {
+                            model: &request.model,
+                            turns: &turns,
+                            tools: &tools,
+                            tool_choice: &request.tool_choice,
+                            parallel_tool_calls: request.parallel_tool_calls,
+                            reasoning_effort: effort.as_deref(),
+                            max_output_tokens: self.max_output_tokens,
+                            json_schema: None,
+                        },
+                        compat,
+                    ),
+                    Parser::Messages(MessagesStream::new(compat.clone())),
+                )
+            }
             WireKind::ChatCompletions(compat) => (
                 "/chat/completions",
                 codex_provider_adapters::chat::build_body(
@@ -113,6 +247,7 @@ impl<T: HttpTransport> WireClient<T> {
                     },
                     compat,
                 ),
+                Parser::Chat(ChatStream::default()),
             ),
         };
         let body = EncodedJsonBody::encode(&body)
@@ -120,7 +255,7 @@ impl<T: HttpTransport> WireClient<T> {
 
         let response = self
             .session
-            .stream_encoded_json_with(Method::POST, path, HeaderMap::new(), Some(body), |req| {
+            .stream_encoded_json_with(Method::POST, path, extra_headers, Some(body), |req| {
                 req.headers.insert(
                     http::header::ACCEPT,
                     HeaderValue::from_static("text/event-stream"),
@@ -137,7 +272,7 @@ impl<T: HttpTransport> WireClient<T> {
         let registry = ToolRegistry::new(&tools);
         let (tx_event, rx_event) = mpsc::channel::<Result<ResponseEvent, ApiError>>(1600);
         tokio::spawn(async move {
-            pump(response.bytes, tx_event, idle_timeout, registry).await;
+            pump(response.bytes, tx_event, idle_timeout, registry, parser).await;
         });
         Ok(ResponseStream {
             routing_affinity: None,
@@ -153,9 +288,9 @@ async fn pump(
     tx: mpsc::Sender<Result<ResponseEvent, ApiError>>,
     idle_timeout: Duration,
     registry: ToolRegistry,
+    mut parser: Parser,
 ) {
     let mut stream = bytes.eventsource();
-    let mut parser = ChatStream::default();
     let response_id = format!("resp_{}", uuid::Uuid::new_v4().simple());
     let mut assembler = Assembler::new(registry, response_id);
     loop {

@@ -38,3 +38,4 @@ pub use responses_websocket_probe::ResponsesWebsocketProbeFailureStage;
 pub use search::SearchClient;
 pub use wire::WireClient;
 pub use wire::WireKind;
+pub use wire::anthropic_wire_kind;

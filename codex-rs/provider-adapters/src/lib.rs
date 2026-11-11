@@ -13,4 +13,5 @@ pub mod events;
 pub mod history;
 pub mod ids;
 pub mod ir;
+pub mod messages;
 pub mod tool_names;

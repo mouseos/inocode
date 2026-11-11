@@ -7686,6 +7686,13 @@
             "chat_completions"
           ],
           "type": "string"
+        },
+        {
+          "description": "The Claude Messages API (`wire_api = \"anthropic_messages\"`).",
+          "enum": [
+            "anthropic_messages"
+          ],
+          "type": "string"
         }
       ]
     },

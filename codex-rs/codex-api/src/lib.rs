@@ -81,6 +81,7 @@ pub use crate::endpoint::ResponsesWebsocketConnection;
 pub use crate::endpoint::ResponsesWebsocketProbe;
 pub use crate::endpoint::WireClient;
 pub use crate::endpoint::WireKind;
+pub use crate::endpoint::anthropic_wire_kind;
 pub use crate::endpoint::ResponsesWebsocketProbeError;
 pub use crate::endpoint::ResponsesWebsocketProbeFailureStage;
 pub use crate::endpoint::SearchClient;

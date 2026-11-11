@@ -224,3 +224,75 @@ async fn rate_limit_and_truncation_become_the_matching_api_errors() -> Result<()
     ));
     Ok(())
 }
+
+#[tokio::test]
+async fn claude_messages_use_the_key_header_and_signed_thinking_comes_back_in_an_envelope() -> Result<()> {
+    let seen = Arc::new(Mutex::new(None));
+    let transport = ChatTransport {
+        sse: sse(&[
+            r#"{"type":"message_start","message":{"usage":{"input_tokens":7,"output_tokens":1}}}"#,
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#,
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"plan"}}"#,
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"SIG-1"}}"#,
+            r#"{"type":"content_block_stop","index":0}"#,
+            r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"shell","input":{}}}"#,
+            r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"cmd\":\"ls\"}"}}"#,
+            r#"{"type":"content_block_stop","index":1}"#,
+            r#"{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":4}}"#,
+            r#"{"type":"message_stop"}"#,
+        ]),
+        seen: Arc::clone(&seen),
+    };
+    let client = WireClient::new(
+        transport,
+        provider(),
+        Arc::new(KeyAuth),
+        WireKind::AnthropicMessages {
+            compat: Default::default(),
+            bearer: false,
+        },
+    );
+    let events: Vec<ResponseEvent> = collect(&client).await.into_iter().collect::<Result<_, _>>()?;
+
+    let reasoning = events
+        .iter()
+        .find_map(|e| match e {
+            ResponseEvent::OutputItemDone(ResponseItem::Reasoning { encrypted_content, .. }) => {
+                encrypted_content.clone()
+            }
+            _ => None,
+        })
+        .expect("a reasoning item with a signature envelope");
+    let envelope = codex_provider_adapters::envelope::Envelope::decode(&reasoning).expect("envelope");
+    assert_eq!(envelope.sig.as_deref(), Some("SIG-1"));
+    assert!(events.iter().any(|e| matches!(
+        e,
+        ResponseEvent::OutputItemDone(ResponseItem::FunctionCall { name, arguments, .. })
+            if name == "shell" && arguments == "{\"cmd\":\"ls\"}"
+    )));
+    let Some(ResponseEvent::Completed { token_usage, .. }) = events.last() else {
+        panic!("expected completion");
+    };
+    assert_eq!(token_usage.as_ref().map(|u| (u.input_tokens, u.output_tokens)), Some((7, 4)));
+
+    let request = seen.lock().expect("lock").take().expect("request");
+    assert_eq!(request.url, "https://example.test/v1/messages");
+    assert_eq!(
+        request.headers.get("x-api-key").and_then(|v| v.to_str().ok()),
+        Some("sk-test-FAKE")
+    );
+    assert!(request.headers.get(http::header::AUTHORIZATION).is_none());
+    assert_eq!(
+        request.headers.get("anthropic-version").and_then(|v| v.to_str().ok()),
+        Some("2023-06-01")
+    );
+    let Some(RequestBody::EncodedJson(body)) = request.body else {
+        panic!("expected a JSON body");
+    };
+    let body: Value = serde_json::from_slice(body.as_bytes())?;
+    assert_eq!(body["model"], "compat-model");
+    assert_eq!(body["system"][0]["text"], "rules");
+    assert_eq!(body["messages"][0], json!({"role": "user", "content": "list files"}));
+    assert_eq!(body["tools"][0]["name"], "shell");
+    Ok(())
+}

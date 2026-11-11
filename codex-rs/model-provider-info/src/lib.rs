@@ -122,6 +122,9 @@ pub enum WireApi {
     /// streams are translated by `codex-provider-adapters`.
     #[serde(rename = "chat_completions")]
     ChatCompletions,
+    /// The Claude Messages API (`wire_api = "anthropic_messages"`).
+    #[serde(rename = "anthropic_messages")]
+    AnthropicMessages,
 }
 
 impl fmt::Display for WireApi {
@@ -129,6 +132,7 @@ impl fmt::Display for WireApi {
         let value = match self {
             Self::Responses => "responses",
             Self::ChatCompletions => "chat_completions",
+            Self::AnthropicMessages => "anthropic_messages",
         };
         f.write_str(value)
     }
@@ -143,10 +147,11 @@ impl<'de> Deserialize<'de> for WireApi {
         match value.as_str() {
             "responses" => Ok(Self::Responses),
             "chat_completions" => Ok(Self::ChatCompletions),
+            "anthropic_messages" => Ok(Self::AnthropicMessages),
             "chat" => Err(serde::de::Error::custom(CHAT_WIRE_API_REMOVED_ERROR)),
             _ => Err(serde::de::Error::unknown_variant(
                 &value,
-                &["responses", "chat_completions"],
+                &["responses", "chat_completions", "anthropic_messages"],
             )),
         }
     }

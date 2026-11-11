@@ -2103,6 +2103,21 @@ impl ResponsesHttpExecutor<'_> {
                     .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
                     client.stream_request(request, options).await
                 }
+                WireApi::AnthropicMessages => {
+                    let kind = codex_api::anthropic_wire_kind(
+                        &client_setup.api_provider.base_url,
+                        /*oauth*/ false,
+                    );
+                    codex_api::WireClient::new(
+                        transport,
+                        client_setup.api_provider,
+                        client_setup.api_auth,
+                        kind,
+                    )
+                    .with_telemetry(Some(request_telemetry))
+                    .stream_request(request, options)
+                    .await
+                }
                 WireApi::ChatCompletions => {
                     codex_api::WireClient::new(
                         transport,
@@ -2622,7 +2637,7 @@ impl ModelClientSession {
     ) -> Result<ResponseStream> {
         let wire_api = self.client.state.provider.info().wire_api;
         match wire_api {
-            WireApi::ChatCompletions => {
+            WireApi::ChatCompletions | WireApi::AnthropicMessages => {
                 ResponsesHttpExecutor::new(&self.client)
                     .stream_responses_http(
                         &self.turn_state,
