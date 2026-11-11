@@ -1,0 +1,171 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "InocodeAccount": {
+      "description": "One pool entry. There is deliberately no e-mail address: identify by `alias` and `plan`.",
+      "properties": {
+        "alias": {
+          "description": "User-chosen name.",
+          "type": "string"
+        },
+        "cooldownUntil": {
+          "description": "Unix seconds; set while `state` is `cooldown`.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "inUse": {
+          "description": "True for the entry used by the next request.",
+          "type": "boolean"
+        },
+        "isDefault": {
+          "description": "True for the legacy `auth.json` login shown as the default account.",
+          "type": "boolean"
+        },
+        "kind": {
+          "$ref": "#/definitions/InocodeAccountKind"
+        },
+        "lastUsedAt": {
+          "description": "Unix seconds.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "plan": {
+          "description": "Plan name for ChatGPT accounts (for example `plus`, `pro`); `null` for API keys.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "priority": {
+          "description": "Larger is used earlier.",
+          "format": "int32",
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/definitions/InocodeAccountState"
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/InocodeAccountUsage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`null` for API keys (no usage concept) or before the first fetch."
+        }
+      },
+      "required": [
+        "alias",
+        "id",
+        "inUse",
+        "isDefault",
+        "kind",
+        "priority",
+        "state"
+      ],
+      "type": "object"
+    },
+    "InocodeAccountKind": {
+      "description": "Which kind of credential an entry holds. Other providers plug in here later.",
+      "enum": [
+        "chatgpt",
+        "apiKey"
+      ],
+      "type": "string"
+    },
+    "InocodeAccountState": {
+      "enum": [
+        "active",
+        "cooldown",
+        "disabled"
+      ],
+      "type": "string"
+    },
+    "InocodeAccountUsage": {
+      "properties": {
+        "fiveHour": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/InocodeAccountUsageWindow"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "updatedAt": {
+          "description": "Unix seconds of the last refresh; `null` when never fetched.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "weekly": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/InocodeAccountUsageWindow"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "InocodeAccountUsageWindow": {
+      "properties": {
+        "resetsAt": {
+          "description": "Unix seconds.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "usedPercent": {
+          "description": "0-100.",
+          "format": "double",
+          "type": "number"
+        },
+        "windowMinutes": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "usedPercent"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "The account list changed (added, removed, usage refreshed, state changed...).",
+  "properties": {
+    "accounts": {
+      "items": {
+        "$ref": "#/definitions/InocodeAccount"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "accounts"
+  ],
+  "title": "InocodeAccountsUpdatedNotification",
+  "type": "object"
+}

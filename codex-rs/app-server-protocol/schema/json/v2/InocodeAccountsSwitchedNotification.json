@@ -1,0 +1,40 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "InocodeAccountSwitchReason": {
+      "enum": [
+        "threshold",
+        "limitReached",
+        "manual"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "fromAlias": {
+      "description": "Alias of the account used before; `null` when none.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "reason": {
+      "$ref": "#/definitions/InocodeAccountSwitchReason"
+    },
+    "threadId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "toAlias": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "reason",
+    "toAlias"
+  ],
+  "title": "InocodeAccountsSwitchedNotification",
+  "type": "object"
+}

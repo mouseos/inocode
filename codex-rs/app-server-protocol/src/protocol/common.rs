@@ -618,6 +618,72 @@ client_request_definitions! {
         serialization: None,
         response: v2::InocodeFlagsWriteResponse,
     },
+    #[experimental("inocode/accounts/list")]
+    InocodeAccountsList => "inocode/accounts/list" {
+        params: v2::InocodeAccountsListParams,
+        serialization: None,
+        response: v2::InocodeAccountsListResponse,
+    },
+    #[experimental("inocode/accounts/addApiKey")]
+    InocodeAccountsAddApiKey => "inocode/accounts/addApiKey" {
+        params: v2::InocodeAccountsAddApiKeyParams,
+        serialization: None,
+        response: v2::InocodeAccountsAddApiKeyResponse,
+    },
+    #[experimental("inocode/accounts/remove")]
+    InocodeAccountsRemove => "inocode/accounts/remove" {
+        params: v2::InocodeAccountsRemoveParams,
+        serialization: None,
+        response: v2::InocodeAccountsRemoveResponse,
+    },
+    #[experimental("inocode/accounts/rename")]
+    InocodeAccountsRename => "inocode/accounts/rename" {
+        params: v2::InocodeAccountsRenameParams,
+        serialization: None,
+        response: v2::InocodeAccountsRenameResponse,
+    },
+    #[experimental("inocode/accounts/setPriority")]
+    InocodeAccountsSetPriority => "inocode/accounts/setPriority" {
+        params: v2::InocodeAccountsSetPriorityParams,
+        serialization: None,
+        response: v2::InocodeAccountsSetPriorityResponse,
+    },
+    #[experimental("inocode/accounts/setEnabled")]
+    InocodeAccountsSetEnabled => "inocode/accounts/setEnabled" {
+        params: v2::InocodeAccountsSetEnabledParams,
+        serialization: None,
+        response: v2::InocodeAccountsSetEnabledResponse,
+    },
+    #[experimental("inocode/accounts/use")]
+    InocodeAccountsUse => "inocode/accounts/use" {
+        params: v2::InocodeAccountsUseParams,
+        serialization: None,
+        response: v2::InocodeAccountsUseResponse,
+    },
+    #[experimental("inocode/accounts/login/start")]
+    InocodeAccountsLoginStart => "inocode/accounts/login/start" {
+        params: v2::InocodeAccountsLoginStartParams,
+        serialization: None,
+        response: v2::InocodeAccountsLoginStartResponse,
+    },
+    #[experimental("inocode/accounts/login/cancel")]
+    InocodeAccountsLoginCancel => "inocode/accounts/login/cancel" {
+        params: v2::InocodeAccountsLoginCancelParams,
+        serialization: None,
+        response: v2::InocodeAccountsLoginCancelResponse,
+    },
+    #[experimental("inocode/accounts/policy/read")]
+    InocodeAccountsPolicyRead => "inocode/accounts/policy/read" {
+        params: v2::InocodeAccountsPolicyReadParams,
+        serialization: None,
+        response: v2::InocodeAccountsPolicyReadResponse,
+    },
+    #[experimental("inocode/accounts/policy/write")]
+    InocodeAccountsPolicyWrite => "inocode/accounts/policy/write" {
+        params: v2::InocodeAccountsPolicyWriteParams,
+        serialization: None,
+        response: v2::InocodeAccountsPolicyWriteResponse,
+    },
     #[experimental("userVerification/status")]
     UserVerificationStatus => "userVerification/status" {
         params: v2::UserVerificationStatusParams,
@@ -2143,6 +2209,12 @@ server_notification_definitions! {
     ThreadGoalUpdated => "thread/goal/updated" (v2::ThreadGoalUpdatedNotification),
     #[experimental("inocode/team/updated")]
     InocodeTeamUpdated => "inocode/team/updated" (v2::InocodeTeamUpdatedNotification),
+    #[experimental("inocode/accounts/updated")]
+    InocodeAccountsUpdated => "inocode/accounts/updated" (v2::InocodeAccountsUpdatedNotification),
+    #[experimental("inocode/accounts/switched")]
+    InocodeAccountsSwitched => "inocode/accounts/switched" (v2::InocodeAccountsSwitchedNotification),
+    #[experimental("inocode/accounts/loginCompleted")]
+    InocodeAccountsLoginCompleted => "inocode/accounts/loginCompleted" (v2::InocodeAccountsLoginCompletedNotification),
     #[experimental("thread/prediction/updated")]
     ThreadPredictionUpdated => "thread/prediction/updated" (v2::ThreadPredictionUpdatedNotification),
     ThreadGoalCleared => "thread/goal/cleared" (v2::ThreadGoalClearedNotification),

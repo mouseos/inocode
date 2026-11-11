@@ -1,0 +1,30 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "properties": {
+    "accountId": {
+      "description": "The new entry's id on success.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "error": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "loginId": {
+      "type": "string"
+    },
+    "success": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "loginId",
+    "success"
+  ],
+  "title": "InocodeAccountsLoginCompletedNotification",
+  "type": "object"
+}
