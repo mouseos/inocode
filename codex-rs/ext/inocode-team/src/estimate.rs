@@ -2,7 +2,8 @@ use serde::Deserialize;
 use serde::Serialize;
 
 /// One independent piece of work.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Task {
     pub name: String,
     /// Files / directories this task writes.
@@ -23,6 +24,8 @@ pub struct EstimateConfig {
     pub boundary_writable: bool,
     /// Extra serial time from dependencies that cannot be parallelised, seconds.
     pub serial_dependency_secs: f64,
+    /// Expected duration of one detected task, seconds. Default 600.
+    pub default_task_secs: f64,
 }
 
 impl Default for EstimateConfig {
@@ -33,6 +36,7 @@ impl Default for EstimateConfig {
             integrate_overhead_secs: 60.0,
             boundary_writable: true,
             serial_dependency_secs: 0.0,
+            default_task_secs: 600.0,
         }
     }
 }
@@ -52,6 +56,9 @@ pub struct Estimate {
     pub cost_multiplier: f64,
     pub decision: Decision,
     pub reason: String,
+    /// The work items the estimate was built from (empty when none were detected).
+    #[serde(default)]
+    pub tasks: Vec<Task>,
 }
 
 impl Estimate {
@@ -61,6 +68,7 @@ impl Estimate {
             cost_multiplier: 1.0,
             decision: Decision::Single,
             reason: reason.into(),
+            tasks: Vec::new(),
         }
     }
 }
@@ -87,6 +95,12 @@ fn any_overlap(tasks: &[Task]) -> bool {
 
 /// speedup = sequential / (longest assignee + split overhead + integrate overhead)
 pub fn estimate(tasks: &[Task], cfg: &EstimateConfig) -> Estimate {
+    let mut e = estimate_inner(tasks, cfg);
+    e.tasks = tasks.to_vec();
+    e
+}
+
+fn estimate_inner(tasks: &[Task], cfg: &EstimateConfig) -> Estimate {
     if tasks.len() < 2 {
         return Estimate::single("fewer than two independent tasks");
     }
@@ -115,6 +129,7 @@ pub fn estimate(tasks: &[Task], cfg: &EstimateConfig) -> Estimate {
                 speedup,
                 cfg.threshold
             ),
+            tasks: Vec::new(),
         }
     } else {
         Estimate {
@@ -125,6 +140,7 @@ pub fn estimate(tasks: &[Task], cfg: &EstimateConfig) -> Estimate {
                 "estimated {:.1}x speedup is below the {:.1}x threshold; split/integration overhead dominates",
                 speedup, cfg.threshold
             ),
+            tasks: Vec::new(),
         }
     }
 }
@@ -198,6 +214,15 @@ mod tests {
             estimate(&[t("a", "a", 900.0), t("b", "b", 900.0)], &cfg).decision,
             Decision::Single
         );
+    }
+
+    #[test]
+    fn estimate_carries_the_tasks_it_was_built_from() {
+        let tasks = [t("a", "a", 600.0), t("b", "b", 600.0)];
+        let e = estimate(&tasks, &EstimateConfig::default());
+        assert_eq!(e.tasks.len(), 2);
+        assert_eq!(e.tasks[0].name, "a");
+        assert!(estimate(&tasks[..1], &EstimateConfig::default()).tasks.len() == 1);
     }
 
     #[test]

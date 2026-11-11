@@ -4,12 +4,15 @@
 mod auto_select;
 mod contract;
 mod estimate;
+mod owned_paths;
 mod roster;
 
 pub use auto_select::detect_tasks;
+pub use auto_select::detect_tasks_with_secs;
 pub use auto_select::recommend_for_input;
 pub use contract::contract_instruction;
 pub use contract::read_contracts;
+pub use owned_paths::owned_paths_from_instruction;
 pub use estimate::Decision;
 pub use estimate::Estimate;
 pub use estimate::EstimateConfig;

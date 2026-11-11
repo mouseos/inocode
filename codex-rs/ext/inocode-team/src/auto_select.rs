@@ -39,6 +39,11 @@ fn list_item(line: &str) -> Option<&str> {
 /// Independent tasks named by the request: its list items. Write sets are unknown at this
 /// point, so none are claimed (the model decides the split and the files).
 pub fn detect_tasks(user_text: &str) -> Vec<Task> {
+    detect_tasks_with_secs(user_text, DEFAULT_TASK_SECONDS)
+}
+
+/// [`detect_tasks`] with an explicit expected duration per task.
+pub fn detect_tasks_with_secs(user_text: &str, est_seconds: f64) -> Vec<Task> {
     user_text
         .lines()
         .filter_map(list_item)
@@ -46,7 +51,7 @@ pub fn detect_tasks(user_text: &str) -> Vec<Task> {
         .map(|s| Task {
             name: s.chars().take(60).collect(),
             write_paths: Vec::new(),
-            est_seconds: DEFAULT_TASK_SECONDS,
+            est_seconds,
         })
         .collect()
 }
@@ -56,7 +61,7 @@ pub fn recommend_for_input(
     user_text: &str,
     cfg: &EstimateConfig,
 ) -> Option<(Estimate, String)> {
-    let tasks = detect_tasks(user_text);
+    let tasks = detect_tasks_with_secs(user_text, cfg.default_task_secs);
     if tasks.len() < 2 {
         return None;
     }

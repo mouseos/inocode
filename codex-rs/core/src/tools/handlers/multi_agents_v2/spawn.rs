@@ -129,6 +129,7 @@ async fn handle_spawn_agent(
         }
     };
     let team_task_name = args.task_name.clone();
+    let spawn_text = message.clone();
     let role_name = args
         .agent_type
         .as_deref()
@@ -197,11 +198,25 @@ async fn handle_spawn_agent(
         codex_inocode_team::TeamAgent {
             id: new_thread_id.to_string(),
             name: team_task_name,
-            owned_paths: Vec::new(),
+            owned_paths: codex_inocode_team::owned_paths_from_instruction(&spawn_text),
             state: codex_inocode_team::AgentState::Running,
             tokens: 0,
             started_at: chrono::Utc::now().to_rfc3339(),
         },
+    );
+    // The child's state follows its own status changes, not only `wait_agent` polls.
+    crate::inocode_team::watch_child(&session, new_thread_id);
+    codex_inocode_protocol::link_thread(&new_thread_id.to_string(), &session.thread_id.to_string());
+    crate::inocode_loop::log_agent_message(
+        session.thread_id,
+        turn.session_source
+            .get_agent_path()
+            .map(|path| path.to_string())
+            .as_deref()
+            .unwrap_or("/root"),
+        &task_name,
+        "spawn",
+        &spawn_text,
     );
 
     let hide_agent_metadata = turn.config.multi_agent_v2.hide_spawn_agent_metadata;
@@ -242,11 +257,14 @@ impl SpawnAgentArgs {
             ));
         }
 
+        // The default comes from `team.fork_turns_default` (`none` unless configured).
+        let default_fork_turns = codex_inocode_flags::string_param("team.fork_turns_default");
         let fork_turns = self
             .fork_turns
             .as_deref()
             .map(str::trim)
             .filter(|fork_turns| !fork_turns.is_empty())
+            .or(default_fork_turns.as_deref())
             .unwrap_or("none");
 
         if fork_turns.eq_ignore_ascii_case("none") {

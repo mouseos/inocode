@@ -8,6 +8,7 @@ use codex_app_server_protocol::InocodeTeamAgentState;
 use codex_app_server_protocol::InocodeTeamDecision;
 use codex_app_server_protocol::InocodeTeamEstimate;
 use codex_app_server_protocol::InocodeTeamStatusResponse;
+use codex_app_server_protocol::InocodeTeamTask;
 use codex_inocode_team::AgentState;
 use codex_inocode_team::Decision;
 use codex_inocode_team::TeamStatus;
@@ -39,6 +40,18 @@ pub(crate) fn to_response(status: TeamStatus) -> InocodeTeamStatusResponse {
                 Decision::Multi => InocodeTeamDecision::Multi,
             },
             reason: status.estimate.reason,
+            tasks: (!status.estimate.tasks.is_empty()).then(|| {
+                status
+                    .estimate
+                    .tasks
+                    .into_iter()
+                    .map(|t| InocodeTeamTask {
+                        name: t.name,
+                        est_seconds: t.est_seconds,
+                        write_paths: t.write_paths,
+                    })
+                    .collect()
+            }),
         },
     }
 }
