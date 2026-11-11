@@ -163,6 +163,9 @@ enum Subcommand {
     /// Remove stored authentication credentials.
     Logout(LogoutCommand),
 
+    /// Manage the account pool: several ChatGPT accounts and API keys, switched by policy.
+    Accounts(codex_cli::accounts_cmd::AccountsCommand),
+
     /// Manage external MCP servers for InoCode.
     Mcp(McpCli),
 
@@ -1703,6 +1706,18 @@ async fn dispatch_cli(
             );
             run_logout(logout_cli.config_overrides).await;
         }
+        Some(Subcommand::Accounts(mut accounts_cli)) => {
+            reject_remote_mode_for_subcommand(
+                root_remote.as_deref(),
+                root_remote_auth_token_env.as_deref(),
+                "accounts",
+            )?;
+            prepend_config_flags(
+                &mut accounts_cli.config_overrides,
+                root_config_overrides.clone(),
+            );
+            codex_cli::accounts_cmd::run_accounts(accounts_cli).await?;
+        }
         Some(Subcommand::Completion(completion_cli)) => {
             reject_remote_mode_for_subcommand(
                 root_remote.as_deref(),
@@ -2385,6 +2400,7 @@ fn unsupported_subcommand_name_for_strict_config(
         Some(Subcommand::App(_)) => Some("app"),
         Some(Subcommand::Login(_)) => Some("login"),
         Some(Subcommand::Logout(_)) => Some("logout"),
+        Some(Subcommand::Accounts(_)) => Some("accounts"),
         Some(Subcommand::Completion(_)) => Some("completion"),
         Some(Subcommand::Update) => Some("update"),
         Some(Subcommand::Cloud(_)) => Some("cloud"),

@@ -228,7 +228,10 @@ pub(super) fn server_notification_thread_target(
         | ServerNotification::FsChanged(_)
         | ServerNotification::WindowsWorldWritableWarning(_)
         | ServerNotification::WindowsSandboxSetupCompleted(_)
-        | ServerNotification::AccountLoginCompleted(_) => None,
+        | ServerNotification::AccountLoginCompleted(_)
+        | ServerNotification::InocodeAccountsUpdated(_)
+        | ServerNotification::InocodeAccountsSwitched(_)
+        | ServerNotification::InocodeAccountsLoginCompleted(_) => None,
     };
 
     match thread_id {

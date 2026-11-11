@@ -1,3 +1,4 @@
+pub mod accounts_cmd;
 pub mod cloud_config;
 pub(crate) mod debug_sandbox;
 mod exit_status;
