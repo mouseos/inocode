@@ -9,7 +9,7 @@
 ## 関連ソースコード
 
 - `core/src/lib.rs` — `Request` / `Response` / `ResponseBody` / `ErrorInfo` / `Core::handle`。TCP 依存なし。
-- `server/src/lib.rs` — `run(listener, shutdown)`: 接続受付、要求のデコード、Core への委譲、応答送信。
+- `server/src/lib.rs` — `run(listener, core, shutdown)`: 接続受付（ソケットオプションの設定に失敗した接続だけを破棄して受け付けを継続）、要求のデコード、Core への委譲、応答送信。
 - `server/src/main.rs` — 独立プロセスの起動（ループバック固定、ポートは `INOCODE_PORT`、既定 8787）。
 - `server/tests/server_tcp.rs` — 実 TCP 接続による統合テスト 11 件。
 - `.github/workflows/protocol-test.yml` — fmt / clippy / build / test を 3 OS で手動実行。

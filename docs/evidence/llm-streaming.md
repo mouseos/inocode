@@ -148,15 +148,21 @@
 - ローカル（Windows 実機）: `cargo test --workspace --release` で 82 件成功・4 件 `ignored`（プロトコル単体 17、プロトコル TCP 統合 14、Core 単体 20、Server チャット TCP 統合 20、Server TCP 統合 11）。`cargo fmt --all -- --check` と `cargo clippy --workspace --all-targets --release -- -D warnings` は警告なし。3 回連続実行して同一結果。
 - 模擬 HTTP API による検証項目: 要求内容（`POST /v1/chat/completions`、Bearer、`stream: true`、messages）、SSE の逐次配送（最初のデルタが完了より 300 ms 以上早い）、イベント順序、5 バイト分割（UTF-8 途中を含む）の復元、応答ヘッダー待ちでの中断（上流接続の close を模擬サーバー側の書き込み失敗で確認）、プロバイダー無応答での中断、中断後の終端が `cancelled` で他の終端が出ないこと、中断直後の同 ID 再利用（拒否またはクリーンな新生成のどちらか）、終端後の ID 再利用で旧タスクが干渉しないこと、送信キュー満杯状態での中断（300 デルタ未満で `cancelled` 終端）、切断を 4 回繰り返しても生成タスクが残留しないこと、30 同時生成の混線なし、3 クライアント×2 要求の混在なし、HTTP 429 の `failed`、途中終了の `provider_stream`、生成中の `ping` 同時応答、遅延読み取りでも 300 デルタ欠落なし、`ping`/`echo` 回帰。
 - Core / プロトコルの単体検証項目: SSE の複数 `data:` 行の連結、CR 単独・CRLF・BOM、終端子のない最終行、`[DONE]` と `finish_reason`、上限（16 MiB）を超える無終端イベントの拒否、`write_json` の上限一致・超過拒否、`read_json` / `read_binary_to` のフレーム種別不一致、`LlmConfig` の Debug 出力に API キーが現れないこと。
-- GitHub Actions（workflow_dispatch、3 OS）: 2026-11-15 の run https://github.com/mouseos/inocode/actions/runs/43714283121 で、是正前のコードに対し 6 ジョブ成功。`live-api` ジョブは実 Logfare API（`logfare/auto`）で逐次生成を確認（デルタ数・文字数・最初のデルタ・完了時刻のみ出力）。ジョブは `LOGFARE_API_KEY` 未設定時に失敗するよう変更済みで、実 API テストが未実施のまま成功扱いになることはない。是正後のコードの 3 OS 結果は本節に追記する。
+- GitHub Actions（workflow_dispatch、3 OS）: ジョブは `LOGFARE_API_KEY` 未設定時に失敗するよう変更済みで、実 API テストが未実施のまま成功扱いになることはない。
+  - 是正前コード: run https://github.com/mouseos/inocode/actions/runs/43714283121 で 6 ジョブ成功。
+  - 是正後コード: run https://github.com/mouseos/inocode/actions/runs/43722585178 で 6 ジョブ成功。`protocol test`（ubuntu / windows / macos）は各 OS で fmt・clippy・build・テスト 82 件成功。`live provider test`（3 OS）は実 Logfare API（`logfare/auto`）での逐次生成を確認（デルタ数・文字数・時刻のみ出力）。
 
-| OS | デルタ数 | 文字数 | 最初のデルタ | 完了まで |
+| 是正後の live provider test | デルタ数 | 文字数 | 最初のデルタ | 完了まで |
+| --- | --- | --- | --- | --- |
+| ubuntu-latest | 4 | 22 | 3766 ms | 3766 ms |
+| macos-latest | 5 | 33 | 4998 ms | 5096 ms |
+| windows-latest | 4 | 23 | 7632 ms | 7636 ms |
+
+| 是正前の live provider test（参考として保持） | デルタ数 | 文字数 | 最初のデルタ | 完了まで |
 | --- | --- | --- | --- | --- |
 | ubuntu-latest | 16 | 145 | 5868 ms | 6127 ms |
 | windows-latest | 8 | 86 | 9721 ms | 9856 ms |
 | macos-latest | 10 | 191 | 3243 ms | 3422 ms |
-
-（上表は是正前コードに対する実測であり、参考値として保持する）
 
 - 未検証: プロバイダーのレート制限下での挙動、数万デルタの長い応答、ネットワーク断、TLS 検証エラー、同時接続数の上限、長時間稼働、中断時のプロバイダー側課金の停止時期（プロバイダー依存）、無応答プロバイダーをクライアントが中断しなかった場合のリソース保持（タイムアウトは承認待ち）。
 - 未検証（研究面）: 提示速度の調整効果、中断による資源節約量、有界キュー容量 64 の妥当性、SSE イベント上限 16 MiB の妥当性。
