@@ -59,6 +59,10 @@
   - `server/src/main.rs` — `login claude [--code]|gpt|muse-code` サブコマンド（トークン等を表示しない）。
   - `server/tests/oauth_flows.rs` — 模擬エンドポイント 9 テスト: Claude ブラウザ/コード表示ログイン、GPT ログイン（JWT から account id 抽出、form 本文検証）、Muse デバイスフロー（pending→承認→ミント、`LLM|` キー確認）、`refresh_claude`、OAuth 3 方式での chat over TCP（ヘッダ・本体・逐次配送・完了イベント）、資格未保存時の `provider_config` 失敗。
   - README にログイン手順と方式別既定を追記。
-- 検証済み（ローカル、2026-11-15）: `cargo fmt --all --check`、`cargo clippy --workspace --release --all-targets -- -D warnings`、`cargo build --workspace --release`、`cargo test --workspace --release`（111 passed / 0 failed / 6 ignored。うち新規: core 単体 6、統合 9）。
-- 未実施・ユーザー実施予定: 実サービスでのログイン（claude.ai / auth.openai.com / auth.meta.com のブラウザ承認、実 `LLM|` キーでの chat）。本記録では実ログインは未検証と明記する。
+- 検証済み（ローカル、2026-11-15 深夜〜）: `cargo fmt --all --check`、`cargo clippy --workspace --release --all-targets -- -D warnings`、`cargo build --workspace --release`、`cargo test --workspace --release`（111 passed / 0 failed / 6 ignored。うち新規: core 単体 6、統合 9）。
+- **実ログイン実測（2026-11-16、Muse Code）**: 実 `login muse-code` でデバイス承認〜キーミントまで完了、`~/.inocode/auth.json` に `api_key`（`LLM|`）と `oauth_access_token` が保存された。実測で判明した Meta 側の線路事実:
+  - デバイス許可エンドポイントは `Content-Type: application/x-www-form-urlencoded` が無いと 404、`User-Agent` が空だと 302（任意の UA 文字列で 200）。実装は両ヘッダを送る。
+  - Model API `/v1/responses`（muse-spark-1.3、`store:false`）は 200、`response.output_text.delta` で本文、`response.completed`、`response.subscription_usage`、最後に **`data: [DONE]`**（非JSON）で終端。`event:` 行と `data:` 行のペア。
+  - これを受け、Responses パーサを参照実装の passthrough アダプタ（`src/adapters/openai-responses/passthrough.ts` の `parseStream`）どおりに修正: **非JSON data 行は無視**（`JSON.parse` 失敗で `continue`、`[DONE]` もここで吸収）、**EOF で正常終了**（`response.completed` を待たない。`response.failed`/`error` のみ中途中断、`response.incomplete` は正常終了）、失敗メッセージは `error`（文字列）→ `error.message` → `incomplete_details.reason` の順。InoCode の旧規則（非JSON＝`provider_protocol` エラー、無终端EOF＝`provider_stream` 失敗）は OpenAI Chat Completions／Anthropic Messages に対しては維持する。
+- 未実施・ユーザー実施予定: 実サービスでのログイン（claude.ai / auth.openai.com）。Muse Code のログインと実キーでの chat は上記のとおり実測済み。
 - 適用しなかった参照実装の修正と理由: フォークのツール名エイリアス（`client_` 接頭辞、403 `client_attestation_denied` 対策）はツールを宣言しない InoCode には作動しない。クォータ拒否（429 `retry-after`）の長時間待機回避も、再試行機構を持たない InoCode には該当せず、429 は通常の `provider_http` 失敗として報告される。両方とも将来ツール対応時に再考する。

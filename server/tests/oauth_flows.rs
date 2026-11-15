@@ -450,6 +450,14 @@ fn responses_sse(answer: &str) -> Vec<Vec<u8>> {
         )
         .into_bytes(),
         format!("data: {}\n\n", json!({"type": "response.completed"})).into_bytes(),
+        // The Muse backend's tail, as observed: a subscription-usage note and
+        // the plain `[DONE]` terminator, which the parser must skip.
+        format!(
+            "data: {}\n\n",
+            json!({"type": "response.subscription_usage"})
+        )
+        .into_bytes(),
+        b"data: [DONE]\n\n".to_vec(),
     ]
 }
 

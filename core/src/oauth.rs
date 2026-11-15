@@ -702,7 +702,9 @@ pub async fn muse_device_authorization(
     let response = client
         .post(&endpoints.device_authorization_url)
         .header("accept", "application/json")
+        .header("content-type", "application/x-www-form-urlencoded")
         .header("x-api-version", MUSE_API_VERSION)
+        .header("user-agent", MUSE_USER_AGENT)
         .body(format!("client_id={}", urlencode(MUSE_CLIENT_ID)))
         .send()
         .await
@@ -767,7 +769,9 @@ pub async fn muse_device_token(
         let response = client
             .post(&endpoints.device_token_url)
             .header("accept", "application/json")
+            .header("content-type", "application/x-www-form-urlencoded")
             .header("x-api-version", MUSE_API_VERSION)
+            .header("user-agent", MUSE_USER_AGENT)
             .body(format!(
                 "client_id={}&device_code={}&grant_type={}",
                 urlencode(MUSE_CLIENT_ID),
@@ -827,6 +831,7 @@ pub async fn muse_mint_key(
     let response = client
         .post(&endpoints.key_url)
         .header("accept", "application/json")
+        .header("user-agent", MUSE_USER_AGENT)
         .header("authorization", format!("Bearer {account_token}"))
         .header("content-type", "application/json")
         .header("x-api-version", MUSE_API_VERSION)

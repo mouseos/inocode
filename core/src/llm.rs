@@ -689,18 +689,11 @@ impl ResponsesStream {
                 None => {}
             }
             if self.body_ended {
-                // `response.completed`/`response.incomplete` are the only
-                // success terminals; a body that ends without either is a
-                // truncated answer, never a success.
+                // The reference passthrough adapter ends the turn at end of
+                // body: buffered deltas are the answer, and only a
+                // `response.failed`/`error` event fails it mid-stream.
                 self.done = true;
-                return if self.signalled {
-                    Ok(None)
-                } else {
-                    Err(ErrorInfo::new(
-                        "provider_stream",
-                        "the provider stream ended before it signalled completion",
-                    ))
-                };
+                return Ok(None);
             }
             match self.response.chunk().await {
                 Ok(Some(chunk)) => self.parser.push(&chunk),
@@ -721,16 +714,22 @@ impl ResponsesStream {
 }
 
 /// Interprets one Responses `data` payload, updating the completion signals on
-/// the stream. Terminal and error rules follow the reference translation in
-/// `src/claude/inbound.ts` of the reference implementation.
+/// the stream. Terminal and error rules follow the reference passthrough
+/// adapter (`parseStream` in `src/adapters/openai-responses/passthrough.ts`):
+/// a data payload that is not a JSON object is skipped, never an error, which
+/// is how the reference absorbs the terminal `data: [DONE]` line.
 fn responses_delta(
     data: &str,
     done: &mut bool,
     signalled: &mut bool,
 ) -> Result<Option<String>, ErrorInfo> {
-    let value: Value = serde_json::from_str(data).map_err(|error| {
-        ErrorInfo::new("provider_protocol", format!("invalid SSE payload: {error}"))
-    })?;
+    let value: Value = match serde_json::from_str(data) {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+    if !value.is_object() {
+        return Ok(None);
+    }
     match value.get("type").and_then(Value::as_str) {
         // The only event carrying answer text.
         Some("response.output_text.delta") => {
@@ -748,39 +747,132 @@ fn responses_delta(
             *signalled = true;
             Ok(None)
         }
-        Some("response.failed") => {
-            let message = value
-                .get("response")
-                .and_then(|response| response.get("error"))
-                .and_then(|error| error.get("message"))
-                .and_then(Value::as_str)
-                .unwrap_or("the provider failed the response");
+        Some("response.failed") | Some("error") => {
+            let inner = if value.get("type").and_then(Value::as_str) == Some("response.failed") {
+                value.get("response").unwrap_or(&value).clone()
+            } else {
+                value.clone()
+            };
             *done = true;
-            Err(ErrorInfo::new("provider_stream", message.to_string()))
-        }
-        Some("error") => {
-            let message = value
-                .get("message")
-                .or_else(|| value.get("error").and_then(|error| error.get("message")))
-                .and_then(Value::as_str)
-                .unwrap_or("provider reported an error in the stream");
-            *done = true;
-            Err(ErrorInfo::new("provider_stream", message.to_string()))
+            Err(ErrorInfo::new(
+                "provider_stream",
+                responses_error_message(&inner),
+            ))
         }
         // `response.created`, `response.output_item.*`,
-        // `response.content_part.*`, `response.heartbeat`, reasoning summary
-        // deltas, and unknown types carry no answer text.
+        // `response.content_part.*`, `response.output_text.done`,
+        // `response.subscription_usage`, `response.heartbeat`, reasoning
+        // summary deltas, and unknown types carry no answer text.
         Some(_) => Ok(None),
-        None => Err(ErrorInfo::new(
-            "provider_protocol",
-            "SSE payload has no \"type\" field",
-        )),
+        None => Ok(None),
     }
+}
+
+/// The failure text of a `response.failed`/`error` payload, following the
+/// reference `responsesErrorMessage`: a string `error`, then `error.message`,
+/// then `incomplete_details.reason`, then a fallback.
+fn responses_error_message(payload: &Value) -> String {
+    match payload.get("error") {
+        Some(Value::String(message)) => return message.clone(),
+        Some(error) if error.is_object() => {
+            if let Some(message) = error.get("message").and_then(Value::as_str) {
+                return message.to_string();
+            }
+        }
+        _ => {}
+    }
+    if let Some(reason) = payload
+        .get("incomplete_details")
+        .and_then(|details| details.get("reason"))
+        .and_then(Value::as_str)
+    {
+        return reason.to_string();
+    }
+    "provider reported an error in the stream".to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn responses_delta_reads_deltas_and_ignores_non_json_data_lines() {
+        let mut done = false;
+        let mut signalled = false;
+        assert_eq!(
+            responses_delta(
+                r#"{"type":"response.output_text.delta","delta":"hello"}"#,
+                &mut done,
+                &mut signalled,
+            )
+            .expect("delta")
+            .as_deref(),
+            Some("hello")
+        );
+        assert!(!done && !signalled);
+        // Non-JSON data payloads (the terminal `data: [DONE]`, keepalives) are
+        // skipped, never errors: the reference `JSON.parse` failure continues.
+        assert_eq!(
+            responses_delta("[DONE]", &mut done, &mut signalled).expect("skipped"),
+            None
+        );
+        assert_eq!(
+            responses_delta("", &mut done, &mut signalled).expect("skipped"),
+            None
+        );
+        assert_eq!(
+            responses_delta(
+                r#"{"type":"response.output_item.added","item":{}}"#,
+                &mut done,
+                &mut signalled,
+            )
+            .expect("ignored"),
+            None
+        );
+        // `completed` is the success terminal.
+        responses_delta(
+            r#"{"type":"response.completed"}"#,
+            &mut done,
+            &mut signalled,
+        )
+        .expect("terminal");
+        assert!(done && signalled);
+    }
+
+    #[test]
+    fn responses_failed_and_error_events_fail_the_stream() {
+        let mut done = false;
+        let mut signalled = false;
+        let error = responses_delta(
+            r#"{"type":"response.failed","response":{"error":{"message":"quota"}}}"#,
+            &mut done,
+            &mut signalled,
+        )
+        .expect_err("failed event");
+        assert_eq!(error.code, "provider_stream");
+        assert_eq!(error.message, "quota");
+        assert!(done);
+        // The reference message lookup also accepts a string `error` and
+        // `incomplete_details.reason`.
+        assert_eq!(
+            responses_error_message(&serde_json::json!({"error": "boom"})),
+            "boom"
+        );
+        assert_eq!(
+            responses_error_message(&serde_json::json!({
+                "incomplete_details": {"reason": "max_output_tokens"}
+            })),
+            "max_output_tokens"
+        );
+        let error = responses_delta(
+            r#"{"type":"error","error":"quota exceeded"}"#,
+            &mut done,
+            &mut signalled,
+        )
+        .expect_err("error event");
+        assert_eq!(error.code, "provider_stream");
+        assert_eq!(error.message, "quota exceeded");
+    }
 
     #[test]
     fn anthropic_url_matches_the_official_client_convention() {
