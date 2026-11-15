@@ -44,3 +44,52 @@ jobs:
       - name: Tests (release, real TCP)
         shell: bash
         run: cargo test --workspace --release
+
+  live-api:
+    name: live provider test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    needs: protocol-test
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustc --version
+
+      # The key is only read into an environment variable. It is never written
+      # to a file or to the log, and the test prints generated text lengths only.
+      - name: Check the provider credential
+        id: credential
+        shell: bash
+        env:
+          LOGFARE_API_KEY: ${{ secrets.LOGFARE_API_KEY }}
+        run: |
+          if [ -z "${LOGFARE_API_KEY}" ]; then
+            echo "::warning::LOGFARE_API_KEY is not set, so the live provider check was skipped."
+            echo "LOGFARE_API_KEY is not set, so the live provider check was skipped." >> "$GITHUB_STEP_SUMMARY"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Live Logfare generation and streaming over TCP
+        if: steps.credential.outputs.available == 'true'
+        shell: bash
+        env:
+          LOGFARE_API_KEY: ${{ secrets.LOGFARE_API_KEY }}
+        run: |
+          cargo test --release -p inocode-server --test live_api -- --ignored --nocapture --test-threads=1 | tee live-api.log
+          if grep -q "live logfare/auto:" live-api.log; then
+            grep "live logfare/auto:" live-api.log >> "$GITHUB_STEP_SUMMARY"
+          fi

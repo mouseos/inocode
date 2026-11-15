@@ -7,7 +7,7 @@ edition = "2021"
 inocode = { path = ".." }
 inocode-core = { path = "../core" }
 serde_json = "1"
-tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync"] }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["sync", "time"] }
+tokio = { version = "1", features = ["time"] }

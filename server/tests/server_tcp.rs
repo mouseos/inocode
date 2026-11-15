@@ -1,69 +1,18 @@
-use std::future::Future;
-use std::io;
-use std::net::SocketAddr;
-use std::time::Duration;
+mod support;
 
-use inocode::{FrameHeader, FrameReader, FrameType, FrameWriter};
+use std::sync::Arc;
+
+use inocode::{FrameHeader, FrameType};
+use inocode_core::Core;
 use serde_json::{json, Value};
+use support::*;
 use tokio::io::AsyncWriteExt;
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
-
-type Client = (FrameReader<OwnedReadHalf>, FrameWriter<OwnedWriteHalf>);
-
-const TIMEOUT: Duration = Duration::from_secs(60);
-
-async fn with_timeout<T>(future: impl Future<Output = T>) -> T {
-    tokio::time::timeout(TIMEOUT, future)
-        .await
-        .expect("test timed out")
-}
-
-/// Starts the server on an ephemeral loopback port. The sender in the returned
-/// tuple triggers a clean shutdown when dropped or used.
-async fn start_server() -> (SocketAddr, oneshot::Sender<()>, JoinHandle<io::Result<()>>) {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind loopback listener");
-    let addr = listener.local_addr().expect("listener address");
-    let (stop, stopped) = oneshot::channel();
-    let handle = tokio::spawn(async move {
-        inocode_server::run(listener, async {
-            let _ = stopped.await;
-        })
-        .await
-    });
-    (addr, stop, handle)
-}
-
-async fn connect(addr: SocketAddr) -> Client {
-    let stream = TcpStream::connect(addr).await.expect("connect to server");
-    stream.set_nodelay(true).expect("set nodelay");
-    let (read_half, write_half) = stream.into_split();
-    (FrameReader::new(read_half), FrameWriter::new(write_half))
-}
-
-async fn call(client: &mut Client, stream_id: u64, request: Value) -> Value {
-    client
-        .1
-        .write_json(stream_id, &request)
-        .await
-        .expect("send request");
-    let (response_stream, response): (u64, Value) =
-        client.0.read_json().await.expect("read response");
-    assert_eq!(
-        response_stream, stream_id,
-        "response must arrive on the request stream"
-    );
-    response
-}
+use tokio::net::TcpStream;
 
 #[tokio::test]
 async fn server_accepts_a_connection_and_returns_the_core_result() {
     with_timeout(async {
-        let (addr, _stop, _handle) = start_server().await;
+        let (addr, _stop, _handle) = start_server(Arc::new(Core::without_llm())).await;
         let mut client = connect(addr).await;
         let response = call(
             &mut client,
@@ -79,7 +28,7 @@ async fn server_accepts_a_connection_and_returns_the_core_result() {
 #[tokio::test]
 async fn echo_request_reaches_the_core() {
     with_timeout(async {
-        let (addr, _stop, _handle) = start_server().await;
+        let (addr, _stop, _handle) = start_server(Arc::new(Core::without_llm())).await;
         let mut client = connect(addr).await;
         let params = json!({"text": "日本語の双方向通信テスト", "binary": [0, 255, 10]});
         let response = call(
@@ -97,7 +46,7 @@ async fn echo_request_reaches_the_core() {
 #[tokio::test]
 async fn response_id_matches_the_request_id() {
     with_timeout(async {
-        let (addr, _stop, _handle) = start_server().await;
+        let (addr, _stop, _handle) = start_server(Arc::new(Core::without_llm())).await;
         let mut client = connect(addr).await;
         for id in [0, 1, 42, u32::MAX as u64, u64::MAX] {
             let response = call(
@@ -116,7 +65,7 @@ async fn response_id_matches_the_request_id() {
 #[tokio::test]
 async fn sequential_requests_on_one_connection_stay_in_order() {
     with_timeout(async {
-        let (addr, _stop, _handle) = start_server().await;
+        let (addr, _stop, _handle) = start_server(Arc::new(Core::without_llm())).await;
         let mut client = connect(addr).await;
         for round in 0..100u64 {
             let response = call(
@@ -139,7 +88,7 @@ async fn sequential_requests_on_one_connection_stay_in_order() {
 #[tokio::test]
 async fn concurrent_clients_are_served_at_the_same_time() {
     with_timeout(async {
-        let (addr, _stop, _handle) = start_server().await;
+        let (addr, _stop, _handle) = start_server(Arc::new(Core::without_llm())).await;
         let mut clients = Vec::new();
         for index in 0..8u64 {
             clients.push(tokio::spawn(async move {
@@ -168,7 +117,7 @@ async fn concurrent_clients_are_served_at_the_same_time() {
 #[tokio::test]
 async fn responses_are_not_mixed_between_clients() {
     with_timeout(async {
-        let (addr, _stop, _handle) = start_server().await;
+        let (addr, _stop, _handle) = start_server(Arc::new(Core::without_llm())).await;
         let mut clients = Vec::new();
         for index in 0..3u64 {
             clients.push(tokio::spawn(async move {
@@ -198,10 +147,8 @@ async fn responses_are_not_mixed_between_clients() {
 #[tokio::test]
 async fn invalid_json_and_invalid_requests_are_rejected() {
     with_timeout(async {
-        let (addr, _stop, _handle) = start_server().await;
-        let stream = TcpStream::connect(addr).await.expect("connect to server");
-        let (read_half, mut write_half) = stream.into_split();
-        let mut reader = FrameReader::new(read_half);
+        let (addr, _stop, _handle) = start_server(Arc::new(Core::without_llm())).await;
+        let (mut reader, mut write_half) = connect_raw(addr).await;
 
         let malformed = b"{ this is not json";
         let header = FrameHeader::new(FrameType::Json, 1, malformed.len())
@@ -219,7 +166,7 @@ async fn invalid_json_and_invalid_requests_are_rejected() {
         assert_eq!(response["error"]["code"], "invalid_json");
         assert!(response["id"].is_null());
 
-        let mut writer = FrameWriter::new(write_half);
+        let mut writer = inocode::FrameWriter::new(write_half);
         writer
             .write_json(2, &json!({"id": 9}))
             .await
@@ -238,7 +185,7 @@ async fn invalid_json_and_invalid_requests_are_rejected() {
 #[tokio::test]
 async fn unknown_method_and_missing_params_are_rejected() {
     with_timeout(async {
-        let (addr, _stop, _handle) = start_server().await;
+        let (addr, _stop, _handle) = start_server(Arc::new(Core::without_llm())).await;
         let mut client = connect(addr).await;
 
         let unknown = call(&mut client, 1, json!({"id": 1, "method": "run_shell"})).await;
@@ -257,7 +204,7 @@ async fn unknown_method_and_missing_params_are_rejected() {
 #[tokio::test]
 async fn binary_frames_are_rejected_as_requests() {
     with_timeout(async {
-        let (addr, _stop, _handle) = start_server().await;
+        let (addr, _stop, _handle) = start_server(Arc::new(Core::without_llm())).await;
         let mut client = connect(addr).await;
         client
             .1
@@ -278,7 +225,7 @@ async fn binary_frames_are_rejected_as_requests() {
 #[tokio::test]
 async fn a_client_disconnect_does_not_stop_the_server() {
     with_timeout(async {
-        let (addr, _stop, _handle) = start_server().await;
+        let (addr, _stop, _handle) = start_server(Arc::new(Core::without_llm())).await;
 
         let stream = TcpStream::connect(addr).await.expect("connect to server");
         let (_read_half, mut write_half) = stream.into_split();
@@ -305,7 +252,7 @@ async fn a_client_disconnect_does_not_stop_the_server() {
 #[tokio::test]
 async fn shutdown_stops_accepting_new_connections() {
     with_timeout(async {
-        let (addr, stop, handle) = start_server().await;
+        let (addr, stop, handle) = start_server(Arc::new(Core::without_llm())).await;
         let mut client = connect(addr).await;
         let ping = call(&mut client, 1, json!({"id": 1, "method": "ping"})).await;
         assert_eq!(ping["result"]["pong"], true);
