@@ -104,7 +104,7 @@ async fn logfare_generates_and_streams_text_over_tcp() {
 }
 
 #[tokio::test]
-#[ignore = "requires LOGFARE_API_KEY; run by the live-api workflow job"]
+#[ignore = "requires a provider credential; run by the live-api workflow jobs"]
 async fn logfare_messages_api_generates_and_streams_text_over_tcp() {
     with_timeout_of(LIVE_TIMEOUT, async {
         // The provider must be selected through the same environment variable
@@ -119,8 +119,10 @@ async fn logfare_messages_api_generates_and_streams_text_over_tcp() {
         let prompt =
             "Write a story about the ocean in Japanese, at least 300 words, with paragraphs.";
         let (deltas, text, first_delta, completed, kinds) = run_chat(&mut client, 1, prompt).await;
+        let model_name = std::env::var("INOCODE_LLM_MODEL")
+            .unwrap_or_else(|_| inocode_core::DEFAULT_MODEL.to_string());
         println!(
-            "live logfare/auto messages kinds: {}",
+            "live {model_name} messages kinds: {}",
             kinds
                 .iter()
                 .map(|(k, v)| format!("{k}={v}"))
@@ -128,7 +130,7 @@ async fn logfare_messages_api_generates_and_streams_text_over_tcp() {
                 .join(",")
         );
         print_result(
-            "logfare/auto messages",
+            &format!("{model_name} messages"),
             deltas,
             &text,
             first_delta,
@@ -150,22 +152,40 @@ async fn logfare_messages_stream_event_kinds() {
             .unwrap_or_else(|_| inocode_core::DEFAULT_BASE_URL.to_string());
         let model = std::env::var("INOCODE_LLM_MODEL")
             .unwrap_or_else(|_| inocode_core::DEFAULT_MODEL.to_string());
-
+        let client = reqwest::Client::new();
+        // Same URL convention as the implementation: the official Anthropic
+        // client receives a base without /v1 and appends /v1/messages.
+        let messages_url = {
+            let base = base.trim_end_matches('/');
+            let base = base.strip_suffix("/v1").unwrap_or(base);
+            format!("{base}/v1/messages")
+        };
         let prompt =
             "Write a story about the ocean in Japanese, at least 300 words, with paragraphs.";
-        // `thinking: {"type":"disabled"}` is the official parameter for turning
-        // thinking off; whether this provider honors it is what this
-        // diagnostic measures. One request per variant.
-        let variants: &[(&str, Value)] = &[
-            ("default", json!({})),
+
+        // One request per case. `thinking: {"type":"disabled"}` is the official
+        // parameter for turning thinking off; the extra model ids are the free
+        // ids community configurations use for the Anthropic base URL. Whether
+        // the provider honors any of this is what this diagnostic measures.
+        let cases: &[(&str, &str, Value)] = &[
+            ("model=auto/default", &model, json!({})),
             (
-                "thinking-disabled",
+                "model=auto/thinking-disabled",
+                &model,
                 json!({ "thinking": { "type": "disabled" } }),
             ),
+            ("model=qwen-3.8-27b", "qwen-3.8-27b", json!({})),
+            ("model=gemma-4-31b-it", "gemma-4-31b-it", json!({})),
+            ("model=gemma-4-26b", "gemma-4-26b", json!({})),
+            (
+                "model=economy/deepseek-v4.1-flash",
+                "economy/deepseek-v4.1-flash",
+                json!({}),
+            ),
         ];
-        for (label, extra) in variants {
+        for (label, case_model, extra) in cases {
             let mut body = json!({
-                "model": model,
+                "model": case_model,
                 "max_tokens": inocode_core::DEFAULT_MAX_TOKENS,
                 "messages": [{ "role": "user", "content": prompt }],
                 "stream": true,
@@ -175,8 +195,8 @@ async fn logfare_messages_stream_event_kinds() {
                 object.insert(key.clone(), value.clone());
             }
 
-            let mut response = reqwest::Client::new()
-                .post(format!("{}/messages", base.trim_end_matches('/')))
+            let mut response = client
+                .post(&messages_url)
                 .header("x-api-key", &api_key)
                 .header("anthropic-version", "2023-06-01")
                 .header("accept", "text/event-stream")

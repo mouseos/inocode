@@ -103,3 +103,31 @@ jobs:
             echo "::error::No live test produced results, so the live check did not run."
             exit 1
           fi
+
+      # The Messages live check against the official Anthropic API. Per project
+      # decision only Haiku models are used. The credential is passed as
+      # LOGFARE_API_KEY, the one environment variable the server reads.
+      - name: Live official Anthropic Messages generation and streaming over TCP
+        shell: bash
+        env:
+          CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+        run: |
+          if [ -z "${CLAUDE_API_KEY}" ]; then
+            echo "::error::CLAUDE_API_KEY is not set, so the official Anthropic live check did not run."
+            {
+              echo "CLAUDE_API_KEY is not set, so the official Anthropic live check did not run."
+              echo "This job failing means the live check was skipped, not passed."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          LOGFARE_API_KEY="${CLAUDE_API_KEY}" \
+          INOCODE_LLM_BASE_URL="https://api.anthropic.com" \
+          INOCODE_LLM_PROVIDER="anthropic" \
+          INOCODE_LLM_MODEL="claude-haiku-5-5" \
+          cargo test --release -p inocode-server --test live_api logfare_messages_api_generates_and_streams_text_over_tcp -- --ignored --exact --nocapture --test-threads=1 | tee official-api.log
+          if grep -q "live claude-haiku-5-5 messages:" official-api.log; then
+            grep "live claude-haiku-5-5 messages:" official-api.log >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::The official Anthropic live check produced no result line, so it did not run."
+            exit 1
+          fi

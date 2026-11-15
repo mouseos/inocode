@@ -182,6 +182,39 @@ async fn a_base_url_with_a_trailing_slash_does_not_duplicate_v1() {
 }
 
 #[tokio::test]
+async fn a_base_url_without_v1_reaches_v1_messages() {
+    with_timeout(async {
+        let mock = start_mock(echo_handler()).await;
+        // Anthropic clients set the base to the host root; the official
+        // endpoint path /v1/messages is appended by the client.
+        let host_root = mock
+            .base_url
+            .trim_end_matches('/')
+            .trim_end_matches("/v1")
+            .to_string();
+        let (addr, _stop, _handle) = start_server(core_for(
+            &mock,
+            "test-model",
+            ProviderKind::Anthropic,
+            Some(host_root),
+        ))
+        .await;
+        let mut client = connect(addr).await;
+
+        let (_, text, terminal) = collect_chat(
+            &mut client,
+            1,
+            json!({"id": 1, "method": "chat", "params": {"prompt": "root base"}}),
+        )
+        .await;
+        assert_eq!(text, "reply[root base]");
+        assert_eq!(terminal["event"], "completed");
+        assert_eq!(mock.requests()[0].path, "/v1/messages");
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn sse_events_split_at_arbitrary_bytes_are_reassembled() {
     with_timeout(async {
         let mut chunks: Vec<Vec<u8>> = anthropic_stream("分割された応答")

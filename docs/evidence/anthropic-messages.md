@@ -53,6 +53,10 @@
   - 「new event types may be added, and your code should handle unknown event types gracefully」— 未知のイベント型は無視するのが仕様上の要求。
   - 例のストリームは `event:` 行と `data:` 行のペアで構成され、`data` の `type` がイベント名と一致する。
   - **thinking 無効化の実測**（run 43727807091、コミット ea3d236、3 OS 同一結果）: 公式パラメータ `thinking: {"type": "disabled"}` を付けても応答形状は無指定時と完全に同一（`message_start`、`thinking` ブロック、`thinking_delta` × 1、`content_block_stop`、`message_delta`、`message_stop`）。Logfare はこのパラメータを無視する。よって選択肢 ⑤（パラメータ追加）は実測で否定された。
+- **公式 Anthropic API の実測**（`CLAUDE_API_KEY` 使用、Haiku のみ使用、テキストは出力しない）:
+  - 直接プローブ（claude-haiku-5-5、`stream: true`、同じ要求形状）: HTTP 200、`message_start`、`text` ブロック、`ping`、`text_delta` × 25（約 1.2 秒に分散して到着＝本物のストリーミング）、`content_block_stop`、`message_delta`、`message_stop`。公式 API は `text_delta` のストリームを返す。
+  - サーバー経由の実測（`INOCODE_LLM_BASE_URL=https://api.anthropic.com`、`claude-haiku-5-5`、実 TCP・実装そのもの）: `deltas=80 chars=372 first_delta=4675ms total=6441ms` で成功。実装は公式 API と正しく動作する。
+  - **URL 規約の修正**（公式仕様・SDK・Logfare ドキュメントに基づく）: Anthropic クライアントは Base URL に `/v1` を含めず `/v1/messages` を付けて呼ぶ（公式ドキュメントの curl 例、SDK の既定 `base_url=https://api.anthropic.com`、Logfare ドキュメント「Anthropic SDK の Base URL は `/v1` なし」）。実装は `base_url` の末尾 `/v1` を除去してから `/v1/messages` を付けるため、`https://api.anthropic.com` と `https://logfare.ai/v1`（既定）のどちらでも同じエンドポイントに届く。これを Url 構築の単体テストと模擬統合テスト（`/v1` なし Base）で検証した。
 - **実 API 観測**（GitHub Actions、`LOGFARE_API_KEY` 使用、テキストは出力しない）:
   - run 43725234427（コミット 8ee9b80）: 3 OS とも `/v1/messages`（`stream: true`）は本文全体を 1 つの delta で返し `completed` に至った（first_delta と total がほぼ同一）。OpenAI 経路は同一プロンプトで 4〜5 delta。
   - run 43726199798（コミット 872b7af）: 3 OS とも `/v1/messages` は 300 語以上の生成を依頼しても text delta 0 件で `completed` に至った。OpenAI 経路は同一環境で 4〜9 delta。

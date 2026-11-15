@@ -137,6 +137,17 @@ impl Llm {
         format!("{}/{}", self.config.base_url.trim_end_matches('/'), path)
     }
 
+    /// Anthropic clients conventionally receive the base URL without `/v1`
+    /// (the official SDK and `ANTHROPIC_BASE_URL` users set the host root, and
+    /// the API path is `/v1/messages`). A base that ends in `/v1` — such as the
+    /// OpenAI-style default `https://logfare.ai/v1` — is trimmed first so both
+    /// forms reach the same endpoint.
+    fn anthropic_url(&self) -> String {
+        let base = self.config.base_url.trim_end_matches('/');
+        let base = base.strip_suffix("/v1").unwrap_or(base);
+        format!("{base}/v1/messages")
+    }
+
     async fn openai_chat(&self, prompt: &str) -> Result<ChatStream, ErrorInfo> {
         let body = json!({
             "model": self.config.model,
@@ -173,7 +184,7 @@ impl Llm {
         });
         let response = self
             .client
-            .post(self.url("messages"))
+            .post(self.anthropic_url())
             .header("x-api-key", &self.config.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header("accept", "text/event-stream")
@@ -452,6 +463,34 @@ fn anthropic_event(data: &str) -> Result<AnthropicEvent, ErrorInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn anthropic_url_matches_the_official_client_convention() {
+        let build = |base: &str| {
+            Llm::new(LlmConfig {
+                provider: ProviderKind::Anthropic,
+                base_url: base.to_string(),
+                model: "test-model".to_string(),
+                api_key: "test-key".to_string(),
+            })
+            .expect("build the client")
+        };
+        // The official convention: the base carries no `/v1`; the client appends
+        // `/v1/messages`.
+        assert_eq!(
+            build("https://api.anthropic.com").anthropic_url(),
+            "https://api.anthropic.com/v1/messages"
+        );
+        // An OpenAI-style base that ends in `/v1` reaches the same endpoint.
+        assert_eq!(
+            build("https://logfare.ai/v1").anthropic_url(),
+            "https://logfare.ai/v1/messages"
+        );
+        assert_eq!(
+            build("https://logfare.ai/v1/").anthropic_url(),
+            "https://logfare.ai/v1/messages"
+        );
+    }
 
     #[test]
     fn debug_output_does_not_contain_the_api_key() {
