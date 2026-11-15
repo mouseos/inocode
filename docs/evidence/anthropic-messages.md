@@ -52,6 +52,7 @@
   - `error` イベント（例: 非ストリーミング時の HTTP 529 に対応する `overloaded_error`）: `{"type":"error","error":{"type":...,"message":...}}`。**ストリーム内エラーは正常終了ではない**。
   - 「new event types may be added, and your code should handle unknown event types gracefully」— 未知のイベント型は無視するのが仕様上の要求。
   - 例のストリームは `event:` 行と `data:` 行のペアで構成され、`data` の `type` がイベント名と一致する。
+  - **thinking 無効化の実測**（run 43727807091、コミット ea3d236、3 OS 同一結果）: 公式パラメータ `thinking: {"type": "disabled"}` を付けても応答形状は無指定時と完全に同一（`message_start`、`thinking` ブロック、`thinking_delta` × 1、`content_block_stop`、`message_delta`、`message_stop`）。Logfare はこのパラメータを無視する。よって選択肢 ⑤（パラメータ追加）は実測で否定された。
 - **実 API 観測**（GitHub Actions、`LOGFARE_API_KEY` 使用、テキストは出力しない）:
   - run 43725234427（コミット 8ee9b80）: 3 OS とも `/v1/messages`（`stream: true`）は本文全体を 1 つの delta で返し `completed` に至った（first_delta と total がほぼ同一）。OpenAI 経路は同一プロンプトで 4〜5 delta。
   - run 43726199798（コミット 872b7af）: 3 OS とも `/v1/messages` は 300 語以上の生成を依頼しても text delta 0 件で `completed` に至った。OpenAI 経路は同一環境で 4〜9 delta。
@@ -70,7 +71,9 @@
 
 ## 未決事項（ユーザー判断待ち）
 
-- Logfare `/v1/messages` の `logfare/auto` は本文相当を `thinking_delta` 1 件として届ける（上記の実測）。Anthropic 公式仕様では `thinking_delta` は推論テキストであり回答本文ではないため、現実装（`text_delta` のみ連結）は仕様どおりで、このストリームでは回答テキストが 0 件になる。`thinking_delta` を回答として連結するのは仕様に反する推測実装であるため、**実装せずユーザー承認待ち（UNSUPPORTED_PENDING）**。選択肢: ①仕様どおりのまま（このプロバイダー設定では回答が空になる）、② `thinking_delta` も回答に連結する（仕様外の拡張で、ユーザー承認が必要）、③ Anthropic 経路では `logfare/auto` 以外のモデルを使う、④ Anthropic 経路では非ストリーミング要求にする。決定まで現実装を変更しない。
+- Logfare `/v1/messages` の `logfare/auto` は本文相当を `thinking_delta` 1 件として届ける（上記の実測）。Anthropic 公式仕様では `thinking_delta` は推論テキストであり回答本文ではないため、現実装（`text_delta` のみ連結）は仕様どおりで、このストリームでは回答テキストが 0 件になる。実装を変えないでよい根拠が 2 つある: Anthropic 仕様（`text_delta` のみが本文）、および公式 SDK の挙動（`thinking_delta` を回答に連結しない、LiteLLM #32357 で裏付け）。
+- 判明した代替手段はすべて実測または根拠で否定済み: `thinking: {"type": "disabled"}` は無視される（⑤ 否定）。
+- 残る選択肢（いずれもユーザー判断待ち）: ①現状維持（`logfare/auto` では回答が空になる）、③ Anthropic 経路で `logfare/auto` 以外のモデルを使う、④ Anthropic 経路で非ストリーミング要求にする。決定まで現実装を変更しない。
 
 ## 実装・検証の状況
 
