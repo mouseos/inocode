@@ -24,15 +24,23 @@ jobs:
       - name: Install stable Rust
         shell: bash
         run: |
-          rustup toolchain install stable --profile minimal --no-self-update
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy --no-self-update
           rustup default stable
           rustc --version
           cargo --version
 
+      - name: Format check
+        shell: bash
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (release, warnings as errors)
+        shell: bash
+        run: cargo clippy --workspace --all-targets --release -- -D warnings
+
       - name: Build (release)
         shell: bash
-        run: cargo build --release
+        run: cargo build --workspace --release
 
-      - name: TCP integration tests (release)
+      - name: Tests (release, real TCP)
         shell: bash
-        run: cargo test --release --test tcp_protocol
+        run: cargo test --workspace --release

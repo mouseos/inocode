@@ -1,0 +1,13 @@
+[package]
+name = "inocode-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+inocode = { path = ".." }
+inocode-core = { path = "../core" }
+serde_json = "1"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["sync", "time"] }
