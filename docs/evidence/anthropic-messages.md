@@ -36,6 +36,14 @@
   - 認証は Bearer トークン。`x-api-key` ヘッダーも受け付ける（「which is what Anthropic clients send」）。
   - 全エンドポイントは `https://logfare.ai/v1` の下にある。
   - **ストリーミングの記載は `/v1/chat/completions`（OpenAI 形式）のみ**（2026-11-15 再取得で全文確認）。「Chat completions (streaming supported)」「Set `"stream": true` to stream over SSE」は OpenAI 形式の節だけにあり、`/v1/messages` の節には `stream` パラメータの記載もストリーミングへの言及もない（curl 例も `stream` なし）。
+- **Anthropic 公式 Thinking ドキュメント**（https://platform.claude.com/docs/en/build-with-claude/thinking、troubleshooting 同、2026-11-15 取得）:
+  - Messages API では thinking は**既定で有効**。「`thinking: {"type": "disabled"}` turns it off on models that accept that value」— 無効化する公式パラメータが存在する。
+  - thinking テキストを応答から外したい場合は `display: "omitted"` を使う（thinking ブロックは空で返る）。
+- **LiteLLM issue #32357**（https://github.com/BerriAI/litellm/issues/32357、2026-07-07）:
+  - OpenAI 互換の推論モデル（`reasoning_content`）を Anthropic `/v1/messages` に写す実装で、`thinking_delta` が本文ブロックに流れ込むと**公式 Anthropic SDK はそれを黙って捨て、Claude Code は「応答なし」としてターンを中断する**という既知の相互運用性問題。公式 SDK の挙動としても `thinking_delta` は回答本文に連結されない。
+  - よって「`thinking_delta` を回答に連結する」対応（前節の選択肢 ②）は、Anthropic 仕様・公式 SDK のどちらの根拠とも矛盾する。採らない。
+- **実装判断の更新（仕様に基づく。研究ではない）**:
+  - 新たな候補（⑤）: Anthropic 要求に公式パラメータ `thinking: {"type": "disabled"}` を加え、推論なしの `text` ブロック（`text_delta`）を得る。Logfare がこのパラメータを尊重するかは未確認で、診断テストで実測してから判断する。
 - **Anthropic 公式ストリーミング仕様**（https://platform.claude.com/docs/en/build-with-claude/streaming、2026-11-15 取得）:
   - 正常終了までのイベント列: `message_start` → `content_block_start` → （任意回の `ping` と `content_block_delta`）→ `content_block_stop` → 1 回以上の `message_delta` → 最後の `message_stop`。
   - `content_block_delta` の `delta.type` は `text_delta`（テキスト）、`input_json_delta`（ツール入力の部分 JSON）などがある。テキストとして連結するのは `text_delta` のみ。

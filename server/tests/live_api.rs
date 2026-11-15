@@ -151,103 +151,123 @@ async fn logfare_messages_stream_event_kinds() {
         let model = std::env::var("INOCODE_LLM_MODEL")
             .unwrap_or_else(|_| inocode_core::DEFAULT_MODEL.to_string());
 
-        let mut response = reqwest::Client::new()
-            .post(format!("{}/messages", base.trim_end_matches('/')))
-            .header("x-api-key", api_key)
-            .header("anthropic-version", "2023-06-01")
-            .header("accept", "text/event-stream")
-            .json(&json!({
+        let prompt =
+            "Write a story about the ocean in Japanese, at least 300 words, with paragraphs.";
+        // `thinking: {"type":"disabled"}` is the official parameter for turning
+        // thinking off; whether this provider honors it is what this
+        // diagnostic measures. One request per variant.
+        let variants: &[(&str, Value)] = &[
+            ("default", json!({})),
+            (
+                "thinking-disabled",
+                json!({ "thinking": { "type": "disabled" } }),
+            ),
+        ];
+        for (label, extra) in variants {
+            let mut body = json!({
                 "model": model,
                 "max_tokens": inocode_core::DEFAULT_MAX_TOKENS,
-                "messages": [{
-                    "role": "user",
-                    "content": "Write a story about the ocean in Japanese, at least 300 words, with paragraphs."
-                }],
+                "messages": [{ "role": "user", "content": prompt }],
                 "stream": true,
-            }))
-            .send()
-            .await
-            .expect("send request");
-        println!(
-            "live messages diagnostic: status={} content_type={:?}",
-            response.status(),
-            response
-                .headers()
-                .get("content-type")
-                .and_then(|value| value.to_str().ok())
-        );
+            });
+            let object = body.as_object_mut().expect("body is an object");
+            for (key, value) in extra.as_object().expect("variant is an object") {
+                object.insert(key.clone(), value.clone());
+            }
 
-        let mut event_types: BTreeMap<String, usize> = BTreeMap::new();
-        let mut delta_types: BTreeMap<String, usize> = BTreeMap::new();
-        let mut block_types: BTreeMap<String, usize> = BTreeMap::new();
-        let mut data = String::new();
-        let mut dispatch = |payload: &str| {
-            let value: Value = match serde_json::from_str(payload) {
-                Ok(value) => value,
-                Err(_) => {
-                    *event_types.entry("<invalid json>".to_string()).or_default() += 1;
-                    return;
+            let mut response = reqwest::Client::new()
+                .post(format!("{}/messages", base.trim_end_matches('/')))
+                .header("x-api-key", &api_key)
+                .header("anthropic-version", "2023-06-01")
+                .header("accept", "text/event-stream")
+                .json(&body)
+                .send()
+                .await
+                .expect("send request");
+            println!(
+                "live messages diagnostic [{label}]: status={} content_type={:?}",
+                response.status(),
+                response
+                    .headers()
+                    .get("content-type")
+                    .and_then(|value| value.to_str().ok())
+            );
+            if !response.status().is_success() {
+                continue;
+            }
+
+            let mut event_types: BTreeMap<String, usize> = BTreeMap::new();
+            let mut delta_types: BTreeMap<String, usize> = BTreeMap::new();
+            let mut block_types: BTreeMap<String, usize> = BTreeMap::new();
+            let mut data = String::new();
+            let mut dispatch = |payload: &str| {
+                let value: Value = match serde_json::from_str(payload) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        *event_types.entry("<invalid json>".to_string()).or_default() += 1;
+                        return;
+                    }
+                };
+                let kind = value
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("<no type>")
+                    .to_string();
+                *event_types.entry(kind.clone()).or_default() += 1;
+                if kind == "content_block_delta" {
+                    let delta = value
+                        .get("delta")
+                        .and_then(|delta| delta.get("type"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("<no delta type>")
+                        .to_string();
+                    *delta_types.entry(delta).or_default() += 1;
+                }
+                if kind == "content_block_start" {
+                    let block = value
+                        .get("content_block")
+                        .and_then(|block| block.get("type"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("<no block type>")
+                        .to_string();
+                    *block_types.entry(block).or_default() += 1;
                 }
             };
-            let kind = value
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or("<no type>")
-                .to_string();
-            *event_types.entry(kind.clone()).or_default() += 1;
-            if kind == "content_block_delta" {
-                let delta = value
-                    .get("delta")
-                    .and_then(|delta| delta.get("type"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("<no delta type>")
-                    .to_string();
-                *delta_types.entry(delta).or_default() += 1;
-            }
-            if kind == "content_block_start" {
-                let block = value
-                    .get("content_block")
-                    .and_then(|block| block.get("type"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("<no block type>")
-                    .to_string();
-                *block_types.entry(block).or_default() += 1;
-            }
-        };
-        while let Some(chunk) = response.chunk().await.expect("read chunk") {
-            for line in String::from_utf8_lossy(&chunk).split_inclusive('\n') {
-                let line = line.trim_end_matches(['\r', '\n']);
-                if line.is_empty() {
-                    if !data.is_empty() {
-                        dispatch(&data);
-                        data.clear();
+            while let Some(chunk) = response.chunk().await.expect("read chunk") {
+                for line in String::from_utf8_lossy(&chunk).split_inclusive('\n') {
+                    let line = line.trim_end_matches(['\r', '\n']);
+                    if line.is_empty() {
+                        if !data.is_empty() {
+                            dispatch(&data);
+                            data.clear();
+                        }
+                    } else if let Some(rest) = line.strip_prefix("data:") {
+                        if !data.is_empty() {
+                            data.push('\n');
+                        }
+                        data.push_str(rest.trim_start_matches(' '));
                     }
-                } else if let Some(rest) = line.strip_prefix("data:") {
-                    if !data.is_empty() {
-                        data.push('\n');
-                    }
-                    data.push_str(rest.trim_start_matches(' '));
+                    // Lines other than `data:` and blank lines carry no counts.
                 }
-                // Lines other than `data:` and blank lines carry no counts.
             }
-        }
-        if !data.is_empty() {
-            dispatch(&data);
-        }
+            if !data.is_empty() {
+                dispatch(&data);
+            }
 
-        let show = |name: &str, counts: &BTreeMap<String, usize>| {
-            println!(
-                "live messages diagnostic {name}: {}",
-                counts
-                    .iter()
-                    .map(|(k, v)| format!("{k}={v}"))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            );
-        };
-        show("event types", &event_types);
-        show("delta types", &delta_types);
-        show("block types", &block_types);
+            let show = |name: &str, counts: &BTreeMap<String, usize>| {
+                println!(
+                    "live messages diagnostic [{label}] {name}: {}",
+                    counts
+                        .iter()
+                        .map(|(k, v)| format!("{k}={v}"))
+                        .collect::<Vec<_>>()
+                        .join(",")
+                );
+            };
+            show("event types", &event_types);
+            show("delta types", &delta_types);
+            show("block types", &block_types);
+        }
     })
     .await;
 }
