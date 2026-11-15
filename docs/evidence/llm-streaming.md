@@ -85,4 +85,15 @@
 
 ## 追記: 3 OS の CI 結果
 
-（この節は CI 実行後に追記する）
+- 実行: https://github.com/mouseos/inocode/actions/runs/43714283121 （workflow_dispatch、コミット `083286c`）。6 ジョブすべて成功。
+- `protocol test`（ubuntu-latest / windows-latest / macos-latest）: 各 OS で `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --release -- -D warnings`、`cargo build --workspace --release`、`cargo test --workspace --release` が成功。各 OS のテスト内訳はプロトコル単体 14、プロトコル TCP 統合 14、Core 単体 15、Server チャット TCP 統合 13、Server TCP 統合 11（計 67 件成功、失敗 0 件）。実 API テストと計測用テストは `ignored` のまま。
+- `live provider test`（ubuntu-latest / windows-latest / macos-latest）: リポジトリシークレット `LOGFARE_API_KEY` を用いて `server/tests/live_api.rs` を 3 OS で実行し、すべて成功。実 Logfare API（`logfare/auto`）からテキストを受信し、複数デルタが完了前に届いたことを確認した。
+
+  | OS | デルタ数 | 文字数 | 最初のデルタ | 完了まで |
+  | --- | --- | --- | --- | --- |
+  | ubuntu-latest | 16 | 145 | 5868 ms | 6127 ms |
+  | windows-latest | 8 | 86 | 9721 ms | 9856 ms |
+  | macos-latest | 10 | 191 | 3243 ms | 3422 ms |
+
+  最初のデルタが完了より数百 ms 以上早く届いているため、応答を一括で受け取っていない。生成テキスト自体はログに残していない（テストが出力するのはデルタ数・文字数・時刻のみ）。
+- シークレットの扱い: ワークフローはキーを環境変数としてのみ渡す。GitHub Actions のログでは `LOGFARE_API_KEY: ***` とマスクされ、値は表示されないことを確認した。キーはソース、コミット、テストコード、成果物に含まれない。
