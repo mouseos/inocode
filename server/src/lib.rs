@@ -18,7 +18,7 @@ use inocode::{FrameReader, FrameType, FrameWriter};
 use inocode_core::{Core, ErrorInfo, EventPayload, Request, Response, ResponseBody};
 use serde_json::{json, Value};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{mpsc, watch, Mutex};
 
 /// Frames buffered per connection before a slow client blocks its senders.
 const SEND_QUEUE_CAPACITY: usize = 64;
@@ -28,8 +28,20 @@ struct Outgoing {
     payload: Value,
 }
 
+/// Registry entry of one generation on a connection.
+///
+/// `Running` holds the cancel signal. `Settling` marks an entry whose terminal
+/// event has already been chosen, so a cancel request arriving from then on
+/// reports `false` instead of racing with the outcome. Only the generation
+/// task removes its entry, and only after its terminal event has been queued,
+/// so a request id stays in use until its previous request is done.
+enum Generation {
+    Running(watch::Sender<bool>),
+    Settling,
+}
+
 /// Cancel handles of the generations running on one connection.
-type InFlight = Arc<Mutex<HashMap<u64, oneshot::Sender<()>>>>;
+type InFlight = Arc<Mutex<HashMap<u64, Generation>>>;
 
 /// Accepts connections until `shutdown` completes, then returns.
 ///
@@ -44,7 +56,11 @@ where
         tokio::select! {
             accepted = listener.accept() => {
                 let (stream, _) = accepted?;
-                stream.set_nodelay(true)?;
+                // A socket option failure affects only this connection: drop
+                // it and keep serving the others instead of ending the server.
+                if stream.set_nodelay(true).is_err() {
+                    continue;
+                }
                 tokio::spawn(serve_connection(stream, Arc::clone(&core)));
             }
             () = &mut shutdown => return Ok(()),
@@ -81,10 +97,9 @@ async fn serve_connection(stream: TcpStream, core: Arc<Core>) {
             if reader.read_payload_to(&header, &mut discard).await.is_err() {
                 break;
             }
-            let payload = error_value("invalid_request", "Only JSON request frames are accepted");
             let message = Outgoing {
                 stream_id: header.stream_id,
-                payload,
+                payload: error_value("invalid_request", "Only JSON request frames are accepted"),
             };
             if queue.send(message).await.is_err() {
                 break;
@@ -100,11 +115,13 @@ async fn serve_connection(stream: TcpStream, core: Arc<Core>) {
         }
     }
 
-    // Dropping the last queue sender ends the writer; dropping the cancel
-    // handles stops the generations this connection still owns.
+    // The read side is over: signal every generation of this connection and
+    // stop the writer at its next await point. Frames still queued are dropped
+    // with the connection — the client closed it or sent an unreadable frame —
+    // and awaiting a writer stalled on a dead socket would pin this task.
     in_flight.lock().await.clear();
     drop(queue);
-    let _ = writer_task.await;
+    writer_task.abort();
 }
 
 /// Returns `false` when the connection should stop being read.
@@ -167,12 +184,11 @@ async fn start_chat(
     if pending.contains_key(&id) {
         drop(pending);
         let error = ErrorInfo::new("duplicate_id", "request id is already in flight");
-        return send_event(queue, stream_id, EventPayload::failed(id, error))
-            .await
-            .is_ok();
+        let event = EventPayload::failed(id, error);
+        return send_event(queue, stream_id, event).await.is_ok();
     }
-    let (cancel_tx, cancel_rx) = oneshot::channel();
-    pending.insert(id, cancel_tx);
+    let (cancel_tx, cancel_rx) = watch::channel(false);
+    pending.insert(id, Generation::Running(cancel_tx));
     drop(pending);
 
     tokio::spawn(generate(
@@ -194,48 +210,167 @@ async fn generate(
     core: Arc<Core>,
     queue: mpsc::Sender<Outgoing>,
     in_flight: InFlight,
-    mut cancel: oneshot::Receiver<()>,
+    mut cancelled: watch::Receiver<bool>,
 ) {
-    let _ = stream_chat(id, &prompt, stream_id, &core, &queue, &mut cancel).await;
-    in_flight.lock().await.remove(&id);
-}
-
-async fn stream_chat(
-    id: u64,
-    prompt: &str,
-    stream_id: u64,
-    core: &Core,
-    queue: &mpsc::Sender<Outgoing>,
-    cancel: &mut oneshot::Receiver<()>,
-) -> Result<(), ()> {
-    let mut stream = match core.chat(prompt).await {
-        Ok(stream) => stream,
-        Err(error) => {
-            send_event(queue, stream_id, EventPayload::failed(id, error)).await?;
-            return Ok(());
+    // Starting the provider request is cancellable at every await: dropping
+    // the future or the stream below closes the HTTP connection.
+    let mut stream = tokio::select! {
+        started = core.chat(&prompt) => match started {
+            Ok(stream) => stream,
+            Err(error) => {
+                settle(id, stream_id, &queue, &in_flight, cancelled, Terminal::Failed(error)).await;
+                return;
+            }
+        },
+        _ = cancelled.changed() => {
+            settle(id, stream_id, &queue, &in_flight, cancelled, Terminal::Cancelled).await;
+            return;
         }
     };
-    send_event(queue, stream_id, EventPayload::started(id)).await?;
+
+    match deliver(&queue, stream_id, EventPayload::started(id), &mut cancelled).await {
+        Delivery::Sent => {}
+        Delivery::ConnectionGone | Delivery::Cancelled => {
+            // A cancel raced with the start, or the connection is gone: the
+            // generation is dead either way and the registry entry must go.
+            settle(
+                id,
+                stream_id,
+                &queue,
+                &in_flight,
+                cancelled,
+                Terminal::Cancelled,
+            )
+            .await;
+            return;
+        }
+    }
+
     loop {
         tokio::select! {
             next = stream.next() => match next {
                 Ok(Some(text)) => {
-                    send_event(queue, stream_id, EventPayload::delta(id, text)).await?;
+                    match deliver(&queue, stream_id, EventPayload::delta(id, text), &mut cancelled).await {
+                        Delivery::Sent => {}
+                        Delivery::ConnectionGone => {
+                            abandon(&in_flight, id).await;
+                            return;
+                        }
+                        Delivery::Cancelled => {
+                            settle(id, stream_id, &queue, &in_flight, cancelled, Terminal::Cancelled).await;
+                            return;
+                        }
+                    }
                 }
                 Ok(None) => {
-                    send_event(queue, stream_id, EventPayload::completed(id)).await?;
-                    return Ok(());
+                    settle(id, stream_id, &queue, &in_flight, cancelled, Terminal::Completed).await;
+                    return;
                 }
                 Err(error) => {
-                    send_event(queue, stream_id, EventPayload::failed(id, error)).await?;
-                    return Ok(());
+                    settle(id, stream_id, &queue, &in_flight, cancelled, Terminal::Failed(error)).await;
+                    return;
                 }
             },
-            _ = &mut *cancel => {
-                send_event(queue, stream_id, EventPayload::cancelled(id)).await?;
-                return Ok(());
+            _ = cancelled.changed() => {
+                settle(id, stream_id, &queue, &in_flight, cancelled, Terminal::Cancelled).await;
+                return;
             }
         }
+    }
+}
+
+/// The terminal event a generation settles with.
+enum Terminal {
+    Cancelled,
+    Completed,
+    Failed(ErrorInfo),
+}
+
+/// Delivers one event of a running generation, staying responsive to cancel
+/// requests while the bounded queue is full.
+async fn deliver(
+    queue: &mpsc::Sender<Outgoing>,
+    stream_id: u64,
+    event: EventPayload,
+    cancelled: &mut watch::Receiver<bool>,
+) -> Delivery {
+    tokio::select! {
+        sent = send_event(queue, stream_id, event) => {
+            if sent.is_ok() {
+                Delivery::Sent
+            } else {
+                // The writer ended: the connection can receive nothing more.
+                Delivery::ConnectionGone
+            }
+        }
+        _ = cancelled.changed() => Delivery::Cancelled,
+    }
+}
+
+enum Delivery {
+    Sent,
+    ConnectionGone,
+    Cancelled,
+}
+
+/// Chooses and queues the single terminal event of one generation, then frees
+/// its id.
+///
+/// The registry entry is switched to [`Generation::Settling`] before the flag
+/// is read: no further cancel request can be reported `true`, so the flag is
+/// final and `cancelled: true` from a cancel request always means the terminal
+/// event below is `cancelled`.
+async fn settle(
+    id: u64,
+    stream_id: u64,
+    queue: &mpsc::Sender<Outgoing>,
+    in_flight: &InFlight,
+    cancelled: watch::Receiver<bool>,
+    terminal: Terminal,
+) {
+    let marked = mark_settling(in_flight, id).await;
+    let was_cancelled = matches!(terminal, Terminal::Cancelled) || *cancelled.borrow();
+    drop(cancelled);
+    if !marked {
+        // Teardown removed the registry entry: the connection is gone and no
+        // event can be delivered.
+        return;
+    }
+    let event = if was_cancelled {
+        EventPayload::cancelled(id)
+    } else {
+        match terminal {
+            Terminal::Cancelled => EventPayload::cancelled(id),
+            Terminal::Completed => EventPayload::completed(id),
+            Terminal::Failed(error) => EventPayload::failed(id, error),
+        }
+    };
+    // The queue may be full behind a slow reader; waiting here is bounded by
+    // the queue draining or the connection being torn down.
+    let _ = send_event(queue, stream_id, event).await;
+    // The terminal is queued, so the id may be reused. Only this task removes
+    // the entry and the key belonged to it since it started, so this cannot
+    // drop another request's slot.
+    in_flight.lock().await.remove(&id);
+}
+
+/// Removes the registry entry when the connection is gone and no terminal
+/// event can be delivered.
+async fn abandon(in_flight: &InFlight, id: u64) {
+    in_flight.lock().await.remove(&id);
+}
+
+/// Switches the entry of `id` to [`Generation::Settling`].
+///
+/// Returns `false` when the entry is already gone, which only teardown does.
+async fn mark_settling(in_flight: &InFlight, id: u64) -> bool {
+    let mut pending = in_flight.lock().await;
+    match pending.get_mut(&id) {
+        Some(slot @ Generation::Running(_)) => {
+            *slot = Generation::Settling;
+            true
+        }
+        Some(Generation::Settling) | None => false,
     }
 }
 
@@ -247,9 +382,11 @@ async fn cancel(
 ) -> bool {
     let response = match request.cancel_target() {
         Ok(target) => {
-            let cancelled = match in_flight.lock().await.remove(&target) {
-                Some(cancel) => cancel.send(()).is_ok(),
-                None => false,
+            // The entry stays in the registry either way: freeing the id is the
+            // generation task's job, once its terminal event has been queued.
+            let cancelled = match in_flight.lock().await.get(&target) {
+                Some(Generation::Running(cancel_tx)) => cancel_tx.send(true).is_ok(),
+                Some(Generation::Settling) | None => false,
             };
             Response {
                 id: Some(request.id),

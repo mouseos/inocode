@@ -69,22 +69,22 @@ jobs:
 
       # The key is only read into an environment variable. It is never written
       # to a file or to the log, and the test prints generated text lengths only.
+      # A missing key fails the job: an unexecuted live check is not a success.
       - name: Check the provider credential
-        id: credential
         shell: bash
         env:
           LOGFARE_API_KEY: ${{ secrets.LOGFARE_API_KEY }}
         run: |
           if [ -z "${LOGFARE_API_KEY}" ]; then
-            echo "::warning::LOGFARE_API_KEY is not set, so the live provider check was skipped."
-            echo "LOGFARE_API_KEY is not set, so the live provider check was skipped." >> "$GITHUB_STEP_SUMMARY"
-            echo "available=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "::error::LOGFARE_API_KEY is not set, so the live provider test did not run."
+            {
+              echo "LOGFARE_API_KEY is not set, so the live provider check did not run."
+              echo "This job failing means the live check was skipped, not passed."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           fi
 
       - name: Live Logfare generation and streaming over TCP
-        if: steps.credential.outputs.available == 'true'
         shell: bash
         env:
           LOGFARE_API_KEY: ${{ secrets.LOGFARE_API_KEY }}

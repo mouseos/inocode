@@ -5,6 +5,7 @@
 //! Completions API works. Higher-level connection modes (Anthropic Messages,
 //! OAuth) are not implemented in this stage.
 
+use std::fmt;
 use std::time::Duration;
 
 use serde_json::json;
@@ -23,11 +24,24 @@ const BASE_URL_ENV: &str = "INOCODE_LLM_BASE_URL";
 const MODEL_ENV: &str = "INOCODE_LLM_MODEL";
 
 /// Endpoint, model, and credential for one OpenAI-compatible provider.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// The manual `Debug` implementation keeps the API key out of any derived
+/// output, so a mislogged config cannot leak the credential.
+#[derive(Clone, PartialEq, Eq)]
 pub struct LlmConfig {
     pub base_url: String,
     pub model: String,
     pub api_key: String,
+}
+
+impl fmt::Debug for LlmConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LlmConfig")
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("api_key", &"[redacted]")
+            .finish()
+    }
 }
 
 impl LlmConfig {
@@ -184,5 +198,26 @@ impl ChatStream {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_output_does_not_contain_the_api_key() {
+        let config = LlmConfig {
+            base_url: "https://example.test/v1".to_string(),
+            model: "test-model".to_string(),
+            api_key: "super-secret-key-material".to_string(),
+        };
+        let rendered = format!("{config:?}");
+        assert!(!rendered.contains("super-secret-key-material"));
+        assert!(rendered.contains("[redacted]"));
+
+        // Cloning keeps the redaction: the clone must not leak either.
+        let rendered = format!("{:?}", config.clone());
+        assert!(!rendered.contains("super-secret-key-material"));
     }
 }

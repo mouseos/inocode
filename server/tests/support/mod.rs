@@ -91,6 +91,7 @@ pub struct MockReply {
     pub status: u16,
     pub content_type: &'static str,
     pub chunks: Vec<Vec<u8>>,
+    pub head_delay: Duration,
     pub chunk_delay: Duration,
 }
 
@@ -101,6 +102,7 @@ impl MockReply {
             status: 200,
             content_type: "text/event-stream",
             chunks,
+            head_delay: Duration::ZERO,
             chunk_delay: Duration::ZERO,
         }
     }
@@ -110,8 +112,15 @@ impl MockReply {
             status,
             content_type: "application/json",
             chunks: vec![body.as_bytes().to_vec()],
+            head_delay: Duration::ZERO,
             chunk_delay: Duration::ZERO,
         }
+    }
+
+    /// Delays the response headers, so the request is answered late.
+    pub fn with_head_delay(mut self, delay: Duration) -> Self {
+        self.head_delay = delay;
+        self
     }
 
     pub fn with_delay(mut self, delay: Duration) -> Self {
@@ -207,6 +216,9 @@ where
 }
 
 async fn write_reply(stream: &mut TcpStream, reply: &MockReply) -> io::Result<()> {
+    if !reply.head_delay.is_zero() {
+        tokio::time::sleep(reply.head_delay).await;
+    }
     let head = format!(
         "HTTP/1.1 {} {}\r\ncontent-type: {}\r\nconnection: close\r\n\r\n",
         reply.status,

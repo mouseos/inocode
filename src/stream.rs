@@ -21,6 +21,28 @@ fn map_eof(error: std::io::Error) -> ProtocolError {
     }
 }
 
+/// Serializes into `inner` while refusing to buffer more than a fixed number
+/// of payload bytes.
+struct LimitedWriter<'a> {
+    inner: &'a mut Vec<u8>,
+    remaining: usize,
+}
+
+impl std::io::Write for LimitedWriter<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if buf.len() > self.remaining {
+            return Err(std::io::Error::from(std::io::ErrorKind::WriteZero));
+        }
+        self.inner.extend_from_slice(buf);
+        self.remaining -= buf.len();
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 async fn read_exact_checked<R>(reader: &mut R, buf: &mut [u8]) -> Result<(), ProtocolError>
 where
     R: AsyncRead + Unpin,
@@ -259,13 +281,28 @@ where
     }
 
     /// Sends one JSON control frame.
+    ///
+    /// Serialization is capped at the payload limit through a counting writer,
+    /// so an oversized value is rejected without ever buffering more than the
+    /// configured maximum.
     pub async fn write_json<T>(&mut self, stream_id: u64, value: &T) -> Result<(), ProtocolError>
     where
         T: Serialize,
     {
         self.buf.clear();
         self.buf.resize(HEADER_LEN, 0);
-        serde_json::to_writer(&mut self.buf, value)?;
+        let mut limited = LimitedWriter {
+            inner: &mut self.buf,
+            remaining: self.max_payload_len,
+        };
+        if serde_json::to_writer(&mut limited, value).is_err() {
+            return Err(ProtocolError::PayloadTooLarge {
+                // Serialization stopped at the limit, so only a lower bound is
+                // known.
+                payload_len: self.max_payload_len + 1,
+                max: self.max_payload_len,
+            });
+        }
         let payload_len = self.buf.len() - HEADER_LEN;
         let header = self.prepare(FrameType::Json, stream_id, payload_len)?;
         self.buf[..HEADER_LEN].copy_from_slice(&header);
@@ -410,6 +447,59 @@ mod tests {
             Err(ProtocolError::PayloadTooLarge {
                 payload_len: 9,
                 max: 8
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn rejects_json_payloads_above_the_writer_bound() {
+        let (client, mut server) = duplex(64);
+        let mut writer = FrameWriter::with_max_payload_len(client, 8);
+
+        // A JSON string whose quoted form is exactly 8 payload bytes.
+        writer.write_json(1, &"123456").await.unwrap();
+        let (stream_id, value): (u64, String) =
+            FrameReader::new(&mut server).read_json().await.unwrap();
+        assert_eq!((stream_id, value.as_str()), (1, "123456"));
+
+        // One character more must be rejected without buffering it.
+        assert!(matches!(
+            writer.write_json(2, &"1234567").await,
+            Err(ProtocolError::PayloadTooLarge { max: 8, .. })
+        ));
+        // After the rejection the writer is still usable for small values.
+        writer.write_json(3, &"ok").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn read_json_rejects_frames_of_another_type() {
+        let (client, server) = duplex(64);
+        let mut writer = FrameWriter::new(client);
+        writer.write_binary_chunk(1, b"bytes").await.unwrap();
+        drop(writer);
+        let mut reader = FrameReader::new(server);
+        assert!(matches!(
+            reader.read_json::<serde_json::Value>().await,
+            Err(ProtocolError::UnexpectedFrameType {
+                expected: FrameType::Json,
+                actual: FrameType::Binary,
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn read_binary_rejects_json_frames() {
+        let (client, server) = duplex(64);
+        let mut writer = FrameWriter::new(client);
+        writer.write_json(1, &"control").await.unwrap();
+        drop(writer);
+        let mut reader = FrameReader::new(server);
+        let mut sink = VecWriter::default();
+        assert!(matches!(
+            reader.read_binary_to(1, &mut sink).await,
+            Err(ProtocolError::UnexpectedFrameType {
+                expected: FrameType::Binary,
+                actual: FrameType::Json,
             })
         ));
     }

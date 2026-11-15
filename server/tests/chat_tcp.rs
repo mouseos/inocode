@@ -586,3 +586,463 @@ async fn ping_and_echo_still_work_with_a_provider_configured() {
     })
     .await;
 }
+
+/// Sends a cancel request on `cancel_stream` and waits for the terminal event
+/// of the generation on `chat_stream`.
+async fn cancel_and_read_terminal(
+    client: &mut Client,
+    chat_stream: u64,
+    request_id: u64,
+    cancel_stream: u64,
+) -> (Value, Vec<String>, String) {
+    client
+        .1
+        .write_json(
+            cancel_stream,
+            &json!({"id": 9, "method": "cancel", "params": {"request_id": request_id}}),
+        )
+        .await
+        .expect("send cancel");
+    let mut cancel_response = None;
+    let mut kinds = Vec::new();
+    let mut text = String::new();
+    loop {
+        let (stream, message): (u64, Value) = client.0.read_json().await.expect("read message");
+        match stream {
+            s if s == cancel_stream => {
+                if message.get("result").is_some() {
+                    cancel_response = Some(message);
+                }
+            }
+            s if s == chat_stream => {
+                let kind = message["event"].as_str().unwrap_or_default().to_string();
+                if kind == "delta" {
+                    text.push_str(message["text"].as_str().unwrap_or_default());
+                }
+                kinds.push(kind.clone());
+                if matches!(kind.as_str(), "completed" | "failed" | "cancelled") {
+                    if let Some(response) = cancel_response {
+                        return (response, kinds, text);
+                    }
+                }
+            }
+            other => panic!("unexpected stream {other}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn cancel_works_while_waiting_for_the_response_headers() {
+    with_timeout(async {
+        let mock = start_mock(|_: &MockRequest| {
+            MockReply::stream(vec![sse_delta("late"), sse_done()])
+                .with_head_delay(Duration::from_secs(2))
+        })
+        .await;
+        let (addr, _stop, _handle) = start_server(core_for(&mock, "test-model")).await;
+        let mut client = connect(addr).await;
+
+        client
+            .1
+            .write_json(
+                1,
+                &json!({"id": 1, "method": "chat", "params": {"prompt": "slow"}}),
+            )
+            .await
+            .expect("send chat");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let (response, kinds, text) = cancel_and_read_terminal(&mut client, 1, 1, 2).await;
+
+        assert_eq!(response["result"]["cancelled"], true);
+        assert_eq!(kinds, ["cancelled"], "no other event may appear: {kinds:?}");
+        assert!(text.is_empty());
+
+        // Cancelling must close the provider connection: the mock fails to
+        // write its late response.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while mock.write_errors() == 0 && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            mock.write_errors() > 0,
+            "the abandoned HTTP request must be closed"
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn cancel_works_when_the_provider_never_responds() {
+    with_timeout(async {
+        let mock = start_mock(|request: &MockRequest| {
+            let text = reply_for(request);
+            MockReply::stream(vec![sse_delta(&text), sse_done()]).with_head_delay(
+                if request.body["messages"][0]["content"] == "stuck" {
+                    Duration::from_secs(30)
+                } else {
+                    Duration::ZERO
+                },
+            )
+        })
+        .await;
+        let (addr, _stop, _handle) = start_server(core_for(&mock, "test-model")).await;
+        let mut client = connect(addr).await;
+
+        client
+            .1
+            .write_json(
+                1,
+                &json!({"id": 1, "method": "chat", "params": {"prompt": "stuck"}}),
+            )
+            .await
+            .expect("send chat");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let (response, kinds, text) = cancel_and_read_terminal(&mut client, 1, 1, 2).await;
+
+        assert_eq!(response["result"]["cancelled"], true);
+        assert_eq!(kinds, ["cancelled"]);
+        assert!(text.is_empty());
+
+        // The connection stays usable after the hung request was cancelled.
+        let (kinds, text, terminal) = collect_chat(
+            &mut client,
+            3,
+            json!({"id": 3, "method": "chat", "params": {"prompt": "again"}}),
+        )
+        .await;
+        assert_eq!(kinds, ["started", "delta", "completed"]);
+        assert_eq!(text, "reply[again]");
+        assert_eq!(terminal["event"], "completed");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_cancelled_request_id_stays_taken_until_the_old_generation_settles() {
+    with_timeout(async {
+        let mock = start_mock(|request: &MockRequest| {
+            let text = reply_for(request);
+            MockReply::stream(vec![sse_delta(&text), sse_done()]).with_head_delay(
+                if request.body["messages"][0]["content"] == "first" {
+                    Duration::from_secs(20)
+                } else {
+                    Duration::ZERO
+                },
+            )
+        })
+        .await;
+        let (addr, _stop, _handle) = start_server(core_for(&mock, "test-model")).await;
+        let mut client = connect(addr).await;
+
+        client
+            .1
+            .write_json(
+                1,
+                &json!({"id": 1, "method": "chat", "params": {"prompt": "first"}}),
+            )
+            .await
+            .expect("send chat");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let (response, kinds, _) = cancel_and_read_terminal(&mut client, 1, 1, 2).await;
+        assert_eq!(response["result"]["cancelled"], true);
+        assert_eq!(kinds, ["cancelled"]);
+
+        // Reusing the id right after the cancel answer is either still
+        // rejected while the old generation settles, or starts a clean fresh
+        // generation once the old task is done. Both are allowed; a mixed or
+        // duplicated event stream is not.
+        let immediate = call_on(
+            &mut client,
+            1,
+            json!({"id": 1, "method": "chat", "params": {"prompt": "reuse"}}),
+        )
+        .await;
+        match immediate["event"].as_str() {
+            Some("started") => {
+                // call_on already consumed the started event.
+                let (rest, text, terminal) = await_terminal(&mut client, 1).await;
+                assert_eq!(rest, ["delta", "completed"]);
+                assert_eq!(text, "reply[reuse]");
+                assert_eq!(terminal, json!({"id": 1, "event": "completed"}));
+            }
+            Some("failed") => assert_eq!(immediate["error"]["code"], "duplicate_id"),
+            other => panic!("unexpected response to the reused id: {other:?} {immediate}"),
+        }
+    })
+    .await;
+}
+
+/// Reads the events of an already started generation until its terminal.
+async fn await_terminal(client: &mut Client, stream_id: u64) -> (Vec<String>, String, Value) {
+    let mut kinds = Vec::new();
+    let mut text = String::new();
+    loop {
+        let event = await_stream(client, stream_id).await;
+        let kind = event["event"].as_str().unwrap_or_default().to_string();
+        if kind == "delta" {
+            text.push_str(event["text"].as_str().unwrap_or_default());
+        }
+        kinds.push(kind.clone());
+        if matches!(kind.as_str(), "completed" | "failed" | "cancelled") {
+            return (kinds, text, event);
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_id_is_reusable_after_the_cancelled_terminal_and_the_old_task_leaves_no_trace() {
+    with_timeout(async {
+        let mock = start_mock(|request: &MockRequest| {
+            let text = reply_for(request);
+            MockReply::stream(vec![sse_delta(&text), sse_done()]).with_head_delay(
+                if request.body["messages"][0]["content"] == "first" {
+                    Duration::from_secs(20)
+                } else {
+                    Duration::ZERO
+                },
+            )
+        })
+        .await;
+        let (addr, _stop, _handle) = start_server(core_for(&mock, "test-model")).await;
+        let mut client = connect(addr).await;
+
+        client
+            .1
+            .write_json(
+                1,
+                &json!({"id": 1, "method": "chat", "params": {"prompt": "first"}}),
+            )
+            .await
+            .expect("send chat");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let (response, kinds, _) = cancel_and_read_terminal(&mut client, 1, 1, 2).await;
+        assert_eq!(response["result"]["cancelled"], true);
+        assert_eq!(kinds, ["cancelled"]);
+
+        // Wait until the terminal is queued and the id freed, then reuse it.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let probe = call_on(
+                &mut client,
+                1,
+                json!({"id": 1, "method": "chat", "params": {"prompt": "reuse"}}),
+            )
+            .await;
+            if probe["event"] == "started" {
+                break;
+            }
+            assert_eq!(
+                probe["error"]["code"], "duplicate_id",
+                "unexpected error: {probe}"
+            );
+            assert!(Instant::now() < deadline, "the id was never freed");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        // The reused request must run cleanly: the old task must have removed
+        // its own registry entry and never touch the new one. call_on already
+        // consumed its started event.
+        let (kinds, text, terminal) = await_terminal(&mut client, 1).await;
+        assert_eq!(kinds, ["delta", "completed"]);
+        assert_eq!(text, "reply[reuse]");
+        assert_eq!(terminal, json!({"id": 1, "event": "completed"}));
+
+        // And one more full generation on the same id works as well.
+        let (kinds, text, terminal) = collect_chat(
+            &mut client,
+            4,
+            json!({"id": 1, "method": "chat", "params": {"prompt": "next"}}),
+        )
+        .await;
+        assert_eq!(kinds, ["started", "delta", "completed"]);
+        assert_eq!(text, "reply[next]");
+        assert_eq!(terminal["event"], "completed");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn cancel_works_while_the_send_queue_is_full() {
+    with_timeout(async {
+        const TOTAL: usize = 300;
+        let mock = start_mock(move |_: &MockRequest| {
+            let mut chunks: Vec<Vec<u8>> = (0..TOTAL).map(|_| sse_delta("x")).collect();
+            chunks.push(sse_done());
+            MockReply::stream(chunks).with_delay(Duration::from_millis(30))
+        })
+        .await;
+        let (addr, _stop, _handle) = start_server(core_for(&mock, "test-model")).await;
+        let mut client = connect(addr).await;
+
+        client
+            .1
+            .write_json(
+                1,
+                &json!({"id": 1, "method": "chat", "params": {"prompt": "flood"}}),
+            )
+            .await
+            .expect("send chat");
+        // Let the bounded queue fill while this client refuses to read.
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        client
+            .1
+            .write_json(
+                2,
+                &json!({"id": 2, "method": "cancel", "params": {"request_id": 1}}),
+            )
+            .await
+            .expect("send cancel");
+
+        let mut cancel_response = None;
+        let mut deltas = 0;
+        let mut terminal = None;
+        while cancel_response.is_none() || terminal.is_none() {
+            let (stream, message): (u64, Value) = client.0.read_json().await.expect("read message");
+            match stream {
+                2 => cancel_response = Some(message),
+                1 => match message["event"].as_str().unwrap_or_default() {
+                    "delta" => deltas += 1,
+                    "started" => {}
+                    other => terminal = Some(other.to_string()),
+                },
+                other => panic!("unexpected stream {other}"),
+            }
+        }
+        assert_eq!(
+            cancel_response.expect("cancel response")["result"]["cancelled"],
+            true
+        );
+        assert_eq!(terminal.expect("terminal"), "cancelled");
+        assert!(
+            deltas < TOTAL,
+            "a cancelled generation must not deliver every delta: {deltas}/{TOTAL}"
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn disconnecting_clients_leave_no_generation_behind() {
+    with_timeout(async {
+        let mock = start_mock(|_: &MockRequest| {
+            let mut chunks: Vec<Vec<u8>> = (0..200).map(|_| sse_delta("x")).collect();
+            chunks.push(sse_done());
+            MockReply::stream(chunks).with_delay(Duration::from_millis(40))
+        })
+        .await;
+        let (addr, _stop, _handle) = start_server(core_for(&mock, "test-model")).await;
+
+        for round in 0..4usize {
+            let mut client = connect(addr).await;
+            client
+                .1
+                .write_json(
+                    1,
+                    &json!({"id": round as u64 + 1, "method": "chat", "params": {"prompt": "drop"}}),
+                )
+                .await
+                .expect("send chat");
+            assert_eq!(await_stream(&mut client, 1).await["event"], "started");
+            drop(client);
+
+            // The abandoned generation must end: the provider connection is
+            // closed and the server keeps serving new clients.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while mock.write_errors() <= round && Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            assert!(
+                mock.write_errors() > round,
+                "round {round}: the generation was not abandoned"
+            );
+
+            let mut other = connect(addr).await;
+            let ping = call(&mut other, 9, json!({"id": 9, "method": "ping"})).await;
+            assert_eq!(ping["result"]["pong"], true);
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn many_concurrent_generations_stay_isolated_and_complete() {
+    with_timeout(async {
+        let mock = start_mock(|request: &MockRequest| {
+            let text = reply_for(request);
+            let split = text.len() / 2;
+            MockReply::stream(vec![
+                sse_delta(&text[..split]),
+                sse_delta(&text[split..]),
+                sse_done(),
+            ])
+            .with_delay(Duration::from_millis(5))
+        })
+        .await;
+        let (addr, _stop, _handle) = start_server(core_for(&mock, "test-model")).await;
+        let mut client = connect(addr).await;
+
+        const GENERATIONS: u64 = 30;
+        for id in 1..=GENERATIONS {
+            client
+                .1
+                .write_json(
+                    id,
+                    &json!({"id": id, "method": "chat", "params": {"prompt": format!("gen-{id}")}}),
+                )
+                .await
+                .expect("send chat");
+        }
+
+        let mut texts: std::collections::HashMap<u64, String> = std::collections::HashMap::new();
+        let mut completed = 0;
+        while completed < GENERATIONS {
+            let (stream, event): (u64, Value) = client.0.read_json().await.expect("read event");
+            assert_eq!(
+                event["id"].as_u64(),
+                Some(stream),
+                "event id must match its stream"
+            );
+            match event["event"].as_str().unwrap_or_default() {
+                "started" => {}
+                "delta" => texts
+                    .entry(stream)
+                    .or_default()
+                    .push_str(event["text"].as_str().unwrap_or_default()),
+                "completed" => completed += 1,
+                other => panic!("unexpected event {other}"),
+            }
+        }
+        for id in 1..=GENERATIONS {
+            assert_eq!(
+                texts.get(&id).cloned().unwrap_or_default(),
+                format!("reply[gen-{id}]"),
+                "generation {id} received another answer"
+            );
+        }
+
+        // Duplicates are still rejected while a generation runs.
+        client
+            .1
+            .write_json(
+                1,
+                &json!({"id": 1, "method": "chat", "params": {"prompt": "slow-again"}}),
+            )
+            .await
+            .expect("send chat");
+        let duplicate = call_on(
+            &mut client,
+            99,
+            json!({"id": 1, "method": "chat", "params": {"prompt": "x"}}),
+        )
+        .await;
+        assert_eq!(duplicate["error"]["code"], "duplicate_id");
+        let cleanup = call_on(
+            &mut client,
+            98,
+            json!({"id": 98, "method": "cancel", "params": {"request_id": 1}}),
+        )
+        .await;
+        assert_eq!(cleanup["result"]["cancelled"], true);
+    })
+    .await;
+}

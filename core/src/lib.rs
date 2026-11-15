@@ -14,7 +14,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 /// One request decoded from a JSON frame payload.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Requests are only received, so the type deserializes but does not need to
+/// serialize.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Request {
     /// Correlation id that responses and events must echo.
     pub id: u64,
@@ -54,7 +57,7 @@ impl Request {
 }
 
 /// Response for an immediate request.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Serialize)]
 pub struct Response {
     /// Echoed request id, or `null` when the payload was not a valid request.
     pub id: Option<u64>,
@@ -142,27 +145,35 @@ impl EventPayload {
     }
 }
 
+/// The provider a [`Core`] answers `chat` with.
+enum Provider {
+    /// No provider configured: `chat` reports `provider_unconfigured`.
+    Unconfigured,
+    /// Configuration was attempted and failed; the error is reported as is.
+    Unavailable(ErrorInfo),
+    Ready(Llm),
+}
+
 /// Request processor.
 ///
 /// Holds no per-connection state, so one instance serves every connection. The
 /// immediate methods (`ping`, `echo`) exercise the request path; `chat` streams
 /// a completion from the configured provider.
-#[derive(Default)]
 pub struct Core {
-    llm: Option<Llm>,
-    llm_error: Option<ErrorInfo>,
+    provider: Provider,
 }
 
 impl Core {
     /// Core without a provider: `chat` reports `provider_unconfigured`.
     pub fn without_llm() -> Self {
-        Self::default()
+        Self {
+            provider: Provider::Unconfigured,
+        }
     }
 
     pub fn with_llm(llm: Llm) -> Self {
         Self {
-            llm: Some(llm),
-            llm_error: None,
+            provider: Provider::Ready(llm),
         }
     }
 
@@ -171,8 +182,7 @@ impl Core {
         match Llm::from_env() {
             Ok(llm) => Self::with_llm(llm),
             Err(error) => Self {
-                llm: None,
-                llm_error: Some(error),
+                provider: Provider::Unavailable(error),
             },
         }
     }
@@ -199,11 +209,13 @@ impl Core {
 
     /// Starts a streaming completion for `prompt`.
     pub async fn chat(&self, prompt: &str) -> Result<ChatStream, ErrorInfo> {
-        match &self.llm {
-            Some(llm) => llm.chat(prompt).await,
-            None => Err(self.llm_error.clone().unwrap_or_else(|| {
-                ErrorInfo::new("provider_unconfigured", "no LLM provider is configured")
-            })),
+        match &self.provider {
+            Provider::Ready(llm) => llm.chat(prompt).await,
+            Provider::Unavailable(error) => Err(error.clone()),
+            Provider::Unconfigured => Err(ErrorInfo::new(
+                "provider_unconfigured",
+                "no LLM provider is configured",
+            )),
         }
     }
 }
@@ -222,7 +234,7 @@ mod tests {
 
     #[test]
     fn ping_answers_with_pong_and_echoes_the_id() {
-        let response = Core::default().handle(request(7, "ping", None));
+        let response = Core::without_llm().handle(request(7, "ping", None));
         assert_eq!(response.id, Some(7));
         assert!(matches!(
             response.body,
@@ -233,7 +245,7 @@ mod tests {
     #[test]
     fn echo_returns_the_sent_value() {
         let params = json!({ "text": "日本語", "numbers": [1, 2, 3] });
-        let response = Core::default().handle(request(1, "echo", Some(params.clone())));
+        let response = Core::without_llm().handle(request(1, "echo", Some(params.clone())));
         assert!(matches!(
             response.body,
             ResponseBody::Result { result } if result == params
@@ -242,7 +254,7 @@ mod tests {
 
     #[test]
     fn echo_without_params_is_an_error() {
-        let response = Core::default().handle(request(3, "echo", None));
+        let response = Core::without_llm().handle(request(3, "echo", None));
         assert_eq!(response.id, Some(3));
         assert!(matches!(
             response.body,
@@ -252,7 +264,7 @@ mod tests {
 
     #[test]
     fn unknown_method_is_rejected() {
-        let response = Core::default().handle(request(9, "delete_everything", None));
+        let response = Core::without_llm().handle(request(9, "delete_everything", None));
         assert_eq!(response.id, Some(9));
         assert!(matches!(
             response.body,
