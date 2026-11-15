@@ -429,6 +429,7 @@ version = "0.1.0"
 dependencies = [
  "inocode",
  "inocode-core",
+ "reqwest",
  "serde_json",
  "tokio",
 ]

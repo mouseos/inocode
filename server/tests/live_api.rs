@@ -137,3 +137,117 @@ async fn logfare_messages_api_generates_and_streams_text_over_tcp() {
     })
     .await;
 }
+
+/// Diagnostic for the Messages path: reads the provider's SSE stream directly
+/// and prints which event types and delta types arrive. Generated text is never
+/// printed.
+#[tokio::test]
+#[ignore = "requires LOGFARE_API_KEY; run by the live-api workflow job"]
+async fn logfare_messages_stream_event_kinds() {
+    with_timeout_of(LIVE_TIMEOUT, async {
+        let api_key = std::env::var("LOGFARE_API_KEY").expect("LOGFARE_API_KEY");
+        let base = std::env::var("INOCODE_LLM_BASE_URL")
+            .unwrap_or_else(|_| inocode_core::DEFAULT_BASE_URL.to_string());
+        let model = std::env::var("INOCODE_LLM_MODEL")
+            .unwrap_or_else(|_| inocode_core::DEFAULT_MODEL.to_string());
+
+        let mut response = reqwest::Client::new()
+            .post(format!("{}/messages", base.trim_end_matches('/')))
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("accept", "text/event-stream")
+            .json(&json!({
+                "model": model,
+                "max_tokens": inocode_core::DEFAULT_MAX_TOKENS,
+                "messages": [{
+                    "role": "user",
+                    "content": "Write a story about the ocean in Japanese, at least 300 words, with paragraphs."
+                }],
+                "stream": true,
+            }))
+            .send()
+            .await
+            .expect("send request");
+        println!(
+            "live messages diagnostic: status={} content_type={:?}",
+            response.status(),
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok())
+        );
+
+        let mut event_types: BTreeMap<String, usize> = BTreeMap::new();
+        let mut delta_types: BTreeMap<String, usize> = BTreeMap::new();
+        let mut block_types: BTreeMap<String, usize> = BTreeMap::new();
+        let mut data = String::new();
+        let mut dispatch = |payload: &str| {
+            let value: Value = match serde_json::from_str(payload) {
+                Ok(value) => value,
+                Err(_) => {
+                    *event_types.entry("<invalid json>".to_string()).or_default() += 1;
+                    return;
+                }
+            };
+            let kind = value
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("<no type>")
+                .to_string();
+            *event_types.entry(kind.clone()).or_default() += 1;
+            if kind == "content_block_delta" {
+                let delta = value
+                    .get("delta")
+                    .and_then(|delta| delta.get("type"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("<no delta type>")
+                    .to_string();
+                *delta_types.entry(delta).or_default() += 1;
+            }
+            if kind == "content_block_start" {
+                let block = value
+                    .get("content_block")
+                    .and_then(|block| block.get("type"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("<no block type>")
+                    .to_string();
+                *block_types.entry(block).or_default() += 1;
+            }
+        };
+        while let Some(chunk) = response.chunk().await.expect("read chunk") {
+            for line in String::from_utf8_lossy(&chunk).split_inclusive('\n') {
+                let line = line.trim_end_matches(['\r', '\n']);
+                if line.is_empty() {
+                    if !data.is_empty() {
+                        dispatch(&data);
+                        data.clear();
+                    }
+                } else if let Some(rest) = line.strip_prefix("data:") {
+                    if !data.is_empty() {
+                        data.push('\n');
+                    }
+                    data.push_str(rest.trim_start_matches(' '));
+                }
+                // Lines other than `data:` and blank lines carry no counts.
+            }
+        }
+        if !data.is_empty() {
+            dispatch(&data);
+        }
+
+        let show = |name: &str, counts: &BTreeMap<String, usize>| {
+            println!(
+                "live messages diagnostic {name}: {}",
+                counts
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+        };
+        show("event types", &event_types);
+        show("delta types", &delta_types);
+        show("block types", &block_types);
+    })
+    .await;
+}
