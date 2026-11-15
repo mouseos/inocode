@@ -164,23 +164,15 @@ async fn logfare_messages_stream_event_kinds() {
             "Write a story about the ocean in Japanese, at least 300 words, with paragraphs.";
 
         // One request per case. `thinking: {"type":"disabled"}` is the official
-        // parameter for turning thinking off; the extra model ids are the free
-        // ids community configurations use for the Anthropic base URL. Whether
-        // the provider honors any of this is what this diagnostic measures.
+        // parameter for turning thinking off; whether this provider honors it
+        // is what this diagnostic measures. Only the configured model is
+        // probed: the CI free tier answers extra model probes with 429.
         let cases: &[(&str, &str, Value)] = &[
             ("model=auto/default", &model, json!({})),
             (
                 "model=auto/thinking-disabled",
                 &model,
                 json!({ "thinking": { "type": "disabled" } }),
-            ),
-            ("model=qwen-3.8-27b", "qwen-3.8-27b", json!({})),
-            ("model=gemma-4-31b-it", "gemma-4-31b-it", json!({})),
-            ("model=gemma-4-26b", "gemma-4-26b", json!({})),
-            (
-                "model=economy/deepseek-v4.1-flash",
-                "economy/deepseek-v4.1-flash",
-                json!({}),
             ),
         ];
         for (label, case_model, extra) in cases {

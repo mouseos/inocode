@@ -106,8 +106,10 @@ jobs:
 
       # The Messages live check against the official Anthropic API. Per project
       # decision only Haiku models are used. The credential is passed as
-      # LOGFARE_API_KEY, the one environment variable the server reads.
+      # LOGFARE_API_KEY, the one environment variable the server reads. It runs
+      # even when the Logfare step failed, so its result is always observable.
       - name: Live official Anthropic Messages generation and streaming over TCP
+        if: always()
         shell: bash
         env:
           CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}

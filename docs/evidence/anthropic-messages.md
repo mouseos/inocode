@@ -53,6 +53,8 @@
   - 「new event types may be added, and your code should handle unknown event types gracefully」— 未知のイベント型は無視するのが仕様上の要求。
   - 例のストリームは `event:` 行と `data:` 行のペアで構成され、`data` の `type` がイベント名と一致する。
   - **thinking 無効化の実測**（run 43727807091、コミット ea3d236、3 OS 同一結果）: 公式パラメータ `thinking: {"type": "disabled"}` を付けても応答形状は無指定時と完全に同一（`message_start`、`thinking` ブロック、`thinking_delta` × 1、`content_block_stop`、`message_delta`、`message_stop`）。Logfare はこのパラメータを無視する。よって選択肢 ⑤（パラメータ追加）は実測で否定された。
+  - **代替モデルの部分実測**（run 43729462248 の診断、macOS）: `gemma-4-31b-it` は `text` ブロックを返したが `text_delta` は 1 件のみ（本文全体が 1 イベント）。`qwen-3.8-27b`・`gemma-4-26b` は thinking のみ。追加のモデルプローブはフリーティアのレート制限（HTTP 429）に当たるため診断からは外した（以後は自動実行しない）。
+  - **ワークフローの構造修正**: 実測ステップは前段の Logfare ステップが失敗するとスキップされるため、公式 API 実測ステップに `if: always()` を付けて常に実行するようにした（run 43729462248 ではスキップされ結果が観測不能だった）。
 - **公式 Anthropic API の実測**（`CLAUDE_API_KEY` 使用、Haiku のみ使用、テキストは出力しない）:
   - 直接プローブ（claude-haiku-5-5、`stream: true`、同じ要求形状）: HTTP 200、`message_start`、`text` ブロック、`ping`、`text_delta` × 25（約 1.2 秒に分散して到着＝本物のストリーミング）、`content_block_stop`、`message_delta`、`message_stop`。公式 API は `text_delta` のストリームを返す。
   - サーバー経由の実測（`INOCODE_LLM_BASE_URL=https://api.anthropic.com`、`claude-haiku-5-5`、実 TCP・実装そのもの）: `deltas=80 chars=372 first_delta=4675ms total=6441ms` で成功。実装は公式 API と正しく動作する。
