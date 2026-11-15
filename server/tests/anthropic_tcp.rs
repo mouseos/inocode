@@ -145,7 +145,7 @@ async fn chat_request_reaches_the_messages_endpoint_with_anthropic_headers() {
             Some("application/json")
         );
         assert_eq!(request.body["model"], "test-model");
-        assert_eq!(request.body["max_tokens"], 1024);
+        assert_eq!(request.body["max_tokens"], 8192);
         assert_eq!(request.body["stream"], true);
         assert_eq!(request.body["messages"][0]["role"], "user");
         assert_eq!(request.body["messages"][0]["content"], prompt);

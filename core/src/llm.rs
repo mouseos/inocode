@@ -19,9 +19,12 @@ pub const DEFAULT_BASE_URL: &str = "https://logfare.ai/v1";
 /// Default model used when `INOCODE_LLM_MODEL` is not set.
 pub const DEFAULT_MODEL: &str = "logfare/auto";
 
-/// `max_tokens` for Anthropic-style requests, which require it. The value is
-/// the one used by the provider's documented samples.
-pub const DEFAULT_MAX_TOKENS: u32 = 1024;
+/// `max_tokens` for Anthropic-style requests, which require it. Reasoning
+/// tokens share this budget, so it must leave room for the visible answer:
+/// with the sample-derived 1024 the routed reasoning models of `logfare/auto`
+/// exhausted the budget with thinking alone (`stop_reason=max_tokens`, no
+/// answer text; see docs/evidence/anthropic-messages.md).
+pub const DEFAULT_MAX_TOKENS: u32 = 8192;
 
 const API_KEY_ENV: &str = "LOGFARE_API_KEY";
 const BASE_URL_ENV: &str = "INOCODE_LLM_BASE_URL";

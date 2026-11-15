@@ -75,20 +75,43 @@
 - 参照元: 本タスクの実装指示（第4段階 §2〜§5、§7）。実 API で `/v1/messages` の生成・ストリーミングを確認することが必須条件で、模擬 API だけでは完成扱いにしないと明示されている。
 - 承認の性質: 機能範囲の確定という形での承認。学術根拠を伴わない（本機能に学術的根拠は不要なため、第3節の停止条件には該当しない設計判断として記録する）。
 
-## 未決事項（ユーザー判断待ち）
+## 根本原因（2026-11-15 確定・実測と一次資料による）
 
-- Logfare `/v1/messages` の `logfare/auto` は本文相当を `thinking_delta` 1 件として届ける（上記の実測）。Anthropic 公式仕様では `thinking_delta` は推論テキストであり回答本文ではないため、現実装（`text_delta` のみ連結）は仕様どおりで、このストリームでは回答テキストが 0 件になる。実装を変えないでよい根拠が 2 つある: Anthropic 仕様（`text_delta` のみが本文）、および公式 SDK の挙動（`thinking_delta` を回答に連結しない、LiteLLM #32357 で裏付け）。
-- 判明した代替手段はすべて実測または根拠で否定済み: `thinking: {"type": "disabled"}` は無視される（⑤ 否定）。
-- 残る選択肢（いずれもユーザー判断待ち）: ①現状維持（`logfare/auto` では回答が空になる）、③ Anthropic 経路で `logfare/auto` 以外のモデルを使う、④ Anthropic 経路で非ストリーミング要求にする。決定まで現実装を変更しない。
+- **事実**: thinking トークンは `max_tokens` と予算を共有する。出典: Anthropic 公式 Thinking ドキュメント（https://platform.claude.com/docs/en/build-with-claude/thinking、「Thinking tokens count toward your `max_tokens` limit」）。同じ知見が本番プロキシ lidge-jun/opencodex の実装にも記録されている（`src/adapters/anthropic.ts`: 既定 8192、「Omitting `thinking` lets a default-on model think anyway, and thinking shares the caller's `max_tokens` — which truncates a small-budget request before it can emit its stop sequence (#545)」、adaptive モデルでは「a default 8192-token request can spend everything on thought and return empty text」(#5824)。参考コミット `decb08b`（messages baseUrl 正規化とストリーム異常の堅牢化）、`bb9da3a`（Messages 変換の実装））。
+- **実測**（ローカル直接 HTTP、同一 300 語プロンプト、テキストは非出力、2026-11-15）:
+  - Logfare `/v1/messages` `logfare/auto` `max_tokens=1024`: thinking のみ 2154 字、**`stop_reason=max_tokens`**、output_tokens=1024、本文 0 字 → 予算を思考で消費し切り、本文が出ない。
+  - Logfare `/v1/messages` `logfare/auto` `max_tokens=4096`: thinking 4834 字 → **本文 1013 字**、`stop_reason=end_turn`、output_tokens=2912。
+  - Logfare `/v1/messages` `gemma-4-31b-it` `max_tokens=1024`: 本文 1724 字、**`text_delta` 1 件のみ**（本文全体が 1 イベント）、`stop_reason=end_turn`。モデル上限は `max_completion_tokens`=16384（`GET /v1/models` で確認）。
+  - 公式 `/v1/messages` `claude-haiku-5-5`（モデル ID は公式 Models overview と `/v1/models` の両方で確認）`max_tokens=1024`: text_delta 175 件（増分）、output_tokens=870（1024 に対する余裕が小さく、CI Windows での 0 delta 失敗と整合）。
+  - 公式 `/v1/messages` `claude-haiku-5-5` ＋ `thinking:{"type":"disabled"}`: text_delta 232 件、thinking ブロックなし。**公式 API はこのパラメータを尊重する**（Logfare は無視する、上記実測）。
+- **結論と修正**: 旧要求の `max_tokens: 1024` は、thinking が有効なモデル（Logfare/auto のルーティング先、公式 haiku-5-5 の adaptive）で本文の余裕がほぼ/全くなく、`stop_reason=max_tokens` による空回答を生む。Anthropic 要求の `max_tokens` を **8192** に引き上げる（opencodex の既定値と同じ。`thinking: {"type": "disabled"}` は受理可否がモデルごとに分かれ、Logfare では無視されるため無条件送信はしない）。実測で 8192 未満の上限が確認されているプロバイダ・モデルはない（Logfare gemma 16384、公式 haiku 128K）。
+- **Logfare 側の制約（InoCode 実装不具合とは区別）**: Logfare `/v1/messages` は本文を 1 つの `text_delta` で返す（B1 実測、CI 複数回）。増分ストリーミングは Logfare が提供しない。公式 API は増分で配る。SSE 解析・URL・応答解釈の実装不具合は確認されなかった（直接 HTTP と InoCode 経由の比較、チャンク境界分割再現テストで仮説 3・4・6 を否定）。
+
+## テスト判定と診断の修正（仕様に基づく）
+
+- Anthropic SSE 仕様はテキスト delta の最小件数を保証しない（`content_block_delta` は任意回）。旧実 API テストの `deltas >= 2` は仕様外の要求だったため、Messages 実 API テストの判定を「本文非空 ＋ 正常終了（completed）」に修正し、delta 件数は結果行に出力するのみとした。逐次配送（任意バイト境界での分割復元）は模擬 API テスト 12 件で担保する。OpenAI 経路の既存判定（≥2）は変更しない。
+- 診断コードのチャンク境界バグ（行が HTTP チャンク境界で分断され `data:` が誤分割・誤集計される）を修正。CI ubuntu で観測された `<invalid json>=1` 誤集計の原因。
+- CI の `cargo test | tee` は `cargo test` の失敗を隠すため、両実 API ステップに `set -o pipefail` を追加した。
+- **8192 受理の検証**: 公式 haiku-5-5 と Logfare（gemma-4-31b-it、logfare/auto）の Messages 経路を、`max_tokens=8192` の実装そのものでローカル実 API 実行して確認する（下記「実装・検証の状況」）。
+
+## 残る制約
+
+- Logfare `/v1/messages` の増分ストリーミング非提供（本文 1 `text_delta`）は Logfare 側の制約。対応はプロバイダー側待ち。
+- `thinking: {"type": "disabled"}` の送信は公式 API で有効（実測）、Logfare で無視（実測）、受理しないモデルの存在あり（opencodex の記録）。無条件送信は仕様の推測となるため未実装。必要ならユーザー承認の上で対応可能。
 
 ## 実装・検証の状況
 
 - 実装: 完了（実装前に本記録を作成した。第3段階のような「実装後調査」ではない）。
-  - `core/src/llm.rs` — `ProviderKind`（`openai` / `anthropic`、既定 `openai`）を追加。`LlmConfig::from_env` が `INOCODE_LLM_PROVIDER` を読む（不正値は `provider_config`）。`Llm::chat` が方式に応じて `/chat/completions`（Bearer）または `/messages`（`x-api-key` ＋ `anthropic-version: 2023-06-01` ＋ `max_tokens: 1024` ＋ `stream: true`）へ要求する。Base URL は末尾の `/` を除去してからパスを連結するため `/v1` が重複しない。
+  - `core/src/llm.rs` — `ProviderKind`（`openai` / `anthropic`、既定 `openai`）を追加。`LlmConfig::from_env` が `INOCODE_LLM_PROVIDER` を読む（不正値は `provider_config`）。`Llm::chat` が方式に応じて `/chat/completions`（Bearer）または `/messages`（`x-api-key` ＋ `anthropic-version: 2023-06-01` ＋ `max_tokens: 8192` ＋ `stream: true`）へ要求する。Anthropic の URL は設定 Base の末尾 `/v1` を除去してから `/v1/messages` を組み立てる（公式クライアント規約）。
   - `core/src/sse.rs` — API 形式に依存しない SSE 増分パーサー（LF/CRLF/CR、複数 `data:` 行、BOM、16 MiB 上限）。
   - Anthropic 応答の解釈: `content_block_delta` の `text_delta` のみ本文として連結する。`message_stop` で正常終了。`message_start`・`content_block_start`/`_stop`・`message_delta`・`ping`・未知の型は無視（仕様の要求）。`error` イベントと `message_stop` を受けずに本文が終わる場合は `provider_stream` の失敗。
-  - `server/tests/anthropic_tcp.rs` — 模擬 Messages API による統合テスト 11 件（要求形状とヘッダー、末尾スラッシュ、分割復元、`message_stop` なしの失敗、ストリーム内 `error`、非テキスト delta の除外、HTTP 429、ヘッダー待ち・ストリーミング中の `cancel`、混線、`ping`/`echo`）。
-  - `server/tests/live_api.rs` — 実 API テスト 2 件（OpenAI 形式・Anthropic 形式）。キーと生成全文は出力しない。
-  - `.github/workflows/protocol-test.yml` — 実 API ジョブで両形式を実行し、どちらかの結果行が出力されなければ失敗（未実行を成功とみなさない）。
-- 検証済み（ローカル）: `cargo test --workspace --release` 95 件成功（うち Anthropic 新設 11 件）＋実 API 2 件は ignored。`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --release -- -D warnings`、actionlint v1.7.12、`git diff --check` すべて成功。
-- 検証済み（実 API）: 未実施。GitHub Actions（3 OS × 両形式、`LOGFARE_API_KEY`）での確認が必須条件。模擬 API だけでは完成扱いにしない。
+  - `server/tests/anthropic_tcp.rs` — 模擬 Messages API による統合テスト 12 件（要求形状とヘッダー、末尾スラッシュと `/v1` なし Base、分割復元、`message_stop` なしの失敗、ストリーム内 `error`、非テキスト delta の除外、HTTP 429、ヘッダー待ち・ストリーミング中の `cancel`、混線、`ping`/`echo`）。
+  - `server/tests/live_api.rs` — 実 API テスト 3 件（OpenAI 形式・Anthropic 形式・Messages 診断）。キーと生成全文は出力しない。
+  - `.github/workflows/protocol-test.yml` — Logfare 両経路と公式 Haiku の実 API テストを 3 OS で実行し、結果行が出なければ失敗（未実行を成功とみなさない）。`set -o pipefail` で失敗隠蔽なし。
+- 検証済み（ローカル）: `cargo test --workspace --release` 127 件成功・0 失敗（実 API 3 件は ignored）。`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --release -- -D warnings`、`cargo build --workspace --release`、actionlint v1.7.12、`git diff --check` すべて成功。独立監査（サブエージェント）で F1 を解消済み、他は OK。
+- 検証済み（実 API・ローカル、2026-11-15）:
+  - Logfare OpenAI `logfare/auto`（`max_tokens` 送らず、変更なし）: deltas=8、成功。
+  - Logfare Messages `gemma-4-31b-it`（`max_tokens=8192` 受理）: deltas=1 chars=1556、成功。
+  - Logfare Messages `logfare/auto`（**修正後**: `max_tokens=8192` 受理、thinking＋本文）: deltas=1 chars=877、成功（修正前は thinking のみで本文ゼロ）。
+  - 公式 API `claude-haiku-5-5`（`max_tokens=8192` 受理）: deltas=126 chars=711、成功。
+- 最終検証: GitHub Actions（3 OS × Logfare 両経路＋公式 Haiku）を別途実行する（コミット・push 後）。
