@@ -1,3 +1,5 @@
+// Several test binaries include this module, and each uses a different part
+// of it, so unused-in-this-binary items are expected here.
 #![allow(dead_code)]
 
 use std::future::Future;

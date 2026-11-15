@@ -26,7 +26,8 @@
 
 ## 検証済みの主張
 
-- `cargo test`（Windows 11）で単体 14 件 + TCP 統合 14 件が成功。debug と release の両方で実行。
+- `cargo test`（Windows 11）で単体 17 件 + TCP 統合 14 件が成功。debug と release の両方で実行。
+- `FrameWriter::write_json` はカウント付きライターで直列化するため、上限を超える JSON ペイロードは上限分を超えてバッファリングされることなく `PayloadTooLarge` で拒否される。上限ちょうどの値は送信できる。`FrameReader` 側の上限検査は変更なしで維持。
 - `cargo clippy --all-targets` 警告なし、`cargo fmt --check` 差分なし、`cargo doc --no-deps` 警告なし。
 - 統合テストは実際の `TcpListener`/`TcpStream`（ループバック）で、本番と同じライブラリのみを使用する。
 
@@ -42,7 +43,7 @@
 - 実装: 完了。フレームのエンコード/デコード、JSON 送受信、生バイナリ送受信、Stream ID 識別、分割送受信、不正フレーム検出、正常/異常切断の区別を提供。
 - 統合テスト（`tests/tcp_protocol.rs`）の対応:
   1. Client→Server JSON / 2. Server→Client JSON / 3. Client→Server バイナリ / 4. Server→Client バイナリ / 5. JSON と Binary の交互送信 / 6. 複数 Stream ID の識別（フレーム交互配置）/ 7. 1 バイト単位に分割した送信（双方向）/ 8. 複数フレーム連結送信 / 9. 0x00・改行・非 UTF-8 を含む完全一致 / 10. 8 MiB の分割送受信（双方向・ハッシュで照合）/ 11. 不正な長さ・Type・Flags・Reserved・上限超過の拒否 / 12. 転送途中切断（ペイロード欠落・End 欠落）と正常切断の区別 / 13. 200 往復の連続送受信で破損・混線なし。
-- 単体テスト（`src/frame.rs` 8 件、`src/stream.rs` 6 件）: ヘッダー境界値、上限、型/フラグ/予約域の拒否、`tokio::io::duplex` 上での分割・再構成・切断。
+- 単体テスト（`src/frame.rs` 8 件、`src/stream.rs` 9 件）: ヘッダー境界値、上限、型/フラグ/予約域の拒否、`tokio::io::duplex` 上での分割・再構成・切断、`write_json` の上限一致と超過拒否、`read_json` / `read_binary_to` のフレーム種別不一致。
 
 ## 学術的な主張・不足点
 
@@ -52,6 +53,7 @@
 - 16 バイトヘッダーという固定長、Type/Flags/Reserved の配置、Stream ID の幅、ペイロード上限 16 MiB、チャンク 64 KiB のいずれについても、直接適用できる研究は未確認。判断根拠は凍結された仕様（ユーザー指示）と実測、およびメモリ安全性の要請である。
 - 1 フレーム 1 回の vectored write による Nagle 遅延の回避は、TCP の挙動に関する一般的な説明に基づく設計判断であり、効果を測定で断定していない。
 - 不足: 不正フレームの拒否（Flags/Reserved 非ゼロ、未知 Type、長さ不整合）が攻撃耐性をどれだけ高めるかを評価した研究は確認していない。実装は仕様適合とテストによる確認に留まる。
+- `write_json` の送信上限は無制限メモリ確保を防ぐための境界であり、輸送層のペイロード上限と同じ値を用いる。境界値の妥当性を評価した研究は未確認。
 
 ## 学術資料
 

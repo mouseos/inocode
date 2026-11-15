@@ -45,7 +45,7 @@
 
 - ユーザー指示による仕様: 要求・応答の形、エラーコード、`ping` / `echo` の意味（第2段階の指示）。
 - 実測（本リポジトリ）: 下記のとおり実 TCP 接続による統合テストで確認。仕様適合と動作の確認であり、学術的有効性の証明ではない。
-- 実装上の判断: 1 クライアントの切断や不正フレームで他クライアントを止めないため、接続ごとにタスクを分ける。有界キューによる逆圧の考え方は `llm-streaming.md`（SEDA, Welsh et al. 2001）に記録する。
+- 実装上の判断: 1 クライアントの切断や不正フレームで他クライアントを止めないため、接続ごとにタスクを分ける。ソケットオプション（`TCP_NODELAY`）の設定失敗はその接続だけを破棄し、Server 全体は受け付けを続ける。有界キューによる逆圧の考え方は `llm-streaming.md`（SEDA, Welsh et al. 2001）に記録する。
 
 ## ユーザーの承認
 
@@ -70,6 +70,6 @@
 ## 実装とテストの状況
 
 - 実装: 完了（Server / Core / 要求・応答）。
-- テスト: 第2段階の時点で 43 件がローカル（Windows）で成功。第3段階で `chat` / `cancel` を追加した結果、現在は 67 件（内訳と CI 結果は `llm-streaming.md`）。
+- テスト: 第2段階の時点で 43 件がローカル（Windows）で成功。第3段階で `chat` / `cancel` を追加し、その後の監査是正で回帰テストを追加した結果、現在は 82 件（内訳と CI 結果は `llm-streaming.md`）。
 - GitHub Actions（`.github/workflows/protocol-test.yml`、workflow_dispatch 手動実行）: run https://github.com/mouseos/inocode/actions/runs/43711649476 で ubuntu-latest / windows-latest / macos-latest の 3 ジョブすべて成功。各 OS の内訳はプロトコル単体 14、プロトコル TCP 統合 14、Core 単体 4、Server TCP 統合 11。fmt / clippy（`-D warnings`）/ build / test を各 OS で実行済み。
 - 追加の承認: 第2段階では追加承認なし（範囲は指示で確定）。LLM 接続は第3段階の指示で着手し、根拠記録は `llm-streaming.md` に分離した。
