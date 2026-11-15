@@ -2,12 +2,13 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use inocode_core::{Core, Llm, LlmConfig};
+use inocode_core::{Core, Llm, LlmConfig, ProviderKind};
 use serde_json::{json, Value};
 use support::*;
 
 fn core_for(mock: &MockApi, model: &str) -> std::sync::Arc<Core> {
     let llm = Llm::new(LlmConfig {
+        provider: ProviderKind::OpenAi,
         base_url: mock.base_url.clone(),
         model: model.to_string(),
         api_key: "test-key".to_string(),

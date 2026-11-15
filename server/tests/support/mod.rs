@@ -136,6 +136,8 @@ pub struct MockRequest {
     pub method: String,
     pub path: String,
     pub authorization: Option<String>,
+    /// All request headers with lowercased names (duplicates keep the last).
+    pub headers: std::collections::HashMap<String, String>,
     pub body: Value,
 }
 
@@ -290,14 +292,16 @@ async fn read_request(stream: &mut TcpStream) -> io::Result<MockRequest> {
 
     let mut authorization = None;
     let mut content_length = 0usize;
+    let mut headers = std::collections::HashMap::new();
     for line in lines {
         if let Some((name, value)) = line.split_once(':') {
-            let value = value.trim();
-            match name.trim().to_ascii_lowercase().as_str() {
-                "authorization" => authorization = Some(value.to_string()),
+            let (name, value) = (name.trim().to_ascii_lowercase(), value.trim().to_string());
+            match name.as_str() {
+                "authorization" => authorization = Some(value.clone()),
                 "content-length" => content_length = value.parse().unwrap_or(0),
                 _ => {}
             }
+            headers.insert(name, value);
         }
     }
 
@@ -316,6 +320,7 @@ async fn read_request(stream: &mut TcpStream) -> io::Result<MockRequest> {
         method,
         path,
         authorization,
+        headers,
         body: serde_json::from_slice(&body).unwrap_or(Value::Null),
     })
 }
@@ -346,6 +351,75 @@ pub fn sse_delta(text: &str) -> Vec<u8> {
 /// The terminal SSE event of a chat completion.
 pub fn sse_done() -> Vec<u8> {
     b"data: [DONE]\n\n".to_vec()
+}
+
+/// One Anthropic SSE event written in the documented `event:`/`data:` form.
+pub fn anthropic_event(event: &str, payload: &Value) -> Vec<u8> {
+    format!("event: {event}\ndata: {payload}\n\n").into_bytes()
+}
+
+/// A `content_block_delta` event that carries answer text.
+pub fn anthropic_text_delta(text: &str) -> Vec<u8> {
+    anthropic_event(
+        "content_block_delta",
+        &json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": { "type": "text_delta", "text": text },
+        }),
+    )
+}
+
+/// A `content_block_delta` event whose delta is not answer text, such as the
+/// input of a tool call.
+pub fn anthropic_other_delta() -> Vec<u8> {
+    anthropic_event(
+        "content_block_delta",
+        &json!({
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": { "type": "input_json_delta", "partial_json": "{\"tool\":1}" },
+        }),
+    )
+}
+
+/// The `message_stop` event that ends a Messages response.
+pub fn anthropic_message_stop() -> Vec<u8> {
+    anthropic_event("message_stop", &json!({ "type": "message_stop" }))
+}
+
+/// An `error` event as the Messages API sends it inside a stream.
+pub fn anthropic_error(message: &str) -> Vec<u8> {
+    anthropic_event(
+        "error",
+        &json!({ "type": "error", "error": { "type": "overloaded_error", "message": message } }),
+    )
+}
+
+/// The events of a Messages response, in the order the documented stream shows
+/// them.
+pub fn anthropic_stream(text: &str) -> Vec<Vec<u8>> {
+    vec![
+        anthropic_event(
+            "message_start",
+            &json!({ "type": "message_start", "message": { "role": "assistant", "content": [] } }),
+        ),
+        anthropic_event(
+            "content_block_start",
+            &json!({ "type": "content_block_start", "index": 0, "content_block": { "type": "text", "text": "" } }),
+        ),
+        anthropic_event("ping", &json!({ "type": "ping" })),
+        anthropic_text_delta(text),
+        anthropic_event(
+            "content_block_stop",
+            &json!({ "type": "content_block_stop", "index": 0 }),
+        ),
+        anthropic_event(
+            "message_delta",
+            &json!({ "type": "message_delta", "delta": { "stop_reason": "end_turn", "stop_sequence": null }, "usage": { "output_tokens": 15 } }),
+        ),
+        anthropic_message_stop(),
+    ]
 }
 
 /// Text that the mock handler returns for a given prompt, so tests can check

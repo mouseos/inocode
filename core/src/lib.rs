@@ -8,7 +8,9 @@
 mod llm;
 mod sse;
 
-pub use llm::{ChatStream, Llm, LlmConfig, DEFAULT_BASE_URL, DEFAULT_MODEL};
+pub use llm::{
+    ChatStream, Llm, LlmConfig, ProviderKind, DEFAULT_BASE_URL, DEFAULT_MAX_TOKENS, DEFAULT_MODEL,
+};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

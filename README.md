@@ -56,10 +56,13 @@ TCP 上で動く JSON / 生バイナリ混在のフレームプロトコルラ�
 
 | 環境変数 | 既定 | 用途 |
 | --- | --- | --- |
-| `LOGFARE_API_KEY` | なし（必須） | プロバイダーの Bearer トークン |
-| `INOCODE_LLM_BASE_URL` | `https://logfare.ai/v1` | OpenAI 互換 API の Base URL |
+| `LOGFARE_API_KEY` | なし（必須） | プロバイダーの API キー |
+| `INOCODE_LLM_PROVIDER` | `openai` | 接続方式: `openai`（`/chat/completions`、Bearer 認証）または `anthropic`（`/messages`、`x-api-key` ＋ `anthropic-version: 2023-06-01`） |
+| `INOCODE_LLM_BASE_URL` | `https://logfare.ai/v1` | 両方式共通の API Base URL |
 | `INOCODE_LLM_MODEL` | `logfare/auto` | モデル名 |
 | `INOCODE_PORT` | `8787` | 待ち受けポート（待ち受けは常に `127.0.0.1`） |
+
+Anthropic 方式では要求に `max_tokens: 1024` を送る。Logfare の `/v1/messages` は Anthropic Messages API 互換なので、`INOCODE_LLM_PROVIDER=anthropic` を設定するだけで切り替わる。TCP プロトコル、イベント形式、`cancel` の意味は両方式で同じ。
 
 ```bash
 export LOGFARE_API_KEY=...            # 環境変数からのみ読む。リポジトリに書かない

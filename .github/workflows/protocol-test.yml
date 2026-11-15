@@ -90,6 +90,16 @@ jobs:
           LOGFARE_API_KEY: ${{ secrets.LOGFARE_API_KEY }}
         run: |
           cargo test --release -p inocode-server --test live_api -- --ignored --nocapture --test-threads=1 | tee live-api.log
+          found=0
           if grep -q "live logfare/auto:" live-api.log; then
             grep "live logfare/auto:" live-api.log >> "$GITHUB_STEP_SUMMARY"
+            found=1
+          fi
+          if grep -q "live logfare/auto messages:" live-api.log; then
+            grep "live logfare/auto messages:" live-api.log >> "$GITHUB_STEP_SUMMARY"
+            found=1
+          fi
+          if [ "$found" -ne 1 ]; then
+            echo "::error::No live test produced results, so the live check did not run."
+            exit 1
           fi
