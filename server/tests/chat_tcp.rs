@@ -657,14 +657,15 @@ async fn cancel_works_while_waiting_for_the_response_headers() {
         assert_eq!(kinds, ["cancelled"], "no other event may appear: {kinds:?}");
         assert!(text.is_empty());
 
-        // Cancelling must close the provider connection: the mock fails to
-        // write its late response.
+        // Cancelling must close the provider connection. The close is observed
+        // by reading on the mock: a single write can still succeed after the
+        // peer closed, depending on the operating system.
         let deadline = Instant::now() + Duration::from_secs(10);
-        while mock.write_errors() == 0 && Instant::now() < deadline {
+        while mock.closed_count() == 0 && Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert!(
-            mock.write_errors() > 0,
+            mock.closed_count() > 0,
             "the abandoned HTTP request must be closed"
         );
     })

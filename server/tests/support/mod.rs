@@ -146,6 +146,7 @@ pub struct MockApi {
     pub base_url: String,
     requests: Arc<Mutex<Vec<MockRequest>>>,
     write_errors: Arc<AtomicUsize>,
+    closed: Arc<AtomicUsize>,
 }
 
 impl MockApi {
@@ -154,9 +155,18 @@ impl MockApi {
     }
 
     /// Number of response writes the mock failed, which shows that the client
-    /// closed its connection (for example after cancelling).
+    /// closed its connection while the mock was writing.
     pub fn write_errors(&self) -> usize {
         self.write_errors.load(Ordering::Relaxed)
+    }
+
+    /// Number of connections on which the mock observed the client's close.
+    ///
+    /// Writing after a peer's FIN can still succeed on some operating
+    /// systems, so a close is detected by reading until the connection ends,
+    /// not by the failure of a single write.
+    pub fn closed_count(&self) -> usize {
+        self.closed.load(Ordering::Relaxed)
     }
 }
 
@@ -170,9 +180,11 @@ where
     let addr = listener.local_addr().expect("mock address");
     let requests = Arc::new(Mutex::new(Vec::new()));
     let write_errors = Arc::new(AtomicUsize::new(0));
+    let closed = Arc::new(AtomicUsize::new(0));
     let handler = Arc::new(handler);
     let recorded = Arc::clone(&requests);
     let failures = Arc::clone(&write_errors);
+    let peers_closed = Arc::clone(&closed);
     tokio::spawn(async move {
         loop {
             let Ok((stream, _)) = listener.accept().await else {
@@ -181,8 +193,9 @@ where
             let recorded = Arc::clone(&recorded);
             let handler = Arc::clone(&handler);
             let failures = Arc::clone(&failures);
+            let closed = Arc::clone(&peers_closed);
             tokio::spawn(async move {
-                let _ = serve_mock(stream, recorded, handler, failures).await;
+                let _ = serve_mock(stream, recorded, handler, failures, closed).await;
             });
         }
     });
@@ -190,6 +203,7 @@ where
         base_url: format!("http://{addr}/v1"),
         requests,
         write_errors,
+        closed,
     }
 }
 
@@ -198,22 +212,35 @@ async fn serve_mock<F>(
     recorded: Arc<Mutex<Vec<MockRequest>>>,
     handler: Arc<F>,
     write_errors: Arc<AtomicUsize>,
+    closed: Arc<AtomicUsize>,
 ) -> io::Result<()>
 where
     F: Fn(&MockRequest) -> MockReply + Send + Sync,
 {
-    let request = read_request(&mut stream).await?;
-    recorded
-        .lock()
-        .expect("mock request log")
-        .push(request.clone());
-    let reply = handler(&request);
-    match write_reply(&mut stream, &reply).await {
-        Ok(()) => Ok(()),
-        Err(error) => {
+    loop {
+        let request = match read_request(&mut stream).await {
+            Ok(request) => request,
+            // The client closed the connection, before a request or while the
+            // next one was expected.
+            Err(_) => {
+                closed.fetch_add(1, Ordering::Relaxed);
+                return Ok(());
+            }
+        };
+        recorded
+            .lock()
+            .expect("mock request log")
+            .push(request.clone());
+        let reply = handler(&request);
+        if write_reply(&mut stream, &reply).await.is_err() {
             write_errors.fetch_add(1, Ordering::Relaxed);
-            Err(error)
+            closed.fetch_add(1, Ordering::Relaxed);
+            return Ok(());
         }
+        // The response declares `connection: close`: end the body so the
+        // client sees it complete, then observe the client's own close by
+        // reading until the connection ends.
+        stream.shutdown().await?;
     }
 }
 
