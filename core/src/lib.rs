@@ -6,6 +6,7 @@
 //! framing, or connections, so the server owns all transport concerns.
 
 mod llm;
+pub mod oauth;
 mod sse;
 
 pub use llm::{

@@ -1,0 +1,597 @@
+//! Interactive logins and OAuth-backed chat against local mock endpoints.
+//!
+//! The mock HTTP server here records raw requests (form bodies included) and
+//! answers per path, standing in for the token, device, and key endpoints. The
+//! real logins are exercised by the user; these tests verify the flows, the
+//! credential store, and the request-time OAuth behaviour.
+
+mod support;
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
+use inocode_core::oauth::{self, Credential, FlowEndpoints, MuseEndpoints, Store};
+use inocode_core::{Core, Llm, LlmConfig, ProviderKind};
+use serde_json::{json, Value};
+use support::*;
+
+// ---------------------------------------------------------------------------
+// Raw mock: records full requests, replies per path with a canned body.
+// ---------------------------------------------------------------------------
+
+struct RawRequest {
+    path: String,
+    headers: HashMap<String, String>,
+    body: String,
+}
+
+impl RawRequest {
+    fn authorization(&self) -> &str {
+        self.headers
+            .get("authorization")
+            .map(String::as_str)
+            .unwrap_or("")
+    }
+}
+
+type RawLog = Arc<Mutex<Vec<RawRequest>>>;
+
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+type RawHandler = Arc<dyn Fn(&RawRequest) -> (u16, String) + Send + Sync>;
+
+async fn start_raw_mock(handler: RawHandler) -> (String, RawLog) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind mock listener");
+    let addr = listener.local_addr().expect("mock address");
+    let log: RawLog = Arc::new(Mutex::new(Vec::new()));
+    let log_task = Arc::clone(&log);
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let handler = Arc::clone(&handler);
+            let log_task = Arc::clone(&log_task);
+            tokio::spawn(async move {
+                let Ok(request) = read_raw(&mut stream).await else {
+                    return;
+                };
+                let (status, body) = handler(&request);
+                log_task.lock().expect("mock log").push(request);
+                let response = format!(
+                    "HTTP/1.1 {status} {}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    if status == 200 { "OK" } else { "Bad Request" },
+                    body.len(),
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write mock response");
+                stream.shutdown().await.expect("shutdown mock response");
+            });
+        }
+    });
+    (format!("http://{addr}"), log)
+}
+
+async fn read_raw(stream: &mut tokio::net::TcpStream) -> std::io::Result<RawRequest> {
+    let mut buffer = Vec::new();
+    let head_end = loop {
+        let mut chunk = [0u8; 1024];
+        let read = stream.read(&mut chunk).await?;
+        if read == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "request ended",
+            ));
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+        if let Some(position) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
+            break position + 4;
+        }
+    };
+    let head = String::from_utf8_lossy(&buffer[..head_end]).to_string();
+    let mut lines = head.split("\r\n");
+    let mut request_line = lines.next().unwrap_or_default().split_whitespace();
+    let _method = request_line.next().unwrap_or_default().to_string();
+    let path = request_line.next().unwrap_or_default().to_string();
+    let mut headers = HashMap::new();
+    let mut content_length = 0usize;
+    for line in lines {
+        if let Some((name, value)) = line.split_once(':') {
+            let (name, value) = (name.trim().to_ascii_lowercase(), value.trim().to_string());
+            if name == "content-length" {
+                content_length = value.parse().unwrap_or(0);
+            }
+            headers.insert(name, value);
+        }
+    }
+    let mut body = buffer[head_end..].to_vec();
+    while body.len() < content_length {
+        let mut chunk = [0u8; 1024];
+        let read = stream.read(&mut chunk).await?;
+        if read == 0 {
+            break;
+        }
+        body.extend_from_slice(&chunk[..read]);
+    }
+    body.truncate(content_length);
+    Ok(RawRequest {
+        path,
+        headers,
+        body: String::from_utf8_lossy(&body).into_owned(),
+    })
+}
+
+/// An ephemeral port for the local callback listener: bind, read, release.
+async fn free_port() -> u16 {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind for a port");
+    listener.local_addr().expect("port").port()
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock")
+        .as_millis() as u64
+}
+
+fn temp_store_path(name: &str) -> std::path::PathBuf {
+    let mut path = std::env::temp_dir();
+    path.push(format!(
+        "inocode-oauth-test-{name}-{}-{}.json",
+        std::process::id(),
+        now_ms()
+    ));
+    path
+}
+
+fn credential_for_store() -> Credential {
+    Credential {
+        access: "stored-access".to_string(),
+        refresh: "stored-refresh".to_string(),
+        expires_at_ms: Some(now_ms() + 3_600_000),
+        account_id: Some("acct_test".to_string()),
+        email: Some("user@example.test".to_string()),
+        api_key: None,
+        oauth_access_token: None,
+    }
+}
+
+fn write_store(path: &std::path::Path, provider: &str, credential: Credential) {
+    let mut store = Store::load(path.to_path_buf());
+    store.save(provider, credential).expect("write the store");
+}
+
+/// Drives a full chat over TCP and collects the streamed deltas.
+async fn chat_deltas(core: Arc<Core>, prompt: &str) -> (Vec<String>, Value) {
+    let (addr, stop, _handle) = start_server(core).await;
+    let mut client = connect(addr).await;
+    let response = call(
+        &mut client,
+        7,
+        json!({"id": 7, "method": "chat", "params": {"prompt": prompt}}),
+    )
+    .await;
+    assert_eq!(response["event"], "started", "chat must start: {response}");
+    let mut deltas = Vec::new();
+    let final_message = loop {
+        let (stream, message): (u64, Value) = client.0.read_json().await.expect("read message");
+        assert_eq!(stream, 7, "events arrive on the request stream");
+        match message["event"].as_str() {
+            Some("delta") => deltas.push(message["text"].as_str().expect("delta text").to_string()),
+            Some("completed") | Some("failed") | Some("cancelled") => break message,
+            _ => {}
+        }
+    };
+    drop(client);
+    let _ = stop.send(());
+    (deltas, final_message)
+}
+
+// ---------------------------------------------------------------------------
+// Login flows
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn claude_login_stores_the_oauth_credential() {
+    let (base, log) = start_raw_mock(Arc::new(|request: &RawRequest| {
+        assert_eq!(request.path, "/v1/oauth/token");
+        let body: Value = serde_json::from_str(&request.body).expect("json token request");
+        assert_eq!(body["grant_type"], "authorization_code");
+        assert_eq!(body["code"], "auth-code-1");
+        assert_eq!(body["state"], "inocode-state-1");
+        assert!(body["code_verifier"]
+            .as_str()
+            .is_some_and(|v| v.len() == 43));
+        (
+            200,
+            json!({
+                "access_token": "at-claude",
+                "refresh_token": "rt-claude",
+                "expires_in": 3600,
+                "account": {"email_address": "user@example.test", "uuid": "acc-1"},
+            })
+            .to_string(),
+        )
+    }))
+    .await;
+    let port = free_port().await;
+    let endpoints = FlowEndpoints {
+        authorize_url: format!("{base}/authorize"),
+        token_url: format!("{base}/v1/oauth/token"),
+        callback_port: port,
+        callback_path: "/callback".to_string(),
+        code_redirect_uri: None,
+    };
+    let start = oauth::claude_login_start(&endpoints, false);
+
+    let flow = tokio::spawn(async move {
+        oauth::claude_login_finish(&endpoints, start, None)
+            .await
+            .expect("the flow completes")
+    });
+    // Let the listener bind, then play the browser redirect.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let mut browser = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect the callback");
+    browser
+        .write_all(b"GET /callback?code=auth-code-1&state=inocode-state-1 HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .await
+        .expect("send the redirect");
+    let mut response = Vec::new();
+    browser
+        .read_to_end(&mut response)
+        .await
+        .expect("read reply");
+    let credential = flow.await.expect("the flow task completes");
+    assert_eq!(credential.access, "at-claude");
+    assert_eq!(credential.refresh, "rt-claude");
+    assert_eq!(credential.account_id.as_deref(), Some("acc-1"));
+    assert_eq!(credential.email.as_deref(), Some("user@example.test"));
+    assert!(credential
+        .expires_at_ms
+        .is_some_and(|expires| expires > now_ms()));
+    assert_eq!(log.lock().expect("log").len(), 1);
+}
+
+#[tokio::test]
+async fn claude_code_mode_exchanges_the_pasted_code() {
+    let (base, _log) = start_raw_mock(Arc::new(|request: &RawRequest| {
+        assert_eq!(request.path, "/v1/oauth/token");
+        let body: Value = serde_json::from_str(&request.body).expect("json token request");
+        assert_eq!(body["code"], "displayed-code");
+        assert_eq!(body["state"], "fragment-state");
+        assert_eq!(body["grant_type"], "authorization_code");
+        (
+            200,
+            json!({"access_token": "at-display", "refresh_token": "rt-display", "expires_in": 3600})
+                .to_string(),
+        )
+    }))
+    .await;
+    let endpoints = FlowEndpoints {
+        authorize_url: format!("{base}/authorize"),
+        token_url: format!("{base}/v1/oauth/token"),
+        callback_port: 54545, // unused in code mode
+        callback_path: "/callback".to_string(),
+        code_redirect_uri: Some("https://platform.claude.com/oauth/code/callback".to_string()),
+    };
+    let start = oauth::claude_login_start(&endpoints, true);
+    let credential = oauth::claude_login_finish(
+        &endpoints,
+        start,
+        Some("displayed-code#fragment-state".to_string()),
+    )
+    .await
+    .expect("the flow completes");
+    assert_eq!(credential.access, "at-display");
+}
+
+#[tokio::test]
+async fn gpt_login_extracts_the_account_id_from_the_id_token() {
+    let (base, log) = start_raw_mock(Arc::new(|request: &RawRequest| {
+        assert_eq!(request.path, "/oauth/token");
+        assert!(request.body.contains("grant_type=authorization_code"));
+        assert!(request.body.contains("code=auth-code-2"));
+        assert!(request.body.contains("code_verifier="));
+        // The token endpoint receives a form body, not JSON.
+        assert!(!request.body.trim_start().starts_with('{'));
+        let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"RS256"}"#);
+        let payload = URL_SAFE_NO_PAD
+            .encode(r#"{"https://api.openai.com/auth":{"chatgpt_account_id":"acct-77"}}"#);
+        (
+            200,
+            json!({
+                "access_token": "at-gpt",
+                "id_token": format!("{header}.{payload}.sig"),
+                "refresh_token": "rt-gpt",
+                "expires_in": 3600,
+            })
+            .to_string(),
+        )
+    }))
+    .await;
+    let port = free_port().await;
+    let endpoints = FlowEndpoints {
+        authorize_url: format!("{base}/authorize"),
+        token_url: format!("{base}/oauth/token"),
+        callback_port: port,
+        callback_path: "/auth/callback".to_string(),
+        code_redirect_uri: None,
+    };
+    let flow = tokio::spawn(async move {
+        oauth::login_gpt(&endpoints)
+            .await
+            .expect("the flow completes")
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let mut browser = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect the callback");
+    browser
+        .write_all(
+            b"GET /auth/callback?code=auth-code-2&state=s HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        )
+        .await
+        .expect("send the redirect");
+    let credential = flow.await.expect("the flow task completes");
+    assert_eq!(credential.access, "at-gpt");
+    assert_eq!(credential.account_id.as_deref(), Some("acct-77"));
+    assert_eq!(log.lock().expect("log").len(), 1);
+}
+
+#[tokio::test]
+async fn muse_login_polls_then_mints_the_subscription_key() {
+    let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let poll_counter = Arc::clone(&polls);
+    let (base, _log) = start_raw_mock(Arc::new(move |request: &RawRequest| {
+        match request.path.as_str() {
+            "/oidc/device/authorization/" => (
+                200,
+                json!({
+                    "device_code": "dev-1",
+                    "user_code": "ABCD-1234",
+                    "verification_uri": "https://auth.meta.test/device",
+                    "interval": 1,
+                    "expires_in": 300,
+                })
+                .to_string(),
+            ),
+            "/oidc/device/token/" => {
+                let seen = poll_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if seen == 0 {
+                    // First poll: still waiting for the user's approval.
+                    (400, json!({"error": "authorization_pending"}).to_string())
+                } else {
+                    assert!(request.body.contains(
+                        "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code"
+                    ));
+                    (
+                        200,
+                        json!({"access_token": "meta-account-token"}).to_string(),
+                    )
+                }
+            }
+            "/muse-code/key" => {
+                assert_eq!(request.authorization(), "Bearer meta-account-token");
+                assert!(request.body.contains("onboard"));
+                (200, json!({"api_key": "LLM|minted-key"}).to_string())
+            }
+            other => panic!("unexpected mock path {other}"),
+        }
+    }))
+    .await;
+    let endpoints = MuseEndpoints {
+        device_authorization_url: format!("{base}/oidc/device/authorization/"),
+        device_token_url: format!("{base}/oidc/device/token/"),
+        key_url: format!("{base}/muse-code/key"),
+    };
+    let credential = oauth::login_muse(&endpoints)
+        .await
+        .expect("the flow completes");
+    // Two polls: one pending, one approved.
+    assert_eq!(polls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(credential.api_key.as_deref(), Some("LLM|minted-key"));
+    // The Meta account token is kept for re-minting, not for model requests.
+    assert_eq!(
+        credential.oauth_access_token.as_deref(),
+        Some("meta-account-token")
+    );
+    assert!(credential.access.is_empty());
+}
+
+#[tokio::test]
+async fn claude_refresh_exchanges_the_refresh_token() {
+    let (base, _log) = start_raw_mock(Arc::new(|request: &RawRequest| {
+        assert_eq!(request.path, "/v1/oauth/token");
+        let body: Value = serde_json::from_str(&request.body).expect("json token request");
+        assert_eq!(body["grant_type"], "refresh_token");
+        assert_eq!(body["refresh_token"], "rt-old");
+        (
+            200,
+            json!({"access_token": "at-new", "refresh_token": "rt-new", "expires_in": 3600})
+                .to_string(),
+        )
+    }))
+    .await;
+    let endpoints = FlowEndpoints {
+        authorize_url: format!("{base}/authorize"),
+        token_url: format!("{base}/v1/oauth/token"),
+        callback_port: 54545,
+        callback_path: "/callback".to_string(),
+        code_redirect_uri: None,
+    };
+    let credential = oauth::refresh_claude(&endpoints, "rt-old")
+        .await
+        .expect("refresh");
+    assert_eq!(credential.access, "at-new");
+    assert_eq!(credential.refresh, "rt-new");
+}
+
+// ---------------------------------------------------------------------------
+// OAuth-backed chat over TCP
+// ---------------------------------------------------------------------------
+
+fn responses_sse(answer: &str) -> Vec<Vec<u8>> {
+    vec![
+        format!("data: {}\n\n", json!({"type": "response.created"})).into_bytes(),
+        format!(
+            "data: {}\n\n",
+            json!({"type": "response.output_text.delta", "delta": answer})
+        )
+        .into_bytes(),
+        format!("data: {}\n\n", json!({"type": "response.completed"})).into_bytes(),
+    ]
+}
+
+#[tokio::test]
+async fn muse_chat_uses_the_subscription_key_and_muse_headers() {
+    let mock = start_mock(|request: &MockRequest| {
+        assert_eq!(request.path, "/v1/responses");
+        assert_eq!(
+            request.authorization.as_deref(),
+            Some("Bearer LLM|stored-key")
+        );
+        assert_eq!(
+            request.headers.get("user-agent").map(String::as_str),
+            Some(oauth::MUSE_USER_AGENT)
+        );
+        assert_eq!(
+            request.headers.get("x-api-version").map(String::as_str),
+            Some("1.0.0")
+        );
+        assert_eq!(request.body["store"], false);
+        assert_eq!(request.body["stream"], true);
+        MockReply::stream(responses_sse("muse says hi"))
+    })
+    .await;
+    let store_path = temp_store_path("muse");
+    write_store(
+        &store_path,
+        "muse-code",
+        Credential {
+            access: String::new(),
+            refresh: String::new(),
+            expires_at_ms: None,
+            account_id: None,
+            email: None,
+            api_key: Some("LLM|stored-key".to_string()),
+            oauth_access_token: Some("meta-account-token".to_string()),
+        },
+    );
+    let llm = Llm::new(LlmConfig {
+        provider: ProviderKind::Responses,
+        auth: inocode_core::oauth::AuthKind::MuseSubscription,
+        base_url: mock.base_url.clone(),
+        model: "muse-spark-1.3".to_string(),
+        api_key: String::new(),
+        auth_store_path: Some(store_path.clone()),
+    })
+    .expect("build the client");
+    let (deltas, message) = chat_deltas(Arc::new(Core::with_llm(llm)), "hello").await;
+    assert_eq!(deltas, vec!["muse says hi".to_string()]);
+    assert_eq!(message["event"], "completed");
+    let _ = std::fs::remove_file(&store_path);
+}
+
+#[tokio::test]
+async fn gpt_chat_sends_the_account_id_header() {
+    let mock = start_mock(|request: &MockRequest| {
+        assert_eq!(request.path, "/v1/responses");
+        assert_eq!(
+            request.authorization.as_deref(),
+            Some("Bearer stored-access")
+        );
+        assert_eq!(
+            request
+                .headers
+                .get("chatgpt-account-id")
+                .map(String::as_str),
+            Some("acct_test")
+        );
+        assert!(!request.headers.contains_key("user-agent"));
+        MockReply::stream(responses_sse("codex says hi"))
+    })
+    .await;
+    let store_path = temp_store_path("gpt");
+    write_store(&store_path, "gpt-oauth", credential_for_store());
+    let llm = Llm::new(LlmConfig {
+        provider: ProviderKind::Responses,
+        auth: inocode_core::oauth::AuthKind::GptOauth,
+        base_url: mock.base_url.clone(),
+        model: "gpt-5.2-codex".to_string(),
+        api_key: String::new(),
+        auth_store_path: Some(store_path.clone()),
+    })
+    .expect("build the client");
+    let (deltas, message) = chat_deltas(Arc::new(Core::with_llm(llm)), "hello").await;
+    assert_eq!(deltas, vec!["codex says hi".to_string()]);
+    assert_eq!(message["event"], "completed");
+    let _ = std::fs::remove_file(&store_path);
+}
+
+#[tokio::test]
+async fn claude_oauth_chat_sends_the_bearer_beta_and_identity_system_block() {
+    let mock = start_mock(|request: &MockRequest| {
+        assert_eq!(request.path, "/v1/messages");
+        assert_eq!(
+            request.authorization.as_deref(),
+            Some("Bearer stored-access")
+        );
+        assert_eq!(
+            request.headers.get("anthropic-beta").map(String::as_str),
+            Some(oauth::CLAUDE_CODE_BETA)
+        );
+        // The identity block leads the system list.
+        assert_eq!(
+            request.body["system"][0]["text"],
+            oauth::CLAUDE_CODE_SYSTEM_INSTRUCTION
+        );
+        MockReply::stream(vec![
+            anthropic_text_delta("claude says hi"),
+            anthropic_message_stop(),
+        ])
+    })
+    .await;
+    let store_path = temp_store_path("claude");
+    write_store(&store_path, "claude-oauth", credential_for_store());
+    let llm = Llm::new(LlmConfig {
+        provider: ProviderKind::Anthropic,
+        auth: inocode_core::oauth::AuthKind::ClaudeOauth,
+        base_url: mock.base_url.clone(),
+        model: "claude-sonnet-5".to_string(),
+        api_key: String::new(),
+        auth_store_path: Some(store_path.clone()),
+    })
+    .expect("build the client");
+    let (deltas, message) = chat_deltas(Arc::new(Core::with_llm(llm)), "hello").await;
+    assert_eq!(deltas, vec!["claude says hi".to_string()]);
+    assert_eq!(message["event"], "completed");
+    let _ = std::fs::remove_file(&store_path);
+}
+
+#[tokio::test]
+async fn chat_without_a_stored_credential_reports_provider_config() {
+    let store_path = temp_store_path("missing");
+    let llm = Llm::new(LlmConfig {
+        provider: ProviderKind::Anthropic,
+        auth: inocode_core::oauth::AuthKind::ClaudeOauth,
+        base_url: "http://127.0.0.1:1".to_string(),
+        model: "claude-sonnet-5".to_string(),
+        api_key: String::new(),
+        auth_store_path: Some(store_path.clone()),
+    })
+    .expect("build the client");
+    let error = llm.chat("hello").await.err().expect("no credential stored");
+    assert_eq!(error.code, "provider_config");
+    let _ = std::fs::remove_file(&store_path);
+}

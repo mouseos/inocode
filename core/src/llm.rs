@@ -1,15 +1,17 @@
 //! Streaming clients for OpenAI-compatible and Anthropic-compatible chat APIs.
 //!
 //! The transport is plain HTTP with server-sent events. The format is chosen by
-//! configuration: Chat Completions (`/chat/completions`) or Messages
-//! (`/messages`) against the same base URL, so any endpoint speaking either
-//! format works. OAuth-based connection modes are not implemented.
+//! configuration: Chat Completions (`/chat/completions`), Messages
+//! (`/messages`), or Responses (`/responses`). Authentication is either a
+//! static API key or a stored OAuth/subscription credential
+//! ([`crate::oauth`]), refreshed at request time when it has expired.
 
 use std::fmt;
 use std::time::Duration;
 
 use serde_json::{json, Value};
 
+use crate::oauth::{AuthKind, Credential, FlowEndpoints};
 use crate::sse::SseParser;
 use crate::ErrorInfo;
 
@@ -40,6 +42,8 @@ pub enum ProviderKind {
     OpenAi,
     /// Anthropic Messages format (`POST {base}/messages`).
     Anthropic,
+    /// OpenAI Responses format (`POST {base}/responses`).
+    Responses,
 }
 
 impl ProviderKind {
@@ -48,10 +52,14 @@ impl ProviderKind {
             Err(_) => Ok(Self::default()),
             Ok(value) if value.eq_ignore_ascii_case("openai") => Ok(Self::OpenAi),
             Ok(value) if value.eq_ignore_ascii_case("anthropic") => Ok(Self::Anthropic),
+            Ok(value) if value.eq_ignore_ascii_case("responses") => Ok(Self::Responses),
             Ok(value) if value.trim().is_empty() => Ok(Self::default()),
             Ok(value) => Err(ErrorInfo::new(
                 "provider_config",
-                format!("{PROVIDER_ENV} must be \"openai\" or \"anthropic\", got \"{value}\""),
+                format!(
+                    "{PROVIDER_ENV} must be \"openai\", \"anthropic\", \"responses\", or an OAuth \
+                     kind (claude-oauth, gpt-oauth, muse-code), got \"{value}\""
+                ),
             )),
         }
     }
@@ -64,21 +72,55 @@ impl ProviderKind {
 #[derive(Clone, PartialEq, Eq)]
 pub struct LlmConfig {
     pub provider: ProviderKind,
+    /// Request-time authentication. OAuth kinds read and refresh credentials
+    /// from the store at [`crate::oauth::Store::default_path`] unless
+    /// [`LlmConfig::auth_store_path`] points elsewhere.
+    pub auth: AuthKind,
     pub base_url: String,
     pub model: String,
     pub api_key: String,
+    /// Overrides the credential store location; `None` uses the default. The
+    /// override exists so tests can exercise the OAuth request paths against
+    /// their own store instead of the user's.
+    pub auth_store_path: Option<std::path::PathBuf>,
 }
 
 impl fmt::Debug for LlmConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("LlmConfig")
             .field("provider", &self.provider)
+            .field("auth", &self.auth)
             .field("base_url", &self.base_url)
             .field("model", &self.model)
             .field("api_key", &"[redacted]")
+            .field("auth_store_path", &self.auth_store_path)
             .finish()
     }
 }
+
+/// Per-kind endpoint, model, and API-shape defaults, so selecting an OAuth
+/// kind needs only a stored credential. Values follow the reference registry
+/// (docs/evidence/oauth-providers.md).
+const OAUTH_DEFAULTS: &[(AuthKind, &str, &str, ProviderKind)] = &[
+    (
+        AuthKind::ClaudeOauth,
+        "https://api.anthropic.com",
+        "claude-sonnet-5",
+        ProviderKind::Anthropic,
+    ),
+    (
+        AuthKind::GptOauth,
+        "https://chatgpt.com/backend-api/codex",
+        "gpt-5.2-codex",
+        ProviderKind::Responses,
+    ),
+    (
+        AuthKind::MuseSubscription,
+        "https://api.meta.ai/v1",
+        "muse-spark-1.3",
+        ProviderKind::Responses,
+    ),
+];
 
 impl LlmConfig {
     /// Reads the key from `LOGFARE_API_KEY`; the API format, base URL, and
@@ -86,6 +128,24 @@ impl LlmConfig {
     /// `INOCODE_LLM_BASE_URL`, and `INOCODE_LLM_MODEL`. The default format is
     /// OpenAI-compatible, so existing configurations behave as before.
     pub fn from_env() -> Result<Self, ErrorInfo> {
+        let provider_name = std::env::var(PROVIDER_ENV).unwrap_or_default();
+        if let Some(auth) = AuthKind::from_provider_name(&provider_name) {
+            // OAuth kinds take their credential from the store instead of the
+            // key variable; the key variable stays authoritative for the
+            // static-key kinds.
+            let default = OAUTH_DEFAULTS
+                .iter()
+                .find(|row| row.0 == auth)
+                .expect("every OAuth kind has defaults");
+            return Ok(Self {
+                provider: default.3,
+                auth,
+                base_url: std::env::var(BASE_URL_ENV).unwrap_or_else(|_| default.1.to_string()),
+                model: std::env::var(MODEL_ENV).unwrap_or_else(|_| default.2.to_string()),
+                api_key: String::new(),
+                auth_store_path: None,
+            });
+        }
         let api_key = std::env::var(API_KEY_ENV).map_err(|_| {
             ErrorInfo::new("provider_unconfigured", format!("{API_KEY_ENV} is not set"))
         })?;
@@ -97,9 +157,11 @@ impl LlmConfig {
         }
         Ok(Self {
             provider: ProviderKind::from_env()?,
+            auth: AuthKind::ApiKey,
             base_url: std::env::var(BASE_URL_ENV).unwrap_or_else(|_| DEFAULT_BASE_URL.to_string()),
             model: std::env::var(MODEL_ENV).unwrap_or_else(|_| DEFAULT_MODEL.to_string()),
             api_key,
+            auth_store_path: None,
         })
     }
 }
@@ -133,6 +195,61 @@ impl Llm {
         match self.config.provider {
             ProviderKind::OpenAi => self.openai_chat(prompt).await,
             ProviderKind::Anthropic => self.anthropic_chat(prompt).await,
+            ProviderKind::Responses => self.responses_chat(prompt).await,
+        }
+    }
+
+    /// Loads the credential for an OAuth kind, refreshing it first when it is
+    /// expired. Static-key kinds never touch the store.
+    async fn credential(&self) -> Result<Credential, ErrorInfo> {
+        let path = match &self.config.auth_store_path {
+            Some(path) => path.clone(),
+            None => crate::oauth::Store::default_path()
+                .map_err(|error| ErrorInfo::new("provider_config", error))?,
+        };
+        let mut store = crate::oauth::Store::load(path);
+        let name = self.config.auth.store_name();
+        let credential = store.credential(name).cloned().ok_or_else(|| {
+            ErrorInfo::new(
+                "provider_config",
+                format!("no stored credential for {name}; run the login first"),
+            )
+        })?;
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        if credential
+            .expires_at_ms
+            .is_none_or(|expires| now_ms < expires)
+        {
+            return Ok(credential);
+        }
+        let refreshed = match self.config.auth {
+            AuthKind::ClaudeOauth => {
+                crate::oauth::refresh_claude(&FlowEndpoints::anthropic(), &credential.refresh).await
+            }
+            AuthKind::GptOauth => {
+                crate::oauth::refresh_gpt(&FlowEndpoints::chatgpt(), &credential.refresh).await
+            }
+            // The Muse key is static; the account token exists only to mint it.
+            AuthKind::MuseSubscription | AuthKind::ApiKey => return Ok(credential),
+        };
+        match refreshed {
+            Ok(new) => {
+                store
+                    .update(name, |stored| {
+                        stored.access = new.access.clone();
+                        stored.refresh = new.refresh.clone();
+                        stored.expires_at_ms = new.expires_at_ms;
+                    })
+                    .map_err(|error| ErrorInfo::new("provider_config", error))?;
+                Ok(new)
+            }
+            Err(error) => Err(ErrorInfo::new(
+                "provider_http",
+                format!("credential refresh failed: {error}"),
+            )),
         }
     }
 
@@ -179,16 +296,28 @@ impl Llm {
     }
 
     async fn anthropic_chat(&self, prompt: &str) -> Result<ChatStream, ErrorInfo> {
-        let body = json!({
+        let mut body = json!({
             "model": self.config.model,
             "max_tokens": DEFAULT_MAX_TOKENS,
             "messages": [{ "role": "user", "content": prompt }],
             "stream": true,
         });
-        let response = self
-            .client
-            .post(self.anthropic_url())
-            .header("x-api-key", &self.config.api_key)
+        let mut request = self.client.post(self.anthropic_url());
+        if self.config.auth == AuthKind::ClaudeOauth {
+            // OAuth bearers are only accepted with the beta opt-in and the
+            // Claude Code identity block ahead of the conversation.
+            let credential = self.credential().await?;
+            body["system"] = json!([{
+                "type": "text",
+                "text": crate::oauth::CLAUDE_CODE_SYSTEM_INSTRUCTION,
+            }]);
+            request = request
+                .bearer_auth(&credential.access)
+                .header("anthropic-beta", crate::oauth::CLAUDE_CODE_BETA);
+        } else {
+            request = request.header("x-api-key", &self.config.api_key);
+        }
+        let response = request
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header("accept", "text/event-stream")
             .json(&body)
@@ -202,6 +331,73 @@ impl Llm {
                 parser: SseParser::new(),
                 body_ended: false,
                 done: false,
+            }),
+        })
+    }
+
+    /// The Responses backend of the ChatGPT/Codex and Meta Muse providers.
+    /// The path is appended to the base as-is; the Muse registry base already
+    /// carries `/v1`.
+    fn responses_url(&self) -> String {
+        format!("{}/responses", self.config.base_url.trim_end_matches('/'))
+    }
+
+    async fn responses_chat(&self, prompt: &str) -> Result<ChatStream, ErrorInfo> {
+        let credential = self.credential().await?;
+        let bearer = match self.config.auth {
+            AuthKind::MuseSubscription => credential.api_key.clone().ok_or_else(|| {
+                ErrorInfo::new(
+                    "provider_config",
+                    "the stored Muse credential has no api_key; run the login again",
+                )
+            })?,
+            // The ChatGPT account access token is the bearer; the Muse account
+            // token must never be sent to the model API (measured 401).
+            _ => credential.access.clone(),
+        };
+        // The minimal body the real backends accept (reference `warmup.ts`).
+        let body = json!({
+            "model": self.config.model,
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": prompt }],
+            }],
+            "stream": true,
+            "store": false,
+        });
+        let mut request = self
+            .client
+            .post(self.responses_url())
+            .bearer_auth(&bearer)
+            .header("accept", "text/event-stream");
+        request = match self.config.auth {
+            AuthKind::GptOauth => {
+                let account = credential.account_id.clone().ok_or_else(|| {
+                    ErrorInfo::new(
+                        "provider_config",
+                        "the stored ChatGPT credential has no account id; run the login again",
+                    )
+                })?;
+                request.header("chatgpt-account-id", account)
+            }
+            AuthKind::MuseSubscription => request
+                .header("user-agent", crate::oauth::MUSE_USER_AGENT)
+                .header("x-api-version", crate::oauth::MUSE_API_VERSION),
+            _ => request,
+        };
+        let response =
+            request.json(&body).send().await.map_err(|error| {
+                ErrorInfo::new("provider_http", format!("request failed: {error}"))
+            })?;
+        let response = require_success(response).await?;
+        Ok(ChatStream {
+            inner: ChatStreamInner::Responses(ResponsesStream {
+                response,
+                parser: SseParser::new(),
+                body_ended: false,
+                done: false,
+                signalled: false,
             }),
         })
     }
@@ -247,6 +443,7 @@ impl ChatStream {
         match &mut self.inner {
             ChatStreamInner::OpenAi(stream) => stream.next().await,
             ChatStreamInner::Anthropic(stream) => stream.next().await,
+            ChatStreamInner::Responses(stream) => stream.next().await,
         }
     }
 }
@@ -254,6 +451,7 @@ impl ChatStream {
 enum ChatStreamInner {
     OpenAi(OpenAiStream),
     Anthropic(AnthropicStream),
+    Responses(ResponsesStream),
 }
 
 struct OpenAiStream {
@@ -463,6 +661,123 @@ fn anthropic_event(data: &str) -> Result<AnthropicEvent, ErrorInfo> {
     }
 }
 
+struct ResponsesStream {
+    response: reqwest::Response,
+    parser: SseParser,
+    body_ended: bool,
+    done: bool,
+    signalled: bool,
+}
+
+impl ResponsesStream {
+    async fn next(&mut self) -> Result<Option<String>, ErrorInfo> {
+        if self.done {
+            return Ok(None);
+        }
+        loop {
+            match self.parser.next_item() {
+                Some(Ok(data)) => {
+                    match responses_delta(&data, &mut self.done, &mut self.signalled)? {
+                        Some(text) => return Ok(Some(text)),
+                        None => continue,
+                    }
+                }
+                Some(Err(error)) => {
+                    self.done = true;
+                    return Err(error);
+                }
+                None => {}
+            }
+            if self.body_ended {
+                // `response.completed`/`response.incomplete` are the only
+                // success terminals; a body that ends without either is a
+                // truncated answer, never a success.
+                self.done = true;
+                return if self.signalled {
+                    Ok(None)
+                } else {
+                    Err(ErrorInfo::new(
+                        "provider_stream",
+                        "the provider stream ended before it signalled completion",
+                    ))
+                };
+            }
+            match self.response.chunk().await {
+                Ok(Some(chunk)) => self.parser.push(&chunk),
+                Ok(None) => {
+                    self.parser.end();
+                    self.body_ended = true;
+                }
+                Err(error) => {
+                    self.done = true;
+                    return Err(ErrorInfo::new(
+                        "provider_stream",
+                        format!("stream failed: {error}"),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// Interprets one Responses `data` payload, updating the completion signals on
+/// the stream. Terminal and error rules follow the reference translation in
+/// `src/claude/inbound.ts` of the reference implementation.
+fn responses_delta(
+    data: &str,
+    done: &mut bool,
+    signalled: &mut bool,
+) -> Result<Option<String>, ErrorInfo> {
+    let value: Value = serde_json::from_str(data).map_err(|error| {
+        ErrorInfo::new("provider_protocol", format!("invalid SSE payload: {error}"))
+    })?;
+    match value.get("type").and_then(Value::as_str) {
+        // The only event carrying answer text.
+        Some("response.output_text.delta") => {
+            let text = value.get("delta").and_then(Value::as_str).unwrap_or("");
+            Ok(if text.is_empty() {
+                None
+            } else {
+                Some(text.to_string())
+            })
+        }
+        // Both end the answer; `incomplete` means the provider stopped early
+        // (length or content filter), which still produces the text it sent.
+        Some("response.completed") | Some("response.incomplete") => {
+            *done = true;
+            *signalled = true;
+            Ok(None)
+        }
+        Some("response.failed") => {
+            let message = value
+                .get("response")
+                .and_then(|response| response.get("error"))
+                .and_then(|error| error.get("message"))
+                .and_then(Value::as_str)
+                .unwrap_or("the provider failed the response");
+            *done = true;
+            Err(ErrorInfo::new("provider_stream", message.to_string()))
+        }
+        Some("error") => {
+            let message = value
+                .get("message")
+                .or_else(|| value.get("error").and_then(|error| error.get("message")))
+                .and_then(Value::as_str)
+                .unwrap_or("provider reported an error in the stream");
+            *done = true;
+            Err(ErrorInfo::new("provider_stream", message.to_string()))
+        }
+        // `response.created`, `response.output_item.*`,
+        // `response.content_part.*`, `response.heartbeat`, reasoning summary
+        // deltas, and unknown types carry no answer text.
+        Some(_) => Ok(None),
+        None => Err(ErrorInfo::new(
+            "provider_protocol",
+            "SSE payload has no \"type\" field",
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -472,9 +787,11 @@ mod tests {
         let build = |base: &str| {
             Llm::new(LlmConfig {
                 provider: ProviderKind::Anthropic,
+                auth: AuthKind::ApiKey,
                 base_url: base.to_string(),
                 model: "test-model".to_string(),
                 api_key: "test-key".to_string(),
+                auth_store_path: None,
             })
             .expect("build the client")
         };
@@ -499,9 +816,11 @@ mod tests {
     fn debug_output_does_not_contain_the_api_key() {
         let config = LlmConfig {
             provider: ProviderKind::Anthropic,
+            auth: AuthKind::ApiKey,
             base_url: "https://example.test/v1".to_string(),
             model: "test-model".to_string(),
             api_key: "super-secret-key-material".to_string(),
+            auth_store_path: None,
         };
         let rendered = format!("{config:?}");
         assert!(!rendered.contains("super-secret-key-material"));

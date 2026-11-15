@@ -9,9 +9,11 @@ use support::*;
 fn core_for(mock: &MockApi, model: &str) -> std::sync::Arc<Core> {
     let llm = Llm::new(LlmConfig {
         provider: ProviderKind::OpenAi,
+        auth: inocode_core::oauth::AuthKind::ApiKey,
         base_url: mock.base_url.clone(),
         model: model.to_string(),
         api_key: "test-key".to_string(),
+        auth_store_path: None,
     })
     .expect("build the provider client");
     std::sync::Arc::new(Core::with_llm(llm))

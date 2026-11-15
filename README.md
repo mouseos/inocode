@@ -57,12 +57,32 @@ TCP 上で動く JSON / 生バイナリ混在のフレームプロトコルラ�
 | 環境変数 | 既定 | 用途 |
 | --- | --- | --- |
 | `LOGFARE_API_KEY` | なし（必須） | プロバイダーの API キー |
-| `INOCODE_LLM_PROVIDER` | `openai` | 接続方式: `openai`（`/chat/completions`、Bearer 認証）または `anthropic`（`/messages`、`x-api-key` ＋ `anthropic-version: 2023-06-01`） |
-| `INOCODE_LLM_BASE_URL` | `https://logfare.ai/v1` | 両方式共通の API Base URL |
-| `INOCODE_LLM_MODEL` | `logfare/auto` | モデル名 |
+| `INOCODE_LLM_PROVIDER` | `openai` | 接続方式: `openai`（`/chat/completions`、Bearer 認証）, `anthropic`（`/messages`、`x-api-key` ＋ `anthropic-version: 2023-06-01`）, `responses`（`/responses`、Bearer 認証）またはサブスクリプション/OAuth 方式の `claude-oauth` / `gpt-oauth` / `muse-code`（下記） |
+| `INOCODE_LLM_BASE_URL` | `https://logfare.ai/v1`（方式ごとの既定は下表） | API Base URL |
+| `INOCODE_LLM_MODEL` | `logfare/auto`（方式ごとの既定は下表） | モデル名 |
 | `INOCODE_PORT` | `8787` | 待ち受けポート（待ち受けは常に `127.0.0.1`） |
 
-Anthropic 方式では要求に `max_tokens: 1024` を送る。Logfare の `/v1/messages` は Anthropic Messages API 互換なので、`INOCODE_LLM_PROVIDER=anthropic` を設定するだけで切り替わる。TCP プロトコル、イベント形式、`cancel` の意味は両方式で同じ。
+Anthropic 方式では要求に `max_tokens: 8192` を送る（思考トークンが `max_tokens` を共有するため、小さな値では本文が空になる。`docs/evidence/anthropic-messages.md` 参照）。Logfare の `/v1/messages` は Anthropic Messages API 互換なので、`INOCODE_LLM_PROVIDER=anthropic` を設定するだけで切り替わる。TCP プロトコル、イベント形式、`cancel` の意味は全方式で同じ。
+
+### サブスクリプション / OAuth ログイン
+
+`claude-oauth`（Claude Pro/Max）、`gpt-oauth`（ChatGPT/Codex）、`muse-code`（Meta Muse Code）は認証情報ストア `~/.inocode/auth.json` を使う。最初に一度だけログインする:
+
+```bash
+cargo run --release -p inocode-server -- login claude       # ブラウザで承認（失敗時は --code でコード貼り付け）
+cargo run --release -p inocode-server -- login gpt          # ブラウザで承認
+cargo run --release -p inocode-server -- login muse-code    # デバイスコードをブラウザで承認
+```
+
+ログイン後は `INOCODE_LLM_PROVIDER` を切り替えるだけで使える（API キー変数は不要）:
+
+| `INOCODE_LLM_PROVIDER` | API 形式と既定エンドポイント | 既定モデル | 認証 |
+| --- | --- | --- | --- |
+| `claude-oauth` | Anthropic Messages、`https://api.anthropic.com/v1/messages` | `claude-sonnet-5` | OAuth Bearer（失効前に自動更新） |
+| `gpt-oauth` | OpenAI Responses、`https://chatgpt.com/backend-api/codex/responses` | `gpt-5.2-codex` | OAuth Bearer ＋ `chatgpt-account-id` |
+| `muse-code` | OpenAI Responses、`https://api.meta.ai/v1/responses` | `muse-spark-1.3` | 保存済みサブスクリプションキー（`LLM|`） |
+
+認証情報はファイルに保存される（秘密値は Debug 出力・ログに出ない）。トークンは要求時に失効を確認し、期限切れなら更新トークンで自動更新する。
 
 ```bash
 export LOGFARE_API_KEY=...            # 環境変数からのみ読む。リポジトリに書かない
@@ -92,7 +112,9 @@ LOGFARE_API_KEY=... cargo test --release -p inocode-server --test live_api -- --
 - `docs/evidence/tcp-frame-protocol.md` — フレームプロトコル。
 - `docs/evidence/server-core-requests.md` — Server / Core と要求処理。
 - `docs/evidence/llm-streaming.md` — OpenAI 互換 API 接続とストリーミング。
+- `docs/evidence/anthropic-messages.md` — Anthropic Messages 互換接続と `max_tokens` の根拠。
+- `docs/evidence/oauth-providers.md` — サブスクリプション / OAuth ログイン（Claude OAuth・GPT OAuth・Muse Code）の線路詳細と根拠。
 
 ## 現状の範囲
 
-実装済み: フレームプロトコル、Server / Core、OpenAI 互換 API 接続と逐次配送、中断、複数クライアント。未実装: Anthropic Messages 互換、Codex OAuth、Claude OAuth、会話履歴、ツール実行、RAG、MCP、GUI、製品用 CLI。
+実装済み: フレームプロトコル、Server / Core、OpenAI 互換 API 接続と逐次配送、Anthropic Messages 互換接続、Claude OAuth・GPT OAuth・Muse Code のログインと要求時認証、中断、複数クライアント。未実装: 会話履歴、ツール実行、RAG、MCP、GUI、製品用 CLI。

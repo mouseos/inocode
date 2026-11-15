@@ -15,9 +15,11 @@ fn core_for(
 ) -> Arc<Core> {
     let llm = Llm::new(LlmConfig {
         provider,
+        auth: inocode_core::oauth::AuthKind::ApiKey,
         base_url: base_url.unwrap_or_else(|| mock.base_url.clone()),
         model: model.to_string(),
         api_key: "test-key".to_string(),
+        auth_store_path: None,
     })
     .expect("build the provider client");
     Arc::new(Core::with_llm(llm))
