@@ -39,13 +39,13 @@
 
 ## 未検証の主張
 
-- macOS 実機での実行は未実施（CI の `macos-latest` で確認する）。
-- Linux 実機での実行は未実施（CI の `ubuntu-latest` で確認する）。
+- Linux / macOS は GitHub Actions の `ubuntu-latest` / `macos-latest` 上でのみ確認しており、手元の実機検証はしていない（Windows のみローカル実機）。
 - 多数同時接続時のスケーラビリティ、長時間稼働、ループバック以外のネットワーク経路、悪意ある入力の網羅的検証は未実施。
 - 要求ペイロードは `FrameReader` の上限（16 MiB）まで受け付ける。上限超過時の挙動は第1段階のテストで確認済みだが、Server 経由の大きすぎる要求は未検証。
 
 ## 実装とテストの状況
 
 - 実装: 完了（Server / Core / 要求・応答）。
-- テスト: 上記 43 件がローカル（Windows）で成功。3 OS の CI 結果は実行後に追記する。
+- テスト: 上記 43 件がローカル（Windows）で成功。
+- GitHub Actions（`.github/workflows/protocol-test.yml`、workflow_dispatch 手動実行）: run https://github.com/mouseos/inocode/actions/runs/43711649476 で ubuntu-latest / windows-latest / macos-latest の 3 ジョブすべて成功。各 OS の内訳はプロトコル単体 14、プロトコル TCP 統合 14、Core 単体 4、Server TCP 統合 11。fmt / clippy（`-D warnings`）/ build / test を各 OS で実行済み。
 - 必要なユーザー承認: 追加なし（範囲は本タスク指示で確定）。LLM 接続は第3段階の指示まで着手しない。
