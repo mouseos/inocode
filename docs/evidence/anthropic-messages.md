@@ -35,6 +35,7 @@
   - `/v1/messages` は「Anthropic Messages API」として提供される。
   - 認証は Bearer トークン。`x-api-key` ヘッダーも受け付ける（「which is what Anthropic clients send」）。
   - 全エンドポイントは `https://logfare.ai/v1` の下にある。
+  - **ストリーミングの記載は `/v1/chat/completions`（OpenAI 形式）のみ**（2026-11-15 再取得で全文確認）。「Chat completions (streaming supported)」「Set `"stream": true` to stream over SSE」は OpenAI 形式の節だけにあり、`/v1/messages` の節には `stream` パラメータの記載もストリーミングへの言及もない（curl 例も `stream` なし）。
 - **Anthropic 公式ストリーミング仕様**（https://platform.claude.com/docs/en/build-with-claude/streaming、2026-11-15 取得）:
   - 正常終了までのイベント列: `message_start` → `content_block_start` → （任意回の `ping` と `content_block_delta`）→ `content_block_stop` → 1 回以上の `message_delta` → 最後の `message_stop`。
   - `content_block_delta` の `delta.type` は `text_delta`（テキスト）、`input_json_delta`（ツール入力の部分 JSON）などがある。テキストとして連結するのは `text_delta` のみ。
@@ -43,6 +44,11 @@
   - `error` イベント（例: 非ストリーミング時の HTTP 529 に対応する `overloaded_error`）: `{"type":"error","error":{"type":...,"message":...}}`。**ストリーム内エラーは正常終了ではない**。
   - 「new event types may be added, and your code should handle unknown event types gracefully」— 未知のイベント型は無視するのが仕様上の要求。
   - 例のストリームは `event:` 行と `data:` 行のペアで構成され、`data` の `type` がイベント名と一致する。
+- **実 API 観測**（GitHub Actions、`LOGFARE_API_KEY` 使用、テキストは出力しない）:
+  - run 43725234427（コミット 8ee9b80）: 3 OS とも `/v1/messages`（`stream: true`）は本文全体を 1 つの delta で返し `completed` に至った（first_delta と total がほぼ同一）。OpenAI 経路は同一プロンプトで 4〜5 delta。
+  - run 43726199798（コミット 872b7af）: 3 OS とも `/v1/messages` は 300 語以上の生成を依頼しても text delta 0 件で `completed` に至った。OpenAI 経路は同一環境で 4〜9 delta。
+  - この挙動は、Logfare 公式ドキュメントが `/v1/messages` のストリーミングを記載していないことと整合する（上記）。
+  - 診断 run 43726962574（コミット ade1cf5、`logfare_messages_stream_event_kinds`、3 OS で同一結果）: `logfare/auto` で `/v1/messages` ＋ `stream: true` に投げると、HTTP 200・`content-type: text/event-stream` で、イベントは `message_start`、`content_block_start`（content_block.type = **`thinking`**）、`content_block_delta` × 1（delta.type = **`thinking_delta`**）、`content_block_stop`、`message_delta`、`message_stop` がこの順に 1 回ずつ。**`text` ブロックも `text_delta` も 1 件も届かない**。本文相当が `thinking` ブロック内に 1 イベントで届く（Logfare がルーティングした上流モデルの推論出力を Anthropic 形式の最初の content block に写しているとしか説明がつかない）。同一キー・同一環境で `/v1/chat/completions` は 4〜9 delta の本文をストリームする。
 - 実装判断（仕様と指示に基づく。研究ではない）:
   - 接続方式は `LlmConfig` の値で選び、既定は `openai`（既存動作を壊さない）。選択のみで設定管理の仕組みは作らない。
   - URL は既存の `INOCODE_LLM_BASE_URL`（既定 `https://logfare.ai/v1`）＋パス連結で組み立て、`/v1` が重複しない。
@@ -53,6 +59,10 @@
 
 - 参照元: 本タスクの実装指示（第4段階 §2〜§5、§7）。実 API で `/v1/messages` の生成・ストリーミングを確認することが必須条件で、模擬 API だけでは完成扱いにしないと明示されている。
 - 承認の性質: 機能範囲の確定という形での承認。学術根拠を伴わない（本機能に学術的根拠は不要なため、第3節の停止条件には該当しない設計判断として記録する）。
+
+## 未決事項（ユーザー判断待ち）
+
+- Logfare `/v1/messages` の `logfare/auto` は本文相当を `thinking_delta` 1 件として届ける（上記の実測）。Anthropic 公式仕様では `thinking_delta` は推論テキストであり回答本文ではないため、現実装（`text_delta` のみ連結）は仕様どおりで、このストリームでは回答テキストが 0 件になる。`thinking_delta` を回答として連結するのは仕様に反する推測実装であるため、**実装せずユーザー承認待ち（UNSUPPORTED_PENDING）**。選択肢: ①仕様どおりのまま（このプロバイダー設定では回答が空になる）、② `thinking_delta` も回答に連結する（仕様外の拡張で、ユーザー承認が必要）、③ Anthropic 経路では `logfare/auto` 以外のモデルを使う、④ Anthropic 経路では非ストリーミング要求にする。決定まで現実装を変更しない。
 
 ## 実装・検証の状況
 
