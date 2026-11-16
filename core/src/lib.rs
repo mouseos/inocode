@@ -6,6 +6,7 @@
 //! framing, or connections, so the server owns all transport concerns.
 
 mod agent_tools;
+mod compaction;
 pub mod conversation;
 pub mod deepai;
 mod llm;

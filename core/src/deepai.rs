@@ -150,6 +150,8 @@ fn is_legacy_answer(payload: &Value) -> bool {
 pub(crate) struct CatalogModel {
     pub(crate) id: String,
     pub(crate) name: Option<String>,
+    /// Input tokens the model accepts (`contextWindow`).
+    pub(crate) context_window: Option<u64>,
     responses: bool,
     theos_per_request: Option<String>,
     theos_per_second: Vec<String>,
@@ -208,6 +210,7 @@ pub(crate) fn parse_catalog(value: &Value) -> Result<Vec<CatalogModel>, ErrorInf
             usable.then(|| CatalogModel {
                 id: id.to_string(),
                 name: item.get("name").and_then(Value::as_str).map(str::to_string),
+                context_window: item.get("contextWindow").and_then(Value::as_u64),
                 responses: item.get("api").and_then(Value::as_str) == Some("openai-responses"),
                 theos_per_request: item
                     .get("theosPerRequest")

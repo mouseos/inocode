@@ -10,6 +10,7 @@ use serde::Serialize;
 use tokio::sync::{mpsc, watch};
 
 use crate::agent_tools::{self, Answer};
+use crate::compaction;
 use crate::conversation::{
     AssistantPart, Body, Conversation, Message, Speaker, StopReason, ToolSpec,
 };
@@ -156,7 +157,13 @@ struct Thread<'a> {
     session: SessionId,
     project: Option<ProjectId>,
     rules: Option<String>,
+    /// What is sent, and the stored position of each message in it.
     conversation: Conversation,
+    seqs: Vec<i64>,
+    /// The position the next stored message takes.
+    next_seq: i64,
+    /// Input tokens of the latest request.
+    last_input: Option<u64>,
     events: mpsc::Sender<TurnEvent>,
     /// `ask` rules the person approved for this turn.
     allowed: HashSet<NoteId>,
@@ -169,21 +176,59 @@ struct Thread<'a> {
 
 impl Thread<'_> {
     async fn record(&mut self, bodies: Vec<Body>) -> Result<(), ErrorInfo> {
-        let base = self.conversation.messages.len();
+        let base = self.next_seq;
         let messages: Vec<Message> = bodies
             .into_iter()
             .enumerate()
             .map(|(offset, body)| Message {
-                id: (base + offset + 1).to_string(),
+                id: (base + offset as i64).to_string(),
                 body,
             })
             .collect();
         let positions = self.store.append(self.session, messages.clone()).await?;
         for (seq, message) in positions.into_iter().zip(messages) {
             self.conversation.messages.push(message.clone());
+            self.seqs.push(seq);
+            self.next_seq = seq + 1;
             // A closed connection does not stop the turn: it is stored.
             let _ = self.events.send(TurnEvent::Message { seq, message }).await;
         }
+        Ok(())
+    }
+
+    /// Compacts what is sent when the latest request used most of the
+    /// context window. The stored history is kept; a compaction message is
+    /// added and the history is assembled again from the store.
+    async fn compact_if_due(&mut self, llm: &Llm, usage: &mut TurnUsage) -> Result<(), ErrorInfo> {
+        // The window is looked up only once a request has reported its size.
+        let Some(input) = self.last_input else {
+            return Ok(());
+        };
+        let Some(window) = llm.context_window().await else {
+            return Ok(());
+        };
+        if !compaction::due(input, window) {
+            return Ok(());
+        }
+        let sent: Vec<(i64, Message)> = self
+            .seqs
+            .iter()
+            .copied()
+            .zip(self.conversation.messages.iter().cloned())
+            .collect();
+        let compacted =
+            compaction::compact(llm, self.conversation.system.clone(), &sent, input, window)
+                .await?;
+        self.last_input = None;
+        let Some((body, summary_usage)) = compacted else {
+            return Ok(());
+        };
+        usage.add(summary_usage);
+        self.record(vec![body]).await?;
+        let stored = self.store.since(self.session, 0, i64::MAX as usize).await?;
+        let (seqs, messages) = compaction::assemble(stored).into_iter().unzip();
+        self.seqs = seqs;
+        self.conversation.messages = messages;
         Ok(())
     }
 
@@ -396,6 +441,8 @@ async fn open<'a>(
     };
     let project = project.map(|(id, _)| id);
     let stored = store.since(session, 0, i64::MAX as usize).await?;
+    let next_seq = stored.last().map_or(1, |last| last.seq + 1);
+    let (seqs, messages) = compaction::assemble(stored).into_iter().unzip();
     let lessons = agent_tools::render_lessons(store, project, prompt).await?;
     Ok(Thread {
         store,
@@ -403,8 +450,11 @@ async fn open<'a>(
         project,
         conversation: Conversation {
             system: Some(system_prompt(rules.as_deref())),
-            messages: stored.into_iter().map(|stored| stored.message).collect(),
+            messages,
         },
+        seqs,
+        next_seq,
+        last_input: None,
         rules,
         events,
         allowed: allowed.into_iter().collect(),
@@ -427,6 +477,15 @@ async fn steps(
         return Ending::Failed(error);
     }
     loop {
+        let compacted = tokio::select! {
+            compacted = thread.compact_if_due(llm, usage) => Some(compacted),
+            () = cancelled(cancel) => None,
+        };
+        match compacted {
+            Some(Ok(())) => {}
+            Some(Err(error)) => return Ending::Failed(error),
+            None => return Ending::Interrupted,
+        }
         let state = match thread.state().await {
             Ok(state) => state,
             Err(error) => return Ending::Failed(error),
@@ -469,6 +528,7 @@ async fn steps(
             }
         }
         usage.add(stream.usage());
+        thread.last_input = stream.usage().map(|usage| usage.input);
         let body = stream.assistant();
         let Body::Assistant { stop, parts, .. } = &body else {
             unreachable!("a stream assembles an assistant turn");

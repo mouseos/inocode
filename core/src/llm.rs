@@ -213,6 +213,8 @@ pub struct Llm {
     deepai: Option<Box<crate::deepai::Session>>,
     /// The configured model's catalog default effort, looked up once.
     catalog_effort: tokio::sync::OnceCell<Option<crate::reasoning::Effort>>,
+    /// The configured model's context window, looked up once.
+    catalog_window: tokio::sync::OnceCell<Option<u64>>,
 }
 
 impl Llm {
@@ -233,6 +235,7 @@ impl Llm {
             config,
             deepai,
             catalog_effort: tokio::sync::OnceCell::new(),
+            catalog_window: tokio::sync::OnceCell::new(),
         })
     }
 
@@ -321,6 +324,21 @@ impl Llm {
             None
         };
         catalog.unwrap_or(crate::reasoning::FALLBACK_EFFORT)
+    }
+
+    /// Input tokens the configured model accepts, as its provider's model
+    /// list states; `None` when the list does not say or cannot be read.
+    pub async fn context_window(&self) -> Option<u64> {
+        *self
+            .catalog_window
+            .get_or_init(|| async {
+                let models = self.models().await.ok()?;
+                models
+                    .into_iter()
+                    .find(|model| model.id == self.config.model)?
+                    .context_window
+            })
+            .await
     }
 
     /// Loads the credential for an OAuth kind, refreshing it first when it is
@@ -675,6 +693,7 @@ impl Llm {
                     owned_by: None,
                     reasoning_levels: None,
                     default_reasoning: None,
+                    context_window: model.context_window,
                 })
                 .collect());
         }
@@ -873,6 +892,8 @@ pub struct ModelInfo {
     pub reasoning_levels: Option<Vec<String>>,
     /// The provider's default effort for the model.
     pub default_reasoning: Option<String>,
+    /// Input tokens the model accepts, when the provider says.
+    pub context_window: Option<u64>,
 }
 
 /// Extracts the model list from a discovery payload. OpenAI-style responses
@@ -933,6 +954,11 @@ fn models_from_json(value: &Value) -> Result<Vec<ModelInfo>, ErrorInfo> {
                     .get("default_reasoning_level")
                     .and_then(Value::as_str)
                     .map(str::to_string),
+                // Anthropic `max_input_tokens`, the ChatGPT roster's
+                // `context_window`, OpenRouter-style `context_length`.
+                context_window: ["max_input_tokens", "context_window", "context_length"]
+                    .iter()
+                    .find_map(|field| item.get(*field).and_then(Value::as_u64)),
             })
         })
         .collect())

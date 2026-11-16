@@ -138,7 +138,8 @@ async fn a_turn_streams_stores_and_reports_why_it_ended() {
 
         // The next turn sends the stored history.
         turn(&mut client, 4, thread, "again").await;
-        let sent = &mock.requests()[1].body["messages"];
+        let chats = chats(&mock);
+        let sent = &chats[1].body["messages"];
         assert_eq!(sent.as_array().map(Vec::len), Some(4));
         assert_eq!(sent[0]["role"], "system");
         assert_eq!(sent[2]["content"], "hello");
@@ -151,7 +152,10 @@ async fn a_turn_goes_on_after_tool_calls_and_answers_each_one() {
     with_timeout(async {
         let calls = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&calls);
-        let mock = start_mock(move |_: &MockRequest| {
+        let mock = start_mock(move |request: &MockRequest| {
+            if request.method == "GET" {
+                return MockReply::status(404, "{}");
+            }
             if counter.fetch_add(1, Ordering::SeqCst) == 0 {
                 MockReply::stream(vec![tool_call_chunk(), finish("tool_calls"), sse_done()])
             } else {
@@ -171,7 +175,8 @@ async fn a_turn_goes_on_after_tool_calls_and_answers_each_one() {
         let last = events.last().unwrap();
         assert_eq!(last["event"], "completed");
         assert_eq!(last["usage"]["requests"], 2);
-        let second = &mock.requests()[1].body["messages"];
+        let chats = chats(&mock);
+        let second = &chats[1].body["messages"];
         assert_eq!(second[3]["role"], "tool");
         assert_eq!(second[3]["tool_call_id"], "call_1");
         assert_eq!(second[3]["content"], "no tool named read is available");
@@ -191,7 +196,10 @@ fn call_chunk(id: &str, name: &str, arguments: &Value) -> Vec<u8> {
 /// plain "done".
 async fn scripted(replies: Vec<Vec<Vec<u8>>>) -> MockApi {
     let count = AtomicUsize::new(0);
-    start_mock(move |_: &MockRequest| {
+    start_mock(move |request: &MockRequest| {
+        if request.method == "GET" {
+            return MockReply::status(404, "{}");
+        }
         let index = count.fetch_add(1, Ordering::SeqCst);
         MockReply::stream(
             replies
@@ -265,7 +273,7 @@ async fn the_plan_is_shown_after_the_history_with_every_request() {
             tool_results(&events),
             ["Plan updated: 0 pending, 1 in progress, 1 completed."]
         );
-        let requests = mock.requests();
+        let requests = chats(&mock);
         assert!(requests[0].body["tools"]
             .as_array()
             .is_some_and(|tools| tools.len() == 3));
@@ -416,7 +424,8 @@ async fn lessons_need_a_condition_and_rules_are_not_duplicated() {
             "rule_quote must be text from the project rules (AGENTS.md)"
         );
 
-        let system = &mock.requests()[0].body["messages"][0];
+        let chats = chats(&mock);
+        let system = &chats[0].body["messages"][0];
         assert!(system["content"]
             .as_str()
             .is_some_and(|text| text.contains("依存関係を勝手に追加しない。")));
@@ -627,6 +636,104 @@ async fn thread_requests_report_their_errors() {
         let mut client = connect(addr).await;
         let response = call(&mut client, 1, json!({"id": 1, "method": "thread/start"})).await;
         assert_eq!(response["error"]["code"], "store_unconfigured");
+    })
+    .await;
+}
+
+/// The chat requests the mock received, without model discovery.
+fn chats(mock: &MockApi) -> Vec<MockRequest> {
+    mock.requests()
+        .into_iter()
+        .filter(|request| request.method == "POST")
+        .collect()
+}
+
+fn usage_chunk(input: u64) -> Vec<u8> {
+    let payload =
+        json!({ "choices": [], "usage": {"prompt_tokens": input, "completion_tokens": 5} });
+    format!("data: {payload}\n\n").into_bytes()
+}
+
+#[tokio::test]
+async fn near_the_window_older_work_is_compacted_and_the_person_kept() {
+    with_timeout(async {
+        let step = AtomicUsize::new(0);
+        let mock = start_mock(move |request: &MockRequest| {
+            if request.method == "GET" {
+                return MockReply::status(
+                    200,
+                    &json!({"data": [{"id": "test-model", "context_length": 1000}]}).to_string(),
+                );
+            }
+            if request
+                .body
+                .to_string()
+                .contains("will be replaced by your summary")
+            {
+                return MockReply::stream(vec![
+                    sse_delta("SUMMARY TEXT"),
+                    finish("stop"),
+                    sse_done(),
+                ]);
+            }
+            let plan = |step: &str| json!({"items": [{"step": step, "status": "in_progress"}]});
+            match step.fetch_add(1, Ordering::SeqCst) {
+                0 => MockReply::stream(vec![
+                    call_chunk("c1", "plan", &plan("one")),
+                    finish("tool_calls"),
+                    usage_chunk(100),
+                    sse_done(),
+                ]),
+                1 => MockReply::stream(vec![
+                    call_chunk("c2", "plan", &plan("two")),
+                    finish("tool_calls"),
+                    usage_chunk(900),
+                    sse_done(),
+                ]),
+                _ => MockReply::stream(vec![sse_delta("done"), finish("stop"), sse_done()]),
+            }
+        })
+        .await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client).await;
+
+        let events = turn(&mut client, 2, thread, "do the work").await;
+        assert_eq!(events.last().unwrap()["event"], "completed");
+        let compaction = events
+            .iter()
+            .find(|event| {
+                event["message"]["message"]["body"]["from"]["harness"]
+                    .as_str()
+                    .is_some_and(|kind| kind.starts_with("compaction:"))
+            })
+            .expect("a compaction message");
+        let parts = &compaction["message"]["message"]["body"]["parts"];
+        assert!(parts[0].as_str().unwrap().contains("plan"));
+        assert!(parts[1].as_str().unwrap().contains("SUMMARY TEXT"));
+
+        let chats = chats(&mock);
+        let last = &chats.last().unwrap().body["messages"];
+        let text = last.to_string();
+        assert!(text.contains("do the work"), "{text}");
+        assert!(text.contains("SUMMARY TEXT"), "{text}");
+        assert!(
+            !text.contains("\"c1\""),
+            "the first call is replaced: {text}"
+        );
+        assert!(text.contains("\"c2\""), "the latest call is kept: {text}");
+        assert_eq!(last[0]["role"], "system");
+
+        // Nothing stored is lost.
+        let read = call(
+            &mut client,
+            3,
+            json!({"id": 3, "method": "thread/read", "params": {"thread_id": thread}}),
+        )
+        .await;
+        let stored = read["result"]["messages"].to_string();
+        assert!(stored.contains("\"c1\""));
     })
     .await;
 }
