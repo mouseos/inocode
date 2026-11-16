@@ -33,6 +33,12 @@ const BASE_URL_ENV: &str = "INOCODE_LLM_BASE_URL";
 const MODEL_ENV: &str = "INOCODE_LLM_MODEL";
 const PROVIDER_ENV: &str = "INOCODE_LLM_PROVIDER";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
+/// The ChatGPT backend filters `/models` by a required `client_version`
+/// parameter; asking as a client newer than any release shows the whole
+/// roster (reference `CODEX_ROSTER_DISCOVERY_CLIENT_VERSION`).
+const CODEX_DISCOVERY_CLIENT_VERSION: &str = "99.0.0";
+/// Overrides the `client_version` reported to the Codex models endpoint.
+const CODEX_CLIENT_VERSION_ENV: &str = "INOCODE_CODEX_CLIENT_VERSION";
 
 /// Which API format a [`Llm`] speaks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -406,12 +412,21 @@ impl Llm {
     /// reference `buildModelsRequest`: OpenAI-style `{base}/models` for
     /// everything except Anthropic, whose endpoint is `{base}/v1/models`
     /// with the maximum page size.
+    /// The discovery endpoint for the configured kind, following the
+    /// reference `buildModelsRequest`: OpenAI-style `{base}/models` for
+    /// everything except Anthropic, whose endpoint is `{base}/v1/models`
+    /// with the maximum page size. The ChatGPT backend additionally requires
+    /// `client_version` on `/models`.
     fn models_url(&self) -> String {
         let base = self.config.base_url.trim_end_matches('/');
         match self.config.provider {
             ProviderKind::Anthropic => {
                 let base = base.strip_suffix("/v1").unwrap_or(base);
                 format!("{base}/v1/models?limit=1000")
+            }
+            ProviderKind::Responses if self.config.auth == AuthKind::GptOauth => {
+                let base = base.strip_suffix("/models").unwrap_or(base);
+                format!("{base}/models?client_version={}", codex_client_version())
             }
             _ => {
                 // The reference `providerModelsUrl` also tolerates a base that
@@ -495,19 +510,37 @@ pub struct ModelInfo {
 }
 
 /// Extracts the model list from a discovery payload. OpenAI-style responses
-/// carry `owned_by`, Anthropic's carry `display_name`; entries without a
-/// usable `id` are skipped, and a payload without a `data` array is invalid.
+/// carry `owned_by`, Anthropic's carry `display_name`, and the ChatGPT/Codex
+/// roster uses `models` with `slug` rows gated by `supported_in_api` and
+/// `visibility` (reference `parseAccountModels`). Entries without a usable id
+/// are skipped, and a payload without a list is invalid.
 fn models_from_json(value: &Value) -> Result<Vec<ModelInfo>, ErrorInfo> {
-    let data = value.get("data").and_then(Value::as_array).ok_or_else(|| {
-        ErrorInfo::new("provider_protocol", "discovery response has no model list")
-    })?;
+    let data = value
+        .get("data")
+        .and_then(Value::as_array)
+        .or_else(|| value.get("models").and_then(Value::as_array))
+        .ok_or_else(|| {
+            ErrorInfo::new("provider_protocol", "discovery response has no model list")
+        })?;
     Ok(data
         .iter()
         .filter_map(|item| {
-            let id = item.get("id").and_then(Value::as_str)?.trim();
-            if id.is_empty() {
-                return None;
-            }
+            let id = item
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.trim().is_empty())
+                .or_else(|| {
+                    // Codex roster rows: only `slug`s the account may use.
+                    let usable = item.get("supported_in_api").and_then(Value::as_bool)
+                        == Some(true)
+                        && item.get("visibility").and_then(Value::as_str) != Some("hide");
+                    usable
+                        .then(|| item.get("slug"))
+                        .flatten()
+                        .and_then(Value::as_str)
+                        .filter(|slug| !slug.trim().is_empty())
+                })?
+                .trim();
             Some(ModelInfo {
                 id: id.to_string(),
                 display_name: item
@@ -521,6 +554,38 @@ fn models_from_json(value: &Value) -> Result<Vec<ModelInfo>, ErrorInfo> {
             })
         })
         .collect())
+}
+
+/// The `client_version` reported to the ChatGPT models endpoint: the env
+/// override when it is a usable version string, else the discovery version
+/// that sees the whole roster (the reference rejects `0.0.0`-style
+/// placeholders because upstream answers them with an empty list).
+fn codex_client_version() -> String {
+    let candidate = std::env::var(CODEX_CLIENT_VERSION_ENV).unwrap_or_default();
+    let trimmed = candidate.trim();
+    let usable = !trimmed.is_empty()
+        && trimmed.len() <= 64
+        && trimmed != "0.0.0"
+        && trimmed
+            .split(['-', '+'])
+            .next()
+            .map(|core| {
+                core.split('.').any(|segment| {
+                    segment
+                        .parse::<u64>()
+                        .map(|value| value != 0)
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false)
+        && trimmed
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '+');
+    if usable {
+        trimmed.to_string()
+    } else {
+        CODEX_DISCOVERY_CLIENT_VERSION.to_string()
+    }
 }
 
 /// Reads the response body with the same 16 MiB cap as the SSE streams, so a
@@ -1018,6 +1083,17 @@ mod tests {
 
     #[test]
     fn models_url_follows_the_reference_discovery_shapes() {
+        let build_gpt = |base: &str| {
+            Llm::new(LlmConfig {
+                provider: ProviderKind::Responses,
+                auth: AuthKind::GptOauth,
+                base_url: base.to_string(),
+                model: "test-model".to_string(),
+                api_key: String::new(),
+                auth_store_path: Some(std::env::temp_dir().join("inocode-gpt-models-url-test")),
+            })
+            .expect("build the client")
+        };
         let build = |provider: ProviderKind, base: &str| {
             Llm::new(LlmConfig {
                 provider,
@@ -1038,6 +1114,12 @@ mod tests {
         assert_eq!(
             build(ProviderKind::Responses, "https://api.meta.ai/v1").models_url(),
             "https://api.meta.ai/v1/models"
+        );
+        // The ChatGPT backend filters `/models` by a required `client_version`;
+        // without it the request fails (see the Codex roster notes).
+        assert_eq!(
+            build_gpt("https://chatgpt.com/backend-api/codex/").models_url(),
+            "https://chatgpt.com/backend-api/codex/models?client_version=99.0.0"
         );
         assert_eq!(
             build(
@@ -1060,6 +1142,18 @@ mod tests {
     }
 
     #[test]
+    fn codex_client_version_prefers_a_usable_override() {
+        std::env::set_var(CODEX_CLIENT_VERSION_ENV, "0.146.0");
+        assert_eq!(codex_client_version(), "0.146.0");
+        std::env::set_var(CODEX_CLIENT_VERSION_ENV, "0.0.0");
+        assert_eq!(codex_client_version(), "99.0.0");
+        std::env::set_var(CODEX_CLIENT_VERSION_ENV, " ");
+        assert_eq!(codex_client_version(), "99.0.0");
+        std::env::remove_var(CODEX_CLIENT_VERSION_ENV);
+        assert_eq!(codex_client_version(), "99.0.0");
+    }
+
+    #[test]
     fn models_from_json_reads_both_shapes_and_skips_unusable_entries() {
         // OpenAI shape: id + owned_by.
         let openai = serde_json::json!({"data": [
@@ -1078,8 +1172,20 @@ mod tests {
         ]});
         let models = models_from_json(&anthropic).expect("anthropic shape");
         assert_eq!(models[0].display_name.as_deref(), Some("Claude Sonnet 5"));
-        // A payload without a data array is invalid.
-        let error = models_from_json(&serde_json::json!({"models": []})).expect_err("no list");
+        // Codex roster shape: `models` with gated `slug` rows (the account may
+        // only use API-enabled, visible models).
+        let codex = serde_json::json!({"models": [
+            {"slug": "gpt-5.2-codex", "supported_in_api": true, "visibility": "show", "display_name": "GPT-5.2 Codex"},
+            {"slug": "hidden-model", "supported_in_api": true, "visibility": "hide"},
+            {"slug": "api-only", "supported_in_api": false, "visibility": "show"},
+            {"slug": "no-flag"},
+        ]});
+        let models = models_from_json(&codex).expect("codex shape");
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "gpt-5.2-codex");
+        assert_eq!(models[0].display_name.as_deref(), Some("GPT-5.2 Codex"));
+        // A payload without a model list is invalid.
+        let error = models_from_json(&serde_json::json!({"other": []})).expect_err("no list");
         assert_eq!(error.code, "provider_protocol");
     }
 

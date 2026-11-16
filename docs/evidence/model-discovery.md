@@ -16,6 +16,12 @@
   - discovery は推論と同一の静的ヘッダを運ぶ（`User-Agent: muse-build/1.3.0`、`x-api-version: 1.0.0` など。レート制限側が匿名クライアントと区別しないため）。
   - **Muse の認証素材**: meta-muse エントリの判定ログに「OAuth アクセストークンは `/v1/models` で 401、姉妹の `api_key` は 200」とある。したがって discovery の bearer は推論と同じ `LLM|` キー（アカウントトークンではない）。
   - 応答読み取りは上限付きバイト数で JSON を解析（`readBoundedDiscoveryJson`）。
+- **ChatGPT/Codex backend の `/models` は上流 codex に追従する必要がある**（`src/codex/model-entitlements.ts` の実測記録）:
+  - エンドポイントは `GET {base}/models?client_version=<v>` で **`client_version` は必須**。実測: `0.60.0` は 0 モデル、`0.142.2` は 5 モデル、アカウントゲート付きモデルは `>= 0.144.0`。`0.0.0` は前置データとして全く返さない。
+  - 応答形状は OpenAI と異なる: `{models: [{slug, supported_in_api, visibility, display_name?, ...}]}`。使用可能なのは `supported_in_api === true` かつ `visibility !== "hide"` の `slug`（参照 `parseAccountModels`）。
+  - ヘッダ: `Authorization: Bearer <access>` ＋ `ChatGPT-Account-Id`。
+  - ロスター全体を見る discovery は `client_version=99.0.0`（どのリリースより新しいクライアント。参照 `CODEX_ROSTER_DISCOVERY_CLIENT_VERSION`。このバージョンは知見を広げるだけ）。InoCode は既定でこれを使い、`INOCODE_CODEX_CLIENT_VERSION` で上書きできる（`0.0.0` 形の無効値は拒否して既定にフォールバック）。
+  - InoCode の discovery 応答解析は `data` 配列と `models` 配列の両方を受け、Codex 行は上述のフィルタを適用する。
 - **gpt-oauth（ChatGPT/Codex backend）の `/models` は未検証の点に注意**: フォークの openai 経路は自サーバ経由の forward で discovery トークンを送らず、ChatGPT backend の `/models` 実挙動は記録にない。InoCode は OpenAI 標準形状（`{base}/models` ＋ Bearer ＋ `chatgpt-account-id`）を実装し、実応答は明日のログイン試験で確認する。
 
 ## ユーザーの承認

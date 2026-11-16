@@ -691,7 +691,7 @@ async fn muse_models_uses_the_subscription_key_and_muse_headers() {
 #[tokio::test]
 async fn gpt_models_sends_the_account_id_header() {
     let mock = start_mock(|request: &MockRequest| {
-        assert_eq!(request.path, "/v1/models");
+        assert_eq!(request.path, "/v1/models?client_version=99.0.0");
         assert_eq!(
             request.authorization.as_deref(),
             Some("Bearer stored-access")
