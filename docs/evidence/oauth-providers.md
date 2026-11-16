@@ -73,5 +73,8 @@
   - トークン POST はリダイレクト禁止＋30 秒上限、3xx は失敗（参照 `redirect: "manual"`）。コールバック待ちは 300 秒（コード表示は 600 秒、参照既定）。
   - GPT ログインも同じ構造（start/finish 分割、state 検証、`localhost` 広告）に統一。トークン交換本文に state を含めない点も参照どおり。
   - 適用しない参照機能: アカウントプロフィール補完（`resolveAnthropicAccountIdentity`、表示用メタデータのみ）、ポート 54545 使用中時の貼り付け待ち受付、ローカル Claude Code 認証情報の自動取り込み、複数アカウントの refresh intent/replay guard（単一資格ストアのため）。
-- 未実施・ユーザー実施予定: 実サービスでのログイン（claude.ai / auth.openai.com）。Muse Code のログインと実キーでの chat は上記のとおり実測済み。
+- **Claude OAuth 実ログイン実測（2026-11-16）**: フォーク再確認修正後のビルドで実 `login claude`（ブラウザ承認、`localhost:54545` コールバック）が完了し、`~/.inocode/auth.json` に `claude-oauth` の access/refresh/expires（5分 skew 済み）/account_id/email が保存された。dual-bind（`127.0.0.1`＋`::1`）と state 検証付きコールバックが実通信で機能した。コールバック待ち 300 秒のタイムアウトも実測（未承認で切れた場合に正しく終端する）。
+  - 実 chat（TCP 経由、claude-oauth）: `started → delta×2 → completed` ✅（OAuth Bearer＋`anthropic-beta`＋system アイデンティティブロック）。
+  - 実モデル取得（claude-oauth）: 初回は `anthropic-version` ヘッダ欠落で 400（実測で判明）→ 全 Anthropic 要求で常に送るよう修正 → **17 モデル取得**（`display_name` 付き）✅。修正は commit `5698afe`。
+- 未実施・ユーザー実施予定: `gpt-oauth` の実ログイン（実装済み、模擬テスト合格、実ログインのみ未実施）。Muse Code と Claude OAuth のログイン・chat・モデル取得は上記のとおり実測済み。
 - 適用しなかった参照実装の修正と理由: フォークのツール名エイリアス（`client_` 接頭辞、403 `client_attestation_denied` 対策）はツールを宣言しない InoCode には作動しない。クォータ拒否（429 `retry-after`）の長時間待機回避も、再試行機構を持たない InoCode には該当せず、429 は通常の `provider_http` 失敗として報告される。両方とも将来ツール対応時に再考する。
