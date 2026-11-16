@@ -566,6 +566,28 @@ async fn gpt_chat_sends_the_account_id_header() {
 }
 
 #[tokio::test]
+async fn responses_with_an_api_key_sends_the_key_without_a_credential_store() {
+    let mock = start_mock(|request: &MockRequest| {
+        assert_eq!(request.path, "/v1/responses");
+        assert_eq!(request.authorization.as_deref(), Some("Bearer static-key"));
+        MockReply::stream(responses_sse("keyed reply"))
+    })
+    .await;
+    let llm = Llm::new(LlmConfig {
+        provider: ProviderKind::Responses,
+        auth: inocode_core::oauth::AuthKind::ApiKey,
+        base_url: mock.base_url.clone(),
+        model: "m".to_string(),
+        api_key: "static-key".to_string(),
+        auth_store_path: Some(temp_store_path("absent")),
+    })
+    .expect("build the client");
+    let (deltas, message) = chat_deltas(Arc::new(Core::with_llm(llm)), "hello").await;
+    assert_eq!(deltas, vec!["keyed reply".to_string()]);
+    assert_eq!(message["event"], "completed");
+}
+
+#[tokio::test]
 async fn claude_oauth_chat_sends_the_bearer_beta_and_identity_system_block() {
     let mock = start_mock(|request: &MockRequest| {
         assert_eq!(request.path, "/v1/messages");

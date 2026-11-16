@@ -66,8 +66,12 @@ async fn a_tool_call_and_its_result_round_trip() {
         .iter()
         .filter(|part| matches!(part, AssistantPart::Reasoning { .. }))
         .count();
+    let replayable = parts
+        .iter()
+        .filter(|part| matches!(part, AssistantPart::Reasoning { replay: Some(_), .. }))
+        .count();
     println!(
-        "first turn: stop {stop:?}, {} calls, {reasoning} reasoning parts",
+        "first turn: stop {stop:?}, {} calls, {reasoning} reasoning parts ({replayable} with replay data)",
         calls.len()
     );
     assert!(!calls.is_empty(), "the model made no tool call");

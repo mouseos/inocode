@@ -532,26 +532,28 @@ impl Llm {
     }
 
     async fn responses_chat(&self, body: &Value) -> Result<reqwest::Response, ErrorInfo> {
-        let credential = self.credential().await?;
-        let bearer = match self.config.auth {
-            AuthKind::MuseSubscription => muse_api_key(&credential)?,
-            // The ChatGPT account access token is the bearer; the Muse account
-            // token must never be sent to the model API (measured 401).
-            _ => credential.access.clone(),
-        };
-        let mut request = self
+        let request = self
             .client
             .post(self.responses_url())
-            .bearer_auth(&bearer)
             .header("accept", "text/event-stream");
-        request = match self.config.auth {
-            AuthKind::GptOauth => {
-                request.header("chatgpt-account-id", chatgpt_account_id(&credential)?)
-            }
+        let request = match self.config.auth {
+            AuthKind::ApiKey => request.bearer_auth(&self.config.api_key),
+            // The Muse account token must never be sent to the model API
+            // (measured 401); its minted key is the bearer.
             AuthKind::MuseSubscription => request
+                .bearer_auth(muse_api_key(&self.credential().await?)?)
                 .header("user-agent", crate::oauth::MUSE_USER_AGENT)
                 .header("x-api-version", crate::oauth::MUSE_API_VERSION),
-            _ => request,
+            // The ChatGPT account access token is the bearer.
+            _ => {
+                let credential = self.credential().await?;
+                let request = request.bearer_auth(&credential.access);
+                if self.config.auth == AuthKind::GptOauth {
+                    request.header("chatgpt-account-id", chatgpt_account_id(&credential)?)
+                } else {
+                    request
+                }
+            }
         };
         let response =
             request.json(body).send().await.map_err(|error| {
