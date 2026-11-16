@@ -362,20 +362,17 @@ fn prepare(conversation: &Conversation) -> Result<Vec<&Body>, ErrorInfo> {
     }
 
     let mut seen = HashSet::new();
-    let mut open: Vec<&str> = Vec::new();
+    let mut open = HashSet::new();
     for body in &turns {
         match body {
             Body::ToolResult { call_id, .. } => {
-                let Some(index) = open.iter().position(|open| open == call_id) else {
+                if !open.remove(call_id.as_str()) {
                     return Err(invalid(format!(
                         "tool result {call_id} does not directly follow its call"
                     )));
-                };
-                open.swap_remove(index);
+                }
             }
-            _ if !open.is_empty() => {
-                return Err(invalid(format!("tool call {} has no result", open[0])));
-            }
+            _ if !open.is_empty() => return Err(unanswered(&open)),
             Body::Assistant { parts, .. } => {
                 for part in parts {
                     if let AssistantPart::ToolCall { call_id, name, .. } = part {
@@ -387,17 +384,24 @@ fn prepare(conversation: &Conversation) -> Result<Vec<&Body>, ErrorInfo> {
                         if !seen.insert(call_id.as_str()) {
                             return Err(invalid(format!("tool call id {call_id} is repeated")));
                         }
-                        open.push(call_id);
+                        open.insert(call_id.as_str());
                     }
                 }
             }
             Body::User { .. } => {}
         }
     }
-    if let Some(call_id) = open.first() {
-        return Err(invalid(format!("tool call {call_id} has no result")));
+    if !open.is_empty() {
+        return Err(unanswered(&open));
     }
     Ok(turns)
+}
+
+/// Names the smallest unanswered id so the message does not depend on hash
+/// order.
+fn unanswered(open: &HashSet<&str>) -> ErrorInfo {
+    let call_id = open.iter().min().copied().unwrap_or_default();
+    invalid(format!("tool call {call_id} has no result"))
 }
 
 fn call_id(part: &AssistantPart) -> Option<&str> {
