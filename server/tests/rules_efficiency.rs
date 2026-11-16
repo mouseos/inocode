@@ -8,7 +8,11 @@
 //!   a retrieved line (so a rule and its later definition or exception come
 //!   together; no language-specific processing);
 //! - index: a short index (each line's first 20 characters, numbered) and a
-//!   `read_rules` tool that returns chosen lines in full.
+//!   `read_rules` tool that returns chosen lines in full;
+//! - rag_self, rag_links_self: rag and rag_links searched with keywords the
+//!   model writes from the situation (that call's tokens count too).
+//!
+//! `INOCODE_EXPERIMENT_CONDITIONS` (comma-separated) runs a subset.
 //!
 //! Documents: the complex and the messy fixtures, and a long one made of
 //! this repository's AGENTS.md followed by both. Tokens are the provider's
@@ -24,7 +28,14 @@ use inocode_core::store::{ProjectId, Store};
 use inocode_core::{ChatStream, JsonOutput, Llm, LlmConfig, TokenUsage};
 use serde_json::{json, Value};
 
-const CONDITIONS: [&str; 4] = ["full", "rag", "rag_links", "index"];
+const CONDITIONS: [&str; 6] = [
+    "full",
+    "rag",
+    "rag_links",
+    "rag_self",
+    "rag_links_self",
+    "index",
+];
 const INDEX_CHARS: usize = 20;
 const RARE_MAX_LINES: usize = 3;
 const LINKS_PER_LINE: usize = 5;
@@ -354,6 +365,43 @@ async fn decide_with_index(
     choice_of(&text)
 }
 
+/// Search keywords the model writes for a situation, knowing nothing of
+/// the rules document's wording.
+async fn keywords(llm: &Llm, scenario: &Value) -> Result<(String, Option<TokenUsage>), String> {
+    let situation = scenario["situation"].as_str().expect("situation");
+    let conversation = Conversation {
+        system: Some(format!(
+            "{AGENT} Before acting you search the project's rules document with a full-text index."
+        )),
+        messages: vec![user(format!(
+            "Situation: {situation}
+Write 3 to 6 search keywords, separated by spaces, that would find the project rules relevant to this situation. Use words likely to appear in a rules document, in the situation's language. Answer with JSON only."
+        ))],
+    };
+    let output = JsonOutput {
+        name: "keywords".to_string(),
+        schema: json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["keywords"],
+            "properties": {"keywords": {"type": "string"}}
+        }),
+    };
+    let stream = llm
+        .converse_json(&conversation, &output)
+        .await
+        .map_err(|error| error.message)?;
+    let (text, stream) = drain(stream).await?;
+    let json = text
+        .find('{')
+        .zip(text.rfind('}'))
+        .map(|(start, end)| &text[start..=end])
+        .ok_or("no JSON")?;
+    let value: Value = serde_json::from_str(json).map_err(|error| error.to_string())?;
+    let words = value["keywords"].as_str().unwrap_or_default().to_string();
+    Ok((words, stream.usage()))
+}
+
 #[tokio::test]
 #[ignore = "calls a real model; run by hand"]
 async fn fewer_tokens_at_the_same_accuracy() {
@@ -412,14 +460,48 @@ async fn fewer_tokens_at_the_same_accuracy() {
                 document.chars().count(),
                 scenarios.len()
             );
+            let chosen: Option<Vec<String>> = std::env::var("INOCODE_EXPERIMENT_CONDITIONS")
+                .ok()
+                .map(|list| {
+                    list.split(',')
+                        .map(|item| item.trim().to_string())
+                        .collect()
+                });
+            let mut written: std::collections::HashMap<String, (String, Option<TokenUsage>)> =
+                std::collections::HashMap::new();
             for condition in CONDITIONS {
+                if chosen
+                    .as_ref()
+                    .is_some_and(|chosen| !chosen.iter().any(|item| item == condition))
+                {
+                    continue;
+                }
                 let mut spent = Spent::default();
                 let mut correct = 0;
                 let mut reads = 0;
                 let mut wrong = Vec::new();
                 for scenario in scenarios {
                     let answer = scenario["answer"].as_str().expect("answer");
-                    let query = scenario["query"].as_str().expect("query");
+                    let mut query = scenario["query"].as_str().expect("query").to_string();
+                    if condition.ends_with("_self") {
+                        let key = scenario["situation"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string();
+                        if !written.contains_key(&key) {
+                            let made = keywords(&llm, scenario).await.unwrap_or_else(|error| {
+                                (String::new(), {
+                                    println!("      keywords failed: {error}");
+                                    None
+                                })
+                            });
+                            written.insert(key.clone(), made);
+                        }
+                        let (words, usage) = written[&key].clone();
+                        spent.add(usage);
+                        query = words;
+                    }
+                    let query = query.as_str();
                     let outcome = match condition {
                         "index" => {
                             decide_with_index(&llm, &lines, scenario, &mut spent, &mut reads).await
@@ -427,7 +509,9 @@ async fn fewer_tokens_at_the_same_accuracy() {
                         _ => {
                             let rules = match condition {
                                 "full" => document.clone(),
-                                "rag" => retrieve(&store, project, &lines, query, None).await,
+                                "rag" | "rag_self" => {
+                                    retrieve(&store, project, &lines, query, None).await
+                                }
                                 _ => retrieve(&store, project, &lines, query, Some(&linked)).await,
                             };
                             let system = format!(
@@ -438,6 +522,19 @@ async fn fewer_tokens_at_the_same_accuracy() {
                     };
                     if outcome.as_deref() == Ok(answer) {
                         correct += 1;
+                    } else if condition.ends_with("_self") {
+                        let situation: String = scenario["situation"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .chars()
+                            .take(24)
+                            .collect();
+                        wrong.push(format!(
+                            "{situation} [keywords: {query}]→{}",
+                            outcome
+                                .clone()
+                                .unwrap_or_else(|error| format!("error {error}"))
+                        ));
                     } else {
                         let situation: String = scenario["situation"]
                             .as_str()
