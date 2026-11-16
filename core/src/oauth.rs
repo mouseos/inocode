@@ -163,6 +163,10 @@ impl Store {
     where
         F: FnOnce(&mut Credential),
     {
+        // Held from the read to the rename, so two processes saving at once
+        // cannot both start from the same file and drop each other's entry
+        // (reference `auth.store.lock`).
+        let _lock = lock_file(&sibling(&self.path, ".lock"))?;
         let mut entries = read_entries(&self.path)?;
         let credential = entries
             .entry(provider.to_string())
@@ -181,6 +185,120 @@ impl Store {
         self.entries = entries;
         Ok(())
     }
+}
+
+/// `path` with `suffix` appended to its file name.
+fn sibling(path: &std::path::Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+fn open_lock_file(path: &std::path::Path) -> Result<std::fs::File, String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options
+        .open(path)
+        .map_err(|e| format!("cannot open the lock file {}: {e}", path.display()))
+}
+
+/// Takes the OS's exclusive lock on `path`; dropping the file releases it,
+/// and so does the process ending, so a crash never leaves a stale lock.
+fn lock_file(path: &std::path::Path) -> Result<std::fs::File, String> {
+    let file = open_lock_file(path)?;
+    file.lock()
+        .map_err(|e| format!("cannot lock {}: {e}", path.display()))?;
+    Ok(file)
+}
+
+/// Whether `credential` can be used at `now_ms` without a refresh.
+pub(crate) fn is_fresh(credential: &Credential, now_ms: u64) -> bool {
+    credential
+        .expires_at_ms
+        .is_none_or(|expires| now_ms < expires)
+}
+
+/// How long a request waits for another refresh of the same credential
+/// (reference `OAUTH_REFRESH_LOCK_WAIT_MS`).
+const REFRESH_LOCK_WAIT: Duration = Duration::from_secs(60);
+
+/// Why [`refresh_stored`] failed.
+#[derive(Debug)]
+pub(crate) enum RefreshError {
+    /// The store or its lock could not be used.
+    Store(String),
+    /// The token endpoint refused or could not be reached.
+    Refresh(String),
+}
+
+/// Refreshes one provider's stored credential, at most once at a time across
+/// this process and others.
+///
+/// Rotating refresh tokens are single-use: two requests that both found the
+/// credential expired must not both spend it. The second one waits for the
+/// refresh lock, finds the credential the first one stored, and uses it. The
+/// result is the stored credential, so fields the token response does not
+/// carry (account id, email) are kept.
+pub(crate) async fn refresh_stored<F, Fut>(
+    path: PathBuf,
+    provider: &str,
+    refresh: F,
+) -> Result<Credential, RefreshError>
+where
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = Result<Credential, String>>,
+{
+    let lock = open_lock_file(&sibling(&path, &format!(".refresh.{provider}.lock")))
+        .map_err(RefreshError::Store)?;
+    let deadline = tokio::time::Instant::now() + REFRESH_LOCK_WAIT;
+    loop {
+        match lock.try_lock() {
+            Ok(()) => break,
+            Err(std::fs::TryLockError::WouldBlock) => {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(RefreshError::Store(format!(
+                        "another refresh of {provider} did not finish in time"
+                    )));
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(std::fs::TryLockError::Error(error)) => {
+                return Err(RefreshError::Store(format!(
+                    "cannot lock the {provider} refresh: {error}"
+                )))
+            }
+        }
+    }
+    let mut store = Store::load(path).map_err(RefreshError::Store)?;
+    let current = store.credential(provider).cloned().ok_or_else(|| {
+        RefreshError::Store(format!(
+            "no stored credential for {provider}; run the login first"
+        ))
+    })?;
+    if is_fresh(&current, now_ms()) {
+        return Ok(current);
+    }
+    let new = refresh(current.refresh.clone())
+        .await
+        .map_err(RefreshError::Refresh)?;
+    store
+        .update(provider, |stored| {
+            stored.access = new.access;
+            stored.refresh = new.refresh;
+            stored.expires_at_ms = new.expires_at_ms;
+        })
+        .map_err(RefreshError::Store)?;
+    store.credential(provider).cloned().ok_or_else(|| {
+        RefreshError::Store(format!("the {provider} credential vanished after saving"))
+    })
 }
 
 fn read_entries(path: &std::path::Path) -> Result<BTreeMap<String, Credential>, String> {
@@ -1271,6 +1389,111 @@ mod tests {
             assert_eq!(mode & 0o777, 0o600);
         }
         std::fs::remove_file(&path).expect("remove");
+    }
+
+    #[test]
+    fn concurrent_saves_from_separate_stores_keep_every_entry() {
+        let path = temp_store_path("concurrent");
+        let writers: Vec<_> = (0..8)
+            .map(|writer| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    for round in 0..25 {
+                        let mut store = Store::load(path.clone()).expect("load");
+                        store
+                            .save(
+                                &format!("provider-{writer}"),
+                                sample_credential(&format!("round-{round}")),
+                            )
+                            .expect("save");
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().expect("writer thread");
+        }
+        let store = Store::load(path.clone()).expect("load");
+        for writer in 0..8 {
+            assert_eq!(
+                store
+                    .credential(&format!("provider-{writer}"))
+                    .map(|c| c.access.as_str()),
+                Some("round-24"),
+                "provider-{writer}"
+            );
+        }
+        std::fs::remove_file(&path).expect("remove");
+        let _ = std::fs::remove_file(sibling(&path, ".lock"));
+    }
+
+    #[test]
+    fn concurrent_refreshes_spend_the_refresh_token_once() {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_time()
+            .build()
+            .expect("runtime")
+            .block_on(concurrent_refreshes());
+    }
+
+    async fn concurrent_refreshes() {
+        let path = temp_store_path("refresh");
+        let mut store = Store::load(path.clone()).expect("load");
+        store
+            .save(
+                "gpt-oauth",
+                Credential {
+                    access: "expired-access".to_string(),
+                    refresh: "rt-1".to_string(),
+                    expires_at_ms: Some(1),
+                    account_id: Some("acct-1".to_string()),
+                    email: None,
+                    api_key: None,
+                    oauth_access_token: None,
+                },
+            )
+            .expect("save");
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let tasks: Vec<_> = (0..4)
+            .map(|_| {
+                let path = path.clone();
+                let calls = std::sync::Arc::clone(&calls);
+                tokio::spawn(async move {
+                    refresh_stored(path, "gpt-oauth", |refresh| async move {
+                        assert_eq!(refresh, "rt-1", "only the stored token is spent");
+                        calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        Ok(Credential {
+                            access: "fresh-access".to_string(),
+                            refresh: "rt-2".to_string(),
+                            expires_at_ms: Some(u64::MAX),
+                            account_id: None,
+                            email: None,
+                            api_key: None,
+                            oauth_access_token: None,
+                        })
+                    })
+                    .await
+                    .expect("refresh")
+                })
+            })
+            .collect();
+        for task in tasks {
+            let credential = task.await.expect("task");
+            assert_eq!(credential.access, "fresh-access");
+            // The token response carries no account id; the stored one stays.
+            assert_eq!(credential.account_id.as_deref(), Some("acct-1"));
+        }
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let stored = Store::load(path.clone()).expect("load");
+        assert_eq!(
+            stored.credential("gpt-oauth").map(|c| c.refresh.as_str()),
+            Some("rt-2")
+        );
+        std::fs::remove_file(&path).expect("remove");
+        let _ = std::fs::remove_file(sibling(&path, ".lock"));
+        let _ = std::fs::remove_file(sibling(&path, ".refresh.gpt-oauth.lock"));
     }
 
     #[test]

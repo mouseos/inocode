@@ -33,6 +33,10 @@ const BASE_URL_ENV: &str = "INOCODE_LLM_BASE_URL";
 const MODEL_ENV: &str = "INOCODE_LLM_MODEL";
 const PROVIDER_ENV: &str = "INOCODE_LLM_PROVIDER";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
+/// Whole-request bound for model discovery, body included (reference
+/// `QODER_MODEL_DISCOVERY_TIMEOUT_MS`), so a stalled provider cannot keep a
+/// `models` request open forever.
+const MODELS_TIMEOUT: Duration = Duration::from_secs(30);
 /// The ChatGPT backend filters `/models` by a required `client_version`
 /// parameter; asking as a client newer than any release shows the whole
 /// roster (reference `CODEX_ROSTER_DISCOVERY_CLIENT_VERSION`).
@@ -213,7 +217,7 @@ impl Llm {
             None => crate::oauth::Store::default_path()
                 .map_err(|error| ErrorInfo::new("provider_config", error))?,
         };
-        let mut store = crate::oauth::Store::load(path)
+        let store = crate::oauth::Store::load(path.clone())
             .map_err(|error| ErrorInfo::new("provider_config", error))?;
         let name = self.config.auth.store_name();
         let credential = store.credential(name).cloned().ok_or_else(|| {
@@ -222,39 +226,29 @@ impl Llm {
                 format!("no stored credential for {name}; run the login first"),
             )
         })?;
-        let now_ms = crate::oauth::now_ms();
-        if credential
-            .expires_at_ms
-            .is_none_or(|expires| now_ms < expires)
-        {
+        if crate::oauth::is_fresh(&credential, crate::oauth::now_ms()) {
             return Ok(credential);
         }
-        let refreshed = match self.config.auth {
-            AuthKind::ClaudeOauth => {
-                crate::oauth::refresh_claude(&FlowEndpoints::anthropic(), &credential.refresh).await
-            }
-            AuthKind::GptOauth => {
-                crate::oauth::refresh_gpt(&FlowEndpoints::chatgpt(), &credential.refresh).await
-            }
+        let auth = self.config.auth;
+        if matches!(auth, AuthKind::MuseSubscription | AuthKind::ApiKey) {
             // The Muse key is static; the account token exists only to mint it.
-            AuthKind::MuseSubscription | AuthKind::ApiKey => return Ok(credential),
-        };
-        match refreshed {
-            Ok(new) => {
-                store
-                    .update(name, |stored| {
-                        stored.access = new.access.clone();
-                        stored.refresh = new.refresh.clone();
-                        stored.expires_at_ms = new.expires_at_ms;
-                    })
-                    .map_err(|error| ErrorInfo::new("provider_config", error))?;
-                Ok(new)
+            return Ok(credential);
+        }
+        crate::oauth::refresh_stored(path, name, |refresh| async move {
+            if auth == AuthKind::GptOauth {
+                crate::oauth::refresh_gpt(&FlowEndpoints::chatgpt(), &refresh).await
+            } else {
+                crate::oauth::refresh_claude(&FlowEndpoints::anthropic(), &refresh).await
             }
-            Err(error) => Err(ErrorInfo::new(
+        })
+        .await
+        .map_err(|error| match error {
+            crate::oauth::RefreshError::Store(error) => ErrorInfo::new("provider_config", error),
+            crate::oauth::RefreshError::Refresh(error) => ErrorInfo::new(
                 "provider_http",
                 format!("credential refresh failed: {error}"),
-            )),
-        }
+            ),
+        })
     }
 
     fn url(&self, path: &str) -> String {
@@ -402,6 +396,7 @@ impl Llm {
         let mut request = self
             .client
             .get(self.models_url())
+            .timeout(MODELS_TIMEOUT)
             .header("accept", "application/json");
         request = match (self.config.provider, self.config.auth) {
             (ProviderKind::Anthropic, AuthKind::ClaudeOauth) => {
