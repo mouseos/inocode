@@ -293,68 +293,97 @@ struct Callback {
 }
 
 /// Runs a one-shot localhost callback listener and returns the browser redirect.
+/// Runs the localhost callback listeners (IPv4 and, where supported, IPv6 —
+/// the advertised redirect is `localhost`, which browsers may resolve to
+/// either, reference `loopbackBindHostnames`) and returns the browser
+/// redirect carrying a code.
 async fn await_callback(port: u16, path: &str, shutdown: Duration) -> Result<Callback, String> {
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+    let path = path.to_string();
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let v4 = tokio::net::TcpListener::bind(("127.0.0.1", port))
         .await
         .map_err(|e| format!("cannot listen on port {port}: {e}"))?;
-    let deadline = tokio::time::Instant::now() + shutdown;
-    loop {
-        let (mut socket, _) = tokio::time::timeout_at(deadline, listener.accept())
-            .await
-            .map_err(|_| "the browser approval did not arrive in time".to_string())?
-            .map_err(|error| format!("callback accept failed: {error}"))?;
-        let mut request_line = String::new();
-        use tokio::io::AsyncReadExt;
-        // The request line and headers fit in a small fixed read for a browser GET.
-        let mut buffer = vec![0u8; 4096];
-        let read: usize = socket
-            .read(&mut buffer)
-            .await
-            .map_err(|e| format!("callback read failed: {e}"))?;
-        request_line.push_str(&String::from_utf8_lossy(&buffer[..read]));
-        let target = request_line
-            .lines()
-            .next()
-            .and_then(|line| line.split_whitespace().nth(1))
-            .unwrap_or_default()
-            .to_string();
-        let body = if target.contains("error=") {
-            "<html><body><h1>login denied</h1></body></html>"
-        } else {
-            "<html><body><h1>login complete</h1>You can close this window.</body></html>"
-        };
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            body.len(),
-            body
-        );
-        use tokio::io::AsyncWriteExt;
-        let _ = socket.write_all(response.as_bytes()).await;
-        let _ = socket.shutdown().await;
-        let path_start = target.find(path);
-        if path_start.is_none() {
-            continue; // favicon or probe: keep waiting
-        }
-        let query = target.split_once('?').map(|(_, q)| q).unwrap_or_default();
-        let mut code = None;
-        let mut state = None;
-        for pair in query.split('&') {
-            match pair.split_once('=') {
-                Some(("code", value)) => code = Some(urldecode(value)),
-                Some(("state", value)) => state = Some(urldecode(value)),
-                _ => {}
+    let mut listeners = vec![v4];
+    if let Ok(v6) = tokio::net::TcpListener::bind(("::1", port)).await {
+        listeners.push(v6);
+    }
+    for listener in listeners {
+        let sender = sender.clone();
+        let path = path.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                if let Some(result) = handle_callback_connection(&mut socket, &path).await {
+                    let _ = sender.send(result);
+                    return;
+                }
             }
-        }
-        if let Some(code) = code {
-            return Ok(Callback {
-                code,
-                state: state.unwrap_or_default(),
-            });
-        }
-        if target.contains("error=") {
-            return Err("the login was denied in the browser".to_string());
+        });
+    }
+    drop(sender);
+    let deadline = tokio::time::Instant::now() + shutdown;
+    match tokio::time::timeout_at(deadline, receiver.recv()).await {
+        Ok(Some(result)) => result,
+        _ => Err("the browser approval did not arrive in time".to_string()),
+    }
+}
+
+/// Handles one callback connection. `None` keeps waiting (wrong path, a
+/// missing code, or a foreign error whose state does not match — the
+/// reference only consumes the flow when the state matches).
+async fn handle_callback_connection(
+    socket: &mut tokio::net::TcpStream,
+    path: &str,
+) -> Option<Result<Callback, String>> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    // The request line and headers fit in a small fixed read for a browser GET.
+    let mut buffer = vec![0u8; 4096];
+    let read: usize = socket.read(&mut buffer).await.ok()?;
+    let request_line = String::from_utf8_lossy(&buffer[..read]);
+    let target = request_line
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .unwrap_or_default()
+        .to_string();
+    let denied = target.contains("error=");
+    let body = if denied {
+        "<html><body><h1>login denied</h1></body></html>"
+    } else {
+        "<html><body><h1>login complete</h1>You can close this window.</body></html>"
+    };
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    let _ = socket.write_all(response.as_bytes()).await;
+    let _ = socket.shutdown().await;
+    if !target.contains(path) {
+        return None; // favicon or probe: keep waiting
+    }
+    let query = target.split_once('?').map(|(_, q)| q).unwrap_or_default();
+    let mut code = None;
+    let mut state = None;
+    for pair in query.split('&') {
+        match pair.split_once('=') {
+            Some(("code", value)) => code = Some(urldecode(value)),
+            Some(("state", value)) => state = Some(urldecode(value)),
+            _ => {}
         }
     }
+    if let Some(code) = code {
+        return Some(Ok(Callback {
+            code,
+            state: state.unwrap_or_default(),
+        }));
+    }
+    if denied {
+        return Some(Err("the login was denied in the browser".to_string()));
+    }
+    None
 }
 
 fn urldecode(value: &str) -> String {
@@ -384,6 +413,17 @@ fn urldecode(value: &str) -> String {
         }
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+/// One-shot client for the token endpoints: no redirect following (the
+/// reference treats a redirect after token rotation as an unknown outcome)
+/// and a bounded 30-second request window.
+fn token_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(30))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
 }
 
 async fn post_token_json(
@@ -458,8 +498,11 @@ fn expiry_from(expires_in: Option<u64>) -> Option<u64> {
         .duration_since(UNIX_EPOCH)
         .ok()?
         .as_millis() as u64;
-    // Five-minute skew so a request started near expiry refreshes first.
-    Some(now.saturating_add(expires_in?.saturating_sub(300).saturating_mul(1000)))
+    // Five-minute skew so a request started near expiry refreshes first. A
+    // missing expires_in defaults to one hour so refresh semantics still
+    // apply (reference `credsFrom`).
+    let seconds = expires_in.unwrap_or(3600);
+    Some(now.saturating_add(seconds.saturating_sub(300).saturating_mul(1000)))
 }
 
 fn credential_from_token(
@@ -496,6 +539,9 @@ pub struct ClaudeLoginStart {
     pub redirect: String,
     pub verifier: String,
     pub state: String,
+    /// The port the callback listener must bind (may have fallen back from
+    /// the preferred one).
+    pub callback_port: u16,
 }
 
 /// Builds the authorize URL with a fresh PKCE pair. The `ClaudeLoginStart`
@@ -503,12 +549,17 @@ pub struct ClaudeLoginStart {
 pub fn claude_login_start(endpoints: &FlowEndpoints, code_mode: bool) -> ClaudeLoginStart {
     let pkce = generate_pkce();
     let state = format!("inocode-{}", generate_state());
+    let callback_port = reserve_callback_port(endpoints.callback_port);
     let redirect = match (code_mode, &endpoints.code_redirect_uri) {
         (true, Some(uri)) => uri.clone(),
-        _ => format!(
-            "http://127.0.0.1:{}{}",
-            endpoints.callback_port, endpoints.callback_path
-        ),
+        _ => {
+            // The OAuth apps registered `localhost` as the redirect host; it
+            // must be advertised verbatim (reference callback-server).
+            format!(
+                "http://localhost:{}{}",
+                callback_port, endpoints.callback_path
+            )
+        }
     };
     let url = format!(
         "{}?code=true&client_id={}&response_type=code&redirect_uri={}&scope={}&code_challenge={}&code_challenge_method=S256&state={}",
@@ -524,6 +575,32 @@ pub fn claude_login_start(endpoints: &FlowEndpoints, code_mode: bool) -> ClaudeL
         redirect,
         verifier: pkce.verifier,
         state,
+        callback_port,
+    }
+}
+
+/// Reserves the callback port: the preferred one is tried first and only a
+/// busy port falls back to an ephemeral one (reference port fallback, which
+/// is possible whenever no fixed redirect URI forces the port). The probe
+/// listener is dropped so the flow can bind it again; the window between the
+/// probe and the bind mirrors the reference's own fallback race.
+fn reserve_callback_port(preferred: u16) -> u16 {
+    match std::net::TcpListener::bind(("127.0.0.1", preferred)) {
+        Ok(listener) => {
+            let port = listener
+                .local_addr()
+                .map(|addr| addr.port())
+                .unwrap_or(preferred);
+            drop(listener);
+            port
+        }
+        Err(_) => match std::net::TcpListener::bind(("127.0.0.1", 0)) {
+            Ok(listener) => listener
+                .local_addr()
+                .map(|addr| addr.port())
+                .unwrap_or(preferred),
+            Err(_) => preferred,
+        },
     }
 }
 
@@ -535,24 +612,31 @@ pub async fn claude_login_finish(
     start: ClaudeLoginStart,
     pasted: Option<String>,
 ) -> Result<Credential, String> {
+    let is_pasted = pasted.is_some();
     let callback = match pasted {
         Some(pasted) => {
-            let (code, fragment_state) = split_code_fragment(pasted.trim());
+            let (code, fragment_state) = split_code_fragment(&pasted);
             Callback {
                 code,
-                state: fragment_state.unwrap_or(start.state),
+                state: fragment_state.unwrap_or_else(|| start.state.clone()),
             }
         }
         None => {
             await_callback(
-                endpoints.callback_port,
+                start.callback_port,
                 &endpoints.callback_path,
-                Duration::from_secs(600),
+                Duration::from_secs(300),
             )
             .await?
         }
     };
-    let client = reqwest::Client::new();
+    // CSRF check: the callback must echo the state this login generated
+    // (reference `stateMatches`). Code-display mode carries the state in the
+    // pasted `code#state` instead.
+    if !is_pasted && callback.state != start.state {
+        return Err("state mismatch - possible CSRF attack".to_string());
+    }
+    let client = token_client();
     let token = post_token_json(
         &client,
         &endpoints.token_url,
@@ -585,7 +669,7 @@ pub async fn refresh_claude(
     endpoints: &FlowEndpoints,
     refresh: &str,
 ) -> Result<Credential, String> {
-    let client = reqwest::Client::new();
+    let client = token_client();
     let token = post_token_json(
         &client,
         &endpoints.token_url,
@@ -599,14 +683,25 @@ pub async fn refresh_claude(
     credential_from_token(&token, Some(refresh))
 }
 
-/// Runs the ChatGPT/Codex browser login (PKCE, localhost callback).
-pub async fn login_gpt(endpoints: &FlowEndpoints) -> Result<Credential, String> {
-    let client = reqwest::Client::new();
+/// Everything the ChatGPT/Codex browser login needs before the user approves.
+pub struct GptLoginStart {
+    pub url: String,
+    pub redirect: String,
+    pub verifier: String,
+    pub state: String,
+    /// The port the callback listener must bind (may have fallen back).
+    pub callback_port: u16,
+}
+
+/// Builds the ChatGPT authorize URL with a fresh PKCE pair; pass the result
+/// to [`gpt_login_finish`].
+pub fn gpt_login_start(endpoints: &FlowEndpoints) -> GptLoginStart {
     let pkce = generate_pkce();
     let state = generate_state();
+    let callback_port = reserve_callback_port(endpoints.callback_port);
     let redirect = format!(
-        "http://127.0.0.1:{}{}",
-        endpoints.callback_port, endpoints.callback_path
+        "http://localhost:{}{}",
+        callback_port, endpoints.callback_path
     );
     let url = format!(
         "{}?response_type=code&client_id=app_EMoamEEZ73f0CkXaXp7hrann&redirect_uri={}&scope={}&code_challenge={}&code_challenge_method=S256&state={}&codex_cli_simplified_flow=true&originator=codex_cli_rs&id_token_add_organizations=true",
@@ -616,22 +711,53 @@ pub async fn login_gpt(endpoints: &FlowEndpoints) -> Result<Credential, String> 
         urlencode(&pkce.challenge),
         urlencode(&state),
     );
-    println!("Open this URL and approve access:\n{url}");
-    let callback = await_callback(
-        endpoints.callback_port,
-        &endpoints.callback_path,
-        Duration::from_secs(600),
-    )
-    .await?;
+    GptLoginStart {
+        url,
+        redirect,
+        verifier: pkce.verifier,
+        state,
+        callback_port,
+    }
+}
+
+/// Exchanges the browser approval for tokens. The token exchange itself
+/// carries no state (reference `exchangeToken`), but the callback must echo
+/// this login's state.
+pub async fn gpt_login_finish(
+    endpoints: &FlowEndpoints,
+    start: GptLoginStart,
+    pasted: Option<String>,
+) -> Result<Credential, String> {
+    let is_pasted = pasted.is_some();
+    let callback = match pasted {
+        Some(pasted) => {
+            let (code, fragment_state) = split_code_fragment(&pasted);
+            Callback {
+                code,
+                state: fragment_state.unwrap_or_else(|| start.state.clone()),
+            }
+        }
+        None => {
+            await_callback(
+                start.callback_port,
+                &endpoints.callback_path,
+                Duration::from_secs(300),
+            )
+            .await?
+        }
+    };
+    if !is_pasted && callback.state != start.state {
+        return Err("state mismatch - possible CSRF attack".to_string());
+    }
     let token = post_token_form(
-        &client,
+        &token_client(),
         &endpoints.token_url,
         &[
             ("grant_type", "authorization_code"),
             ("client_id", "app_EMoamEEZ73f0CkXaXp7hrann"),
             ("code", &callback.code),
-            ("redirect_uri", &redirect),
-            ("code_verifier", &pkce.verifier),
+            ("redirect_uri", &start.redirect),
+            ("code_verifier", &start.verifier),
         ],
     )
     .await?;
@@ -648,7 +774,7 @@ pub async fn login_gpt(endpoints: &FlowEndpoints) -> Result<Credential, String> 
 
 /// Refreshes a ChatGPT OAuth credential.
 pub async fn refresh_gpt(endpoints: &FlowEndpoints, refresh: &str) -> Result<Credential, String> {
-    let client = reqwest::Client::new();
+    let client = token_client();
     let token = post_token_form(
         &client,
         &endpoints.token_url,
@@ -663,10 +789,13 @@ pub async fn refresh_gpt(endpoints: &FlowEndpoints, refresh: &str) -> Result<Cre
 }
 
 fn generate_state() -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    format!("{:x}{:x}", now.as_nanos(), std::process::id())
+    // The CSRF state must be unguessable: 16 bytes from the OS CSPRNG,
+    // hex-encoded (reference `generateState`).
+    let mut bytes = [0u8; 16];
+    getrandom::getrandom(&mut bytes)
+        .map_err(|e| e.to_string())
+        .expect("OS CSPRNG");
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Muse Code device-approval state shown to the user.

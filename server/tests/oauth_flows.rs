@@ -207,7 +207,8 @@ async fn claude_login_stores_the_oauth_credential() {
         let body: Value = serde_json::from_str(&request.body).expect("json token request");
         assert_eq!(body["grant_type"], "authorization_code");
         assert_eq!(body["code"], "auth-code-1");
-        assert_eq!(body["state"], "inocode-state-1");
+        // The state echoed by the browser callback (CSRF value of this login).
+        assert!(body["state"].as_str().is_some_and(|v| !v.is_empty()));
         assert!(body["code_verifier"]
             .as_str()
             .is_some_and(|v| v.len() == 43));
@@ -232,6 +233,7 @@ async fn claude_login_stores_the_oauth_credential() {
         code_redirect_uri: None,
     };
     let start = oauth::claude_login_start(&endpoints, false);
+    let state = start.state.clone();
 
     let flow = tokio::spawn(async move {
         oauth::claude_login_finish(&endpoints, start, None)
@@ -244,7 +246,12 @@ async fn claude_login_stores_the_oauth_credential() {
         .await
         .expect("connect the callback");
     browser
-        .write_all(b"GET /callback?code=auth-code-1&state=inocode-state-1 HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .write_all(
+            format!(
+                "GET /callback?code=auth-code-1&state={state} HTTP/1.1\r\nHost: localhost\r\n\r\n"
+            )
+            .as_bytes(),
+        )
         .await
         .expect("send the redirect");
     let mut response = Vec::new();
@@ -328,8 +335,11 @@ async fn gpt_login_extracts_the_account_id_from_the_id_token() {
         callback_path: "/auth/callback".to_string(),
         code_redirect_uri: None,
     };
+    let start = oauth::gpt_login_start(&endpoints);
+    let state = start.state.clone();
+
     let flow = tokio::spawn(async move {
-        oauth::login_gpt(&endpoints)
+        oauth::gpt_login_finish(&endpoints, start, None)
             .await
             .expect("the flow completes")
     });
@@ -339,7 +349,10 @@ async fn gpt_login_extracts_the_account_id_from_the_id_token() {
         .expect("connect the callback");
     browser
         .write_all(
-            b"GET /auth/callback?code=auth-code-2&state=s HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            format!(
+                "GET /auth/callback?code=auth-code-2&state={state} HTTP/1.1\r\nHost: localhost\r\n\r\n"
+            )
+            .as_bytes(),
         )
         .await
         .expect("send the redirect");

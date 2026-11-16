@@ -64,5 +64,14 @@
   - デバイス許可エンドポイントは `Content-Type: application/x-www-form-urlencoded` が無いと 404、`User-Agent` が空だと 302（任意の UA 文字列で 200）。実装は両ヘッダを送る。
   - Model API `/v1/responses`（muse-spark-1.3、`store:false`）は 200、`response.output_text.delta` で本文、`response.completed`、`response.subscription_usage`、最後に **`data: [DONE]`**（非JSON）で終端。`event:` 行と `data:` 行のペア。
   - これを受け、Responses パーサを参照実装の passthrough アダプタ（`src/adapters/openai-responses/passthrough.ts` の `parseStream`）どおりに修正: **非JSON data 行は無視**（`JSON.parse` 失敗で `continue`、`[DONE]` もここで吸収）、**EOF で正常終了**（`response.completed` を待たない。`response.failed`/`error` のみ中途中断、`response.incomplete` は正常終了）、失敗メッセージは `error`（文字列）→ `error.message` → `incomplete_details.reason` の順。InoCode の旧規則（非JSON＝`provider_protocol` エラー、無终端EOF＝`provider_stream` 失敗）は OpenAI Chat Completions／Anthropic Messages に対しては維持する。
+- **Claude/GPT OAuth のフォーク再確認修正（2026-11-16、実ログイン前）**: `src/oauth/anthropic.ts`・`callback-server.ts`・`chatgpt.ts` を精読し、InoCode 実装を参照どおりに修正:
+  - CSRF state を OS CSPRNG 16 バイト hex に（参照 `generateState`。旧実装は時刻+PID で予測可能だった）。
+  - コールバックで state 一致を検証（参照 `stateMatches`、不一致は「state mismatch - possible CSRF attack」で失敗）。コード表示モードは貼り付けられた `code#state` の state を使用。
+  - redirect_uri の広告を `http://localhost:{port}{path}` に（参照注記「OAuth アプリが登録した URI は localhost」。旧実装は 127.0.0.1）。リスナーは `127.0.0.1`＋`::1` の dual bind（Windows は localhost→`::1` 優先。参照 `loopbackBindHostnames`）。
+  - ポート使用中はエフェメラルポートへフォールバック（固定 redirect URI でない場合のみ。参照 `#startCallbackServer`）。
+  - `expires_in` 欠落・不正時は既定 3600 秒（参照 `credsFrom`）。
+  - トークン POST はリダイレクト禁止＋30 秒上限、3xx は失敗（参照 `redirect: "manual"`）。コールバック待ちは 300 秒（コード表示は 600 秒、参照既定）。
+  - GPT ログインも同じ構造（start/finish 分割、state 検証、`localhost` 広告）に統一。トークン交換本文に state を含めない点も参照どおり。
+  - 適用しない参照機能: アカウントプロフィール補完（`resolveAnthropicAccountIdentity`、表示用メタデータのみ）、ポート 54545 使用中時の貼り付け待ち受付、ローカル Claude Code 認証情報の自動取り込み、複数アカウントの refresh intent/replay guard（単一資格ストアのため）。
 - 未実施・ユーザー実施予定: 実サービスでのログイン（claude.ai / auth.openai.com）。Muse Code のログインと実キーでの chat は上記のとおり実測済み。
 - 適用しなかった参照実装の修正と理由: フォークのツール名エイリアス（`client_` 接頭辞、403 `client_attestation_denied` 対策）はツールを宣言しない InoCode には作動しない。クォータ拒否（429 `retry-after`）の長時間待機回避も、再試行機構を持たない InoCode には該当せず、429 は通常の `provider_http` 失敗として報告される。両方とも将来ツール対応時に再考する。

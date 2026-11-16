@@ -96,12 +96,17 @@ async fn login_command(provider: Option<&str>, option: Option<&str>) -> io::Resu
                     .map_err(login_error)?,
             )
         }
-        Some("gpt") => (
-            "gpt-oauth",
-            oauth::login_gpt(&FlowEndpoints::chatgpt())
-                .await
-                .map_err(login_error)?,
-        ),
+        Some("gpt") => {
+            let endpoints = FlowEndpoints::chatgpt();
+            let start = oauth::gpt_login_start(&endpoints);
+            println!("Open this URL and approve access:\n{}", start.url);
+            (
+                "gpt-oauth",
+                oauth::gpt_login_finish(&endpoints, start, None)
+                    .await
+                    .map_err(login_error)?,
+            )
+        }
         Some("muse-code" | "muse") => (
             "muse-code",
             oauth::login_muse(&MuseEndpoints::default())
