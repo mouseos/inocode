@@ -68,7 +68,15 @@ async fn a_tool_call_and_its_result_round_trip() {
         .count();
     let replayable = parts
         .iter()
-        .filter(|part| matches!(part, AssistantPart::Reasoning { replay: Some(_), .. }))
+        .filter(|part| {
+            matches!(
+                part,
+                AssistantPart::Reasoning {
+                    replay: Some(_),
+                    ..
+                }
+            )
+        })
         .count();
     println!(
         "first turn: stop {stop:?}, {} calls, {reasoning} reasoning parts ({replayable} with replay data)",
