@@ -1,0 +1,51 @@
+{
+  "note": "Search scenarios for comparing rule retrieval methods. Each query is the keywords an agent would search with; gold lists the 1-based document lines that hold the rule the scenario needs. Written before any run.",
+  "documents": [
+    {
+      "name": "AGENTS.md",
+      "scenarios": [
+        { "situation": "頼まれていない便利機能を足したい", "query": "依頼されていない 機能 追加", "gold": [7, 9] },
+        { "situation": "不具合修正のついでに周辺を整形したい", "query": "リファクタリング 整形 不具合修正", "gold": [10] },
+        { "situation": "既存の挙動を変える修正をしたい", "query": "既存の動作 公開仕様 変更", "gold": [11] },
+        { "situation": "依頼内容が曖昧で判断できない", "query": "曖昧 推測 質問", "gold": [12] },
+        { "situation": "実装に入る前に何を確認するか", "query": "呼び出し元 既存テスト 確認", "gold": [15] },
+        { "situation": "共通化のために抽象クラスを作りたい", "query": "抽象化 再利用 インターフェース", "gold": [17, 40] },
+        { "situation": "新しいライブラリを依存に追加したい", "query": "新しい 依存関係 導入", "gold": [21] },
+        { "situation": "設計判断の根拠として論文を探す", "query": "学術研究 論文 査読", "gold": [22] },
+        { "situation": "公式仕様書を根拠にしてよいか", "query": "公式仕様書 標準規格", "gold": [23] },
+        { "situation": "根拠が見つからない機能を実装しようとしている", "query": "根拠が見つからない 停止 確認", "gold": [25] },
+        { "situation": "ユーザーが機能名を書いたので承認済みとみなしてよいか", "query": "明示的な承認 機能名 UNSUPPORTED_APPROVED", "gold": [26] },
+        { "situation": "既存機能に研究根拠がないと分かった", "query": "既存機能 研究根拠 EXISTING_UNSUPPORTED", "gold": [28] },
+        { "situation": "根拠記録をどこに何を書くか", "query": "docs/evidence 記録 作成", "gold": [24, 32, 33] },
+        { "situation": "修正内容をコメントに履歴として残したい", "query": "変更履歴 コメント", "gold": [44] },
+        { "situation": "docstring に何を書くか", "query": "docstring コメント 説明", "gold": [43] },
+        { "situation": "あとでやる TODO を残したい", "query": "TODO 仮置き", "gold": [45] },
+        { "situation": "落ちるテストを消して通したい", "query": "テスト 削除 弱める", "gold": [52] },
+        { "situation": "コミット前に差分を確認する", "query": "最終差分 秘密情報 確認", "gold": [51] },
+        { "situation": "作業ツリーを reset して push したい", "query": "未コミット push リセット", "gold": [53] },
+        { "situation": "作業の最終報告に何を書くか", "query": "最終報告 変更内容 検証", "gold": [58] },
+        { "situation": "調査だけ頼まれたときにコードを直してよいか", "query": "調査 説明 計画 コード変更", "gold": [59] },
+        { "situation": "バグを再現して回帰テストを書く", "query": "回帰テスト 現象 再現", "gold": [49] }
+      ]
+    },
+    {
+      "name": "agents_messy_ja.md",
+      "scenarios": [
+        { "situation": "本番サーバーの設定を直したい", "query": "サーバー 本番環境 設定", "gold": [5] },
+        { "situation": "ファイルを保存する前に何をするか", "query": "バックアップ 保存", "gold": [5, 15] },
+        { "situation": "設定にパスワードを書き込みたい", "query": "パスワード 書き込み", "gold": [6] },
+        { "situation": "コミットにメールアドレスを入れたい", "query": "メールアドレス", "gold": [7] },
+        { "situation": "不要なファイルを削除したい", "query": "ファイル 削除", "gold": [12] },
+        { "situation": "新しいファイルを5個作りたい", "query": "新しいファイル 作成 たくさん", "gold": [12] },
+        { "situation": "1時間かかる作業を始めたい", "query": "時間がかかる 作業 30分", "gold": [13] },
+        { "situation": "コードにコメントを書く", "query": "コード コメント 英語", "gold": [9] },
+        { "situation": "説明に専門用語を使いたい", "query": "専門用語 説明", "gold": [9] },
+        { "situation": "作業報告を書く", "query": "報告 短く", "gold": [10] },
+        { "situation": "判断に迷った", "query": "わからない 質問 勝手に", "gold": [17] },
+        { "situation": "有料のAPIを使いたい", "query": "有料 API サブスク", "gold": [19] },
+        { "situation": "週末に返事が来ない", "query": "土日 返事 待つ", "gold": [21] },
+        { "situation": "見つけたバグを直したい", "query": "バグ 修正 見つけた", "gold": [3] }
+      ]
+    }
+  ]
+}
