@@ -19,8 +19,8 @@ mod usage;
 pub use usage::{Usage, UsageWindow};
 
 pub use llm::{
-    ChatStream, Llm, LlmConfig, ModelInfo, ProviderKind, DEFAULT_BASE_URL, DEFAULT_MAX_TOKENS,
-    DEFAULT_MODEL,
+    ChatStream, JsonOutput, Llm, LlmConfig, ModelInfo, ProviderKind, DEFAULT_BASE_URL,
+    DEFAULT_MAX_TOKENS, DEFAULT_MODEL,
 };
 
 use serde::{Deserialize, Serialize};

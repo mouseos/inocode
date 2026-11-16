@@ -263,12 +263,33 @@ impl Llm {
         conversation: &Conversation,
         tools: &[ToolSpec],
     ) -> Result<ChatStream, ErrorInfo> {
+        self.start(conversation, tools, None).await
+    }
+
+    /// Like [`Self::converse`] without tools, asking for an answer in the
+    /// JSON shape of `output` (Chat Completions `response_format`, Responses
+    /// `text.format`; Anthropic has no such field, so its answer follows the
+    /// instructions only).
+    pub async fn converse_json(
+        &self,
+        conversation: &Conversation,
+        output: &JsonOutput,
+    ) -> Result<ChatStream, ErrorInfo> {
+        self.start(conversation, &[], Some(output)).await
+    }
+
+    async fn start(
+        &self,
+        conversation: &Conversation,
+        tools: &[ToolSpec],
+        output: Option<&JsonOutput>,
+    ) -> Result<ChatStream, ErrorInfo> {
         if let Some(session) = &self.deepai {
-            return self.deepai_chat(session, conversation, tools).await;
+            return self.deepai_chat(session, conversation, tools, output).await;
         }
         let format = self.config.provider;
         let effort = self.effort().await;
-        let body = request_body(format, &self.config, effort, conversation, tools)?;
+        let body = request_body(format, &self.config, effort, conversation, tools, output)?;
         let response = match format {
             ProviderKind::OpenAi => self.openai_chat(&body).await,
             ProviderKind::Anthropic => self.anthropic_chat(body).await,
@@ -520,6 +541,7 @@ impl Llm {
         session: &crate::deepai::Session,
         conversation: &Conversation,
         tools: &[ToolSpec],
+        output: Option<&JsonOutput>,
     ) -> Result<ChatStream, ErrorInfo> {
         let api_key = deepai_api_key(&self.credential().await?)?;
         let base = &self.config.base_url;
@@ -542,6 +564,7 @@ impl Llm {
             self.effort().await,
             conversation,
             tools,
+            output,
         )?;
         loop {
             session
@@ -718,6 +741,7 @@ fn request_body(
     effort: crate::reasoning::Effort,
     conversation: &Conversation,
     tools: &[ToolSpec],
+    output: Option<&JsonOutput>,
 ) -> Result<Value, ErrorInfo> {
     let model = config.model.as_str();
     let mut body = match format {
@@ -743,7 +767,46 @@ fn request_body(
             conversation::tool_definitions(format, tools)?,
         );
     }
+    if let Some(output) = output {
+        match format {
+            ProviderKind::OpenAi => {
+                body.insert(
+                    "response_format".into(),
+                    json!({
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": output.name,
+                            "strict": true,
+                            "schema": output.schema,
+                        },
+                    }),
+                );
+            }
+            ProviderKind::Responses => {
+                body.insert(
+                    "text".into(),
+                    json!({
+                        "format": {
+                            "type": "json_schema",
+                            "name": output.name,
+                            "strict": true,
+                            "schema": output.schema,
+                        },
+                    }),
+                );
+            }
+            ProviderKind::Anthropic => {}
+        }
+    }
     Ok(Value::Object(body))
+}
+
+/// A JSON Schema the answer must follow, in the strict subset (every
+/// property required, no additional properties).
+#[derive(Debug, Clone, PartialEq)]
+pub struct JsonOutput {
+    pub name: String,
+    pub schema: Value,
 }
 
 /// What the reasoning rules need to know about a request's target.
@@ -2052,6 +2115,7 @@ mod tests {
             crate::reasoning::FALLBACK_EFFORT,
             &conversation,
             &tools,
+            None,
         )
         .expect("body");
         assert_eq!(chat["tools"][0]["function"]["name"], "read");
@@ -2062,6 +2126,7 @@ mod tests {
             crate::reasoning::FALLBACK_EFFORT,
             &conversation,
             &tools,
+            None,
         )
         .expect("body");
         assert_eq!(anthropic["tools"][0]["input_schema"]["type"], "object");
@@ -2077,6 +2142,7 @@ mod tests {
             crate::reasoning::FALLBACK_EFFORT,
             &conversation,
             &tools,
+            None,
         )
         .expect("body");
         assert_eq!(
@@ -2093,16 +2159,53 @@ mod tests {
             crate::reasoning::FALLBACK_EFFORT,
             &conversation,
             &[],
+            None,
         )
         .expect("body");
         assert!(bare.get("tools").is_none());
+        let output = JsonOutput {
+            name: "shape".to_string(),
+            schema: json!({"type": "object"}),
+        };
+        let shaped = request_body(
+            ProviderKind::OpenAi,
+            &config,
+            crate::reasoning::FALLBACK_EFFORT,
+            &conversation,
+            &[],
+            Some(&output),
+        )
+        .expect("body");
+        assert_eq!(shaped["response_format"]["json_schema"]["name"], "shape");
+        assert_eq!(shaped["response_format"]["json_schema"]["strict"], true);
+        let shaped = request_body(
+            ProviderKind::Responses,
+            &config,
+            crate::reasoning::FALLBACK_EFFORT,
+            &conversation,
+            &[],
+            Some(&output),
+        )
+        .expect("body");
+        assert_eq!(shaped["text"]["format"]["type"], "json_schema");
+        let shaped = request_body(
+            ProviderKind::Anthropic,
+            &config,
+            crate::reasoning::FALLBACK_EFFORT,
+            &conversation,
+            &[],
+            Some(&output),
+        )
+        .expect("body");
+        assert!(shaped.get("response_format").is_none() && shaped.get("text").is_none());
         let twice = [tools[0].clone(), tools[0].clone()];
         assert!(request_body(
             ProviderKind::OpenAi,
             &config,
             crate::reasoning::FALLBACK_EFFORT,
             &conversation,
-            &twice
+            &twice,
+            None
         )
         .is_err());
     }

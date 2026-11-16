@@ -8,7 +8,6 @@ use std::time::Duration;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-pub use crate::rules_import::Chunking;
 use crate::store::{
     collect, fts_query, normalize_tags, now, store_error, Found, NoteHit, NoteId, NoteKind,
     ProjectId, SessionId, Source, Store,
@@ -109,8 +108,12 @@ pub struct ImportReport {
     pub added: usize,
     pub retired: usize,
     pub unchanged: usize,
-    /// Why the model's search sentences are missing, when they are.
-    pub keys_error: Option<String>,
+    /// Why the document was stored whole instead of extracted, if it was.
+    pub extraction_error: Option<String>,
+    /// Sources the model gave that are not in the document.
+    pub unverified_sources: usize,
+    /// Document text no extracted rule rests on.
+    pub uncovered: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,6 +180,7 @@ impl Store {
                     condition: "",
                     keywords: "",
                     segmented_by: "person",
+                    details: "{}",
                 },
                 now(),
             )?;
@@ -578,8 +582,12 @@ pub(crate) struct RuleRow<'a> {
     pub(crate) summary: &'a str,
     pub(crate) condition: &'a str,
     pub(crate) keywords: &'a str,
-    /// `mechanical`, `model` (has model-written search sentences) or `person`.
+    /// `whole` (the entire document), `model` (extracted, sources located),
+    /// `model_unverified` (extracted, no source located) or `person`.
     pub(crate) segmented_by: &'a str,
+    /// The model's fields as JSON (statement, condition, exceptions, reason,
+    /// suggested strength, section, sources it could not locate).
+    pub(crate) details: &'a str,
 }
 
 pub(crate) fn insert_rule_row(
@@ -608,8 +616,8 @@ pub(crate) fn insert_rule_row(
     let id = NoteId(db.last_insert_rowid());
     db.execute(
         "INSERT INTO rules(note_id, strength, origin_path, origin_start, origin_end, section,
-                           ordinal, segmented_by)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                           ordinal, segmented_by, details)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             id.0,
             Strength::Should.as_str(),
@@ -619,6 +627,7 @@ pub(crate) fn insert_rule_row(
             rule.section,
             rule.ordinal,
             rule.segmented_by,
+            rule.details,
         ],
     )
     .map_err(store_error)?;
@@ -677,7 +686,7 @@ mod tests {
             let store = Store::open(dir.path().join("r.db")).await.expect("open");
             let p = store.project("p").await.expect("p");
             store
-                .import_rules(None, Some(p), "AGENTS.md", AGENTS, Chunking::default())
+                .import_rules(None, Some(p), "AGENTS.md", AGENTS)
                 .await
                 .expect("import");
             let shared = store

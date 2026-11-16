@@ -1,5 +1,5 @@
-//! Rule import as verbatim chunks with model-written search sentences,
-//! against a local stand-in for a Chat Completions provider.
+//! Rule import by whole-document extraction, against a local stand-in for a
+//! Chat Completions provider, plus a hand-run check against a real model.
 
 mod support;
 
@@ -7,17 +7,12 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use inocode_core::rules::Chunking;
 use inocode_core::store::Store;
 use inocode_core::{Llm, LlmConfig, ProviderKind};
 use serde_json::json;
 use support::*;
 
-const DOC: &str = "Aの場合はBする。Cの時はやらない。pushの前に必ず確認を取ること。コミットメッセージは英語で書く。";
-const SMALL: Chunking = Chunking {
-    chars: 20,
-    overlap: 5,
-};
+const DOC: &str = "# Rules\n\n- Never **push** without approval.\n- Write comments in English.\n";
 
 fn llm(mock: &MockApi) -> Arc<Llm> {
     Arc::new(
@@ -25,7 +20,7 @@ fn llm(mock: &MockApi) -> Arc<Llm> {
             provider: ProviderKind::OpenAi,
             auth: inocode_core::oauth::AuthKind::ApiKey,
             base_url: mock.base_url.clone(),
-            model: "writer".to_string(),
+            model: "extractor".to_string(),
             api_key: "test-key".to_string(),
             auth_store_path: None,
             reasoning: Default::default(),
@@ -48,14 +43,18 @@ fn remove(path: &std::path::Path) {
     }
 }
 
-/// Writes one sentence per chunk in the request ("chunk N requires
-/// approval"), or a broken answer while `broken` is set.
-fn writer(
+/// Extracts one rule per bullet of the request's document (quoting it with
+/// the markup dropped, as models do), or answers nonsense while `broken`.
+fn extractor(
     calls: Arc<AtomicUsize>,
     broken: Arc<AtomicBool>,
 ) -> impl Fn(&MockRequest) -> MockReply + Send + Sync + 'static {
     move |request: &MockRequest| {
         calls.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(
+            request.body["response_format"]["json_schema"]["name"], "rule_extraction",
+            "the answer shape is requested"
+        );
         let prompt = request.body["messages"][1]["content"]
             .as_str()
             .unwrap_or_default()
@@ -63,21 +62,33 @@ fn writer(
         let answer = if broken.load(Ordering::SeqCst) {
             "sorry".to_string()
         } else {
-            let count = prompt.matches("<<<CHUNK ").count();
-            let chunks: Vec<_> = (1..=count)
-                .map(|id| json!({"id": id, "rules": [format!("chunk {id} requires approval")]}))
+            let rules: Vec<_> = prompt
+                .lines()
+                .filter_map(|line| line.strip_prefix("- "))
+                .map(|bullet| {
+                    let quote = bullet.replace("**", "");
+                    json!({
+                        "statement": format!("The agent must: {quote}"),
+                        "condition": null,
+                        "exceptions": [],
+                        "reason": null,
+                        "strength": "must",
+                        "sources": [quote],
+                        "section": "Rules"
+                    })
+                })
                 .collect();
-            json!({ "chunks": chunks }).to_string()
+            json!({ "rules": rules }).to_string()
         };
         MockReply::stream(vec![sse_delta(&answer), sse_done()])
     }
 }
 
 #[tokio::test]
-async fn chunks_are_kept_verbatim_and_sentences_widen_search() {
+async fn rules_are_extracted_from_the_whole_document() {
     let calls = Arc::new(AtomicUsize::new(0));
     let broken = Arc::new(AtomicBool::new(true));
-    let mock = start_mock(writer(Arc::clone(&calls), Arc::clone(&broken))).await;
+    let mock = start_mock(extractor(Arc::clone(&calls), Arc::clone(&broken))).await;
     let llm = llm(&mock);
     let path = database();
     let store = Store::open(&path).await.expect("store");
@@ -86,20 +97,11 @@ async fn chunks_are_kept_verbatim_and_sentences_widen_search() {
         let (store, llm) = (store.clone(), Arc::clone(&llm));
         async move {
             store
-                .import_rules(Some(llm), Some(project), "AGENTS.md", &text, SMALL)
+                .import_rules(Some(llm), Some(project), "AGENTS.md", &text)
                 .await
                 .expect("import")
         }
     };
-
-    let first = import(DOC.to_string()).await;
-    assert_eq!(
-        calls.load(Ordering::SeqCst),
-        1,
-        "one request for the document"
-    );
-    assert_eq!(first.added, 4);
-    assert!(first.keys_error.is_some(), "a broken answer is reported");
     let search = |text: &'static str| {
         let store = store.clone();
         async move {
@@ -110,93 +112,119 @@ async fn chunks_are_kept_verbatim_and_sentences_widen_search() {
                 .items
         }
     };
-    assert!(search("requires").await.is_empty(), "no sentences yet");
+
+    let first = import(DOC.to_string()).await;
     assert_eq!(
-        search("Cの時").await.len(),
+        calls.load(Ordering::SeqCst),
         1,
-        "the verbatim text is searchable"
+        "one request for the document"
+    );
+    assert!(first.extraction_error.is_some());
+    assert_eq!(
+        first.added, 1,
+        "a failed extraction keeps the whole document"
     );
 
     broken.store(false, Ordering::SeqCst);
     let second = import(DOC.to_string()).await;
-    assert_eq!(
-        calls.load(Ordering::SeqCst),
-        2,
-        "chunks without sentences are retried"
-    );
-    assert_eq!((second.unchanged, second.added), (4, 0));
-    assert!(second.keys_error.is_none());
-    let found = search("requires").await;
-    assert_eq!(found.len(), 4, "the sentences are search keys");
-    let note = store
+    assert_eq!(calls.load(Ordering::SeqCst), 2, "the extraction is retried");
+    assert_eq!((second.added, second.retired), (2, 1));
+    assert_eq!(second.unverified_sources, 0);
+    assert_eq!(second.uncovered, ["Rules"]);
+    let found = search("approval").await;
+    assert_eq!(found.len(), 1);
+    let rule = store
         .note(found[0].id)
         .await
         .expect("note")
         .expect("exists");
-    assert!(
-        DOC.contains(&note.body),
-        "the stored rule is the source text"
+    assert_eq!(
+        rule.body, "Never **push** without approval.",
+        "the stored rule is the source text, markup kept"
+    );
+    assert_eq!(
+        search("agent must").await.len(),
+        2,
+        "the statements are searchable"
     );
 
     let third = import(DOC.to_string()).await;
     assert_eq!(
         calls.load(Ordering::SeqCst),
         2,
-        "an unchanged document is not resent"
+        "an extracted document is not resent"
     );
-    assert_eq!(third.unchanged, 4);
+    assert_eq!(third.unchanged, 2);
 
-    let edited = format!("{DOC}テストは必ず実行する。");
+    let edited = format!("{DOC}- Run the tests before committing.\n");
     let fourth = import(edited).await;
     assert_eq!(calls.load(Ordering::SeqCst), 3);
-    assert!(fourth.added >= 1, "the new text is a new chunk");
-    assert!(fourth.unchanged >= 2, "chunks before the edit are kept");
+    assert_eq!((fourth.unchanged, fourth.added, fourth.retired), (2, 1, 0));
 
     drop(store);
     remove(&path);
 }
 
-/// Imports this repository's AGENTS.md through the provider configured in
-/// the environment and prints the result. Ignored because it needs network
-/// access and a credential; run it by hand.
+/// Extracts this repository's AGENTS.md and a messy hand-written one through
+/// the provider configured in the environment, and prints what came out.
+/// Ignored because it needs network access and a credential; run it by hand.
 #[tokio::test]
 #[ignore = "requires a provider credential; run by hand"]
-async fn live_import_of_this_repository_agents_md() {
-    let markdown = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../AGENTS.md"))
-        .expect("AGENTS.md");
+async fn live_extraction_of_the_fixture_documents() {
     let llm = Arc::new(Llm::from_env().expect("provider"));
-    let path = database();
-    let store = Store::open(&path).await.expect("store");
-    let project = store.project("inocode").await.expect("project");
-    let started = std::time::Instant::now();
-    let report = store
-        .import_rules(
-            Some(llm),
-            Some(project),
+    let documents = [
+        (
             "AGENTS.md",
-            &markdown,
-            Chunking::default(),
-        )
-        .await
-        .expect("import");
-    println!("elapsed: {:?}", started.elapsed());
-    println!("chunks: {}", report.added);
-    println!("search sentences error: {:?}", report.keys_error);
-    for query in ["コミット", "研究根拠", "変更履歴を書かない"] {
-        let found = store
-            .rules_for(Some(project), query, 2, Duration::from_secs(5), None)
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../AGENTS.md")),
+            "コミット 研究根拠 変更履歴",
+        ),
+        (
+            "agents_messy_ja.md",
+            include_str!("fixtures/agents_messy_ja.md"),
+            "バックアップ 本番環境 土日",
+        ),
+    ];
+    for (name, document, query) in documents {
+        let path = database();
+        let store = Store::open(&path).await.expect("store");
+        let project = store.project(name).await.expect("project");
+        let started = std::time::Instant::now();
+        let report = store
+            .import_rules(Some(Arc::clone(&llm)), Some(project), name, document)
             .await
-            .expect("rules");
+            .expect("import");
+        println!("== {name}: {:?}", started.elapsed());
+        println!(
+            "rules {} | unverified sources {} | error {:?}",
+            report.added, report.unverified_sources, report.extraction_error
+        );
+        for fragment in &report.uncovered {
+            let shown: String = fragment.chars().take(70).collect();
+            println!("  uncovered: {shown:?}");
+        }
+        let found = store
+            .search_notes(inocode_core::store::NoteQuery {
+                text: query.to_string(),
+                project: Some(project),
+                include_shared: false,
+                kinds: vec![inocode_core::store::NoteKind::Rule],
+                usable_only: false,
+                since: None,
+                until: None,
+                limit: 4,
+                budget: Duration::from_secs(5),
+            })
+            .await
+            .expect("search");
         for hit in found.items {
             let note = store.note(hit.id).await.expect("note").expect("exists");
-            let sentences: Vec<&str> = note.summary.lines().take(3).collect();
+            let source: String = note.body.chars().take(50).collect();
             println!(
-                "  [{query}] note {} | {} sentences, e.g. {sentences:?}",
-                hit.id.0,
-                note.summary.lines().count()
+                "  - {} | source: {source:?}",
+                note.summary.lines().next().unwrap_or_default()
             );
         }
+        drop(store);
+        remove(&path);
     }
-    drop(store);
-    remove(&path);
 }
