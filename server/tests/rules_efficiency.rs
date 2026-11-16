@@ -570,3 +570,136 @@ async fn fewer_tokens_at_the_same_accuracy() {
         let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
     }
 }
+
+/// Where the whole document stops being cheaper than linked retrieval with
+/// the model's own keywords: the same 18 scenarios over rule documents of
+/// growing length, with the scenario rules in the middle of unrelated rules
+/// (`fixtures/filler_rules_*`, which reuse words such as test, commit and
+/// database). `INOCODE_EXPERIMENT_REPEATS` repeats each condition.
+#[tokio::test]
+#[ignore = "calls a real model; run by hand"]
+async fn crossover_by_length() {
+    let fixtures: Value =
+        serde_json::from_str(include_str!("fixtures/rules_behavior.json")).expect("fixtures");
+    let scenarios: Vec<Value> = fixtures["documents"]
+        .as_array()
+        .expect("documents")
+        .iter()
+        .flat_map(|entry| entry["scenarios"].as_array().expect("scenarios").clone())
+        .collect();
+    let target = format!(
+        "{}\n\n{}",
+        include_str!("fixtures/agents_complex_ja.md"),
+        include_str!("fixtures/agents_messy_ja.md")
+    );
+    let a = include_str!("fixtures/filler_rules_a_ja.md");
+    let b = include_str!("fixtures/filler_rules_b_ja.md");
+    let agents =
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../AGENTS.md")).replace("\r\n", "\n");
+    let guide = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../docs/evidence/README.md"
+    ))
+    .replace("\r\n", "\n");
+    let documents = [
+        target.clone(),
+        format!("{a}\n\n{target}"),
+        format!("{a}\n\n{target}\n\n{b}"),
+        format!("{a}\n\n{agents}\n\n{target}\n\n{b}"),
+        format!("{a}\n\n{agents}\n\n{guide}\n\n{target}\n\n{b}"),
+    ];
+    let repeats: usize = std::env::var("INOCODE_EXPERIMENT_REPEATS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1);
+    let base = LlmConfig::from_env().expect("provider");
+    let models: Vec<String> = std::env::var("INOCODE_EXPERIMENT_MODELS")
+        .map(|list| {
+            list.split(',')
+                .map(|model| model.trim().to_string())
+                .collect()
+        })
+        .unwrap_or_else(|_| vec![base.model.clone()]);
+    let path = database();
+    let store = Store::open(&path).await.expect("store");
+    for model in models {
+        let llm = Llm::new(LlmConfig {
+            model: model.clone(),
+            ..base.clone()
+        })
+        .expect("client");
+        println!(
+            "#### model {model}, {repeats} repeat(s), {} scenarios",
+            scenarios.len()
+        );
+        for (number, document) in documents.iter().enumerate() {
+            let lines: Vec<&str> = document.lines().collect();
+            let linked = links(&lines);
+            let project = store
+                .project(&format!("{model}:length-{number}"))
+                .await
+                .expect("project");
+            for line in lines.iter().filter(|line| !line.trim().is_empty()) {
+                store.add_rule(Some(project), line).await.expect("rule");
+            }
+            let mut written: HashMap<String, (String, Option<TokenUsage>)> = HashMap::new();
+            for condition in ["full", "rag_links_self"] {
+                let mut spent = Spent::default();
+                let mut correct = 0;
+                let mut wrong = Vec::new();
+                for repeat in 0..repeats {
+                    for scenario in &scenarios {
+                        let answer = scenario["answer"].as_str().expect("answer");
+                        let rules = if condition == "full" {
+                            document.clone()
+                        } else {
+                            let key = format!(
+                                "{repeat}:{}",
+                                scenario["situation"].as_str().unwrap_or_default()
+                            );
+                            if !written.contains_key(&key) {
+                                let made = keywords(&llm, scenario).await.unwrap_or_default();
+                                written.insert(key.clone(), made);
+                            }
+                            let (words, usage) = written[&key].clone();
+                            spent.add(usage);
+                            retrieve(&store, project, &lines, &words, Some(&linked)).await
+                        };
+                        let system = format!(
+                            "{AGENT} Follow the project's rules below.\n----- RULES -----\n{rules}----- END RULES -----"
+                        );
+                        let outcome = decide(&llm, system, scenario, &mut spent).await;
+                        if outcome.as_deref() == Ok(answer) {
+                            correct += 1;
+                        } else {
+                            let situation: String = scenario["situation"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .chars()
+                                .take(20)
+                                .collect();
+                            wrong.push(situation);
+                        }
+                    }
+                }
+                let decisions = (scenarios.len() * repeats) as f64;
+                println!(
+                    "  {} chars | {condition:14} {correct}/{} correct | input {:.0} (cached {:.0}) + output {:.0} tokens per decision | unreported {}",
+                    document.chars().count(),
+                    scenarios.len() * repeats,
+                    spent.input as f64 / decisions,
+                    spent.cached as f64 / decisions,
+                    spent.output as f64 / decisions,
+                    spent.unreported
+                );
+                if !wrong.is_empty() {
+                    println!("      wrong: {}", wrong.join(" / "));
+                }
+            }
+        }
+    }
+    drop(store);
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+    }
+}
