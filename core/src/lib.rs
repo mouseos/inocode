@@ -5,6 +5,7 @@
 //! with a stream of [`EventPayload`] events. The core knows nothing about TCP,
 //! framing, or connections, so the server owns all transport concerns.
 
+pub mod conversation;
 pub mod deepai;
 mod llm;
 pub mod oauth;
