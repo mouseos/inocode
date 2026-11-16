@@ -17,6 +17,29 @@
 - **実装・検証の状況：** <実際に実行したテストと結果。未実施なら「未検証」>
 ```
 
+## 記録の一覧
+
+実装された機能・設計判断と、その根拠の記録。状態の詳細（部分ごとの区別、承認の証跡、未検証の事項）は各ファイルを参照する。
+
+| 記録 | 対象 | 根拠の状態 | 主なコード |
+|---|---|---|---|
+| [tcp-frame-protocol.md](tcp-frame-protocol.md) | TCP フレームプロトコル（JSON＋生バイナリ、16 バイトヘッダー） | UNSUPPORTED_APPROVED | `src/` |
+| [server-core-requests.md](server-core-requests.md) | Server と Core の分割、要求処理 | UNSUPPORTED_APPROVED | `server/src/lib.rs`、`core/src/lib.rs` |
+| [llm-streaming.md](llm-streaming.md) | OpenAI 互換 API 接続と逐次配送 | UNSUPPORTED_APPROVED | `core/src/llm.rs`、`core/src/sse.rs` |
+| [anthropic-messages.md](anthropic-messages.md) | Anthropic Messages 互換接続 | UNSUPPORTED_APPROVED | `core/src/llm.rs` |
+| [model-discovery.md](model-discovery.md) | モデル一覧の取得 | UNSUPPORTED_APPROVED | `core/src/llm.rs` |
+| [oauth-providers.md](oauth-providers.md) | Claude OAuth・GPT OAuth・Muse Code のログインと要求時認証 | UNSUPPORTED_APPROVED | `core/src/oauth.rs` |
+| [deepai-code-provider.md](deepai-code-provider.md) | DeepAI Code（チェックイン、待機、Theos） | UNSUPPORTED_APPROVED | `core/src/deepai.rs` |
+| [account-usage.md](account-usage.md) | アカウントの使用量取得 | UNSUPPORTED_APPROVED | `core/src/usage.rs` |
+| [audit-robustness-fixes.md](audit-robustness-fixes.md) | 監査 A 項目（例外処理・正しさ）の是正 | 項目ごと | 複数 |
+| [streaming-performance.md](streaming-performance.md) | ストリーミング経路の性能改善（監査 B 項目） | UNSUPPORTED_APPROVED（一部は不実施） | `core/src/sse.rs`、`core/src/llm.rs` |
+| [conversation-model.md](conversation-model.md) | 会話の型と 3 形式への変換、自走性の研究の整理 | UNSUPPORTED_APPROVED（判断 6・9 は研究で一部支持） | `core/src/conversation.rs` |
+| [tool-calling.md](tool-calling.md) | ツール定義の送信とストリームからの組み立て | UNSUPPORTED_APPROVED | `core/src/conversation.rs`、`core/src/llm.rs` |
+| [reasoning-controls.md](reasoning-controls.md) | 思考・推論の指定、モデルの深さ一覧と既定値 | UNSUPPORTED_APPROVED | `core/src/reasoning.rs` |
+| [conversation-state.md](conversation-state.md) | 会話の状態をサーバーが持つ判断、Codex の保存の問題 | UNSUPPORTED_APPROVED（注記あり） | 保存層のみ |
+| [project-memory.md](project-memory.md) | SQLite の保存層：履歴・大きな中身・教訓・手順・根拠台帳・知識・タグ・リンク・検索・連想 | 部分ごと（RESEARCH_SUPPORTED と UNSUPPORTED_APPROVED） | `core/src/store.rs` |
+| [rules-and-local-issues.md](rules-and-local-issues.md) | 守ってほしいこと（規則）とローカル issue | UNSUPPORTED_PENDING（未実装） | 未実装 |
+
 ## 状態の判定
 
 - `RESEARCH_SUPPORTED`：**直接適用できる**学術的根拠を確認した。類似テーマの引用だけでは不可。

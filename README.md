@@ -57,12 +57,14 @@ TCP 上で動く JSON / 生バイナリ混在のフレームプロトコルラ�
 | 環境変数 | 既定 | 用途 |
 | --- | --- | --- |
 | `LOGFARE_API_KEY` | なし（必須） | プロバイダーの API キー |
-| `INOCODE_LLM_PROVIDER` | `openai` | 接続方式: `openai`（`/chat/completions`、Bearer 認証）, `anthropic`（`/messages`、`x-api-key` ＋ `anthropic-version: 2023-06-01`）, `responses`（`/responses`、Bearer 認証）またはサブスクリプション/OAuth 方式の `claude-oauth` / `gpt-oauth` / `muse-code`（下記） |
+| `INOCODE_LLM_PROVIDER` | `openai` | 接続方式: `openai`（`/chat/completions`、Bearer 認証）, `anthropic`（`/messages`、`x-api-key` ＋ `anthropic-version: 2023-06-01`）, `responses`（`/responses`、Bearer 認証）またはサブスクリプション/OAuth 方式の `claude-oauth` / `gpt-oauth` / `muse-code` / `deepai`（下記） |
 | `INOCODE_LLM_BASE_URL` | `https://logfare.ai/v1`（方式ごとの既定は下表） | API Base URL |
 | `INOCODE_LLM_MODEL` | `logfare/auto`（方式ごとの既定は下表） | モデル名 |
 | `INOCODE_PORT` | `8787` | 待ち受けポート（待ち受けは常に `127.0.0.1`） |
+| `INOCODE_LLM_REASONING` | モデルの既定値（一覧にあれば）、なければ `medium` | 思考の深さ: `none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`（`ultra` は `max`）。受け付けない値は接続先のエラーをそのまま返す |
+| `INOCODE_LLM_REASONING_SUMMARY` | `auto` | 思考の要約: `auto` / `concise` / `detailed` / `none` |
 
-Anthropic 方式では要求に `max_tokens: 8192` を送る（思考トークンが `max_tokens` を共有するため、小さな値では本文が空になる。`docs/evidence/anthropic-messages.md` 参照）。Logfare の `/v1/messages` は Anthropic Messages API 互換なので、`INOCODE_LLM_PROVIDER=anthropic` を設定するだけで切り替わる。TCP プロトコル、イベント形式、`cancel` の意味は全方式で同じ。
+Anthropic 方式の `max_tokens` は思考の指定に応じて決まる（思考なしで 8192。思考トークンが `max_tokens` を共有するため。`docs/evidence/anthropic-messages.md`、`docs/evidence/reasoning-controls.md` 参照）。Logfare の `/v1/messages` は Anthropic Messages API 互換なので、`INOCODE_LLM_PROVIDER=anthropic` を設定するだけで切り替わる。TCP プロトコル、イベント形式、`cancel` の意味は全方式で同じ。
 
 ### サブスクリプション / OAuth ログイン
 
@@ -81,6 +83,7 @@ cargo run --release -p inocode-server -- login muse-code    # デバイスコー
 | `claude-oauth` | Anthropic Messages、`https://api.anthropic.com/v1/messages` | `claude-sonnet-5` | OAuth Bearer（失効前に自動更新） |
 | `gpt-oauth` | OpenAI Responses、`https://chatgpt.com/backend-api/codex/responses` | `gpt-5.2-codex` | OAuth Bearer ＋ `chatgpt-account-id` |
 | `muse-code` | OpenAI Responses、`https://api.meta.ai/v1/responses` | `muse-spark-1.3` | 保存済みサブスクリプションキー（`LLM|`） |
+| `deepai` | モデルごとに Chat Completions または Responses、`https://api.deepai.org/deepai_code` | `glm-5.3-flash` | 保存済み `api-key` ＋チェックイン（`docs/evidence/deepai-code-provider.md`） |
 
 > `gpt-oauth` のモデル一覧は ChatGPT アカウントごとに異なります（既定の `gpt-5.2-codex` が一覧にないアカウントでは `model_not_found` になります）。`inocode-server models` で利用可能なモデルを確認し、`INOCODE_LLM_MODEL` で選んでください。
 
@@ -121,12 +124,8 @@ LOGFARE_API_KEY=... cargo test --release -p inocode-server --test live_api -- --
 
 ## 記録
 
-- `docs/evidence/tcp-frame-protocol.md` — フレームプロトコル。
-- `docs/evidence/server-core-requests.md` — Server / Core と要求処理。
-- `docs/evidence/llm-streaming.md` — OpenAI 互換 API 接続とストリーミング。
-- `docs/evidence/anthropic-messages.md` — Anthropic Messages 互換接続と `max_tokens` の根拠。
-- `docs/evidence/oauth-providers.md` — サブスクリプション / OAuth ログイン（Claude OAuth・GPT OAuth・Muse Code）の線路詳細と根拠。
+実装した機能・設計判断ごとの根拠（研究・仕様・参照実装・実測・承認）は `docs/evidence/` にある。一覧は [docs/evidence/README.md](docs/evidence/README.md) の「記録の一覧」。
 
 ## 現状の範囲
 
-実装済み: フレームプロトコル、Server / Core、OpenAI 互換 API 接続と逐次配送、Anthropic Messages 互換接続、Claude OAuth・GPT OAuth・Muse Code のログインと要求時認証、モデル一覧取得（全方式）、中断、複数クライアント。未実装: 会話履歴、ツール実行、RAG、MCP、GUI、製品用 CLI。
+実装済み: フレームプロトコル、Server / Core、OpenAI 互換 API 接続と逐次配送、Anthropic Messages 互換接続、Responses 接続、Claude OAuth・GPT OAuth・Muse Code・DeepAI Code のログインと要求時認証、使用量の取得、モデル一覧取得（全方式。思考の深さの一覧と既定値を含む）、中断、複数クライアント。core のみ: 会話の型と 3 形式への変換、ツール定義の送信とストリームからのツール呼び出しの組み立て、思考の指定、SQLite の保存層（履歴・記憶・検索・連想）。未実装: TCP での会話・ツールの公開、エージェントループとツールの実行、規則とローカル issue、MCP、GUI、製品用 CLI。
