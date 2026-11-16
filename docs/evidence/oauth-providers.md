@@ -77,4 +77,8 @@
   - 実 chat（TCP 経由、claude-oauth）: `started → delta×2 → completed` ✅（OAuth Bearer＋`anthropic-beta`＋system アイデンティティブロック）。
   - 実モデル取得（claude-oauth）: 初回は `anthropic-version` ヘッダ欠落で 400（実測で判明）→ 全 Anthropic 要求で常に送るよう修正 → **17 モデル取得**（`display_name` 付き）✅。修正は commit `5698afe`。
 - 未実施・ユーザー実施予定: `gpt-oauth` の実ログイン（実装済み、模擬テスト合格、実ログインのみ未実施）。Muse Code と Claude OAuth のログイン・chat・モデル取得は上記のとおり実測済み。
+- **gpt-oauth 実検証（2026-11-16）**:
+  - ログイン成功（`login gpt`、ブラウザ承認 → コールバック交換 → ストア保存）。途中の失敗は運用由来: 旧 URL（前回発行の state）での承認は `state mismatch - possible CSRF attack` で拒否（保護は正常動作）。
+  - モデル取得成功: `client_version=99.0.0` 付き `GET /backend-api/codex/models` で **9 モデル**（`gpt-6.1-sol`, `gpt-6-astra`, `gpt-6.1-terra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol/terra/luna`, `gpt-daybreak-blue-latest`）。Codex ロスター解析（`supported_in_api`/`visibility` フィルタ、`slug`）は実環境で動作。
+  - chat: 既定 `gpt-5.2-codex` は上流 400 `model_not_found`（"not supported when using Codex with a ChatGPT account"）— ロスターがアカウント依存であることの実測確認（フォーク記録と一致）。既定モデルはロスターに存在しない場合があるため、`models` で一覧を取り `INOCODE_LLM_MODEL` で選ぶ運用を README に記載。ロスター内の `gpt-5.6-luna` では上流 429 `usage_limit_reached`（Plus、約28時間でリセット）— 要求経路全体が有効な認証で上流まで届いていることの実測。ストリーミング本体は模擬テストで網羅。
 - 適用しなかった参照実装の修正と理由: フォークのツール名エイリアス（`client_` 接頭辞、403 `client_attestation_denied` 対策）はツールを宣言しない InoCode には作動しない。クォータ拒否（429 `retry-after`）の長時間待機回避も、再試行機構を持たない InoCode には該当せず、429 は通常の `provider_http` 失敗として報告される。両方とも将来ツール対応時に再考する。

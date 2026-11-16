@@ -82,6 +82,8 @@ cargo run --release -p inocode-server -- login muse-code    # デバイスコー
 | `gpt-oauth` | OpenAI Responses、`https://chatgpt.com/backend-api/codex/responses` | `gpt-5.2-codex` | OAuth Bearer ＋ `chatgpt-account-id` |
 | `muse-code` | OpenAI Responses、`https://api.meta.ai/v1/responses` | `muse-spark-1.3` | 保存済みサブスクリプションキー（`LLM|`） |
 
+> `gpt-oauth` のモデル一覧は ChatGPT アカウントごとに異なります（既定の `gpt-5.2-codex` が一覧にないアカウントでは `model_not_found` になります）。`inocode-server models` で利用可能なモデルを確認し、`INOCODE_LLM_MODEL` で選んでください。
+
 認証情報はファイルに保存される（秘密値は Debug 出力・ログに出ない）。トークンは要求時に失効を確認し、期限切れなら更新トークンで自動更新する。
 
 ### モデル一覧の取得
