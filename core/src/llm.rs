@@ -751,6 +751,10 @@ fn request_body(
     };
     body.insert("model".into(), json!(model));
     body.insert("stream".into(), json!(true));
+    if format == ProviderKind::OpenAi {
+        // Without this, Chat Completions streams report no token usage.
+        body.insert("stream_options".into(), json!({ "include_usage": true }));
+    }
     if format == ProviderKind::Responses {
         body.insert("store".into(), json!(false));
         body.insert("include".into(), json!(["reasoning.encrypted_content"]));
@@ -799,6 +803,15 @@ fn request_body(
         }
     }
     Ok(Value::Object(body))
+}
+
+/// Tokens a provider reported for one request. `input` includes the
+/// `cached` part.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TokenUsage {
+    pub input: u64,
+    pub output: u64,
+    pub cached: u64,
 }
 
 /// A JSON Schema the answer must follow, in the strict subset (every
@@ -1075,6 +1088,11 @@ impl ChatStream {
         next
     }
 
+    /// Tokens the provider reported for this request, once it has.
+    pub fn usage(&self) -> Option<TokenUsage> {
+        self.turn.usage()
+    }
+
     /// The turn received so far: complete once [`Self::next`] returned
     /// `None`, `Error` after it failed, `Aborted` when read no further.
     pub fn assistant(&mut self) -> Body {
@@ -1213,6 +1231,16 @@ fn openai_delta(
             .unwrap_or("provider reported an error in the stream");
         return Err(ErrorInfo::new("provider_stream", message.to_string()));
     }
+    if let Some(usage) = value.get("usage").filter(|usage| usage.is_object()) {
+        turn.report_usage(
+            usage.get("prompt_tokens").and_then(Value::as_u64),
+            usage.get("completion_tokens").and_then(Value::as_u64),
+            usage
+                .get("prompt_tokens_details")
+                .and_then(|details| details.get("cached_tokens"))
+                .and_then(Value::as_u64),
+        );
+    }
     let choice = value.get("choices").and_then(|choices| choices.get(0));
     if let Some(reason) = choice
         .and_then(|choice| choice.get("finish_reason"))
@@ -1347,7 +1375,28 @@ fn anthropic_event(data: &str, turn: &mut TurnBuilder) -> Result<AnthropicEvent,
             }
             Ok(AnthropicEvent::Ignored)
         }
+        Some("message_start") => {
+            if let Some(usage) = value
+                .get("message")
+                .and_then(|message| message.get("usage"))
+            {
+                let field = |name: &str| usage.get(name).and_then(Value::as_u64);
+                let cached = field("cache_read_input_tokens");
+                let input = field("input_tokens").map(|input| {
+                    input + cached.unwrap_or(0) + field("cache_creation_input_tokens").unwrap_or(0)
+                });
+                turn.report_usage(input, field("output_tokens"), cached);
+            }
+            Ok(AnthropicEvent::Ignored)
+        }
         Some("message_delta") => {
+            if let Some(output) = value
+                .get("usage")
+                .and_then(|usage| usage.get("output_tokens"))
+                .and_then(Value::as_u64)
+            {
+                turn.report_usage(None, Some(output), None);
+            }
             if let Some(reason) = value
                 .get("delta")
                 .and_then(|delta| delta.get("stop_reason"))
@@ -1446,6 +1495,19 @@ fn responses_delta(
         // Both end the answer; `incomplete` means the provider stopped early
         // (length or content filter), which still produces the text it sent.
         Some("response.completed") | Some("response.incomplete") => {
+            if let Some(usage) = value
+                .get("response")
+                .and_then(|response| response.get("usage"))
+            {
+                turn.report_usage(
+                    usage.get("input_tokens").and_then(Value::as_u64),
+                    usage.get("output_tokens").and_then(Value::as_u64),
+                    usage
+                        .get("input_tokens_details")
+                        .and_then(|details| details.get("cached_tokens"))
+                        .and_then(Value::as_u64),
+                );
+            }
             if value
                 .get("response")
                 .and_then(|response| response.get("incomplete_details"))
@@ -2070,6 +2132,66 @@ mod tests {
     }
 
     #[test]
+    fn token_usage_is_read_from_each_format() {
+        let usage = |format, events: &[&str]| {
+            let (mut done, mut signalled) = (false, false);
+            let mut turn = TurnBuilder::default();
+            for data in events {
+                interpret(format, data, &mut done, &mut signalled, &mut turn).expect("valid");
+            }
+            turn.usage()
+        };
+        assert_eq!(
+            usage(
+                ProviderKind::OpenAi,
+                &[
+                    r#"{"choices":[{"delta":{"content":"ok"}}],"usage":null}"#,
+                    r#"{"choices":[],"usage":{"prompt_tokens":120,"completion_tokens":7,"prompt_tokens_details":{"cached_tokens":100}}}"#,
+                ]
+            ),
+            Some(TokenUsage {
+                input: 120,
+                output: 7,
+                cached: 100
+            })
+        );
+        assert_eq!(
+            usage(
+                ProviderKind::Anthropic,
+                &[
+                    r#"{"type":"message_start","message":{"usage":{"input_tokens":20,"cache_read_input_tokens":100,"cache_creation_input_tokens":5,"output_tokens":1}}}"#,
+                    r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":42}}"#,
+                ]
+            ),
+            Some(TokenUsage {
+                input: 125,
+                output: 42,
+                cached: 100
+            })
+        );
+        assert_eq!(
+            usage(
+                ProviderKind::Responses,
+                &[
+                    r#"{"type":"response.completed","response":{"usage":{"input_tokens":300,"output_tokens":9,"input_tokens_details":{"cached_tokens":256}}}}"#
+                ]
+            ),
+            Some(TokenUsage {
+                input: 300,
+                output: 9,
+                cached: 256
+            })
+        );
+        assert_eq!(
+            usage(
+                ProviderKind::OpenAi,
+                &[r#"{"choices":[{"delta":{"content":"x"}}]}"#]
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn unfinished_and_failed_turns_say_so() {
         let mut turn = TurnBuilder::default();
         turn.text("half");
@@ -2119,6 +2241,7 @@ mod tests {
         )
         .expect("body");
         assert_eq!(chat["tools"][0]["function"]["name"], "read");
+        assert_eq!(chat["stream_options"], json!({"include_usage": true}));
         assert_eq!(chat["messages"][0]["role"], "system");
         let anthropic = request_body(
             ProviderKind::Anthropic,

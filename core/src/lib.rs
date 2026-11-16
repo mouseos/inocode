@@ -19,7 +19,7 @@ mod usage;
 pub use usage::{Usage, UsageWindow};
 
 pub use llm::{
-    ChatStream, JsonOutput, Llm, LlmConfig, ModelInfo, ProviderKind, DEFAULT_BASE_URL,
+    ChatStream, JsonOutput, Llm, LlmConfig, ModelInfo, ProviderKind, TokenUsage, DEFAULT_BASE_URL,
     DEFAULT_MAX_TOKENS, DEFAULT_MODEL,
 };
 

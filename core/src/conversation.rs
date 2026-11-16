@@ -390,9 +390,34 @@ pub(crate) struct TurnBuilder {
     /// The Chat Completions field the reasoning arrived in.
     reasoning_field: Option<&'static str>,
     stop: Option<StopReason>,
+    usage: Option<crate::TokenUsage>,
 }
 
 impl TurnBuilder {
+    /// Records what the provider reported; later reports of a field replace
+    /// earlier ones (Anthropic reports input first and output last).
+    pub(crate) fn report_usage(
+        &mut self,
+        input: Option<u64>,
+        output: Option<u64>,
+        cached: Option<u64>,
+    ) {
+        let usage = self.usage.get_or_insert_with(crate::TokenUsage::default);
+        if let Some(input) = input {
+            usage.input = input;
+        }
+        if let Some(output) = output {
+            usage.output = output;
+        }
+        if let Some(cached) = cached {
+            usage.cached = cached;
+        }
+    }
+
+    pub(crate) fn usage(&self) -> Option<crate::TokenUsage> {
+        self.usage
+    }
+
     pub(crate) fn text(&mut self, delta: &str) {
         match self.parts.last_mut() {
             Some(AssistantPart::Text { text }) => text.push_str(delta),
