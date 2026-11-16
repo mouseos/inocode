@@ -1,7 +1,7 @@
 # 会話の型（プロバイダ中立のメッセージ列）
 
 - **対象と範囲：** 1 往復の `prompt` しか持てない現状を、複数ターンとツール呼び出し・結果・思考を含む会話として表せるようにする型と、それを 3 形式（OpenAI Chat Completions / Anthropic Messages / OpenAI Responses）へ変換する処理。範囲外（後続段階）：ツール定義の送信とストリームからのツール呼び出しの組み立て（段階 2）、TCP プロトコルへの公開（段階 3）、エージェントループ（段階 4）、観測結果の圧縮・マスク（後続）、保存と再開（段階 6）、画像。
-- **関連コード：** `core/src/conversation.rs`（型、`to_chat_completions`・`to_anthropic`・`to_responses`、送信前の検査 `prepare`）。既存の 1 往復の `chat` はまだこの型を通らない（段階 2・3 で接続）。
+- **関連コード：** `core/src/conversation.rs`（型、`to_chat_completions`・`to_anthropic`・`to_responses`、送信前の検査 `prepare`）。送信とストリームからの組み立ては `docs/evidence/tool-calling.md`。
 - **根拠の状態：** 設計判断ごとに下表のとおり。全体としては UNSUPPORTED_APPROVED（2026-11-16 承認。研究で直接裏付けられるのは判断 6・9 の一部のみで、それ以外は公式仕様・公開実装・このプロジェクトの判断）。
 - **調査日：** 2026-11-16。各調査の原典 URL・ファイル位置は下記。
 

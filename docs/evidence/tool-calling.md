@@ -1,0 +1,21 @@
+# ツール呼び出し（定義の送信とストリームからの組み立て）
+
+- **対象と範囲：** 会話（`docs/evidence/conversation-model.md`）とツール定義を 3 形式のリクエストにし、ストリームから assistant の発言（文章・思考と再送用データ・ツール呼び出し・止まった理由）を組み立てる。範囲外：ツールの中身（どのツールを持つかは別途議論）、ツールの実行とエージェントループ（段階 4）、TCP への公開（段階 3）。
+- **関連コード：**
+  - `core/src/conversation.rs` — `ToolSpec`、`tool_definitions`、`TurnBuilder`（組み立て）。
+  - `core/src/llm.rs` — `Llm::converse`（`chat` は 1 発言の会話として同じ経路）、`request_body`、`interpret` と形式ごとの `openai_delta`・`anthropic_event`・`responses_delta`、`ChatStream::assistant`。
+- **根拠の状態：** UNSUPPORTED_APPROVED（2026-11-16、段階 2 の案に「いいよ。ただしツールの内容は後で議論」）。仕組みは各社の公式仕様への適合で、有効性の研究は対象外。思考の再送の研究上の位置づけは conversation-model.md の判断 6。
+- **公式仕様（2026-11-16 時点、conversation-model.md と同じ原典）：**
+  - ツール定義：Chat は `tools[].function{name, description, parameters}`、Anthropic は `tools[]{name, description, input_schema}`、Responses は `tools[]{type: "function", name, description, parameters, strict}`（Responses は `strict` が既定で true のため false を明示。参照実装 Codex も false を送る）。
+  - ストリーム：Chat は `delta.tool_calls[].index` ごとに `function.arguments` が分割される。Anthropic は `content_block_start`（`thinking` / `redacted_thinking` / `tool_use`）と `content_block_delta`（`thinking_delta` / `signature_delta` / `input_json_delta`）、止まった理由は `message_delta.delta.stop_reason`。Responses は `response.output_item.done` が完成した `reasoning` / `function_call` 項目を持つ。
+  - Responses は `store: false` で送るため、思考を次のターンへ返すには `include: ["reasoning.encrypted_content"]` が必要。
+- **実装上の判断（このプロジェクトの判断）：**
+  - 組み立ては受け取った分だけ追記し、1 回の応答で O(受信バイト数)。位置（Chat の index、Anthropic の block index）から部品への対応は HashMap（提供元が大きな index を送っても確保量は増えない）。
+  - Responses は引数の差分を連結せず、完成した項目を使う（差分と完成品の二重管理をしない）。
+  - Chat の思考は `reasoning_content`（DeepSeek・GLM 系）か `reasoning`（OpenRouter 系）の先に見つかった方を読み、同じフィールド名で返す。
+  - 止まった理由：Chat `length`→長さ切れ、`tool_calls`→ツール使用、他→完了。Anthropic `max_tokens`→長さ切れ、`tool_use`→ツール使用、他→完了。Responses は `max_output_tokens` で未完了なら長さ切れ、それ以外は呼び出しがあればツール使用、なければ完了。ストリームが失敗すればエラー、最後まで読まなければ中断。
+  - 1 往復の `chat` も同じ経路を通るため、Anthropic の user 発言は文字列ではなく text ブロックの配列で送る（仕様上同じ意味）。Claude OAuth では会話の system を Claude Code の識別ブロックの後ろに足す。
+- **実装・検証の状況：**
+  - 単体試験（`core/src/llm.rs`）：3 形式のストリームからの組み立て（思考と署名、redacted thinking、分割された引数、2 件の呼び出し、止まった理由、長さ切れ）、未完了・失敗の扱い、リクエスト本文（ツール定義、system、`store`・`include`、空のツールで `tools` を送らない、重複名はエラー）。`cargo test --workspace --release` 成功、clippy 警告なし。
+  - 実通信（2026-11-16、`server/tests/live_tools.rs`、手動実行）：ツールを 1 回呼ばせ、結果を返して 2 ターン目の回答まで。Claude OAuth `claude-haiku-5-5`（Anthropic 形式、呼び出し 1、完了）、Muse `muse-spark-1.3-contributor`（Responses 形式、暗号化された思考 1 件を同じモデルへ再送して完了。`include` を受け付けることを確認）、DeepAI `glm-5.3-flash`（Chat 形式、`reasoning_content` を再送して完了）。
+  - 未検証：GPT OAuth（使用量の上限に達しているため未実施）、Anthropic の thinking を有効にしたときの署名つき再送（haiku の既定では思考が出なかった）、Logfare の Chat 形式でのツール呼び出し。

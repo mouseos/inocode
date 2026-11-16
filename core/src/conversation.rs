@@ -1,7 +1,7 @@
 //! A provider-neutral conversation and its conversion to the three wire
 //! formats. Design and sources: docs/evidence/conversation-model.md.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::{json, Map, Value};
 
@@ -325,6 +325,176 @@ pub fn to_responses(
     Ok(fields)
 }
 
+/// A function the model may call. `parameters` is a JSON Schema object.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolSpec {
+    pub name: String,
+    pub description: String,
+    pub parameters: Value,
+}
+
+/// The `tools` array of a request in `format`. Responses tools are sent with
+/// `strict: false` because that API defaults to strict schemas.
+pub fn tool_definitions(format: ProviderKind, tools: &[ToolSpec]) -> Result<Value, ErrorInfo> {
+    let mut names = HashSet::with_capacity(tools.len());
+    tools
+        .iter()
+        .map(|tool| {
+            if !valid_tool_name(&tool.name) {
+                return Err(bad_tool_name(&tool.name));
+            }
+            if !names.insert(tool.name.as_str()) {
+                return Err(invalid(format!("tool {} is defined twice", tool.name)));
+            }
+            Ok(match format {
+                ProviderKind::OpenAi => json!({
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.parameters,
+                    },
+                }),
+                ProviderKind::Anthropic => json!({
+                    "name": tool.name,
+                    "description": tool.description,
+                    "input_schema": tool.parameters,
+                }),
+                ProviderKind::Responses => json!({
+                    "type": "function",
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.parameters,
+                    "strict": false,
+                }),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Value::Array)
+}
+
+/// Collects one streamed assistant turn. Keys are the provider's stream
+/// positions: Chat Completions `tool_calls[].index`, Anthropic block `index`.
+#[derive(Debug, Default)]
+pub(crate) struct TurnBuilder {
+    parts: Vec<AssistantPart>,
+    keyed: HashMap<u64, usize>,
+    /// Anthropic thinking signatures by part index.
+    signatures: HashMap<usize, String>,
+    /// The Chat Completions field the reasoning arrived in.
+    reasoning_field: Option<&'static str>,
+    stop: Option<StopReason>,
+}
+
+impl TurnBuilder {
+    pub(crate) fn text(&mut self, delta: &str) {
+        match self.parts.last_mut() {
+            Some(AssistantPart::Text { text }) => text.push_str(delta),
+            _ => self.parts.push(AssistantPart::Text {
+                text: delta.to_string(),
+            }),
+        }
+    }
+
+    /// Chat Completions reasoning, replayed later under the same field.
+    pub(crate) fn chat_reasoning(&mut self, field: &'static str, delta: &str) {
+        self.reasoning_field = Some(field);
+        match self.parts.last_mut() {
+            Some(AssistantPart::Reasoning { text, replay: None }) => text.push_str(delta),
+            _ => self.parts.push(AssistantPart::Reasoning {
+                text: delta.to_string(),
+                replay: None,
+            }),
+        }
+    }
+
+    pub(crate) fn push(&mut self, part: AssistantPart) {
+        self.parts.push(part);
+    }
+
+    /// Starts a part that later deltas address by `key`.
+    pub(crate) fn start(&mut self, key: u64, part: AssistantPart) {
+        self.keyed.insert(key, self.parts.len());
+        self.parts.push(part);
+    }
+
+    pub(crate) fn started(&self, key: u64) -> bool {
+        self.keyed.contains_key(&key)
+    }
+
+    /// Appends to the reasoning text or call arguments started at `key`.
+    pub(crate) fn append(&mut self, key: u64, delta: &str) {
+        match self
+            .keyed
+            .get(&key)
+            .and_then(|&index| self.parts.get_mut(index))
+        {
+            Some(AssistantPart::Reasoning { text, .. } | AssistantPart::Text { text }) => {
+                text.push_str(delta)
+            }
+            Some(AssistantPart::ToolCall { arguments, .. }) => arguments.push_str(delta),
+            None => {}
+        }
+    }
+
+    pub(crate) fn sign(&mut self, key: u64, delta: &str) {
+        if let Some(&index) = self.keyed.get(&key) {
+            self.signatures.entry(index).or_default().push_str(delta);
+        }
+    }
+
+    pub(crate) fn stop(&mut self, reason: StopReason) {
+        self.stop = Some(reason);
+    }
+
+    /// The turn so far. A failed stream ends in `Error`, one that never
+    /// completed in `Aborted`; otherwise the provider's reason, or `ToolUse`
+    /// / `Completed` when it gave none.
+    pub(crate) fn finish(&mut self, origin: Origin, failed: bool, completed: bool) -> Body {
+        let mut parts = std::mem::take(&mut self.parts);
+        for (index, signature) in self.signatures.drain() {
+            if let Some(AssistantPart::Reasoning { text, replay }) = parts.get_mut(index) {
+                *replay = Some(Replay(json!({
+                    "type": "thinking",
+                    "thinking": text,
+                    "signature": signature,
+                })));
+            }
+        }
+        if let Some(field) = self.reasoning_field {
+            for part in &mut parts {
+                if let AssistantPart::Reasoning {
+                    text,
+                    replay: replay @ None,
+                } = part
+                {
+                    let mut fields = Map::new();
+                    fields.insert(field.to_string(), json!(text));
+                    *replay = Some(Replay(Value::Object(fields)));
+                }
+            }
+        }
+        let stop = if failed {
+            StopReason::Error
+        } else if !completed {
+            StopReason::Aborted
+        } else {
+            self.stop.unwrap_or_else(|| {
+                if parts.iter().any(|part| call_id(part).is_some()) {
+                    StopReason::ToolUse
+                } else {
+                    StopReason::Completed
+                }
+            })
+        };
+        Body::Assistant {
+            origin,
+            stop,
+            parts,
+        }
+    }
+}
+
 /// The format and model a conversion sends to.
 struct Target<'a> {
     format: ProviderKind,
@@ -377,9 +547,7 @@ fn prepare(conversation: &Conversation) -> Result<Vec<&Body>, ErrorInfo> {
                 for part in parts {
                     if let AssistantPart::ToolCall { call_id, name, .. } = part {
                         if !valid_tool_name(name) {
-                            return Err(invalid(format!(
-                                "tool name {name:?} must match ^[A-Za-z0-9_-]{{1,64}}$"
-                            )));
+                            return Err(bad_tool_name(name));
                         }
                         if !seen.insert(call_id.as_str()) {
                             return Err(invalid(format!("tool call id {call_id} is repeated")));
@@ -431,6 +599,12 @@ fn arguments_object(call_id: &str, arguments: &str) -> Result<Value, ErrorInfo> 
             "the arguments of tool call {call_id} are not a JSON object"
         ))),
     }
+}
+
+fn bad_tool_name(name: &str) -> ErrorInfo {
+    invalid(format!(
+        "tool name {name:?} must match ^[A-Za-z0-9_-]{{1,64}}$"
+    ))
 }
 
 fn invalid(message: String) -> ErrorInfo {

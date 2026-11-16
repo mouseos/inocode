@@ -150,7 +150,10 @@ async fn chat_request_reaches_the_messages_endpoint_with_anthropic_headers() {
         assert_eq!(request.body["max_tokens"], 8192);
         assert_eq!(request.body["stream"], true);
         assert_eq!(request.body["messages"][0]["role"], "user");
-        assert_eq!(request.body["messages"][0]["content"], prompt);
+        assert_eq!(
+            request.body["messages"][0]["content"],
+            json!([{"type": "text", "text": prompt}])
+        );
     })
     .await;
 }

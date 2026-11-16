@@ -425,8 +425,11 @@ pub fn anthropic_stream(text: &str) -> Vec<Vec<u8>> {
 /// Text that the mock handler returns for a given prompt, so tests can check
 /// that responses are not mixed between clients.
 pub fn reply_for(request: &MockRequest) -> String {
-    let prompt = request.body["messages"][0]["content"]
+    // Chat Completions sends a string, Anthropic a list of text blocks.
+    let content = &request.body["messages"][0]["content"];
+    let prompt = content
         .as_str()
+        .or_else(|| content[0]["text"].as_str())
         .unwrap_or("unknown");
     format!("reply[{prompt}]")
 }
