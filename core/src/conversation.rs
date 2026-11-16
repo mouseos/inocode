@@ -3,25 +3,27 @@
 
 use std::collections::{HashMap, HashSet};
 
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use crate::{ErrorInfo, ProviderKind};
 
 /// System instructions plus the turns of one conversation.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Conversation {
     pub system: Option<String>,
     pub messages: Vec<Message>,
 }
 
 /// One turn. `id` is unique within its conversation; it is never sent.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     pub id: String,
     pub body: Body,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "role", rename_all = "snake_case")]
 pub enum Body {
     User {
         from: Speaker,
@@ -44,7 +46,8 @@ pub enum Body {
 
 /// Who wrote a user turn: the person, or the harness (continuation nudges,
 /// re-checks, loop warnings), named by kind so the harness can count them.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Speaker {
     Person,
     Harness(String),
@@ -52,14 +55,15 @@ pub enum Speaker {
 
 /// The format and model that produced an assistant turn. Replay data is only
 /// valid for this pair.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Origin {
     pub format: ProviderKind,
     pub model: String,
 }
 
 /// Why an assistant turn ended. `Error` and `Aborted` turns are never sent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum StopReason {
     Completed,
     Length,
@@ -68,7 +72,8 @@ pub enum StopReason {
     Aborted,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum AssistantPart {
     Text {
         text: String,
@@ -94,7 +99,8 @@ pub enum AssistantPart {
 /// - Chat Completions: for reasoning, an object whose fields are added to the
 ///   assistant message (e.g. `{"reasoning_content": …}`); for a tool call,
 ///   the `tool_calls` entry.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct Replay(pub Value);
 
 /// `messages` (with the system turn first) for a Chat Completions body.

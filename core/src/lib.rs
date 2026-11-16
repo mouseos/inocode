@@ -11,6 +11,7 @@ mod llm;
 pub mod oauth;
 pub mod reasoning;
 mod sse;
+pub mod store;
 mod usage;
 
 pub use usage::{Usage, UsageWindow};

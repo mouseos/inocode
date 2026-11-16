@@ -61,7 +61,8 @@ const CODEX_DISCOVERY_CLIENT_VERSION: &str = "99.0.0";
 const CODEX_CLIENT_VERSION_ENV: &str = "INOCODE_CODEX_CLIENT_VERSION";
 
 /// Which API format a [`Llm`] speaks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ProviderKind {
     /// Chat Completions format (`POST {base}/chat/completions`).
     #[default]
