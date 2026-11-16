@@ -222,10 +222,7 @@ impl Llm {
                 format!("no stored credential for {name}; run the login first"),
             )
         })?;
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
+        let now_ms = crate::oauth::now_ms();
         if credential
             .expires_at_ms
             .is_none_or(|expires| now_ms < expires)
@@ -291,15 +288,7 @@ impl Llm {
             .await
             .map_err(|error| ErrorInfo::new("provider_http", format!("request failed: {error}")))?;
         let response = require_success(response).await?;
-        Ok(ChatStream {
-            inner: ChatStreamInner::OpenAi(OpenAiStream {
-                response,
-                parser: SseParser::new(),
-                body_ended: false,
-                done: false,
-                signalled: false,
-            }),
-        })
+        Ok(ChatStream::new(StreamFormat::OpenAi, response))
     }
 
     async fn anthropic_chat(&self, prompt: &str) -> Result<ChatStream, ErrorInfo> {
@@ -332,14 +321,7 @@ impl Llm {
             .await
             .map_err(|error| ErrorInfo::new("provider_http", format!("request failed: {error}")))?;
         let response = require_success(response).await?;
-        Ok(ChatStream {
-            inner: ChatStreamInner::Anthropic(AnthropicStream {
-                response,
-                parser: SseParser::new(),
-                body_ended: false,
-                done: false,
-            }),
-        })
+        Ok(ChatStream::new(StreamFormat::Anthropic, response))
     }
 
     /// The Responses backend of the ChatGPT/Codex and Meta Muse providers.
@@ -352,12 +334,7 @@ impl Llm {
     async fn responses_chat(&self, prompt: &str) -> Result<ChatStream, ErrorInfo> {
         let credential = self.credential().await?;
         let bearer = match self.config.auth {
-            AuthKind::MuseSubscription => credential.api_key.clone().ok_or_else(|| {
-                ErrorInfo::new(
-                    "provider_config",
-                    "the stored Muse credential has no api_key; run the login again",
-                )
-            })?,
+            AuthKind::MuseSubscription => muse_api_key(&credential)?,
             // The ChatGPT account access token is the bearer; the Muse account
             // token must never be sent to the model API (measured 401).
             _ => credential.access.clone(),
@@ -380,13 +357,7 @@ impl Llm {
             .header("accept", "text/event-stream");
         request = match self.config.auth {
             AuthKind::GptOauth => {
-                let account = credential.account_id.clone().ok_or_else(|| {
-                    ErrorInfo::new(
-                        "provider_config",
-                        "the stored ChatGPT credential has no account id; run the login again",
-                    )
-                })?;
-                request.header("chatgpt-account-id", account)
+                request.header("chatgpt-account-id", chatgpt_account_id(&credential)?)
             }
             AuthKind::MuseSubscription => request
                 .header("user-agent", crate::oauth::MUSE_USER_AGENT)
@@ -398,21 +369,9 @@ impl Llm {
                 ErrorInfo::new("provider_http", format!("request failed: {error}"))
             })?;
         let response = require_success(response).await?;
-        Ok(ChatStream {
-            inner: ChatStreamInner::Responses(ResponsesStream {
-                response,
-                parser: SseParser::new(),
-                body_ended: false,
-                done: false,
-                signalled: false,
-            }),
-        })
+        Ok(ChatStream::new(StreamFormat::Responses, response))
     }
 
-    /// The discovery endpoint for the configured kind, following the
-    /// reference `buildModelsRequest`: OpenAI-style `{base}/models` for
-    /// everything except Anthropic, whose endpoint is `{base}/v1/models`
-    /// with the maximum page size.
     /// The discovery endpoint for the configured kind, following the
     /// reference `buildModelsRequest`: OpenAI-style `{base}/models` for
     /// everything except Anthropic, whose endpoint is `{base}/v1/models`
@@ -456,28 +415,16 @@ impl Llm {
                 // The Meta account token is rejected by `/v1/models`; the
                 // subscription key is the bearer, as for inference.
                 let credential = self.credential().await?;
-                let api_key = credential.api_key.clone().ok_or_else(|| {
-                    ErrorInfo::new(
-                        "provider_config",
-                        "the stored Muse credential has no api_key; run the login again",
-                    )
-                })?;
                 request
-                    .bearer_auth(api_key)
+                    .bearer_auth(muse_api_key(&credential)?)
                     .header("user-agent", crate::oauth::MUSE_USER_AGENT)
                     .header("x-api-version", crate::oauth::MUSE_API_VERSION)
             }
             (_, AuthKind::GptOauth) => {
                 let credential = self.credential().await?;
-                let account = credential.account_id.clone().ok_or_else(|| {
-                    ErrorInfo::new(
-                        "provider_config",
-                        "the stored ChatGPT credential has no account id; run the login again",
-                    )
-                })?;
                 request
                     .bearer_auth(&credential.access)
-                    .header("chatgpt-account-id", account)
+                    .header("chatgpt-account-id", chatgpt_account_id(&credential)?)
             }
             _ => request.bearer_auth(&self.config.api_key),
         };
@@ -500,6 +447,26 @@ impl Llm {
         })?;
         models_from_json(&value)
     }
+}
+
+/// The Muse subscription key, the bearer of every Muse model request.
+fn muse_api_key(credential: &Credential) -> Result<String, ErrorInfo> {
+    credential.api_key.clone().ok_or_else(|| {
+        ErrorInfo::new(
+            "provider_config",
+            "the stored Muse credential has no api_key; run the login again",
+        )
+    })
+}
+
+/// The ChatGPT account the Codex backend routes a request to.
+fn chatgpt_account_id(credential: &Credential) -> Result<String, ErrorInfo> {
+    credential.account_id.clone().ok_or_else(|| {
+        ErrorInfo::new(
+            "provider_config",
+            "the stored ChatGPT credential has no account id; run the login again",
+        )
+    })
 }
 
 /// One model advertised by the provider's discovery endpoint.
@@ -650,49 +617,64 @@ fn snippet(body: &str) -> String {
     }
 }
 
+/// The SSE format a [`ChatStream`] reads.
+#[derive(Debug, Clone, Copy)]
+enum StreamFormat {
+    OpenAi,
+    Anthropic,
+    Responses,
+}
+
+/// What one SSE `data` payload means for the answer.
+enum StreamItem {
+    Text(String),
+    /// Carries no answer text; keep reading.
+    Skip,
+    /// The provider ended the answer.
+    Finish,
+}
+
 /// Text deltas of one completion, in generation order.
 pub struct ChatStream {
-    inner: ChatStreamInner,
+    format: StreamFormat,
+    response: reqwest::Response,
+    parser: SseParser,
+    body_ended: bool,
+    done: bool,
+    /// The provider sent its completion signal (`[DONE]`, a finish reason,
+    /// or a terminal Responses event).
+    signalled: bool,
 }
 
 impl ChatStream {
+    fn new(format: StreamFormat, response: reqwest::Response) -> Self {
+        Self {
+            format,
+            response,
+            parser: SseParser::new(),
+            body_ended: false,
+            done: false,
+            signalled: false,
+        }
+    }
+
     /// Returns the next text delta, or `None` once the provider finished.
     ///
     /// A body that ends before the provider signalled completion is an error,
     /// so a truncated answer is never reported as complete.
     pub async fn next(&mut self) -> Result<Option<String>, ErrorInfo> {
-        match &mut self.inner {
-            ChatStreamInner::OpenAi(stream) => stream.next().await,
-            ChatStreamInner::Anthropic(stream) => stream.next().await,
-            ChatStreamInner::Responses(stream) => stream.next().await,
-        }
-    }
-}
-
-enum ChatStreamInner {
-    OpenAi(OpenAiStream),
-    Anthropic(AnthropicStream),
-    Responses(ResponsesStream),
-}
-
-struct OpenAiStream {
-    response: reqwest::Response,
-    parser: SseParser,
-    body_ended: bool,
-    done: bool,
-    signalled: bool,
-}
-
-impl OpenAiStream {
-    async fn next(&mut self) -> Result<Option<String>, ErrorInfo> {
         if self.done {
             return Ok(None);
         }
         loop {
             match self.parser.next_item() {
-                Some(Ok(data)) => match openai_delta(&data, &mut self.done, &mut self.signalled)? {
-                    Some(text) => return Ok(Some(text)),
-                    None => continue,
+                Some(Ok(data)) => match self.interpret(&data)? {
+                    StreamItem::Text(text) => return Ok(Some(text)),
+                    StreamItem::Skip => continue,
+                    StreamItem::Finish => {
+                        self.done = true;
+                        return Ok(None);
+                    }
                 },
                 Some(Err(error)) => {
                     self.done = true;
@@ -701,17 +683,8 @@ impl OpenAiStream {
                 None => {}
             }
             if self.body_ended {
-                // The body is over and the parser has nothing left: only a
-                // provider that signalled completion finished successfully.
                 self.done = true;
-                return if self.signalled {
-                    Ok(None)
-                } else {
-                    Err(ErrorInfo::new(
-                        "provider_stream",
-                        "the provider stream ended before it signalled completion",
-                    ))
-                };
+                return self.end_of_body();
             }
             match self.response.chunk().await {
                 Ok(Some(chunk)) => self.parser.push(&chunk),
@@ -728,6 +701,51 @@ impl OpenAiStream {
                 }
             }
         }
+    }
+
+    fn interpret(&mut self, data: &str) -> Result<StreamItem, ErrorInfo> {
+        Ok(match self.format {
+            StreamFormat::OpenAi => {
+                text_or_skip(openai_delta(data, &mut self.done, &mut self.signalled)?)
+            }
+            StreamFormat::Anthropic => match anthropic_event(data)? {
+                AnthropicEvent::Text(text) => StreamItem::Text(text),
+                AnthropicEvent::Stop => StreamItem::Finish,
+                AnthropicEvent::Ignored => StreamItem::Skip,
+            },
+            StreamFormat::Responses => {
+                text_or_skip(responses_delta(data, &mut self.done, &mut self.signalled)?)
+            }
+        })
+    }
+
+    /// The outcome once the body is over and the parser has nothing left.
+    fn end_of_body(&self) -> Result<Option<String>, ErrorInfo> {
+        match self.format {
+            // Only a provider that signalled completion finished successfully.
+            StreamFormat::OpenAi if self.signalled => Ok(None),
+            StreamFormat::OpenAi => Err(ErrorInfo::new(
+                "provider_stream",
+                "the provider stream ended before it signalled completion",
+            )),
+            // `message_stop` is the only completion signal; a body that ends
+            // without it is a truncated answer, never a success.
+            StreamFormat::Anthropic => Err(ErrorInfo::new(
+                "provider_stream",
+                "the provider stream ended before message_stop",
+            )),
+            // The reference passthrough adapter ends the turn at end of body:
+            // buffered deltas are the answer, and only a
+            // `response.failed`/`error` event fails it mid-stream.
+            StreamFormat::Responses => Ok(None),
+        }
+    }
+}
+
+fn text_or_skip(text: Option<String>) -> StreamItem {
+    match text {
+        Some(text) => StreamItem::Text(text),
+        None => StreamItem::Skip,
     }
 }
 
@@ -770,61 +788,6 @@ fn openai_delta(
     } else {
         Some(content.to_string())
     })
-}
-
-struct AnthropicStream {
-    response: reqwest::Response,
-    parser: SseParser,
-    body_ended: bool,
-    done: bool,
-}
-
-impl AnthropicStream {
-    async fn next(&mut self) -> Result<Option<String>, ErrorInfo> {
-        if self.done {
-            return Ok(None);
-        }
-        loop {
-            match self.parser.next_item() {
-                Some(Ok(data)) => match anthropic_event(&data)? {
-                    AnthropicEvent::Text(text) => return Ok(Some(text)),
-                    AnthropicEvent::Stop => {
-                        self.done = true;
-                        return Ok(None);
-                    }
-                    AnthropicEvent::Ignored => continue,
-                },
-                Some(Err(error)) => {
-                    self.done = true;
-                    return Err(error);
-                }
-                None => {}
-            }
-            if self.body_ended {
-                // `message_stop` is the only completion signal; a body that
-                // ends without it is a truncated answer, never a success.
-                self.done = true;
-                return Err(ErrorInfo::new(
-                    "provider_stream",
-                    "the provider stream ended before message_stop",
-                ));
-            }
-            match self.response.chunk().await {
-                Ok(Some(chunk)) => self.parser.push(&chunk),
-                Ok(None) => {
-                    self.parser.end();
-                    self.body_ended = true;
-                }
-                Err(error) => {
-                    self.done = true;
-                    return Err(ErrorInfo::new(
-                        "provider_stream",
-                        format!("stream failed: {error}"),
-                    ));
-                }
-            }
-        }
-    }
 }
 
 /// One Anthropic Messages SSE event reduced to what this protocol needs.
@@ -879,58 +842,6 @@ fn anthropic_event(data: &str) -> Result<AnthropicEvent, ErrorInfo> {
             "provider_protocol",
             "SSE payload has no \"type\" field",
         )),
-    }
-}
-
-struct ResponsesStream {
-    response: reqwest::Response,
-    parser: SseParser,
-    body_ended: bool,
-    done: bool,
-    signalled: bool,
-}
-
-impl ResponsesStream {
-    async fn next(&mut self) -> Result<Option<String>, ErrorInfo> {
-        if self.done {
-            return Ok(None);
-        }
-        loop {
-            match self.parser.next_item() {
-                Some(Ok(data)) => {
-                    match responses_delta(&data, &mut self.done, &mut self.signalled)? {
-                        Some(text) => return Ok(Some(text)),
-                        None => continue,
-                    }
-                }
-                Some(Err(error)) => {
-                    self.done = true;
-                    return Err(error);
-                }
-                None => {}
-            }
-            if self.body_ended {
-                // The reference passthrough adapter ends the turn at end of
-                // body: buffered deltas are the answer, and only a
-                // `response.failed`/`error` event fails it mid-stream.
-                self.done = true;
-                return Ok(None);
-            }
-            match self.response.chunk().await {
-                Ok(Some(chunk)) => self.parser.push(&chunk),
-                Ok(None) => {
-                    self.parser.end();
-                    self.body_ended = true;
-                }
-                Err(error) => {
-                    self.done = true;
-                    return Err(ErrorInfo::new(
-                        "provider_stream",
-                        format!("stream failed: {error}"),
-                    ));
-                }
-            }
-        }
     }
 }
 

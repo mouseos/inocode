@@ -284,6 +284,7 @@ impl FlowEndpoints {
 }
 
 const ANTHROPIC_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+const GPT_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const ANTHROPIC_SCOPES: &str = "org:create_api_key user:profile user:inference";
 /// Anthropic's OAuth beta opt-in; requests with an OAuth bearer are rejected
 /// without it.
@@ -355,7 +356,6 @@ fn pasted_callback(pasted: &str, expected_state: &str) -> Result<Callback, Strin
     }
 }
 
-/// Runs a one-shot localhost callback listener and returns the browser redirect.
 /// Runs the localhost callback listeners (IPv4 and, where supported, IPv6 —
 /// the advertised redirect is `localhost`, which browsers may resolve to
 /// either, reference `loopbackBindHostnames`) and returns the browser
@@ -515,21 +515,13 @@ async fn post_token_json(
     url: &str,
     body: Value,
 ) -> Result<Value, String> {
-    let response = client
-        .post(url)
-        .header("content-type", "application/json")
-        .header("accept", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("token request failed: {e}"))?;
-    let status = response.status();
-    if !status.is_success() {
-        // Never echo the body: it can carry request material.
-        return Err(format!("token request returned HTTP {}", status.as_u16()));
-    }
-    let bytes = read_success_body(response, "token response").await?;
-    serde_json::from_slice(&bytes).map_err(|_| "token response was not valid JSON".to_string())
+    send_token_request(
+        client
+            .post(url)
+            .header("content-type", "application/json")
+            .json(&body),
+    )
+    .await
 }
 
 async fn post_token_form(
@@ -537,27 +529,33 @@ async fn post_token_form(
     url: &str,
     body: &[(&str, &str)],
 ) -> Result<Value, String> {
-    let response = client
-        .post(url)
-        .header("content-type", "application/x-www-form-urlencoded")
+    let mut encoded = String::new();
+    for (name, value) in body {
+        if !encoded.is_empty() {
+            encoded.push('&');
+        }
+        encoded.push_str(name);
+        encoded.push('=');
+        encoded.push_str(&urlencode(value));
+    }
+    send_token_request(
+        client
+            .post(url)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(encoded),
+    )
+    .await
+}
+
+async fn send_token_request(request: reqwest::RequestBuilder) -> Result<Value, String> {
+    let response = request
         .header("accept", "application/json")
-        .body({
-            let mut encoded = String::new();
-            for (name, value) in body {
-                if !encoded.is_empty() {
-                    encoded.push('&');
-                }
-                encoded.push_str(name);
-                encoded.push('=');
-                encoded.push_str(&urlencode(value));
-            }
-            encoded
-        })
         .send()
         .await
         .map_err(|e| format!("token request failed: {e}"))?;
     let status = response.status();
     if !status.is_success() {
+        // Never echo the body: it can carry request material.
         return Err(format!("token request returned HTTP {}", status.as_u16()));
     }
     let bytes = read_success_body(response, "token response").await?;
@@ -575,6 +573,14 @@ fn urlencode(value: &str) -> String {
         }
     }
     encoded
+}
+
+/// Milliseconds since the Unix epoch; a clock set before the epoch reads 0.
+pub(crate) fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 fn expiry_from(expires_in: Option<u64>) -> Option<u64> {
@@ -780,8 +786,9 @@ pub fn gpt_login_start(endpoints: &FlowEndpoints) -> GptLoginStart {
         callback_port, endpoints.callback_path
     );
     let url = format!(
-        "{}?response_type=code&client_id=app_EMoamEEZ73f0CkXaXp7hrann&redirect_uri={}&scope={}&code_challenge={}&code_challenge_method=S256&state={}&codex_cli_simplified_flow=true&originator=codex_cli_rs&id_token_add_organizations=true",
+        "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&code_challenge={}&code_challenge_method=S256&state={}&codex_cli_simplified_flow=true&originator=codex_cli_rs&id_token_add_organizations=true",
         endpoints.authorize_url,
+        urlencode(GPT_CLIENT_ID),
         urlencode(&redirect),
         urlencode("openid profile email offline_access api.connectors.read api.connectors.invoke"),
         urlencode(&pkce.challenge),
@@ -823,7 +830,7 @@ pub async fn gpt_login_finish(
         &endpoints.token_url,
         &[
             ("grant_type", "authorization_code"),
-            ("client_id", "app_EMoamEEZ73f0CkXaXp7hrann"),
+            ("client_id", GPT_CLIENT_ID),
             ("code", &callback.code),
             ("redirect_uri", &start.redirect),
             ("code_verifier", &start.verifier),
@@ -849,7 +856,7 @@ pub async fn refresh_gpt(endpoints: &FlowEndpoints, refresh: &str) -> Result<Cre
         &endpoints.token_url,
         &[
             ("grant_type", "refresh_token"),
-            ("client_id", "app_EMoamEEZ73f0CkXaXp7hrann"),
+            ("client_id", GPT_CLIENT_ID),
             ("refresh_token", refresh),
         ],
     )
@@ -943,10 +950,7 @@ pub async fn muse_device_authorization(
         .get("expires_in")
         .and_then(Value::as_u64)
         .unwrap_or(900);
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
+    let now = now_ms();
     Ok(MuseDevice {
         device_code,
         user_code,
@@ -1018,11 +1022,7 @@ pub async fn muse_device_token(
                 ))
             }
         }
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-        if now >= device.expires_at_ms {
+        if now_ms() >= device.expires_at_ms {
             return Err("the device authorization expired before approval".to_string());
         }
         tokio::time::sleep(interval.min(Duration::from_secs(60))).await;
