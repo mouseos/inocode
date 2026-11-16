@@ -1,5 +1,5 @@
-//! Rule import with the model splitting sections by unit number, against a
-//! local stand-in for a Chat Completions provider.
+//! Rule import as verbatim chunks with model-written search sentences,
+//! against a local stand-in for a Chat Completions provider.
 
 mod support;
 
@@ -7,12 +7,17 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use inocode_core::rules::Chunking;
 use inocode_core::store::Store;
 use inocode_core::{Llm, LlmConfig, ProviderKind};
 use serde_json::json;
 use support::*;
 
-const DOC: &str = "# Rules\n\n## Scope\n- Never push without approval.\n  - Ask first, every time.\n\n## Style\n- Write in English.\n";
+const DOC: &str = "Aの場合はBする。Cの時はやらない。pushの前に必ず確認を取ること。コミットメッセージは英語で書く。";
+const SMALL: Chunking = Chunking {
+    chars: 20,
+    overlap: 5,
+};
 
 fn llm(mock: &MockApi) -> Arc<Llm> {
     Arc::new(
@@ -20,7 +25,7 @@ fn llm(mock: &MockApi) -> Arc<Llm> {
             provider: ProviderKind::OpenAi,
             auth: inocode_core::oauth::AuthKind::ApiKey,
             base_url: mock.base_url.clone(),
-            model: "splitter".to_string(),
+            model: "writer".to_string(),
             api_key: "test-key".to_string(),
             auth_store_path: None,
             reasoning: Default::default(),
@@ -43,11 +48,11 @@ fn remove(path: &std::path::Path) {
     }
 }
 
-/// Answers each section with a split; `Style` gets a unit number that does
-/// not exist while `wrong_style` is set.
-fn splitter(
+/// Writes one sentence per chunk in the request ("chunk N requires
+/// approval"), or a broken answer while `broken` is set.
+fn writer(
     calls: Arc<AtomicUsize>,
-    wrong_style: Arc<AtomicBool>,
+    broken: Arc<AtomicBool>,
 ) -> impl Fn(&MockRequest) -> MockReply + Send + Sync + 'static {
     move |request: &MockRequest| {
         calls.fetch_add(1, Ordering::SeqCst);
@@ -55,28 +60,24 @@ fn splitter(
             .as_str()
             .unwrap_or_default()
             .to_string();
-        let answer = if prompt.contains("Heading (context only, not a unit): Rules > Scope") {
-            assert!(prompt.contains("[1] - Never push without approval.\n[2] - Ask first"));
-            json!({"rules": [{
-                "units": [1, 2],
-                "title": "No unapproved push",
-                "condition": "before pushing",
-                "keywords": "git push approval"
-            }]})
-        } else if wrong_style.load(Ordering::SeqCst) {
-            json!({"rules": [{"units": [9]}]})
+        let answer = if broken.load(Ordering::SeqCst) {
+            "sorry".to_string()
         } else {
-            json!({"rules": [{"units": [1], "keywords": "language"}]})
+            let count = prompt.matches("<<<CHUNK ").count();
+            let chunks: Vec<_> = (1..=count)
+                .map(|id| json!({"id": id, "rules": [format!("chunk {id} requires approval")]}))
+                .collect();
+            json!({ "chunks": chunks }).to_string()
         };
-        MockReply::stream(vec![sse_delta(&answer.to_string()), sse_done()])
+        MockReply::stream(vec![sse_delta(&answer), sse_done()])
     }
 }
 
 #[tokio::test]
-async fn the_model_splits_by_unit_and_unchanged_sections_are_not_resent() {
+async fn chunks_are_kept_verbatim_and_sentences_widen_search() {
     let calls = Arc::new(AtomicUsize::new(0));
-    let wrong = Arc::new(AtomicBool::new(true));
-    let mock = start_mock(splitter(Arc::clone(&calls), Arc::clone(&wrong))).await;
+    let broken = Arc::new(AtomicBool::new(true));
+    let mock = start_mock(writer(Arc::clone(&calls), Arc::clone(&broken))).await;
     let llm = llm(&mock);
     let path = database();
     let store = Store::open(&path).await.expect("store");
@@ -85,71 +86,82 @@ async fn the_model_splits_by_unit_and_unchanged_sections_are_not_resent() {
         let (store, llm) = (store.clone(), Arc::clone(&llm));
         async move {
             store
-                .import_rules_with(llm, Some(project), "AGENTS.md", &text)
+                .import_rules(Some(llm), Some(project), "AGENTS.md", &text, SMALL)
                 .await
                 .expect("import")
         }
     };
 
     let first = import(DOC.to_string()).await;
-    assert_eq!(calls.load(Ordering::SeqCst), 2, "one request per section");
-    assert_eq!(first.added, 2, "one model rule and one mechanical rule");
-    assert_eq!(first.fallbacks.len(), 1);
-    assert_eq!(first.fallbacks[0].0, "Rules > Style");
-    assert!(first.fallbacks[0].1.contains("does not exist"));
-
-    let found = store
-        .rules_for(
-            Some(project),
-            "push approval",
-            5,
-            Duration::from_secs(5),
-            None,
-        )
-        .await
-        .expect("rules");
-    assert_eq!(found.items.len(), 1);
-    assert_eq!(found.items[0].title, "No unapproved push");
-    let rule = store
-        .note(found.items[0].id)
-        .await
-        .expect("note")
-        .expect("exists");
     assert_eq!(
-        rule.body, "- Never push without approval.\n\n- Ask first, every time.",
-        "a rule is a slice of the source"
+        calls.load(Ordering::SeqCst),
+        1,
+        "one request for the document"
+    );
+    assert_eq!(first.added, 4);
+    assert!(first.keys_error.is_some(), "a broken answer is reported");
+    let search = |text: &'static str| {
+        let store = store.clone();
+        async move {
+            store
+                .rules_for(Some(project), text, 10, Duration::from_secs(5), None)
+                .await
+                .expect("rules")
+                .items
+        }
+    };
+    assert!(search("requires").await.is_empty(), "no sentences yet");
+    assert_eq!(
+        search("Cの時").await.len(),
+        1,
+        "the verbatim text is searchable"
     );
 
-    wrong.store(false, Ordering::SeqCst);
+    broken.store(false, Ordering::SeqCst);
     let second = import(DOC.to_string()).await;
     assert_eq!(
         calls.load(Ordering::SeqCst),
-        3,
-        "the split section is not sent again; the fallen-back one is retried"
+        2,
+        "chunks without sentences are retried"
     );
-    // Rules are slices of the source, so the model's split of Style matches
-    // the mechanical block it replaces.
-    assert_eq!((second.unchanged, second.added, second.retired), (2, 0, 0));
-    assert!(second.fallbacks.is_empty());
+    assert_eq!((second.unchanged, second.added), (4, 0));
+    assert!(second.keys_error.is_none());
+    let found = search("requires").await;
+    assert_eq!(found.len(), 4, "the sentences are search keys");
+    let note = store
+        .note(found[0].id)
+        .await
+        .expect("note")
+        .expect("exists");
+    assert!(
+        DOC.contains(&note.body),
+        "the stored rule is the source text"
+    );
 
-    let third = import(DOC.replace("## Style\n- Write in English.\n", "")).await;
-    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    let third = import(DOC.to_string()).await;
     assert_eq!(
-        (third.unchanged, third.retired),
-        (1, 1),
-        "a removed section is retired"
+        calls.load(Ordering::SeqCst),
+        2,
+        "an unchanged document is not resent"
     );
+    assert_eq!(third.unchanged, 4);
+
+    let edited = format!("{DOC}テストは必ず実行する。");
+    let fourth = import(edited).await;
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    assert!(fourth.added >= 1, "the new text is a new chunk");
+    assert!(fourth.unchanged >= 2, "chunks before the edit are kept");
 
     drop(store);
     remove(&path);
 }
 
 /// Imports this repository's AGENTS.md through the provider configured in
-/// the environment and prints what the model made of it. Ignored because it
-/// needs network access and a credential; run it by hand.
+/// the environment and prints the result. Ignored because it needs network
+/// access and a credential; run it by hand.
 #[tokio::test]
 #[ignore = "requires a provider credential; run by hand"]
-async fn live_split_of_this_repository_agents_md() {
+async fn live_import_of_this_repository_agents_md() {
     let markdown = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../AGENTS.md"))
         .expect("AGENTS.md");
     let llm = Arc::new(Llm::from_env().expect("provider"));
@@ -158,31 +170,30 @@ async fn live_split_of_this_repository_agents_md() {
     let project = store.project("inocode").await.expect("project");
     let started = std::time::Instant::now();
     let report = store
-        .import_rules_with(llm, Some(project), "AGENTS.md", &markdown)
+        .import_rules(
+            Some(llm),
+            Some(project),
+            "AGENTS.md",
+            &markdown,
+            Chunking::default(),
+        )
         .await
         .expect("import");
     println!("elapsed: {:?}", started.elapsed());
-    println!("rules added: {}", report.added);
-    println!("sections split mechanically: {}", report.fallbacks.len());
-    for (section, reason) in &report.fallbacks {
-        println!("  fallback [{section}]: {reason}");
-    }
-    println!("unassigned fragments: {}", report.unassigned.len());
-    for fragment in &report.unassigned {
-        let shown: String = fragment.chars().take(80).collect();
-        println!("  unassigned: {shown:?}");
-    }
-    for query in ["コミット", "研究根拠", "変更履歴"] {
+    println!("chunks: {}", report.added);
+    println!("search sentences error: {:?}", report.keys_error);
+    for query in ["コミット", "研究根拠", "変更履歴を書かない"] {
         let found = store
-            .rules_for(Some(project), query, 3, Duration::from_secs(5), None)
+            .rules_for(Some(project), query, 2, Duration::from_secs(5), None)
             .await
             .expect("rules");
         for hit in found.items {
             let note = store.note(hit.id).await.expect("note").expect("exists");
-            let first: String = note.body.chars().take(60).collect();
+            let sentences: Vec<&str> = note.summary.lines().take(3).collect();
             println!(
-                "  [{query}] {} | when: {} | {first:?}",
-                note.title, note.condition
+                "  [{query}] note {} | {} sentences, e.g. {sentences:?}",
+                hit.id.0,
+                note.summary.lines().count()
             );
         }
     }

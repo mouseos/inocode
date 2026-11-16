@@ -4,11 +4,11 @@
 //! rule was presented, enforced or overridden. Design and sources:
 //! docs/evidence/rules-and-local-issues.md.
 
-use std::collections::HashMap;
 use std::time::Duration;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
+pub use crate::rules_import::Chunking;
 use crate::store::{
     collect, fts_query, normalize_tags, now, store_error, Found, NoteHit, NoteId, NoteKind,
     ProjectId, SessionId, Source, Store,
@@ -107,13 +107,10 @@ pub struct Event {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ImportReport {
     pub added: usize,
-    pub changed: usize,
     pub retired: usize,
     pub unchanged: usize,
-    /// Source text the model assigned to no rule, reason or explanation.
-    pub unassigned: Vec<String>,
-    /// Sections split mechanically instead, with why.
-    pub fallbacks: Vec<(String, String)>,
+    /// Why the model's search sentences are missing, when they are.
+    pub keys_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,107 +145,6 @@ pub struct Issue {
     pub blocked_by: Vec<NoteId>,
 }
 
-/// One block of a rules document: a list item, paragraph or fenced block.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Block {
-    pub(crate) section: String,
-    pub(crate) ordinal: i64,
-    pub(crate) start: i64,
-    pub(crate) end: i64,
-    pub(crate) text: String,
-}
-
-/// Splits markdown into blocks without rewording them. Headings set the
-/// section; each list item (nested ones too), paragraph and fenced block is
-/// one block, numbered within its section.
-pub(crate) fn split_rules(markdown: &str) -> Vec<Block> {
-    let mut blocks = Vec::new();
-    let mut headings: Vec<(usize, String)> = Vec::new();
-    let mut current: Option<Block> = None;
-    let mut fenced = false;
-    let mut ordinals: HashMap<String, i64> = HashMap::new();
-    let section = |headings: &[(usize, String)]| {
-        headings
-            .iter()
-            .map(|(_, title)| title.as_str())
-            .collect::<Vec<_>>()
-            .join(" > ")
-    };
-    let mut start = |blocks: &mut Vec<Block>,
-                     current: &mut Option<Block>,
-                     headings: &[(usize, String)],
-                     line: i64,
-                     text: &str| {
-        blocks.extend(current.take());
-        let section = section(headings);
-        let ordinal = ordinals.entry(section.clone()).or_default();
-        *ordinal += 1;
-        *current = Some(Block {
-            section,
-            ordinal: *ordinal,
-            start: line,
-            end: line,
-            text: text.to_string(),
-        });
-    };
-    for (index, raw) in markdown.lines().enumerate() {
-        let line = index as i64 + 1;
-        let trimmed = raw.trim();
-        let is_fence = trimmed.starts_with("```") || trimmed.starts_with("~~~");
-        if fenced || (is_fence && current.is_some() && !is_list_item(trimmed)) {
-            if let Some(block) = current.as_mut() {
-                block.text.push('\n');
-                block.text.push_str(raw);
-                block.end = line;
-            }
-            if is_fence {
-                fenced = !fenced;
-            }
-            continue;
-        }
-        if is_fence {
-            start(&mut blocks, &mut current, &headings, line, raw);
-            fenced = true;
-            continue;
-        }
-        if trimmed.is_empty() {
-            blocks.extend(current.take());
-            continue;
-        }
-        if let Some(level) = heading_level(trimmed) {
-            blocks.extend(current.take());
-            headings.retain(|(depth, _)| *depth < level);
-            headings.push((level, trimmed[level..].trim().to_string()));
-            continue;
-        }
-        if is_list_item(trimmed) || current.is_none() {
-            start(&mut blocks, &mut current, &headings, line, raw.trim_end());
-        } else if let Some(block) = current.as_mut() {
-            block.text.push('\n');
-            block.text.push_str(raw.trim_end());
-            block.end = line;
-        }
-    }
-    blocks.extend(current);
-    for block in &mut blocks {
-        block.text = block.text.trim().to_string();
-    }
-    blocks
-}
-
-fn heading_level(line: &str) -> Option<usize> {
-    let level = line.bytes().take_while(|&byte| byte == b'#').count();
-    ((1..=6).contains(&level) && line[level..].starts_with(' ')).then_some(level)
-}
-
-fn is_list_item(line: &str) -> bool {
-    if line.starts_with("- ") || line.starts_with("* ") || line.starts_with("+ ") {
-        return true;
-    }
-    let digits = line.bytes().take_while(u8::is_ascii_digit).count();
-    digits > 0 && (line[digits..].starts_with(". ") || line[digits..].starts_with(") "))
-}
-
 pub(crate) fn title_of(text: &str) -> String {
     let first = text.lines().next().unwrap_or_default();
     let first =
@@ -257,107 +153,33 @@ pub(crate) fn title_of(text: &str) -> String {
 }
 
 impl Store {
-    /// Imports a rules document (AGENTS.md, CLAUDE.md, …) as should rules,
-    /// keyed by file, section and position. Re-importing keeps unchanged
-    /// rules, replaces changed ones while keeping the old version, and
-    /// retires rules that disappeared.
-    pub async fn import_rules(
-        &self,
-        project: Option<ProjectId>,
-        path: &str,
-        markdown: &str,
-    ) -> Result<ImportReport, ErrorInfo> {
-        let path = path.to_string();
-        let blocks = split_rules(markdown);
-        self.write(move |db| {
-            let tx = db.transaction().map_err(store_error)?;
-            let mut existing: HashMap<(String, i64), (NoteId, String)> = HashMap::new();
-            {
-                let mut statement = tx
-                    .prepare(
-                        "SELECT r.note_id, r.section, r.ordinal, n.body FROM rules r
-                         JOIN notes n ON n.id = r.note_id
-                         WHERE r.origin_path = ?1 AND n.project_id IS ?2
-                           AND n.superseded_by IS NULL AND n.status != 'retired'",
-                    )
-                    .map_err(store_error)?;
-                let rows = statement
-                    .query_map(params![path, project.map(|p| p.0)], |row| {
-                        Ok((
-                            (row.get::<_, String>(1)?, row.get::<_, i64>(2)?),
-                            (NoteId(row.get(0)?), row.get::<_, String>(3)?),
-                        ))
-                    })
-                    .map_err(store_error)?;
-                for row in rows {
-                    let (key, value) = row.map_err(store_error)?;
-                    existing.insert(key, value);
-                }
-            }
-            let mut report = ImportReport::default();
-            let time = now();
-            for block in &blocks {
-                let key = (block.section.clone(), block.ordinal);
-                match existing.remove(&key) {
-                    Some((id, body)) if body == block.text => {
-                        tx.execute(
-                            "UPDATE rules SET origin_start = ?1, origin_end = ?2 WHERE note_id = ?3",
-                            params![block.start, block.end, id.0],
-                        )
-                        .map_err(store_error)?;
-                        report.unchanged += 1;
-                    }
-                    Some((old, _)) => {
-                        let new = insert_rule(&tx, project, &path, block, time)?;
-                        tx.execute(
-                            "UPDATE notes SET superseded_by = ?1, valid_to = ?2, updated = ?2
-                             WHERE id = ?3",
-                            params![new.0, time, old.0],
-                        )
-                        .map_err(store_error)?;
-                        tx.execute(
-                            "INSERT OR IGNORE INTO links(src, dst, kind) VALUES (?1, ?2, 'supersedes')",
-                            params![new.0, old.0],
-                        )
-                        .map_err(store_error)?;
-                        report.changed += 1;
-                    }
-                    None => {
-                        insert_rule(&tx, project, &path, block, time)?;
-                        report.added += 1;
-                    }
-                }
-            }
-            for (id, _) in existing.into_values() {
-                tx.execute(
-                    "UPDATE notes SET status = 'retired', valid_to = ?1, updated = ?1 WHERE id = ?2",
-                    params![time, id.0],
-                )
-                .map_err(store_error)?;
-                report.retired += 1;
-            }
-            tx.commit().map_err(store_error)?;
-            Ok(report)
-        })
-        .await
-    }
-
     /// Adds a rule a person states directly.
     pub async fn add_rule(
         &self,
         project: Option<ProjectId>,
         text: &str,
     ) -> Result<NoteId, ErrorInfo> {
-        let block = Block {
-            section: String::new(),
-            ordinal: 0,
-            start: 0,
-            end: 0,
-            text: text.trim().to_string(),
-        };
+        let text = text.trim().to_string();
         self.write(move |db| {
             let tx = db.transaction().map_err(store_error)?;
-            let id = insert_rule(&tx, project, "", &block, now())?;
+            let id = insert_rule_row(
+                &tx,
+                project,
+                "",
+                &RuleRow {
+                    section: "",
+                    ordinal: 0,
+                    start: 0,
+                    end: 0,
+                    body: &text,
+                    title: &title_of(&text),
+                    summary: "",
+                    condition: "",
+                    keywords: "",
+                    segmented_by: "person",
+                },
+                now(),
+            )?;
             tx.execute(
                 "UPDATE rules SET origin_path = NULL, origin_start = NULL, origin_end = NULL,
                                   ordinal = NULL WHERE note_id = ?1",
@@ -744,7 +566,8 @@ impl Store {
 }
 
 /// A rule ready to store. `body` is verbatim source text; `title`,
-/// `condition` and `keywords` only widen search, and `reason` is verbatim.
+/// `summary` (model-written rule sentences), `condition` and `keywords`
+/// only widen search.
 pub(crate) struct RuleRow<'a> {
     pub(crate) section: &'a str,
     pub(crate) ordinal: i64,
@@ -752,38 +575,11 @@ pub(crate) struct RuleRow<'a> {
     pub(crate) end: i64,
     pub(crate) body: &'a str,
     pub(crate) title: &'a str,
-    pub(crate) reason: &'a str,
+    pub(crate) summary: &'a str,
     pub(crate) condition: &'a str,
     pub(crate) keywords: &'a str,
-    /// `mechanical` or `model`.
+    /// `mechanical`, `model` (has model-written search sentences) or `person`.
     pub(crate) segmented_by: &'a str,
-}
-
-fn insert_rule(
-    db: &Connection,
-    project: Option<ProjectId>,
-    path: &str,
-    block: &Block,
-    time: i64,
-) -> Result<NoteId, ErrorInfo> {
-    insert_rule_row(
-        db,
-        project,
-        path,
-        &RuleRow {
-            section: &block.section,
-            ordinal: block.ordinal,
-            start: block.start,
-            end: block.end,
-            body: &block.text,
-            title: &title_of(&block.text),
-            reason: "",
-            condition: &block.section,
-            keywords: "",
-            segmented_by: "mechanical",
-        },
-        time,
-    )
 }
 
 pub(crate) fn insert_rule_row(
@@ -800,7 +596,7 @@ pub(crate) fn insert_rule_row(
         params![
             project.map(|p| p.0),
             rule.title,
-            rule.reason,
+            rule.summary,
             rule.keywords,
             rule.condition,
             rule.body,
@@ -875,102 +671,13 @@ mod tests {
     const AGENTS: &str = "# Rules\n\n## Scope\n- Do only what was asked.\n  Keep changes small.\n- Never push without approval.\n  - Ask first, every time.\n\nParagraph rule about evidence.\n\n```\ngit config user.email\n```\n\n## Comments\n1. No change history in comments.\n";
 
     #[test]
-    fn documents_split_into_verbatim_blocks() {
-        let blocks = split_rules(AGENTS);
-        let view: Vec<(&str, i64, &str)> = blocks
-            .iter()
-            .map(|b| (b.section.as_str(), b.ordinal, b.text.as_str()))
-            .collect();
-        assert_eq!(
-            view,
-            [
-                (
-                    "Rules > Scope",
-                    1,
-                    "- Do only what was asked.\n  Keep changes small."
-                ),
-                ("Rules > Scope", 2, "- Never push without approval."),
-                ("Rules > Scope", 3, "- Ask first, every time."),
-                ("Rules > Scope", 4, "Paragraph rule about evidence."),
-                ("Rules > Scope", 5, "```\ngit config user.email\n```"),
-                ("Rules > Comments", 1, "1. No change history in comments."),
-            ]
-        );
-        assert_eq!((blocks[0].start, blocks[0].end), (4, 5));
-        assert_eq!(title_of(&blocks[0].text), "Do only what was asked.");
-    }
-
-    #[test]
-    fn reimport_keeps_replaces_and_retires() {
-        let dir = tempfile::tempdir().expect("dir");
-        run(async {
-            let store = Store::open(dir.path().join("r.db")).await.expect("open");
-            let p = store.project("p").await.expect("p");
-            let first = store
-                .import_rules(Some(p), "AGENTS.md", AGENTS)
-                .await
-                .expect("import");
-            assert_eq!(
-                first,
-                ImportReport {
-                    added: 6,
-                    ..Default::default()
-                }
-            );
-            let again = store
-                .import_rules(Some(p), "AGENTS.md", AGENTS)
-                .await
-                .expect("import");
-            assert_eq!(
-                again,
-                ImportReport {
-                    unchanged: 6,
-                    ..Default::default()
-                }
-            );
-
-            let edited = AGENTS
-                .replace(
-                    "Never push without approval.",
-                    "Never push or tag without approval.",
-                )
-                .replace("1. No change history in comments.\n", "");
-            let edited = format!("{edited}\n## Tests\n- Run clippy before committing.\n");
-            let report = store
-                .import_rules(Some(p), "AGENTS.md", &edited)
-                .await
-                .expect("import");
-            assert_eq!(
-                report,
-                ImportReport {
-                    added: 1,
-                    changed: 1,
-                    retired: 1,
-                    unchanged: 4,
-                    ..Default::default()
-                }
-            );
-            let found = store
-                .rules_for(Some(p), "push tag approval", 10, BUDGET, None)
-                .await
-                .expect("rules");
-            let titles: Vec<&str> = found.items.iter().map(|hit| hit.title.as_str()).collect();
-            assert_eq!(
-                titles,
-                ["Never push or tag without approval."],
-                "the old wording is history"
-            );
-        });
-    }
-
-    #[test]
     fn relevant_rules_are_logged_as_presented() {
         let dir = tempfile::tempdir().expect("dir");
         run(async {
             let store = Store::open(dir.path().join("r.db")).await.expect("open");
             let p = store.project("p").await.expect("p");
             store
-                .import_rules(Some(p), "AGENTS.md", AGENTS)
+                .import_rules(None, Some(p), "AGENTS.md", AGENTS, Chunking::default())
                 .await
                 .expect("import");
             let shared = store
