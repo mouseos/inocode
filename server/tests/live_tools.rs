@@ -44,7 +44,7 @@ async fn a_tool_call_and_its_result_round_trip() {
             0,
             Body::User {
                 from: Speaker::Person,
-                parts: vec!["What is the weather in Tokyo? Call get_weather.".to_string()],
+                parts: vec!["Work out which city hosted the 1964 Summer Olympics, then call get_weather for it.".to_string()],
             },
         )],
     };

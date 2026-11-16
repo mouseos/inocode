@@ -521,6 +521,7 @@ async fn muse_chat_uses_the_subscription_key_and_muse_headers() {
         model: "muse-spark-1.3".to_string(),
         api_key: String::new(),
         auth_store_path: Some(store_path.clone()),
+        reasoning: Default::default(),
     })
     .expect("build the client");
     let (deltas, message) = chat_deltas(Arc::new(Core::with_llm(llm)), "hello").await;
@@ -557,6 +558,7 @@ async fn gpt_chat_sends_the_account_id_header() {
         model: "gpt-5.2-codex".to_string(),
         api_key: String::new(),
         auth_store_path: Some(store_path.clone()),
+        reasoning: Default::default(),
     })
     .expect("build the client");
     let (deltas, message) = chat_deltas(Arc::new(Core::with_llm(llm)), "hello").await;
@@ -580,6 +582,7 @@ async fn responses_with_an_api_key_sends_the_key_without_a_credential_store() {
         model: "m".to_string(),
         api_key: "static-key".to_string(),
         auth_store_path: Some(temp_store_path("absent")),
+        reasoning: Default::default(),
     })
     .expect("build the client");
     let (deltas, message) = chat_deltas(Arc::new(Core::with_llm(llm)), "hello").await;
@@ -619,6 +622,7 @@ async fn claude_oauth_chat_sends_the_bearer_beta_and_identity_system_block() {
         model: "claude-sonnet-5".to_string(),
         api_key: String::new(),
         auth_store_path: Some(store_path.clone()),
+        reasoning: Default::default(),
     })
     .expect("build the client");
     let (deltas, message) = chat_deltas(Arc::new(Core::with_llm(llm)), "hello").await;
@@ -637,6 +641,7 @@ async fn chat_without_a_stored_credential_reports_provider_config() {
         model: "claude-sonnet-5".to_string(),
         api_key: String::new(),
         auth_store_path: Some(store_path.clone()),
+        reasoning: Default::default(),
     })
     .expect("build the client");
     let error = llm.chat("hello").await.err().expect("no credential stored");
@@ -706,6 +711,7 @@ async fn muse_models_uses_the_subscription_key_and_muse_headers() {
         model: "muse-spark-1.3".to_string(),
         api_key: String::new(),
         auth_store_path: Some(store_path.clone()),
+        reasoning: Default::default(),
     })
     .expect("build the client");
     let models = models_call(Arc::new(Core::with_llm(llm))).await;
@@ -745,6 +751,7 @@ async fn gpt_models_sends_the_account_id_header() {
         model: "gpt-5.2-codex".to_string(),
         api_key: String::new(),
         auth_store_path: Some(store_path.clone()),
+        reasoning: Default::default(),
     })
     .expect("build the client");
     let models = models_call(Arc::new(Core::with_llm(llm))).await;
@@ -777,6 +784,7 @@ async fn claude_oauth_models_sends_the_bearer_and_beta_header() {
         model: "claude-sonnet-5".to_string(),
         api_key: String::new(),
         auth_store_path: Some(store_path.clone()),
+        reasoning: Default::default(),
     })
     .expect("build the client");
     let models = models_call(Arc::new(Core::with_llm(llm))).await;
@@ -802,6 +810,7 @@ async fn api_key_models_use_x_api_key_or_bearer_per_format() {
         model: "logfare/auto".to_string(),
         api_key: "test-key".to_string(),
         auth_store_path: None,
+        reasoning: Default::default(),
     })
     .expect("build the client");
     let models = models_call(Arc::new(Core::with_llm(llm))).await;
@@ -825,6 +834,7 @@ async fn api_key_models_use_x_api_key_or_bearer_per_format() {
         model: "claude-haiku-5-5".to_string(),
         api_key: "test-key".to_string(),
         auth_store_path: None,
+        reasoning: Default::default(),
     })
     .expect("build the client");
     let models = models_call(Arc::new(Core::with_llm(llm))).await;
@@ -846,6 +856,7 @@ async fn slow_discovery_does_not_block_the_connection() {
         model: "late-model".to_string(),
         api_key: "test-key".to_string(),
         auth_store_path: None,
+        reasoning: Default::default(),
     })
     .expect("build the client");
     let (addr, _stop, _server) = start_server(Arc::new(Core::with_llm(llm))).await;
@@ -924,6 +935,7 @@ async fn oversized_bodies_are_not_read_whole() {
         model: "m".to_string(),
         api_key: "test-key".to_string(),
         auth_store_path: None,
+        reasoning: Default::default(),
     })
     .expect("build the client");
     let error = llm.models().await.expect_err("HTTP 500 fails");
@@ -981,6 +993,7 @@ fn oauth_llm(
         model: "m".to_string(),
         api_key: String::new(),
         auth_store_path: Some(store_path.clone()),
+        reasoning: Default::default(),
     })
     .expect("build the client");
     (llm, store_path)

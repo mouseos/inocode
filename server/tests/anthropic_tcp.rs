@@ -20,6 +20,7 @@ fn core_for(
         model: model.to_string(),
         api_key: "test-key".to_string(),
         auth_store_path: None,
+        reasoning: Default::default(),
     })
     .expect("build the provider client");
     Arc::new(Core::with_llm(llm))
@@ -147,7 +148,12 @@ async fn chat_request_reaches_the_messages_endpoint_with_anthropic_headers() {
             Some("application/json")
         );
         assert_eq!(request.body["model"], "test-model");
-        assert_eq!(request.body["max_tokens"], 8192);
+        // Default medium effort on a non-Claude id: a legacy thinking budget.
+        assert_eq!(request.body["max_tokens"], 16_384);
+        assert_eq!(
+            request.body["thinking"],
+            json!({"type": "enabled", "budget_tokens": 8192})
+        );
         assert_eq!(request.body["stream"], true);
         assert_eq!(request.body["messages"][0]["role"], "user");
         assert_eq!(

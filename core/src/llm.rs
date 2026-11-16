@@ -109,6 +109,8 @@ pub struct LlmConfig {
     /// override exists so tests can exercise the OAuth request paths against
     /// their own store instead of the user's.
     pub auth_store_path: Option<std::path::PathBuf>,
+    /// Thinking depth and summary sent with every request.
+    pub reasoning: crate::reasoning::Reasoning,
 }
 
 impl fmt::Debug for LlmConfig {
@@ -120,6 +122,7 @@ impl fmt::Debug for LlmConfig {
             .field("model", &self.model)
             .field("api_key", &"[redacted]")
             .field("auth_store_path", &self.auth_store_path)
+            .field("reasoning", &self.reasoning)
             .finish()
     }
 }
@@ -177,6 +180,7 @@ impl LlmConfig {
                 model: std::env::var(MODEL_ENV).unwrap_or_else(|_| default.2.to_string()),
                 api_key: String::new(),
                 auth_store_path: None,
+                reasoning: crate::reasoning::Reasoning::from_env()?,
             });
         }
         let api_key = std::env::var(API_KEY_ENV).map_err(|_| {
@@ -195,6 +199,7 @@ impl LlmConfig {
             model: std::env::var(MODEL_ENV).unwrap_or_else(|_| DEFAULT_MODEL.to_string()),
             api_key,
             auth_store_path: None,
+            reasoning: crate::reasoning::Reasoning::from_env()?,
         })
     }
 }
@@ -258,7 +263,7 @@ impl Llm {
             return self.deepai_chat(session, conversation, tools).await;
         }
         let format = self.config.provider;
-        let body = request_body(format, &self.config.model, conversation, tools)?;
+        let body = request_body(format, &self.config, conversation, tools)?;
         let response = match format {
             ProviderKind::OpenAi => self.openai_chat(&body).await,
             ProviderKind::Anthropic => self.anthropic_chat(body).await,
@@ -342,6 +347,8 @@ impl Llm {
     }
 
     async fn anthropic_chat(&self, mut body: Value) -> Result<reqwest::Response, ErrorInfo> {
+        let destination = destination(ProviderKind::Anthropic, &self.config);
+        let reasoning = self.config.reasoning;
         let mut request = self.client.post(self.anthropic_url());
         if self.config.auth == AuthKind::ClaudeOauth {
             // OAuth bearers are only accepted with the beta opt-in and the
@@ -355,11 +362,18 @@ impl Llm {
                 system.push(json!({ "type": "text", "text": text }));
             }
             body["system"] = Value::Array(system);
+            let beta = match crate::reasoning::anthropic_beta(&destination, reasoning) {
+                Some(extra) => format!("{},{extra}", crate::oauth::CLAUDE_CODE_BETA),
+                None => crate::oauth::CLAUDE_CODE_BETA.to_string(),
+            };
             request = request
                 .bearer_auth(&credential.access)
-                .header("anthropic-beta", crate::oauth::CLAUDE_CODE_BETA);
+                .header("anthropic-beta", beta);
         } else {
             request = request.header("x-api-key", &self.config.api_key);
+            if let Some(beta) = crate::reasoning::anthropic_beta(&destination, reasoning) {
+                request = request.header("anthropic-beta", beta);
+            }
         }
         let response = request
             .header("anthropic-version", ANTHROPIC_VERSION)
@@ -492,7 +506,7 @@ impl Llm {
         } else {
             (ProviderKind::OpenAi, self.url("chat/completions"))
         };
-        let body = request_body(format, &self.config.model, conversation, tools)?;
+        let body = request_body(format, &self.config, conversation, tools)?;
         loop {
             session
                 .ensure_checked_in(&self.client, base, &api_key)
@@ -662,10 +676,11 @@ type UsageParser = fn(&Value) -> Result<crate::Usage, ErrorInfo>;
 /// reasoning comes back encrypted to be replayed on the next turn.
 fn request_body(
     format: ProviderKind,
-    model: &str,
+    config: &LlmConfig,
     conversation: &Conversation,
     tools: &[ToolSpec],
 ) -> Result<Value, ErrorInfo> {
+    let model = config.model.as_str();
     let mut body = match format {
         ProviderKind::OpenAi => conversation::to_chat_completions(conversation, model)?,
         ProviderKind::Anthropic => conversation::to_anthropic(conversation, model)?,
@@ -673,16 +688,11 @@ fn request_body(
     };
     body.insert("model".into(), json!(model));
     body.insert("stream".into(), json!(true));
-    match format {
-        ProviderKind::Anthropic => {
-            body.insert("max_tokens".into(), json!(DEFAULT_MAX_TOKENS));
-        }
-        ProviderKind::Responses => {
-            body.insert("store".into(), json!(false));
-            body.insert("include".into(), json!(["reasoning.encrypted_content"]));
-        }
-        ProviderKind::OpenAi => {}
+    if format == ProviderKind::Responses {
+        body.insert("store".into(), json!(false));
+        body.insert("include".into(), json!(["reasoning.encrypted_content"]));
     }
+    crate::reasoning::apply(&mut body, &destination(format, config), config.reasoning);
     if !tools.is_empty() {
         body.insert(
             "tools".into(),
@@ -690,6 +700,16 @@ fn request_body(
         );
     }
     Ok(Value::Object(body))
+}
+
+/// What the reasoning rules need to know about a request's target.
+fn destination(format: ProviderKind, config: &LlmConfig) -> crate::reasoning::Destination<'_> {
+    crate::reasoning::Destination {
+        format,
+        auth: config.auth,
+        model: &config.model,
+        first_party_anthropic: config.base_url.contains("://api.anthropic.com"),
+    }
 }
 
 /// The DeepAI account key, sent as `api-key`.
@@ -1278,7 +1298,12 @@ fn responses_delta(
                         .filter_map(|part| part.get("text").and_then(Value::as_str))
                         .collect::<Vec<_>>()
                         .join("\n\n"),
-                    replay: item.cloned().map(Replay),
+                    replay: item.cloned().map(|mut item| {
+                        if let Some(fields) = item.as_object_mut() {
+                            fields.remove("status");
+                        }
+                        Replay(item)
+                    }),
                 }),
                 Some("function_call") => turn.push(AssistantPart::ToolCall {
                     call_id: string_at(item.and_then(|item| item.get("call_id"))),
@@ -1455,6 +1480,7 @@ mod tests {
                 model: "test-model".to_string(),
                 api_key: String::new(),
                 auth_store_path: Some(std::env::temp_dir().join("inocode-gpt-models-url-test")),
+                reasoning: Default::default(),
             })
             .expect("build the client")
         };
@@ -1466,6 +1492,7 @@ mod tests {
                 model: "test-model".to_string(),
                 api_key: "test-key".to_string(),
                 auth_store_path: None,
+                reasoning: Default::default(),
             })
             .expect("build the client")
         };
@@ -1563,6 +1590,7 @@ mod tests {
                 model: "test-model".to_string(),
                 api_key: "test-key".to_string(),
                 auth_store_path: None,
+                reasoning: Default::default(),
             })
             .expect("build the client")
         };
@@ -1592,6 +1620,7 @@ mod tests {
             model: "test-model".to_string(),
             api_key: "super-secret-key-material".to_string(),
             auth_store_path: None,
+            reasoning: Default::default(),
         };
         let rendered = format!("{config:?}");
         assert!(!rendered.contains("super-secret-key-material"));
@@ -1931,28 +1960,47 @@ mod tests {
                 },
             }],
         };
+        let config = LlmConfig {
+            provider: ProviderKind::OpenAi,
+            auth: AuthKind::ApiKey,
+            base_url: DEFAULT_BASE_URL.to_string(),
+            model: "m".to_string(),
+            api_key: "k".to_string(),
+            auth_store_path: None,
+            reasoning: Default::default(),
+        };
         let tools = [ToolSpec {
             name: "read".to_string(),
             description: "Reads a file".to_string(),
             parameters: json!({"type": "object", "properties": {}}),
         }];
-        let chat = request_body(ProviderKind::OpenAi, "m", &conversation, &tools).expect("body");
+        let chat =
+            request_body(ProviderKind::OpenAi, &config, &conversation, &tools).expect("body");
         assert_eq!(chat["tools"][0]["function"]["name"], "read");
         assert_eq!(chat["messages"][0]["role"], "system");
         let anthropic =
-            request_body(ProviderKind::Anthropic, "m", &conversation, &tools).expect("body");
+            request_body(ProviderKind::Anthropic, &config, &conversation, &tools).expect("body");
         assert_eq!(anthropic["tools"][0]["input_schema"]["type"], "object");
-        assert_eq!(anthropic["max_tokens"], DEFAULT_MAX_TOKENS);
+        assert_eq!(
+            anthropic["thinking"],
+            json!({"type": "enabled", "budget_tokens": 8192})
+        );
+        assert_eq!(anthropic["max_tokens"], 16_384);
+        assert_eq!(chat["reasoning_effort"], "medium");
         let responses =
-            request_body(ProviderKind::Responses, "m", &conversation, &tools).expect("body");
+            request_body(ProviderKind::Responses, &config, &conversation, &tools).expect("body");
+        assert_eq!(
+            responses["reasoning"],
+            json!({"effort": "medium", "summary": "auto"})
+        );
         assert_eq!(responses["tools"][0]["strict"], false);
         assert_eq!(responses["instructions"], "sys");
         assert_eq!(responses["store"], false);
         assert_eq!(responses["include"], json!(["reasoning.encrypted_content"]));
-        let bare = request_body(ProviderKind::OpenAi, "m", &conversation, &[]).expect("body");
+        let bare = request_body(ProviderKind::OpenAi, &config, &conversation, &[]).expect("body");
         assert!(bare.get("tools").is_none());
         let twice = [tools[0].clone(), tools[0].clone()];
-        assert!(request_body(ProviderKind::OpenAi, "m", &conversation, &twice).is_err());
+        assert!(request_body(ProviderKind::OpenAi, &config, &conversation, &twice).is_err());
     }
 
     /// Release-mode parsing measurements for the streaming path. They print

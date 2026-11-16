@@ -41,6 +41,7 @@ async fn chat_delta_forwarding() {
         model: "measure-model".to_string(),
         api_key: "test-key".to_string(),
         auth_store_path: None,
+        reasoning: Default::default(),
     })
     .expect("build the provider client");
     let (addr, _stop, _server) = start_server(Arc::new(Core::with_llm(llm))).await;

@@ -52,6 +52,7 @@ fn llm_for(mock: &MockApi, model: &str, name: &str) -> Llm {
         model: model.to_string(),
         api_key: String::new(),
         auth_store_path: Some(path),
+        reasoning: Default::default(),
     })
     .expect("build the client")
 }

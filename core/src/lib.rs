@@ -9,6 +9,7 @@ pub mod conversation;
 pub mod deepai;
 mod llm;
 pub mod oauth;
+pub mod reasoning;
 mod sse;
 mod usage;
 

@@ -20,4 +20,4 @@
   - 実通信（2026-11-16、`server/tests/live_tools.rs`、手動実行）：ツールを 1 回呼ばせ、結果を返して 2 ターン目の回答まで。Claude OAuth `claude-haiku-5-5`（Anthropic 形式、呼び出し 1、完了）、Muse `muse-spark-1.3-contributor`（Responses 形式、暗号化された思考 1 件を同じモデルへ再送して完了。`include` を受け付けることを確認）、DeepAI `glm-5.3-flash`（Chat 形式、`reasoning_content` を再送して完了）。
   - 追加の実通信（同日）：Claude OAuth `claude-sonnet-5-5`（呼び出し 1、完了、思考なし）。Logfare `logfare/auto` を 3 形式で（Chat：呼び出し 1、完了。Anthropic：思考 1 件は署名なしのため再送用データなし＝次のターンでは落とす、呼び出し 1、完了。Responses：再送用データつきの思考 1 件、呼び出し 1、完了）。
   - 実通信で見つけた既存の不具合を修正：API キー方式で Responses 形式を選ぶと、鍵ではなく保存済みの OAuth 資格情報を読みに行って失敗していた。API キー方式では鍵を bearer に使う（回帰試験 `server/tests/oauth_flows.rs` の `responses_with_an_api_key_sends_the_key_without_a_credential_store`）。
-  - 未検証：GPT OAuth（使用量の上限に達しているため未実施）、Anthropic の署名つき thinking の再送（inocode は `thinking` を有効にする指定を送らないため、haiku・sonnet とも思考を返さなかった）。
+  - 未検証：GPT OAuth（使用量の上限に達しているため未実施）。Anthropic の署名つき thinking の再送は、思考の指定を加えた後に確認済み（`docs/evidence/reasoning-controls.md`）。
