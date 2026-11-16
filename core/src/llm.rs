@@ -435,9 +435,7 @@ impl Llm {
                     .bearer_auth(&credential.access)
                     .header("anthropic-beta", crate::oauth::CLAUDE_CODE_BETA)
             }
-            (ProviderKind::Anthropic, _) => request
-                .header("x-api-key", &self.config.api_key)
-                .header("anthropic-version", ANTHROPIC_VERSION),
+            (ProviderKind::Anthropic, _) => request.header("x-api-key", &self.config.api_key),
             (_, AuthKind::MuseSubscription) => {
                 // The Meta account token is rejected by `/v1/models`; the
                 // subscription key is the bearer, as for inference.
@@ -467,6 +465,11 @@ impl Llm {
             }
             _ => request.bearer_auth(&self.config.api_key),
         };
+        // Every Anthropic request carries the version header, including OAuth
+        // (the API rejects discovery without it).
+        if self.config.provider == ProviderKind::Anthropic {
+            request = request.header("anthropic-version", ANTHROPIC_VERSION);
+        }
         let response = request
             .send()
             .await
