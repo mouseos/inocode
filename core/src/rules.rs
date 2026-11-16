@@ -27,7 +27,7 @@ pub enum Strength {
 }
 
 impl Strength {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Must => "must",
             Self::Should => "should",
@@ -104,12 +104,16 @@ pub struct Event {
     pub detail: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ImportReport {
     pub added: usize,
     pub changed: usize,
     pub retired: usize,
     pub unchanged: usize,
+    /// Source text the model assigned to no rule, reason or explanation.
+    pub unassigned: Vec<String>,
+    /// Sections split mechanically instead, with why.
+    pub fallbacks: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,18 +150,18 @@ pub struct Issue {
 
 /// One block of a rules document: a list item, paragraph or fenced block.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Block {
-    section: String,
-    ordinal: i64,
-    start: i64,
-    end: i64,
-    text: String,
+pub(crate) struct Block {
+    pub(crate) section: String,
+    pub(crate) ordinal: i64,
+    pub(crate) start: i64,
+    pub(crate) end: i64,
+    pub(crate) text: String,
 }
 
 /// Splits markdown into blocks without rewording them. Headings set the
 /// section; each list item (nested ones too), paragraph and fenced block is
 /// one block, numbered within its section.
-fn split_rules(markdown: &str) -> Vec<Block> {
+pub(crate) fn split_rules(markdown: &str) -> Vec<Block> {
     let mut blocks = Vec::new();
     let mut headings: Vec<(usize, String)> = Vec::new();
     let mut current: Option<Block> = None;
@@ -245,7 +249,7 @@ fn is_list_item(line: &str) -> bool {
     digits > 0 && (line[digits..].starts_with(". ") || line[digits..].starts_with(") "))
 }
 
-fn title_of(text: &str) -> String {
+pub(crate) fn title_of(text: &str) -> String {
     let first = text.lines().next().unwrap_or_default();
     let first =
         first.trim_start_matches(|c: char| c == '-' || c == '*' || c == '+' || c.is_whitespace());
@@ -739,6 +743,22 @@ impl Store {
     }
 }
 
+/// A rule ready to store. `body` is verbatim source text; `title`,
+/// `condition` and `keywords` only widen search, and `reason` is verbatim.
+pub(crate) struct RuleRow<'a> {
+    pub(crate) section: &'a str,
+    pub(crate) ordinal: i64,
+    pub(crate) start: i64,
+    pub(crate) end: i64,
+    pub(crate) body: &'a str,
+    pub(crate) title: &'a str,
+    pub(crate) reason: &'a str,
+    pub(crate) condition: &'a str,
+    pub(crate) keywords: &'a str,
+    /// `mechanical` or `model`.
+    pub(crate) segmented_by: &'a str,
+}
+
 fn insert_rule(
     db: &Connection,
     project: Option<ProjectId>,
@@ -746,15 +766,44 @@ fn insert_rule(
     block: &Block,
     time: i64,
 ) -> Result<NoteId, ErrorInfo> {
+    insert_rule_row(
+        db,
+        project,
+        path,
+        &RuleRow {
+            section: &block.section,
+            ordinal: block.ordinal,
+            start: block.start,
+            end: block.end,
+            body: &block.text,
+            title: &title_of(&block.text),
+            reason: "",
+            condition: &block.section,
+            keywords: "",
+            segmented_by: "mechanical",
+        },
+        time,
+    )
+}
+
+pub(crate) fn insert_rule_row(
+    db: &Connection,
+    project: Option<ProjectId>,
+    path: &str,
+    rule: &RuleRow,
+    time: i64,
+) -> Result<NoteId, ErrorInfo> {
     db.execute(
         "INSERT INTO notes(project_id, kind, title, summary, keywords, condition, body, tags,
                            status, source, created, updated)
-         VALUES (?1, 'rule', ?2, '', '', ?3, ?4, '', 'active', ?5, ?6, ?6)",
+         VALUES (?1, 'rule', ?2, ?3, ?4, ?5, ?6, '', 'active', ?7, ?8, ?8)",
         params![
             project.map(|p| p.0),
-            title_of(&block.text),
-            block.section,
-            block.text,
+            rule.title,
+            rule.reason,
+            rule.keywords,
+            rule.condition,
+            rule.body,
             Source::Person.as_str(),
             time,
         ],
@@ -763,16 +812,17 @@ fn insert_rule(
     let id = NoteId(db.last_insert_rowid());
     db.execute(
         "INSERT INTO rules(note_id, strength, origin_path, origin_start, origin_end, section,
-                           ordinal)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                           ordinal, segmented_by)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             id.0,
             Strength::Should.as_str(),
             path,
-            block.start,
-            block.end,
-            block.section,
-            block.ordinal,
+            rule.start,
+            rule.end,
+            rule.section,
+            rule.ordinal,
+            rule.segmented_by,
         ],
     )
     .map_err(store_error)?;
@@ -896,7 +946,8 @@ mod tests {
                     added: 1,
                     changed: 1,
                     retired: 1,
-                    unchanged: 4
+                    unchanged: 4,
+                    ..Default::default()
                 }
             );
             let found = store

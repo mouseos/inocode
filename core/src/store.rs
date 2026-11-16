@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use crate::conversation::{AssistantPart, Body, Message};
 use crate::ErrorInfo;
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 /// Tool results above this size are stored once in `blobs` and referenced.
 const BLOB_THRESHOLD: usize = 16 * 1024;
 /// Text indexed per message; the rest stays readable but unsearchable.
@@ -153,8 +153,21 @@ CREATE TABLE note_events(
 CREATE INDEX note_events_note ON note_events(note_id, at);
 "#;
 
+/// How each rule was cut from its document, and the hash of each imported
+/// section so an unchanged section is not sent to the model again.
+const SCHEMA_V3: &str = r#"
+ALTER TABLE rules ADD COLUMN segmented_by TEXT NOT NULL DEFAULT 'mechanical';
+CREATE TABLE rule_sections(
+    scope INTEGER NOT NULL,
+    path TEXT NOT NULL,
+    section TEXT NOT NULL,
+    hash TEXT NOT NULL,
+    PRIMARY KEY(scope, path, section)
+) WITHOUT ROWID;
+"#;
+
 /// Schema steps; step `i` brings the database to version `i + 1`.
-const MIGRATIONS: [&str; 2] = [SCHEMA, SCHEMA_V2];
+const MIGRATIONS: [&str; 3] = [SCHEMA, SCHEMA_V2, SCHEMA_V3];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ProjectId(pub i64);

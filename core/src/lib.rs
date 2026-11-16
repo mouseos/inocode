@@ -11,6 +11,7 @@ mod llm;
 pub mod oauth;
 pub mod reasoning;
 pub mod rules;
+mod rules_import;
 mod sse;
 pub mod store;
 mod usage;

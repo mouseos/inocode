@@ -1,7 +1,7 @@
 # 守ってほしいこと（規則）とローカル issue
 
 - **対象と範囲：** (1) AGENTS.md / CLAUDE.md を発展させた「守ってほしいこと」：規則を 1 件ずつ ID つきで持ち、どの規則がいつ提示・適用・逸脱されたかを追えるようにする。既存の AGENTS.md / CLAUDE.md から規則を取り込む。(2) ローカル issue：会話をまたいで残る作業・不具合・課題の記録。いずれも `docs/evidence/project-memory.md` の保存層（ノート・タグ・リンク・検索）の上に載せる案。
-- **関連コード：** `core/src/rules.rs`（取り込み `import_rules`、`add_rule`、`rules_for`、`propose_enforcement`・`approve_enforcement`・`check`、`record`・`events`、issue の `open_issue`・`set_issue_state`・`block_issue`・`issues`）、`core/src/store.rs`（スキーマ v2：`rules`・`issues`・`note_events` 表、版 1 からの移行）。
+- **関連コード：** `core/src/rules_import.rs`（モデルによる引用での分割 `import_rules_with`、検査 `accept`）、`core/src/rules.rs`（機械的な取り込み `import_rules`、`add_rule`、`rules_for`、`propose_enforcement`・`approve_enforcement`・`check`、`record`・`events`、issue の `open_issue`・`set_issue_state`・`block_issue`・`issues`）、`core/src/store.rs`（スキーマ v2：`rules`・`issues`・`note_events` 表、v3：`rules.segmented_by`・`rule_sections` 表、旧版からの移行）。
 - **根拠の状態：** UNSUPPORTED_APPROVED（2026-11-16、ユーザーが「Approve both」で規則とローカル issue の両方を承認）。規則の一部は下表のとおり研究で支持される。ローカル issue は適用可能な学術研究を確認できていない。
 
 ## 研究で分かったこと
@@ -14,6 +14,7 @@
 | ファイルの構造と時間経過 | McMillan, "Instruction Adherence in Coding Agent Configuration Files: A Factorial Study of Four File-Structure Variables", arXiv 2605.10039, 2026（https://arxiv.org/abs/2605.10039） | ファイルの長さ・位置・分割・矛盾する指示のいずれも遵守率に検出可能な差なし。最大の効果は会話中の劣化：関数を 1 つ生成するごとに遵守のオッズが約 5.6% 下がる（事後に見つけた効果） | 査読前。対象は単純な注記 1 種、Anthropic のモデルと TypeScript のみ |
 | 実行時の強制 | Wang, Poskitt, Sun, "AgentSpec: Customizable Runtime Enforcement for Safe and Reliable LLM Agents", ICSE 2026（arXiv 2503.18666） | 「きっかけ・条件・処置」の規則を実行時に強制し、コードエージェントの危険な実行の 90% 超を防いだ。オーバーヘッドはミリ秒。LLM で規則を生成すると適合率 95.56%・再現率 70.96%（身体化エージェント） | 査読あり |
 | 自己申告の理由の信頼性 | Turpin et al., "Language Models Don't Always Say What They Think", NeurIPS 2023（arXiv 2305.04388） | モデルが書く理由は、実際に答えを左右した要因を言わないことがある | 査読あり。「どの規則に従ったか」をモデルの申告だけで記録してはいけない根拠 |
+| 言い換えの危険（モデルによる分割） | Maynez et al., "On Faithfulness and Factuality in Abstractive Summarization", ACL 2020, pp. 1906-1919（https://preview.aclanthology.org/setup/2020.acl-main.173） | 人による評価で、生成型の要約にはどのモデルでも原文にない内容がかなり含まれていた（二次資料では要約の約 6 割に原文にない語句） | 査読あり。要約が題材で、規則の分割そのものの研究ではない。言い換えを許さず引用の一致を機械で検査する根拠 |
 | ローカル issue | 学術研究なし。実践例：Beads、vybe、ticketd、mneme（会話をまたぐ作業状態を、事実・作業状態・使い捨ての文脈に分ける） | 実践者の報告：ツールは指示しないと使われにくい | 研究ではない |
 
 ## 設計（承認済み）
@@ -30,9 +31,18 @@
 4. **ローカル issue：** 保存層のノートに「issue」の種類を加える。状態（未着手・作業中・保留・完了・見送り）、優先度、依存（何が何を止めているか）、関連する教訓・主張・会話へのリンクを持つ。会話の開始時に、未完了の上位数件だけを短く示す。会話内の計画（todo）とは別物で、会話をまたいで残る。
 5. **規則と issue は既存のノートの仕組みを使う：** 全文検索・タグ・リンク・版・連想を新たに作らない。規則の適用記録と issue の状態変化は、1 つのイベント表に時刻つきで残す。
 
+## モデルによる分割（追加の承認による）
+
+見出しと箇条書きだけでは、1 つの項目に複数の規則が入る、段落に規則と理由が混ざる、親と子の項目で 1 つの規則になる、といった文章を規則 1 件ずつに分けられない（ユーザーの指摘）。そこで次のようにした。
+
+1. 機械で見出しごとの節に分け、節ごとにモデルへ送る。モデルは原文の引用（`quotes`）で規則を返し、理由（`reasons`）とその他（`other`）も引用で返す。題名・条件・キーワードはモデル自身の言葉で、検索の入口にだけ使う（ノートの title・condition・keywords）。規則の本文（body）と理由（summary）は引用だけから作る。
+2. ハーネスが検査する：すべての引用が節の本文に一字一句あること（同じ文が複数あれば、まだ使っていない箇所を優先）。どこにも割り当てられなかった本文の断片（記号・番号・句読点だけのものは除く）は `ImportReport::unassigned` で返す。
+3. 応答の誤り（JSON でない、規則がない、空の引用、原文にない引用）、接続の失敗、32 KiB を超える節は、その節だけ機械的な分割に戻し、理由を `ImportReport::fallbacks` で返す。機械的に戻した節は次回の取り込みで再びモデルへ送る。
+4. 節ごとに本文の SHA-256 を `rule_sections` に保存し、変わらない節は再送しない。変わった節では、本文が同じ規則を残し、新しいものを追加し、残りを退役させる。消えた節の規則は退役させる。各規則がどちらで分けられたかを `rules.segmented_by`（`model` / `mechanical`）に残す。
+
 ## ユーザーの承認
 
-2026-11-16、「Approve both」（規則とローカル issue の設計案の両方）。
+2026-11-16、「Approve both」（規則とローカル issue の設計案の両方）。モデルによる引用での分割は、同日「Implement it」で承認。
 
 ## 実装上の判断（このプロジェクトの判断）
 
@@ -45,4 +55,5 @@
 ## 実装・検証の状況
 
 - 単体試験 `core/src/rules.rs` 5 件：文書の分割（節・入れ子・段落・コードブロック・行番号・言い換えなし）、取り込み直し（変更なし・変更・退役・追加の数、旧版は出ない）、関係する規則の提示とその記録（共有の規則、ターンの位置、モデルの逸脱理由）、必須の規則（承認前は発火しない、ツールの限定と `*`、止めるが優先、他プロジェクトに及ばない、記録）、issue（優先度順、止めている関係と完了による解除、完了を含む一覧、存在しない issue）。`core/src/store.rs` の移行試験 1 件（版 1 のデータベースをデータを保ったまま版 2 へ）。
+- 単体試験 `core/src/rules_import.rs` 3 件：節の組み立てと行番号の対応、一字一句の引用の受け入れ（理由、複数の引用、題名の後退値、行の範囲）、言い換え・空の応答・JSON でない応答・空の引用の拒否と、割り当てのない断片の報告。模擬サーバーでの結合試験 `server/tests/rules_import.rs` 1 件：節ごとに 1 回送る、言い換えた節は機械的に戻して理由を返す、分けられた節は再送しない（戻した節は再送する）、同じ本文の規則は残る、消えた節は退役。実際のモデルでの分割は試していない。
 - 未実装：ツール実行の直前に `check` を呼ぶ処理と、判断の場面で `rules_for` の結果を文脈へ入れる処理（段階 4・5）、会話の開始時に未完了の issue を示す処理（段階 4）、LLM による判定条件の候補作成、TCP への公開（段階 3）。
