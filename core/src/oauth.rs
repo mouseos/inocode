@@ -30,6 +30,8 @@ pub enum AuthKind {
     GptOauth,
     /// Meta Muse Code subscription; the stored `LLM|` key is the bearer.
     MuseSubscription,
+    /// DeepAI Code account; the stored API key is sent as `api-key`.
+    DeepAi,
 }
 
 impl AuthKind {
@@ -40,6 +42,7 @@ impl AuthKind {
             "claude-oauth" => Some(Self::ClaudeOauth),
             "gpt-oauth" => Some(Self::GptOauth),
             "muse-code" => Some(Self::MuseSubscription),
+            "deepai" => Some(Self::DeepAi),
             _ => None,
         }
     }
@@ -51,6 +54,7 @@ impl AuthKind {
             Self::ClaudeOauth => "claude-oauth",
             Self::GptOauth => "gpt-oauth",
             Self::MuseSubscription => "muse-code",
+            Self::DeepAi => "deepai",
         }
     }
 }
@@ -449,9 +453,9 @@ pub fn chatgpt_account_id(token: &str) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
-struct Callback {
-    code: String,
-    state: String,
+pub(crate) struct Callback {
+    pub(crate) code: String,
+    pub(crate) state: String,
 }
 
 /// Interprets a pasted code. A `code#state` paste is an authorization
@@ -478,7 +482,11 @@ fn pasted_callback(pasted: &str, expected_state: &str) -> Result<Callback, Strin
 /// the advertised redirect is `localhost`, which browsers may resolve to
 /// either, reference `loopbackBindHostnames`) and returns the browser
 /// redirect carrying a code.
-async fn await_callback(port: u16, path: &str, shutdown: Duration) -> Result<Callback, String> {
+pub(crate) async fn await_callback(
+    port: u16,
+    path: &str,
+    shutdown: Duration,
+) -> Result<Callback, String> {
     let path = path.to_string();
     let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
     let v4 = tokio::net::TcpListener::bind(("127.0.0.1", port))
@@ -619,9 +627,12 @@ fn token_client() -> Result<reqwest::Client, String> {
 
 /// Largest successful body accepted from the login endpoints (reference
 /// `CHATGPT_SUCCESS_BODY_MAX_BYTES`); token and key payloads are far smaller.
-const SUCCESS_BODY_MAX_BYTES: usize = 64 * 1024;
+pub(crate) const SUCCESS_BODY_MAX_BYTES: usize = 64 * 1024;
 
-async fn read_success_body(mut response: reqwest::Response, what: &str) -> Result<Vec<u8>, String> {
+pub(crate) async fn read_success_body(
+    mut response: reqwest::Response,
+    what: &str,
+) -> Result<Vec<u8>, String> {
     crate::llm::read_capped(&mut response, SUCCESS_BODY_MAX_BYTES)
         .await
         .map_err(|e| format!("reading the {what} failed: {e}"))?
@@ -792,7 +803,7 @@ pub fn claude_login_start(endpoints: &FlowEndpoints, code_mode: bool) -> ClaudeL
 /// is possible whenever no fixed redirect URI forces the port). The probe
 /// listener is dropped so the flow can bind it again; the window between the
 /// probe and the bind mirrors the reference's own fallback race.
-fn reserve_callback_port(preferred: u16) -> u16 {
+pub(crate) fn reserve_callback_port(preferred: u16) -> u16 {
     match std::net::TcpListener::bind(("127.0.0.1", preferred)) {
         Ok(listener) => {
             let port = listener

@@ -1,0 +1,26 @@
+# アカウントの使用量取得（Claude OAuth / GPT OAuth / Muse Code / DeepAI）
+
+- **対象と範囲：** サブスクリプション系の接続方式で、アカウントの使用量を取得する。OAuth 系はレート制限の枠（使用率と回復時刻）、DeepAI は Theos の残高。公開は CLI `inocode-server usage`（JSON を表示）と TCP の `usage` メソッド（`result` に同じ形）。API キー方式（`openai` / `anthropic` / `responses`）は対象外で、`provider_unsupported` を返す。範囲外：取得結果のキャッシュ、間隔制限・バックオフ、使用量に応じた送信の抑制、通常応答のヘッダー（`anthropic-ratelimit-unified-*`）や Muse のストリームイベント（`response.subscription_usage`）からの受動的な取得。
+- **関連コード：**
+  - `core/src/usage.rs` — `Usage` / `UsageWindow`、`from_wham`・`from_anthropic`・`from_muse`（応答の解析）。
+  - `core/src/llm.rs` — `Llm::usage`（方式ごとの送信先・ヘッダー・上限）。
+  - `core/src/deepai.rs` — `TheosAllowance`、`Session::theos`（チェックインと同じロックと状態を使う）、`request_theos`（チェックインと共通の `/theos` 送信）。
+  - `core/src/lib.rs` — `Core::usage`。`server/src/lib.rs` — TCP `usage`（読み取りループの外のタスクで実行）。`server/src/main.rs` — `usage` サブコマンド。
+- **根拠の状態：** UNSUPPORTED_APPROVED。
+- **学術的な主張・不足点：** 適用可能な学術研究はない。外部サービスの通信仕様への追従。
+- **学術資料：** なし。
+- **その他の根拠（参照実装。研究とは区別する）：**
+  - GPT OAuth：opencodex `src/codex/quota-query-backoff.ts`（`GET https://chatgpt.com/backend-api/wham/usage`）、`src/codex/auth-api/main-account-probe.ts:325`（ヘッダーは `Authorization: Bearer` と `ChatGPT-Account-Id` のみ）、`src/codex/quota-recovery-timing.ts:19`（8 秒）、`src/codex/quota-types.ts:124-163`（`rate_limit.{primary,secondary,tertiary}_window` の `used_percent`・`reset_at`・`limit_window_seconds`、`plan_type`）、`src/codex/quota.ts` の `parseUsageQuota`（`used_percent` は数値か数値文字列で 0〜100 に丸める）。
+  - Claude OAuth：opencodex `src/providers/claude-cli-usage.ts:37-47`（`GET https://api.anthropic.com/api/oauth/usage`、`Accept`・`Content-Type`・`User-Agent: claude-cli/2.1.321 (external, cli)`・`anthropic-beta`（5 項目）・`Authorization: Bearer`、`anthropic-version` は送らない）、`src/providers/quota-wire.ts`（8 秒、本文 512 KB）、`src/providers/quota/anthropic-usage-windows.ts:72-122`（`limits[]` の `kind`・`percent`・`resets_at`・`scope.model.display_name` を優先し、無ければ `five_hour` / `seven_day` / `seven_day_{fable,opus,sonnet}` の `utilization`・`resets_at`）。
+  - Muse Code：opencodex-muse `src/providers/muse-key-quota.ts`（専用の使用量 API は無く、鍵発行 `POST https://api.meta.ai/muse-code/key` の応答の `subs_usage` を読む。本文は `{}` で `onboard` を送らない＝読み取りでアカウントを変えない。応答の `api_key` は読まない）、`src/oauth/meta-muse-device.ts:365-375`（`Authorization: Bearer <Meta アカウントのトークン>`、`x-api-version: 1.0.0`、20 秒）、`src/providers/muse-subscription-usage.ts:48-95`（`subs_usage.window` の `used_percent`・`resets_at`・`window_duration_mins`、`subs_usage.weekly`、`is_subs_active` が false なら使用量なし、`subs_tier_name`）。
+  - DeepAI：`docs/evidence/deepai-code-provider.md` と同じ解析（`GET /deepai_code/theos` の `{enabled, balance, granted, refresh_at}`、金額は数値か数値文字列）。
+- **設計判断（このプロジェクトの判断）：**
+  - 4 方式を 1 つの `usage` にまとめ、枠の名前は各社の呼び名をそのまま使う（`primary`、`session`、`five_hour`、`window` など）。回復時刻は各社の書式のまま文字列で返す（秒・ミリ秒・日付文字列が混在するため、変換で意味を変えない）。
+  - 参照実装にある間隔制限とバックオフ（ChatGPT は失敗時 5 分〜60 分、Muse は成功後も 5 分空ける）は入れない。`usage` は利用者が呼んだときだけ送る。Muse の鍵発行 API は参照実装で「レート制限あり」とされているため、頻繁に呼ぶと 429 になりうる。
+  - エラー時は応答本文を表示しない（Muse の応答は鍵を含みうるため）。HTTP の状態だけを返す。
+  - DeepAI の残高取得は `/theos` で、これ自体がチェックインになる。チェックインと同じロックの中で送り、受け取った nonce を記録するので、直後の chat は追加のチェックインを要しない。
+- **ユーザーの承認：** 2026-11-16、「Theos取得は必要だ」「それとoauth系は使用量も取得できるようにしなさい」。
+- **実装・検証の状況：**
+  - 単体試験（`core/src/usage.rs` 3 件、`core/src/deepai.rs` の `allowance_reads_numbers_and_numeric_strings`）と、模擬サーバーでの結合試験（`server/tests/oauth_flows.rs` の 4 件：GPT の wham 枠、Claude の参照ヘッダー、Muse の `onboard` 無し・鍵を出さないこと、エラー時に本文を出さないこと。`server/tests/deepai_flows.rs` の `usage_reads_the_theos_allowance_and_keeps_its_check_in`）。`cargo test --workspace --release` 153 件成功。
+  - 実通信（2026-11-16、各 1 回、モデルは使わない読み取り）：DeepAI は Theos 残高 72 / 付与 72。Claude は `session` 16%、`weekly_all` 3%、`weekly_scoped:Fable` 0%（`limits[]` 形式）。GPT は `plus`、`primary`（604800 秒＝週）100%。Muse は `Muse Code High Usage`、5 時間枠 0%、週 0%。Muse の読み取り後も保存済みの鍵で chat（`muse-spark-1.3-contributor`）が成功し、鍵が無効化されないことを確認した。
+  - 未検証：各社の 429 や形式変更への対応、Muse の鍵発行 API を短い間隔で呼んだときの挙動。

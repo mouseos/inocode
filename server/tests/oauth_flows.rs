@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use inocode_core::oauth::{self, Credential, FlowEndpoints, MuseEndpoints, Store};
+use inocode_core::oauth::{self, AuthKind, Credential, FlowEndpoints, MuseEndpoints, Store};
 use inocode_core::{Core, Llm, LlmConfig, ProviderKind};
 use serde_json::{json, Value};
 use support::*;
@@ -926,4 +926,137 @@ async fn oversized_bodies_are_not_read_whole() {
     .await
     .expect_err("an oversized token response fails");
     assert!(error.contains("exceeds"), "{error}");
+}
+
+// ---------------------------------------------------------------------------
+// Account usage (`usage`)
+// ---------------------------------------------------------------------------
+
+/// Calls the `usage` method over TCP and returns the result.
+async fn usage_call(core: Arc<Core>) -> Value {
+    let (addr, _stop, _server) = start_server(core).await;
+    let mut client = connect(addr).await;
+    let response = call(&mut client, 7, json!({"id": 7, "method": "usage"})).await;
+    assert!(
+        response.get("result").is_some(),
+        "usage must answer with a result: {response}"
+    );
+    response["result"].clone()
+}
+
+fn oauth_llm(
+    mock: &MockApi,
+    auth: AuthKind,
+    provider: &str,
+    credential: Credential,
+) -> (Llm, std::path::PathBuf) {
+    let store_path = temp_store_path(&format!("usage-{provider}"));
+    write_store(&store_path, provider, credential);
+    let llm = Llm::new(LlmConfig {
+        provider: ProviderKind::Responses,
+        auth,
+        base_url: mock.base_url.clone(),
+        model: "m".to_string(),
+        api_key: String::new(),
+        auth_store_path: Some(store_path.clone()),
+    })
+    .expect("build the client");
+    (llm, store_path)
+}
+
+#[tokio::test]
+async fn gpt_usage_reads_the_wham_windows() {
+    let mock = start_mock(|request: &MockRequest| {
+        assert_eq!(request.method, "GET");
+        assert_eq!(request.path, "/v1/wham/usage");
+        assert_eq!(request.authorization.as_deref(), Some("Bearer stored-access"));
+        assert_eq!(request.headers["chatgpt-account-id"], "acct_test");
+        MockReply::status(
+            200,
+            r#"{"plan_type":"plus","rate_limit":{"allowed":true,
+                "primary_window":{"used_percent":12,"reset_at":1794894516,"limit_window_seconds":18000},
+                "secondary_window":{"used_percent":40,"reset_at":1795000000,"limit_window_seconds":604800}}}"#,
+        )
+    })
+    .await;
+    let (llm, path) = oauth_llm(
+        &mock,
+        AuthKind::GptOauth,
+        "gpt-oauth",
+        credential_for_store(),
+    );
+    let usage = usage_call(Arc::new(Core::with_llm(llm))).await;
+    assert_eq!(usage["plan"], "plus");
+    assert_eq!(usage["windows"][0]["name"], "primary");
+    assert_eq!(usage["windows"][0]["used_percent"], 12.0);
+    assert_eq!(usage["windows"][1]["window_seconds"], 604800);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn claude_usage_sends_the_reference_headers() {
+    let mock = start_mock(|request: &MockRequest| {
+        assert_eq!(request.path, "/api/oauth/usage");
+        assert_eq!(request.authorization.as_deref(), Some("Bearer stored-access"));
+        assert_eq!(request.headers["user-agent"], "claude-cli/2.1.321 (external, cli)");
+        assert!(request.headers["anthropic-beta"].starts_with("claude-code-20250219,oauth-2025-04-20"));
+        assert!(!request.headers.contains_key("anthropic-version"));
+        MockReply::status(
+            200,
+            r#"{"five_hour":{"utilization":41,"resets_at":"2026-11-16T15:00:00Z"},"seven_day":{"utilization":7}}"#,
+        )
+    })
+    .await;
+    let (llm, path) = oauth_llm(
+        &mock,
+        AuthKind::ClaudeOauth,
+        "claude-oauth",
+        credential_for_store(),
+    );
+    let usage = usage_call(Arc::new(Core::with_llm(llm))).await;
+    assert_eq!(usage["windows"][0]["name"], "five_hour");
+    assert_eq!(usage["windows"][0]["resets_at"], "2026-11-16T15:00:00Z");
+    assert_eq!(usage["windows"][1]["used_percent"], 7.0);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn muse_usage_reads_the_key_mint_without_onboarding_or_leaking_the_key() {
+    let mock = start_mock(|request: &MockRequest| {
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.path, "/muse-code/key");
+        assert_eq!(request.authorization.as_deref(), Some("Bearer meta-account-token"));
+        assert_eq!(request.headers["x-api-version"], "1.0.0");
+        assert_eq!(request.body, json!({}), "a usage read must not onboard");
+        MockReply::status(
+            200,
+            r#"{"api_key":"LLM|fresh-secret","is_subs_active":true,"subs_tier_name":"Plus",
+                "subs_usage":{"window":{"used_percent":20,"resets_at":1794894516,"window_duration_mins":300},
+                              "weekly":{"used_percent":3,"resets_at":1795000000}}}"#,
+        )
+    })
+    .await;
+    let mut credential = credential_for_store();
+    credential.api_key = Some("LLM|stored".to_string());
+    credential.oauth_access_token = Some("meta-account-token".to_string());
+    let (llm, path) = oauth_llm(&mock, AuthKind::MuseSubscription, "muse-code", credential);
+    let usage = usage_call(Arc::new(Core::with_llm(llm))).await;
+    assert_eq!(usage["plan"], "Plus");
+    assert_eq!(usage["windows"][0]["window_seconds"], 18000);
+    assert!(!usage.to_string().contains("secret"));
+    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn usage_errors_do_not_echo_the_response_body() {
+    let mock = start_mock(|_request: &MockRequest| {
+        MockReply::status(401, r#"{"api_key":"LLM|leaked","error":"unauthorized"}"#)
+    })
+    .await;
+    let mut credential = credential_for_store();
+    credential.oauth_access_token = Some("meta-account-token".to_string());
+    let (llm, path) = oauth_llm(&mock, AuthKind::MuseSubscription, "muse-code", credential);
+    let error = llm.usage().await.expect_err("401 fails");
+    assert_eq!(error.message, "the usage request returned HTTP 401");
+    let _ = std::fs::remove_file(&path);
 }

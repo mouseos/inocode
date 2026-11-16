@@ -5,9 +5,13 @@
 //! with a stream of [`EventPayload`] events. The core knows nothing about TCP,
 //! framing, or connections, so the server owns all transport concerns.
 
+pub mod deepai;
 mod llm;
 pub mod oauth;
 mod sse;
+mod usage;
+
+pub use usage::{Usage, UsageWindow};
 
 pub use llm::{
     ChatStream, Llm, LlmConfig, ModelInfo, ProviderKind, DEFAULT_BASE_URL, DEFAULT_MAX_TOKENS,
@@ -227,6 +231,18 @@ impl Core {
     pub async fn models(&self) -> Result<Vec<ModelInfo>, ErrorInfo> {
         match &self.provider {
             Provider::Ready(llm) => llm.models().await,
+            Provider::Unavailable(error) => Err(error.clone()),
+            Provider::Unconfigured => Err(ErrorInfo::new(
+                "provider_unconfigured",
+                "no LLM provider is configured",
+            )),
+        }
+    }
+
+    /// The configured account's usage.
+    pub async fn usage(&self) -> Result<Usage, ErrorInfo> {
+        match &self.provider {
+            Provider::Ready(llm) => llm.usage().await,
             Provider::Unavailable(error) => Err(error.clone()),
             Provider::Unconfigured => Err(ErrorInfo::new(
                 "provider_unconfigured",

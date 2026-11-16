@@ -194,6 +194,16 @@ async fn dispatch(
     match request.method.as_str() {
         "chat" => start_chat(request, stream_id, core, queue, in_flight).await,
         "cancel" => cancel(request, stream_id, queue, in_flight).await,
+        "usage" => {
+            // An HTTP round trip like discovery, so it runs beside the read loop.
+            tokio::spawn(read_usage(
+                request.id,
+                stream_id,
+                Arc::clone(core),
+                queue.clone(),
+            ));
+            true
+        }
         "models" => {
             // Discovery is an HTTP round trip: it runs beside the read loop,
             // like `chat`, so the connection keeps reading `cancel` and other
@@ -232,6 +242,15 @@ async fn list_models(id: u64, stream_id: u64, core: Arc<Core>, queue: mpsc::Send
         Err(error) => {
             json!({ "id": id, "error": error })
         }
+    };
+    // A closed connection has nobody to answer.
+    let _ = send(&queue, stream_id, payload).await;
+}
+
+async fn read_usage(id: u64, stream_id: u64, core: Arc<Core>, queue: mpsc::Sender<Outgoing>) {
+    let payload = match core.usage().await {
+        Ok(usage) => json!({ "id": id, "result": usage }),
+        Err(error) => json!({ "id": id, "error": error }),
     };
     // A closed connection has nobody to answer.
     let _ = send(&queue, stream_id, payload).await;

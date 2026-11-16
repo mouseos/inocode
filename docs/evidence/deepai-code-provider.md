@@ -1,0 +1,34 @@
+# DeepAI Code プロバイダ
+
+- **対象と範囲：** DeepAI Code のアカウント（`api.deepai.org`）を inocode の接続方式として使えるようにする。範囲はユーザーが選んだ「必須＋待機処理」。
+  - 必須：ブラウザによるサインイン（ループバック受信とコード交換）、API キーの保存、モデル一覧、chat（カタログの `api` で Chat Completions と Responses を振り分け）、共通ヘッダー（レーン版数・インスタンス・マシン識別）、チェックイン（`/theos`）。
+  - 待機処理：409 `session_busy` の `Retry-After` に従う再送、Theos を消費するモデルの同時実行を 1 本に絞ること。
+  - 追加（2026-11-16、ユーザー指示「Theos取得は必要だ」）：Theos 残高の取得。`docs/evidence/account-usage.md` に記録。
+  - 範囲外：Web 検索・サービス検索・履歴同期・広告カード・音声・添付、無応答 330 秒／全体 930 秒の打ち切り。
+- **関連コード：**
+  - `core/src/deepai.rs` — `Session`（インスタンス ID、マシン識別、チェックイン状態、カタログ、有料モデルの 1 本制限）、`ensure_checked_in`、`parse_catalog` と `CatalogModel::metered`、`admission`（409 の判定）、`require_lane`（426 の説明）、`sign_in_start` / `sign_in_finish` / `exchange_code`、マシン識別の取得（Windows は PowerShell の SMBIOS UUID → `reg query` の MachineGuid、macOS は `ioreg`、Linux は `/etc/machine-id` → `/var/lib/dbus/machine-id`。10 秒で打ち切り、SHA-256 にして送る）。
+  - `core/src/llm.rs` — `deepai_chat`（カタログで形式を選び、有料なら枠を待ち、試行ごとにチェックイン→送信→409 `session_busy` なら待って再送）、`models` の DeepAI 分岐、`OAUTH_DEFAULTS` の DeepAI 行（既定モデル `glm-5.3-flash`）。
+  - `core/src/oauth.rs` — `AuthKind::DeepAi`（`INOCODE_LLM_PROVIDER=deepai`、保存名 `deepai`）。コールバック待ち受けとポート確保を DeepAI のサインインと共用。
+  - `server/src/main.rs` — `login deepai`。
+- **根拠の状態：** UNSUPPORTED_APPROVED。
+- **学術的な主張・不足点：** 適用可能な学術研究はない。外部サービスの通信仕様への追従であり、機能の有効性を研究で裏付ける対象ではない。
+- **学術資料：** なし。
+- **その他の根拠（研究とは区別する）：**
+  - 通信仕様は配布物の静的解析による。Notion「DeepAI Code」ページ（0.3.20 Mac 版の解析と、2026-11-16 の追補3＝0.3.37 Windows 版の再解析）。0.3.37 の出典は `resources/server.asar` 内 `apps/server/dist/binCli-BIPvs5sY.mjs`（SHA-256 `e08ebd1554d4be6a3a60c66141e4d61e2e2c7eda13baf784064627451ade5d6f`）の `src/deepai/api.ts`・`machineId.ts`・`DeepAIAccount.ts`・`localTransport.ts`・`modelTransportPolicy.ts`・`modelRates.ts`。
+  - REA の Evidence：`ev_832668005f55a18acc763b89334e2f22d0fce013063b4a876ff59294c26a4310`（インストール先の目録）、`ev_5a79f3abcbc8f32fcf78f0761bf17747de69ae66c23f361cde4e7365a10a1c21`（Electron Fuse）、`ev_4de3f0bc6b534d38a9b5e6c40156aae30c5c47ae50e7b3f1f676d46aedb582e1`（JS 解析。単一バンドルが大きく解析ワーカーのヒープ上限に達したため、構造グラフは得られず、ソース区切りに沿って静的に読んだ）。
+  - 実測（2026-11-16、認証なし、`api.deepai.org` へ）：
+    - `GET /deepai_code/models` をレーン版数 6〜16 で 1 回ずつ（計 11 回）。6 は 401 `auth_required`、7〜16 はすべて 426 `lane_version_unsupported`（「This version of DeepAI Code is no longer supported. Please update the app.」）。版数を上げてもモデルは増えず、現行は 6。2026-11-09 の記録では認証なしで 200 だったモデル一覧が、現在は認証を要する。
+    - 更新フィード `https://downloads.deepai.org/deepai-code/releases/latest.yml` を 1 回取得：`version: 0.3.37`、`releaseDate: 2026-11-14T08:08:16.115Z`。
+- **設計判断（ユーザーの判断と、このプロジェクトの判断を区別する）：**
+  - ユーザー：範囲は「必須＋待機処理」。実通信は無料モデル（`theosPerRequest` が `"0"`）のみ。ビーコンの `v=` は「本家に追従、難しければ版数を最大 10 上げて試し、モデルが増える値を最新とする」。
+  - このプロジェクト：レーン版数はサーバーが 6 しか受け付けないため定数 `6`。ビーコンの `v=` は本家最新版の `0.3.37` を定数で持つ。本家がレーン版数を上げると inocode は 426 で止まりコード更新が必要になるので、`v=` だけを実行時にフィードから追従しても利点が小さく、両方を同時に更新する運用にする。426 は「本家の版が上がった」と分かる形で利用者に返す。
+- **ユーザーの承認：** 2026-11-16、「次はdeepai code実装してほしい」の後、範囲・版数・試験モデルの質問に上記のとおり回答。
+- **実装・検証の状況：**
+  - 本家との差（このプロジェクトの判断）：サインイン成功時はアプリ内確認ページへの 303 ではなく、既存のコールバック待ち受けの完了ページを返す。ビーコンの `focus` は、画面を持たないため常に省く（本家も不明なときは省く）。`up` はプロセス稼働秒ではなく、このセッション（`Llm`）を作ってからの秒数。チェックイン応答の本文は 64 KiB、409 の本文は 16 KiB で読み取りを打ち切る。
+  - 模擬サーバーでの試験（`server/tests/deepai_flows.rs`、8 件）：初回にカタログ→チェックイン→chat の順で送り、全要求にレーン・インスタンス・`api-key`（`Authorization` は送らない）が付く／チェックインは間隔の半分まで再利用し、それを過ぎると受け取った nonce を `X-DeepAI-Code-Check-In` に入れて取り直し、ビーコンが `pi=1` になる／カタログの `api: "openai-responses"` のモデルは `/responses` へ送る／409 `session_busy` は既定 2 秒待って再送し、ほかの 409 は失敗／426 は lane の更新が必要と分かる失敗／チェックインの 4xx は `error.code` を含めて失敗、`check_in` の無い現行サーバーの応答は `check_in_unavailable`／`models` は `api-key` 付きでカタログを返す／サインインはコールバックのコードを交換して API キーを得て、期限切れのコードは失敗。`core/src/deepai.rs` の単体試験 5 件（nonce の検証、旧サーバーの判定、ビーコン、有料判定の規則、UUID と秘密の比較）。
+  - `cargo test --workspace --release` 144 件成功、clippy（`-D warnings`）・fmt クリーン。
+  - 実アカウントでの確認（2026-11-16、ユーザーのアカウント、無料モデルのみ）：
+    - `login deepai`：ブラウザでのサインイン → `127.0.0.1` へのコールバック → コード交換が成功し、`auth.json` に `deepai` が追加された（他の 3 プロバイダのエントリは保持）。
+    - `models`：27 モデル。無料（`theosPerRequest` が `"0"`）は glm-5.3-flash、deepseek-v4.1-flash、mimo-2.6-flash、qwen-3.8-flash、minimax-m3.1-flash、muse-ember、solar-mini-4、gpt-6-luna、mimo-2.6-pro、glyph-cluster、deepai-cyber の 11 個で、すべて Chat Completions 形式。Responses 形式は gpt-6-astra（50 Theos）だけ。既定は glm-5.3-flash。価格の確認のため、同じカタログをもう 1 回取得した（キーは表示していない）。
+    - chat（`glm-5.3-flash`、TCP 経由で 1 回）：`started → delta → completed`（`inocode ok`）。この経路は `/theos` が有効な `check_in` を返さないと送信前に失敗するため、サーバーが現行の形式のチェックインを返したことも確認できた。
+  - 未検証：Responses 形式の実通信（無料の対象モデルが無い）、有料モデルの Theos 消費と 1 本制限の実際の効果、マシン識別がサーバーに受け入れられるか（無料モデルでは判別できない）、409 `session_busy` と 426 の実際の発生、チェックインの実際の間隔（`seconds`）。

@@ -37,6 +37,18 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// `QODER_MODEL_DISCOVERY_TIMEOUT_MS`), so a stalled provider cannot keep a
 /// `models` request open forever.
 const MODELS_TIMEOUT: Duration = Duration::from_secs(30);
+/// Bound for the ChatGPT and Anthropic usage reads (reference
+/// `WHAM_REQUEST_TIMEOUT_MS`, `REQUEST_TIMEOUT_MS` in `quota-wire.ts`).
+const USAGE_TIMEOUT: Duration = Duration::from_secs(8);
+/// Bound for the Muse key-mint read that carries the subscription usage
+/// (reference `meta-muse-device.ts`).
+const MUSE_USAGE_TIMEOUT: Duration = Duration::from_secs(20);
+/// Largest usage body read (reference `quota-wire.ts`).
+const USAGE_BODY_MAX_BYTES: usize = 512 * 1024;
+/// Identity the reference sends on the Anthropic usage read
+/// (`claude-cli-identity.ts`).
+const CLAUDE_USAGE_USER_AGENT: &str = "claude-cli/2.1.321 (external, cli)";
+const CLAUDE_USAGE_BETA: &str = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05";
 /// The ChatGPT backend filters `/models` by a required `client_version`
 /// parameter; asking as a client newer than any release shows the whole
 /// roster (reference `CODEX_ROSTER_DISCOVERY_CLIENT_VERSION`).
@@ -130,6 +142,13 @@ const OAUTH_DEFAULTS: &[(AuthKind, &str, &str, ProviderKind)] = &[
         "muse-spark-1.3",
         ProviderKind::Responses,
     ),
+    // The format is chosen per model from the account catalog.
+    (
+        AuthKind::DeepAi,
+        crate::deepai::DEEPAI_BASE,
+        "glm-5.3-flash",
+        ProviderKind::OpenAi,
+    ),
 ];
 
 impl LlmConfig {
@@ -180,6 +199,8 @@ impl LlmConfig {
 pub struct Llm {
     client: reqwest::Client,
     config: LlmConfig,
+    /// Check-in, catalog and slot state of a DeepAI account.
+    deepai: Option<Box<crate::deepai::Session>>,
 }
 
 impl Llm {
@@ -193,7 +214,13 @@ impl Llm {
                     format!("cannot build the HTTP client: {error}"),
                 )
             })?;
-        Ok(Self { client, config })
+        let deepai =
+            (config.auth == AuthKind::DeepAi).then(|| Box::new(crate::deepai::Session::new()));
+        Ok(Self {
+            client,
+            config,
+            deepai,
+        })
     }
 
     pub fn from_env() -> Result<Self, ErrorInfo> {
@@ -202,6 +229,9 @@ impl Llm {
 
     /// Starts a streaming completion and returns the deltas as they arrive.
     pub async fn chat(&self, prompt: &str) -> Result<ChatStream, ErrorInfo> {
+        if let Some(session) = &self.deepai {
+            return self.deepai_chat(session, prompt).await;
+        }
         match self.config.provider {
             ProviderKind::OpenAi => self.openai_chat(prompt).await,
             ProviderKind::Anthropic => self.anthropic_chat(prompt).await,
@@ -230,8 +260,12 @@ impl Llm {
             return Ok(credential);
         }
         let auth = self.config.auth;
-        if matches!(auth, AuthKind::MuseSubscription | AuthKind::ApiKey) {
-            // The Muse key is static; the account token exists only to mint it.
+        if matches!(
+            auth,
+            AuthKind::MuseSubscription | AuthKind::ApiKey | AuthKind::DeepAi
+        ) {
+            // The Muse and DeepAI keys are static; the Muse account token
+            // exists only to mint its key.
             return Ok(credential);
         }
         crate::oauth::refresh_stored(path, name, |refresh| async move {
@@ -267,11 +301,7 @@ impl Llm {
     }
 
     async fn openai_chat(&self, prompt: &str) -> Result<ChatStream, ErrorInfo> {
-        let body = json!({
-            "model": self.config.model,
-            "stream": true,
-            "messages": [{ "role": "user", "content": prompt }],
-        });
+        let body = chat_completions_body(&self.config.model, prompt);
         let response = self
             .client
             .post(self.url("chat/completions"))
@@ -318,6 +348,165 @@ impl Llm {
         Ok(ChatStream::new(StreamFormat::Anthropic, response))
     }
 
+    /// The account's usage: rate-limit windows for the OAuth kinds, the
+    /// Theos allowance for DeepAI. Static-key kinds have none.
+    pub async fn usage(&self) -> Result<crate::Usage, ErrorInfo> {
+        if let Some(session) = &self.deepai {
+            let api_key = deepai_api_key(&self.credential().await?)?;
+            let theos = session
+                .theos(&self.client, &self.config.base_url, &api_key)
+                .await?;
+            return Ok(crate::Usage {
+                plan: None,
+                windows: Vec::new(),
+                theos: Some(theos),
+            });
+        }
+        let base = self.config.base_url.trim_end_matches('/');
+        let (request, parse): (reqwest::RequestBuilder, UsageParser) =
+            match self.config.auth {
+                AuthKind::GptOauth => {
+                    let credential = self.credential().await?;
+                    let backend = base.strip_suffix("/codex").unwrap_or(base);
+                    (
+                        self.client
+                            .get(format!("{backend}/wham/usage"))
+                            .timeout(USAGE_TIMEOUT)
+                            .bearer_auth(&credential.access)
+                            .header("ChatGPT-Account-Id", chatgpt_account_id(&credential)?),
+                        crate::usage::from_wham,
+                    )
+                }
+                AuthKind::ClaudeOauth => {
+                    let credential = self.credential().await?;
+                    let host = base.strip_suffix("/v1").unwrap_or(base);
+                    (
+                        self.client
+                            .get(format!("{host}/api/oauth/usage"))
+                            .timeout(USAGE_TIMEOUT)
+                            .header("accept", "application/json, text/plain, */*")
+                            .header("content-type", "application/json")
+                            .header("user-agent", CLAUDE_USAGE_USER_AGENT)
+                            .header("anthropic-beta", CLAUDE_USAGE_BETA)
+                            .bearer_auth(&credential.access),
+                        crate::usage::from_anthropic,
+                    )
+                }
+                AuthKind::MuseSubscription => {
+                    let credential = self.credential().await?;
+                    let token = credential.oauth_access_token.clone().ok_or_else(|| {
+                        ErrorInfo::new(
+                        "provider_config",
+                        "the stored Muse credential has no Meta account token; run the login again",
+                    )
+                    })?;
+                    let host = base.strip_suffix("/v1").unwrap_or(base);
+                    // No `onboard`: this is a read, and onboarding on a read
+                    // would change the user's account (reference
+                    // `muse-key-quota.ts`).
+                    (
+                        self.client
+                            .post(format!("{host}/muse-code/key"))
+                            .timeout(MUSE_USAGE_TIMEOUT)
+                            .header("accept", "application/json")
+                            .header("content-type", "application/json")
+                            .header("x-api-version", crate::oauth::MUSE_API_VERSION)
+                            .bearer_auth(token)
+                            .body("{}"),
+                        crate::usage::from_muse,
+                    )
+                }
+                AuthKind::ApiKey | AuthKind::DeepAi => return Err(ErrorInfo::new(
+                    "provider_unsupported",
+                    "usage is only available for claude-oauth, gpt-oauth, muse-code, and deepai",
+                )),
+            };
+        let response = request
+            .send()
+            .await
+            .map_err(|error| ErrorInfo::new("provider_http", format!("request failed: {error}")))?;
+        let status = response.status();
+        if !status.is_success() {
+            // The body is not echoed: the Muse answer can carry its key.
+            return Err(ErrorInfo::new(
+                "provider_http",
+                format!("the usage request returned HTTP {}", status.as_u16()),
+            ));
+        }
+        let mut response = response;
+        let bytes = read_capped(&mut response, USAGE_BODY_MAX_BYTES)
+            .await
+            .map_err(|error| ErrorInfo::new("provider_stream", format!("stream failed: {error}")))?
+            .ok_or_else(|| {
+                ErrorInfo::new("provider_protocol", "the usage response is too large")
+            })?;
+        let value: Value = serde_json::from_slice(&bytes)
+            .map_err(|_| ErrorInfo::new("provider_protocol", "the usage response is not JSON"))?;
+        parse(&value)
+    }
+
+    /// A DeepAI chat: the catalog picks the format, a metered model waits
+    /// for the single metered slot, and every attempt renews the check-in
+    /// first and waits out `session_busy` (reference `localTransport`).
+    async fn deepai_chat(
+        &self,
+        session: &crate::deepai::Session,
+        prompt: &str,
+    ) -> Result<ChatStream, ErrorInfo> {
+        let api_key = deepai_api_key(&self.credential().await?)?;
+        let base = &self.config.base_url;
+        let route = session
+            .route(&self.client, base, &api_key, &self.config.model)
+            .await?;
+        let slot = if route.metered {
+            Some(session.metered_slot().await)
+        } else {
+            None
+        };
+        let (format, url, body) = if route.responses {
+            (
+                StreamFormat::Responses,
+                self.responses_url(),
+                responses_body(&self.config.model, prompt),
+            )
+        } else {
+            (
+                StreamFormat::OpenAi,
+                self.url("chat/completions"),
+                chat_completions_body(&self.config.model, prompt),
+            )
+        };
+        loop {
+            session
+                .ensure_checked_in(&self.client, base, &api_key)
+                .await?;
+            let request = self
+                .client
+                .post(&url)
+                .header("content-type", "application/json")
+                .header("accept", "text/event-stream")
+                .json(&body);
+            let response = session
+                .headers(request, &api_key)
+                .await
+                .send()
+                .await
+                .map_err(|error| {
+                    ErrorInfo::new("provider_http", format!("request failed: {error}"))
+                })?;
+            match crate::deepai::admission(response).await {
+                crate::deepai::Admission::Answered(response) => {
+                    let response = crate::deepai::require_lane(response).await?;
+                    let mut stream = ChatStream::new(format, response);
+                    stream.slot = slot;
+                    return Ok(stream);
+                }
+                crate::deepai::Admission::Busy(delay) => tokio::time::sleep(delay).await,
+                crate::deepai::Admission::Refused(error) => return Err(error),
+            }
+        }
+    }
+
     /// The Responses backend of the ChatGPT/Codex and Meta Muse providers.
     /// The path is appended to the base as-is; the Muse registry base already
     /// carries `/v1`.
@@ -333,17 +522,7 @@ impl Llm {
             // token must never be sent to the model API (measured 401).
             _ => credential.access.clone(),
         };
-        // The minimal body the real backends accept (reference `warmup.ts`).
-        let body = json!({
-            "model": self.config.model,
-            "input": [{
-                "type": "message",
-                "role": "user",
-                "content": [{ "type": "input_text", "text": prompt }],
-            }],
-            "stream": true,
-            "store": false,
-        });
+        let body = responses_body(&self.config.model, prompt);
         let mut request = self
             .client
             .post(self.responses_url())
@@ -393,6 +572,20 @@ impl Llm {
 
     /// Lists the models the configured endpoint advertises.
     pub async fn models(&self) -> Result<Vec<ModelInfo>, ErrorInfo> {
+        if let Some(session) = &self.deepai {
+            let api_key = deepai_api_key(&self.credential().await?)?;
+            let catalog = session
+                .catalog(&self.client, &self.config.base_url, &api_key, true)
+                .await?;
+            return Ok(catalog
+                .into_iter()
+                .map(|model| ModelInfo {
+                    id: model.id,
+                    display_name: model.name,
+                    owned_by: None,
+                })
+                .collect());
+        }
         let mut request = self
             .client
             .get(self.models_url())
@@ -442,6 +635,43 @@ impl Llm {
         })?;
         models_from_json(&value)
     }
+}
+
+/// Reads one provider's usage payload.
+type UsageParser = fn(&Value) -> Result<crate::Usage, ErrorInfo>;
+
+/// Chat Completions body for one user prompt.
+fn chat_completions_body(model: &str, prompt: &str) -> Value {
+    json!({
+        "model": model,
+        "stream": true,
+        "messages": [{ "role": "user", "content": prompt }],
+    })
+}
+
+/// The minimal Responses body the real backends accept (reference
+/// `warmup.ts`).
+fn responses_body(model: &str, prompt: &str) -> Value {
+    json!({
+        "model": model,
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [{ "type": "input_text", "text": prompt }],
+        }],
+        "stream": true,
+        "store": false,
+    })
+}
+
+/// The DeepAI account key, sent as `api-key`.
+fn deepai_api_key(credential: &Credential) -> Result<String, ErrorInfo> {
+    credential.api_key.clone().ok_or_else(|| {
+        ErrorInfo::new(
+            "provider_config",
+            "the stored DeepAI credential has no api_key; run the login again",
+        )
+    })
 }
 
 /// The Muse subscription key, the bearer of every Muse model request.
@@ -553,7 +783,9 @@ fn codex_client_version() -> String {
 
 /// Reads the response body with the same 16 MiB cap as the SSE streams, so a
 /// discovery endpoint cannot make the client allocate without bound.
-async fn read_bounded_body(mut response: reqwest::Response) -> Result<String, ErrorInfo> {
+pub(crate) async fn read_bounded_body(
+    mut response: reqwest::Response,
+) -> Result<String, ErrorInfo> {
     const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
     let body = read_capped(&mut response, MAX_BODY_BYTES)
         .await
@@ -583,7 +815,9 @@ pub(crate) async fn read_capped(
     Ok(Some(body))
 }
 
-async fn require_success(mut response: reqwest::Response) -> Result<reqwest::Response, ErrorInfo> {
+pub(crate) async fn require_success(
+    mut response: reqwest::Response,
+) -> Result<reqwest::Response, ErrorInfo> {
     let status = response.status();
     if !status.is_success() {
         let body = match read_capped(&mut response, ERROR_BODY_MAX_BYTES).await {
@@ -639,6 +873,8 @@ pub struct ChatStream {
     /// The provider sent its completion signal (`[DONE]`, a finish reason,
     /// or a terminal Responses event).
     signalled: bool,
+    /// Keeps a metered DeepAI request's slot until the stream is dropped.
+    slot: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
 impl ChatStream {
@@ -650,6 +886,7 @@ impl ChatStream {
             body_ended: false,
             done: false,
             signalled: false,
+            slot: None,
         }
     }
 

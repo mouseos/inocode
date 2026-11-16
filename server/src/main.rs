@@ -7,14 +7,17 @@
 //! `INOCODE_LLM_MODEL`; without a key the server still starts and answers
 //! `ping` and `echo`, while `chat` reports that no provider is configured.
 //!
-//! `login claude|gpt|muse-code` runs the interactive subscription/OAuth login
+//! `login claude|gpt|muse-code|deepai` runs the interactive subscription/OAuth login
 //! instead of serving, storing the credential at `~/.inocode/auth.json`.
-//! `models` lists the models the configured provider advertises.
+//! `models` lists the models the configured provider advertises; `usage`
+//! prints the account's usage (rate-limit windows or the DeepAI Theos
+//! allowance).
 
 use std::env;
 use std::io;
 use std::sync::Arc;
 
+use inocode_core::deepai;
 use inocode_core::oauth::{self, FlowEndpoints, MuseEndpoints, Store};
 use inocode_core::{Core, Llm, LlmConfig};
 use tokio::net::TcpListener;
@@ -27,6 +30,7 @@ async fn main() -> io::Result<()> {
     match args.next().as_deref() {
         Some("login") => login_command(args.next().as_deref(), args.next().as_deref()).await,
         Some("models") => models_command().await,
+        Some("usage") => usage_command().await,
         _ => serve().await,
     }
 }
@@ -47,6 +51,22 @@ async fn models_command() -> io::Result<()> {
         }
     }
     println!("{} models", models.len());
+    Ok(())
+}
+
+/// Prints the configured account's usage as JSON. Credentials are never
+/// displayed.
+async fn usage_command() -> io::Result<()> {
+    let llm = Llm::new(LlmConfig::from_env().map_err(|error| io::Error::other(error.message))?)
+        .map_err(|error| io::Error::other(error.message))?;
+    let usage = llm
+        .usage()
+        .await
+        .map_err(|error| io::Error::other(error.message))?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&usage).map_err(io::Error::other)?
+    );
     Ok(())
 }
 
@@ -114,16 +134,33 @@ async fn login_command(provider: Option<&str>, option: Option<&str>) -> io::Resu
                 .await
                 .map_err(login_error)?,
         ),
+        Some("deepai") => {
+            let endpoints = deepai::SignInEndpoints::default();
+            let start = deepai::sign_in_start(&endpoints);
+            println!(
+                "Open this URL and sign in to DeepAI Code:
+{}",
+                start.url
+            );
+            (
+                "deepai",
+                deepai::sign_in_finish(&endpoints, start)
+                    .await
+                    .map_err(login_error)?,
+            )
+        }
         Some(other) => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                format!("unknown login target \"{other}\"; expected claude, gpt, or muse-code"),
+                format!(
+                    "unknown login target \"{other}\"; expected claude, gpt, muse-code, or deepai"
+                ),
             ));
         }
         None => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "usage: inocode-server login claude|gpt|muse-code",
+                "usage: inocode-server login claude|gpt|muse-code|deepai",
             ));
         }
     };
