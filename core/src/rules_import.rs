@@ -1,15 +1,20 @@
-//! Rule import with the model splitting each section into rules by quoting
-//! it. The harness accepts a split only if every quote occurs verbatim in
-//! the section, reports source text assigned to nothing, and falls back to
-//! the mechanical split on any failure. Unchanged sections are not sent
-//! again. Design and sources: docs/evidence/rules-and-local-issues.md.
+//! Rule import with the model splitting each section into rules. The
+//! section is cut into numbered units (sentences and lines) and the model
+//! answers with unit numbers only, so it cannot paraphrase and the stored
+//! rules are slices of the source. Units assigned to nothing are reported,
+//! any failure falls back to the mechanical split, unchanged sections are
+//! not sent again, and sections are sent concurrently. Design and sources:
+//! docs/evidence/rules-and-local-issues.md.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Duration;
 
 use rusqlite::params;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 
 use crate::conversation::{Body, Conversation, Message, Speaker};
 use crate::rules::{insert_rule_row, split_rules, title_of, Block, ImportReport, RuleRow};
@@ -18,30 +23,31 @@ use crate::{ErrorInfo, Llm};
 
 /// Sections larger than this are split mechanically.
 const SEGMENT_MAX_BYTES: usize = 32 * 1024;
+/// Sections in flight at once.
+const CONCURRENT_SECTIONS: usize = 4;
 
 const INSTRUCTIONS: &str = "You split one section of a rules document into individual rules. \
-Never paraphrase: every quote, reason and other entry must be copied character for character \
-from the text, without the surrounding markers. One rule is one requirement; a rule may combine \
-several quotes (for example a list item and its sub-items). Text that explains why a rule exists \
-goes into that rule's reasons. Text that is neither a rule nor a reason goes into other. Every \
-part of the text should appear in exactly one quote, reason or other entry. title, condition \
-and keywords are your own short words in the document's language: condition says when the rule \
-applies, keywords are space-separated search terms. Answer with JSON only, in this shape: \
-{\"rules\":[{\"quotes\":[\"...\"],\"reasons\":[\"...\"],\"title\":\"...\",\"condition\":\"...\",\
-\"keywords\":\"...\"}],\"other\":[\"...\"]}";
+The section is given as numbered units (sentences or lines). Answer with unit numbers only. One \
+rule is one requirement; a rule may combine several units (for example a list item and its \
+sub-items). Units that explain why a rule exists go into that rule's reasons. Units that are \
+neither a rule nor a reason go into other. Every unit should appear exactly once. title, \
+condition and keywords are your own short words in the document's language: condition says when \
+the rule applies, keywords are space-separated search terms. Answer with JSON only, in this \
+shape: {\"rules\":[{\"units\":[1,2],\"reasons\":[3],\"title\":\"...\",\"condition\":\"...\",\
+\"keywords\":\"...\"}],\"other\":[4]}";
 
 #[derive(Debug, Deserialize)]
 struct Split {
     rules: Vec<SplitRule>,
     #[serde(default)]
-    other: Vec<String>,
+    other: Vec<usize>,
 }
 
 #[derive(Debug, Deserialize)]
 struct SplitRule {
-    quotes: Vec<String>,
+    units: Vec<usize>,
     #[serde(default)]
-    reasons: Vec<String>,
+    reasons: Vec<usize>,
     #[serde(default)]
     title: String,
     #[serde(default)]
@@ -58,6 +64,8 @@ pub(crate) struct Section {
     blocks: Vec<Block>,
     /// Byte offset in `text` where each block starts.
     offsets: Vec<usize>,
+    /// Byte ranges of the numbered units, in order.
+    units: Vec<(usize, usize)>,
 }
 
 impl Section {
@@ -71,7 +79,12 @@ impl Section {
         let within = offset
             .saturating_sub(self.offsets[index])
             .min(block.text.len());
-        block.start + block.text[..within].matches('\n').count() as i64
+        // Bytes, not `str`: the offset may fall inside a multi-byte character.
+        let newlines = block.text.as_bytes()[..within]
+            .iter()
+            .filter(|&&byte| byte == b'\n')
+            .count();
+        block.start + newlines as i64
     }
 
     fn hash(&self) -> String {
@@ -93,6 +106,7 @@ pub(crate) fn sections(blocks: Vec<Block>) -> Vec<Section> {
                 text: String::new(),
                 blocks: Vec::new(),
                 offsets: Vec::new(),
+                units: Vec::new(),
             });
             order.len() - 1
         });
@@ -104,7 +118,75 @@ pub(crate) fn sections(blocks: Vec<Block>) -> Vec<Section> {
         section.text.push_str(&block.text);
         section.blocks.push(block);
     }
+    for section in &mut order {
+        section.units = units(&section.text);
+    }
     order
+}
+
+/// Sentences and lines of `text` as byte ranges, trimmed and non-empty. A
+/// sentence ends at `。`, `！`, `？`, or a `.` followed by a space.
+fn units(text: &str) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut push = |start: usize, end: usize| {
+        let piece = &text[start..end];
+        let lead = piece.len() - piece.trim_start().len();
+        let trail = piece.len() - piece.trim_end().len();
+        if start + lead < end - trail {
+            out.push((start + lead, end - trail));
+        }
+    };
+    let mut line_start = 0;
+    for line in text.split_inclusive('\n') {
+        let content = line.trim_end_matches(['\n', '\r']);
+        let mut start = line_start;
+        let mut chars = content.char_indices().peekable();
+        while let Some((index, c)) = chars.next() {
+            let end = line_start + index + c.len_utf8();
+            let boundary = matches!(c, '。' | '！' | '？')
+                || (c == '.' && chars.peek().is_some_and(|&(_, next)| next == ' '));
+            if boundary {
+                push(start, end);
+                start = end;
+            }
+        }
+        push(start, line_start + content.len());
+        line_start += line.len();
+    }
+    out
+}
+
+impl Section {
+    /// The units as the model sees them: `[n] text`, one per line.
+    fn numbered(&self) -> String {
+        let mut out = String::with_capacity(self.text.len() + self.units.len() * 6);
+        for (index, &(start, end)) in self.units.iter().enumerate() {
+            out.push_str(&format!("[{}] ", index + 1));
+            out.push_str(&self.text[start..end].replace('\n', " "));
+            out.push('\n');
+        }
+        out
+    }
+
+    /// The source text of the given units: runs of consecutive units are one
+    /// slice of the original (keeping its markup and line breaks), and runs
+    /// are joined by a line break.
+    fn slices(&self, ids: &[usize]) -> String {
+        let mut sorted = ids.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        let mut runs: Vec<(usize, usize)> = Vec::new();
+        for id in sorted {
+            match runs.last_mut() {
+                Some(run) if run.1 + 1 == id => run.1 = id,
+                _ => runs.push((id, id)),
+            }
+        }
+        runs.iter()
+            .map(|&(first, last)| &self.text[self.units[first - 1].0..self.units[last - 1].1])
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 }
 
 /// One rule cut from a section.
@@ -119,9 +201,9 @@ pub(crate) struct Segment {
     pub(crate) end: i64,
 }
 
-/// Checks the model's answer against the section: every quote, reason and
-/// other entry must occur verbatim. Returns the rules and the source text
-/// left unassigned (markers and punctuation alone do not count).
+/// Checks the model's answer against the section: every unit number must
+/// exist. Returns the rules and the units assigned to nothing (markers and
+/// punctuation alone do not count).
 pub(crate) fn accept(
     section: &Section,
     answer: &str,
@@ -137,90 +219,63 @@ pub(crate) fn accept(
     if split.rules.is_empty() {
         return Err("the answer holds no rules".to_string());
     }
-    let mut claimed: Vec<(usize, usize)> = Vec::new();
+    let count = section.units.len();
+    let mut used = vec![false; count + 1];
+    let mut check = |ids: &[usize]| -> Result<(), String> {
+        for &id in ids {
+            if id == 0 || id > count {
+                return Err(format!(
+                    "unit {id} does not exist (the section has {count})"
+                ));
+            }
+            used[id] = true;
+        }
+        Ok(())
+    };
     let mut segments = Vec::with_capacity(split.rules.len());
     for rule in &split.rules {
-        if rule.quotes.is_empty() {
-            return Err("a rule has no quotes".to_string());
+        if rule.units.is_empty() {
+            return Err("a rule names no units".to_string());
         }
-        let mut lines = (i64::MAX, i64::MIN);
-        for quote in &rule.quotes {
-            let (start, end) = locate(&section.text, quote, &mut claimed)?;
-            lines.0 = lines.0.min(section.line_at(start));
-            lines.1 = lines.1.max(section.line_at(end.saturating_sub(1)));
-        }
-        for reason in &rule.reasons {
-            locate(&section.text, reason, &mut claimed)?;
-        }
-        let body = rule.quotes.join("\n");
+        check(&rule.units)?;
+        check(&rule.reasons)?;
+        let first = rule.units.iter().min().copied().unwrap_or(1);
+        let last = rule.units.iter().max().copied().unwrap_or(1);
+        let body = section.slices(&rule.units);
         segments.push(Segment {
             title: if rule.title.trim().is_empty() {
                 title_of(&body)
             } else {
                 rule.title.trim().to_string()
             },
-            reason: rule.reasons.join("\n"),
+            reason: if rule.reasons.is_empty() {
+                String::new()
+            } else {
+                section.slices(&rule.reasons)
+            },
             condition: rule.condition.trim().to_string(),
             keywords: rule.keywords.trim().to_string(),
-            start: lines.0,
-            end: lines.1,
+            start: section.line_at(section.units[first - 1].0),
+            end: section.line_at(section.units[last - 1].1 - 1),
             body,
         });
     }
-    for other in &split.other {
-        locate(&section.text, other, &mut claimed)?;
-    }
-    Ok((segments, unassigned(&section.text, claimed)))
-}
-
-/// Finds `quote` in `text`, preferring an occurrence not yet claimed.
-fn locate(
-    text: &str,
-    quote: &str,
-    claimed: &mut Vec<(usize, usize)>,
-) -> Result<(usize, usize), String> {
-    if quote.trim().is_empty() {
-        return Err("an empty quote".to_string());
-    }
-    let mut first = None;
-    for (start, _) in text.match_indices(quote) {
-        let range = (start, start + quote.len());
-        first.get_or_insert(range);
-        if claimed.iter().all(|&(a, b)| range.1 <= a || b <= range.0) {
-            claimed.push(range);
-            return Ok(range);
-        }
-    }
-    let range = first.ok_or_else(|| {
-        let shown: String = quote.chars().take(60).collect();
-        format!("a quote is not in the source: {shown:?}")
-    })?;
-    claimed.push(range);
-    Ok(range)
-}
-
-/// Source fragments outside every claimed range that hold more than list
-/// markers, heading marks and punctuation.
-fn unassigned(text: &str, mut claimed: Vec<(usize, usize)>) -> Vec<String> {
-    claimed.sort_unstable();
-    let mut gaps = Vec::new();
-    let mut cursor = 0;
-    for (start, end) in claimed {
-        if start > cursor {
-            gaps.push(&text[cursor..start]);
-        }
-        cursor = cursor.max(end);
-    }
-    gaps.push(&text[cursor.min(text.len())..]);
-    gaps.into_iter()
-        .map(|gap| {
-            gap.trim_matches(|c: char| {
+    check(&split.other)?;
+    let unassigned = section
+        .units
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !used[index + 1])
+        .map(|(_, &(start, end))| section.text[start..end].to_string())
+        .filter(|text| {
+            text.trim_matches(|c: char| {
                 c.is_whitespace() || "-*+#>`|.:;,()[]0123456789、。".contains(c)
             })
+            .chars()
+            .any(char::is_alphanumeric)
         })
-        .filter(|gap| gap.chars().any(char::is_alphanumeric))
-        .map(str::to_string)
-        .collect()
+        .collect();
+    Ok((segments, unassigned))
 }
 
 /// The mechanical split of a section, used when the model's split fails.
@@ -248,8 +303,9 @@ async fn ask(llm: &Llm, section: &Section) -> Result<String, ErrorInfo> {
             body: Body::User {
                 from: Speaker::Harness("rule-import".to_string()),
                 parts: vec![format!(
-                    "Section: {}\n\n<<<TEXT\n{}\nTEXT>>>",
-                    section.name, section.text
+                    "Heading (context only, not a unit): {}\n\nUnits:\n{}",
+                    section.name,
+                    section.numbered()
                 )],
             },
         }],
@@ -274,13 +330,13 @@ enum Plan {
 
 impl Store {
     /// Imports a rules document with `llm` splitting each changed section
-    /// into rules by quotation. A section the model splits wrongly, or one
+    /// into rules by unit number. A section the model splits wrongly, or one
     /// too large, is split mechanically and retried on the next import.
     /// Within a section, rules with the same text are kept, new ones added
     /// and the rest retired; sections that disappeared are retired.
     pub async fn import_rules_with(
         &self,
-        llm: &Llm,
+        llm: Arc<Llm>,
         project: Option<ProjectId>,
         path: &str,
         markdown: &str,
@@ -304,28 +360,49 @@ impl Store {
             })
             .await?;
 
-        let mut report = ImportReport::default();
-        let mut plans = Vec::with_capacity(sections.len());
-        for section in &sections {
-            let hash = section.hash();
-            if known.get(&section.name) == Some(&hash) {
-                plans.push(Plan::Unchanged(section.name.clone()));
+        let mut answers: Vec<Option<Result<String, String>>> = vec![None; sections.len()];
+        let slots = Arc::new(Semaphore::new(CONCURRENT_SECTIONS));
+        let mut asking = JoinSet::new();
+        for (index, section) in sections.iter().enumerate() {
+            if known.get(&section.name) == Some(&section.hash()) {
                 continue;
             }
-            let outcome = if section.text.len() > SEGMENT_MAX_BYTES {
-                Err(format!("the section exceeds {SEGMENT_MAX_BYTES} bytes"))
-            } else {
-                match ask(llm, section).await {
-                    Ok(answer) => accept(section, &answer),
-                    Err(error) => Err(error.message),
-                }
+            if section.text.len() > SEGMENT_MAX_BYTES {
+                answers[index] = Some(Err(format!(
+                    "the section exceeds {SEGMENT_MAX_BYTES} bytes"
+                )));
+                continue;
+            }
+            let (llm, slots, section) = (Arc::clone(&llm), Arc::clone(&slots), section.clone());
+            asking.spawn(async move {
+                let _slot = slots.acquire_owned().await;
+                (
+                    index,
+                    ask(&llm, &section).await.map_err(|error| error.message),
+                )
+            });
+        }
+        while let Some(done) = asking.join_next().await {
+            let (index, answer) = done.map_err(|error| {
+                ErrorInfo::new("store", format!("a split task failed: {error}"))
+            })?;
+            answers[index] = Some(answer);
+        }
+
+        let mut report = ImportReport::default();
+        let mut plans = Vec::with_capacity(sections.len());
+        for (section, answer) in sections.iter().zip(answers) {
+            let Some(answer) = answer else {
+                plans.push(Plan::Unchanged(section.name.clone()));
+                continue;
             };
+            let outcome = answer.and_then(|answer| accept(section, &answer));
             plans.push(match outcome {
                 Ok((segments, unassigned)) => {
                     report.unassigned.extend(unassigned);
                     Plan::Replace {
                         name: section.name.clone(),
-                        hash: Some(hash),
+                        hash: Some(section.hash()),
                         segments,
                         by: "model",
                     }
@@ -465,72 +542,88 @@ fn retire(
 mod tests {
     use super::*;
 
-    const DOC: &str = "# Rules\n\n## Scope\n- Do only what was asked. Keep changes small.\n- Never push without approval.\n  - Ask first, every time.\n\nWhy: pushes are public.\n";
+    const DOC: &str = "# Rules\n\n## Scope\n- Do only what was asked. Keep changes **small**.\n- Never push without approval.\n  - Ask first, every time.\n\nWhy: pushes are public.\n";
 
     fn scope() -> Section {
         sections(split_rules(DOC)).remove(0)
     }
 
     #[test]
-    fn sections_join_blocks_and_map_offsets_to_lines() {
-        let all = sections(split_rules(DOC));
-        assert_eq!(all.len(), 1);
-        let section = &all[0];
+    fn sections_are_cut_into_numbered_units() {
+        let section = scope();
         assert_eq!(section.name, "Rules > Scope");
         assert_eq!(
-            section.text,
-            "- Do only what was asked. Keep changes small.\n\n- Never push without approval.\n\n- Ask first, every time.\n\nWhy: pushes are public."
+            section.numbered(),
+            "[1] - Do only what was asked.\n[2] Keep changes **small**.\n[3] - Never push without approval.\n[4] - Ask first, every time.\n[5] Why: pushes are public.\n"
         );
         let ask = section.text.find("Ask first").expect("present");
         assert_eq!(section.line_at(ask), 6);
         assert_eq!(section.line_at(0), 4);
+        let japanese = units("依頼したことだけを実装する。正しさを優先する。\n二行目");
+        assert_eq!(japanese.len(), 3);
     }
 
     #[test]
-    fn a_verbatim_split_is_accepted_with_reasons_and_lines() {
+    fn rules_are_slices_of_the_source() {
         let answer = r#"Here you go:
 ```json
 {"rules":[
-  {"quotes":["Do only what was asked."],"title":"Scope","condition":"always","keywords":"scope"},
-  {"quotes":["Keep changes small."]},
-  {"quotes":["Never push without approval.","Ask first, every time."],"reasons":["Why: pushes are public."],
-   "title":"No unapproved push","condition":"before git push","keywords":"git push"}
+  {"units":[1],"title":"Scope","condition":"always","keywords":"scope"},
+  {"units":[2]},
+  {"units":[3,4],"reasons":[5],"title":"No unapproved push","condition":"before git push","keywords":"git push"}
 ],"other":[]}
 ```"#;
         let (segments, unassigned) = accept(&scope(), answer).expect("accepted");
         assert!(unassigned.is_empty(), "{unassigned:?}");
-        assert_eq!(segments.len(), 3);
         assert_eq!(
-            segments[1].title, "Keep changes small.",
-            "a missing title falls back to the text"
+            segments[1].body, "Keep changes **small**.",
+            "markup survives"
+        );
+        assert_eq!(
+            segments[1].title, "Keep changes **small**.",
+            "a missing title falls back"
         );
         let push = &segments[2];
         assert_eq!(
-            push.body,
-            "Never push without approval.\nAsk first, every time."
+            push.body, "- Never push without approval.\n\n- Ask first, every time.",
+            "consecutive units are one slice of the original"
         );
         assert_eq!(push.reason, "Why: pushes are public.");
         assert_eq!((push.start, push.end), (5, 6));
-        assert_eq!(push.condition, "before git push");
     }
 
     #[test]
-    fn paraphrase_and_omission_are_caught() {
-        let paraphrased = r#"{"rules":[{"quotes":["Do not push without asking."]}]}"#;
-        assert!(accept(&scope(), paraphrased)
-            .unwrap_err()
-            .contains("not in the source"));
-        assert!(accept(&scope(), r#"{"rules":[]}"#).is_err());
-        assert!(accept(&scope(), "no json here").is_err());
-        assert!(accept(&scope(), r#"{"rules":[{"quotes":["  "]}]}"#).is_err());
+    fn line_numbers_hold_for_multi_byte_text() {
+        let section = sections(split_rules(
+            "## 目的\n依頼したことだけを実装する。\n正しさを優先する。\n",
+        ))
+        .remove(0);
+        let answer = r#"{"rules":[{"units":[1]},{"units":[2]}]}"#;
+        let (segments, unassigned) = accept(&section, answer).expect("accepted");
+        assert!(unassigned.is_empty());
+        assert_eq!(segments[0].body, "依頼したことだけを実装する。");
+        assert_eq!((segments[0].start, segments[0].end), (2, 2));
+        assert_eq!((segments[1].start, segments[1].end), (3, 3));
+    }
 
-        let partial = r#"{"rules":[{"quotes":["Never push without approval."]}]}"#;
+    #[test]
+    fn bad_answers_are_refused_and_omissions_reported() {
+        assert!(accept(&scope(), r#"{"rules":[{"units":[9]}]}"#)
+            .unwrap_err()
+            .contains("does not exist"));
+        assert!(accept(&scope(), r#"{"rules":[{"units":[0]}]}"#).is_err());
+        assert!(accept(&scope(), r#"{"rules":[]}"#).is_err());
+        assert!(accept(&scope(), r#"{"rules":[{"units":[]}]}"#).is_err());
+        assert!(accept(&scope(), "no json here").is_err());
+        let partial = r#"{"rules":[{"units":[3]}]}"#;
         let (_, unassigned) = accept(&scope(), partial).expect("accepted");
         assert_eq!(
             unassigned,
             [
-                "Do only what was asked. Keep changes small",
-                "Ask first, every time.\n\nWhy: pushes are public"
+                "- Do only what was asked.",
+                "Keep changes **small**.",
+                "- Ask first, every time.",
+                "Why: pushes are public."
             ]
         );
     }

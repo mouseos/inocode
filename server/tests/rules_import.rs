@@ -1,10 +1,11 @@
-//! Rule import with the model splitting sections, against a local stand-in
-//! for a Chat Completions provider.
+//! Rule import with the model splitting sections by unit number, against a
+//! local stand-in for a Chat Completions provider.
 
 mod support;
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use inocode_core::store::Store;
 use inocode_core::{Llm, LlmConfig, ProviderKind};
@@ -13,17 +14,19 @@ use support::*;
 
 const DOC: &str = "# Rules\n\n## Scope\n- Never push without approval.\n  - Ask first, every time.\n\n## Style\n- Write in English.\n";
 
-fn llm(mock: &MockApi) -> Llm {
-    Llm::new(LlmConfig {
-        provider: ProviderKind::OpenAi,
-        auth: inocode_core::oauth::AuthKind::ApiKey,
-        base_url: mock.base_url.clone(),
-        model: "splitter".to_string(),
-        api_key: "test-key".to_string(),
-        auth_store_path: None,
-        reasoning: Default::default(),
-    })
-    .expect("client")
+fn llm(mock: &MockApi) -> Arc<Llm> {
+    Arc::new(
+        Llm::new(LlmConfig {
+            provider: ProviderKind::OpenAi,
+            auth: inocode_core::oauth::AuthKind::ApiKey,
+            base_url: mock.base_url.clone(),
+            model: "splitter".to_string(),
+            api_key: "test-key".to_string(),
+            auth_store_path: None,
+            reasoning: Default::default(),
+        })
+        .expect("client"),
+    )
 }
 
 fn database() -> std::path::PathBuf {
@@ -34,11 +37,17 @@ fn database() -> std::path::PathBuf {
     std::env::temp_dir().join(format!("inocode-rules-{}-{nanos}.db", std::process::id()))
 }
 
-/// Answers each section with a split; `Style` gets a paraphrase while
-/// `paraphrase_style` is set.
+fn remove(path: &std::path::Path) {
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+    }
+}
+
+/// Answers each section with a split; `Style` gets a unit number that does
+/// not exist while `wrong_style` is set.
 fn splitter(
     calls: Arc<AtomicUsize>,
-    paraphrase_style: Arc<std::sync::atomic::AtomicBool>,
+    wrong_style: Arc<AtomicBool>,
 ) -> impl Fn(&MockRequest) -> MockReply + Send + Sync + 'static {
     move |request: &MockRequest| {
         calls.fetch_add(1, Ordering::SeqCst);
@@ -46,48 +55,55 @@ fn splitter(
             .as_str()
             .unwrap_or_default()
             .to_string();
-        let answer = if prompt.contains("Section: Rules > Scope") {
+        let answer = if prompt.contains("Heading (context only, not a unit): Rules > Scope") {
+            assert!(prompt.contains("[1] - Never push without approval.\n[2] - Ask first"));
             json!({"rules": [{
-                "quotes": ["Never push without approval.", "Ask first, every time."],
+                "units": [1, 2],
                 "title": "No unapproved push",
                 "condition": "before pushing",
                 "keywords": "git push approval"
             }]})
-        } else if paraphrase_style.load(Ordering::SeqCst) {
-            json!({"rules": [{"quotes": ["Use English."]}]})
+        } else if wrong_style.load(Ordering::SeqCst) {
+            json!({"rules": [{"units": [9]}]})
         } else {
-            json!({"rules": [{"quotes": ["Write in English."], "keywords": "language"}]})
+            json!({"rules": [{"units": [1], "keywords": "language"}]})
         };
         MockReply::stream(vec![sse_delta(&answer.to_string()), sse_done()])
     }
 }
 
 #[tokio::test]
-async fn the_model_splits_by_quotation_and_unchanged_sections_are_not_resent() {
+async fn the_model_splits_by_unit_and_unchanged_sections_are_not_resent() {
     let calls = Arc::new(AtomicUsize::new(0));
-    let paraphrase = Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let mock = start_mock(splitter(Arc::clone(&calls), Arc::clone(&paraphrase))).await;
+    let wrong = Arc::new(AtomicBool::new(true));
+    let mock = start_mock(splitter(Arc::clone(&calls), Arc::clone(&wrong))).await;
     let llm = llm(&mock);
     let path = database();
     let store = Store::open(&path).await.expect("store");
     let project = store.project("p").await.expect("project");
+    let import = |text: String| {
+        let (store, llm) = (store.clone(), Arc::clone(&llm));
+        async move {
+            store
+                .import_rules_with(llm, Some(project), "AGENTS.md", &text)
+                .await
+                .expect("import")
+        }
+    };
 
-    let first = store
-        .import_rules_with(&llm, Some(project), "AGENTS.md", DOC)
-        .await
-        .expect("import");
+    let first = import(DOC.to_string()).await;
     assert_eq!(calls.load(Ordering::SeqCst), 2, "one request per section");
     assert_eq!(first.added, 2, "one model rule and one mechanical rule");
     assert_eq!(first.fallbacks.len(), 1);
     assert_eq!(first.fallbacks[0].0, "Rules > Style");
-    assert!(first.fallbacks[0].1.contains("not in the source"));
+    assert!(first.fallbacks[0].1.contains("does not exist"));
 
     let found = store
         .rules_for(
             Some(project),
             "push approval",
             5,
-            std::time::Duration::from_secs(5),
+            Duration::from_secs(5),
             None,
         )
         .await
@@ -100,30 +116,23 @@ async fn the_model_splits_by_quotation_and_unchanged_sections_are_not_resent() {
         .expect("note")
         .expect("exists");
     assert_eq!(
-        rule.body,
-        "Never push without approval.\nAsk first, every time."
+        rule.body, "- Never push without approval.\n\n- Ask first, every time.",
+        "a rule is a slice of the source"
     );
 
-    paraphrase.store(false, Ordering::SeqCst);
-    let second = store
-        .import_rules_with(&llm, Some(project), "AGENTS.md", DOC)
-        .await
-        .expect("import");
+    wrong.store(false, Ordering::SeqCst);
+    let second = import(DOC.to_string()).await;
     assert_eq!(
         calls.load(Ordering::SeqCst),
         3,
         "the split section is not sent again; the fallen-back one is retried"
     );
-    // Scope is untouched; Style moves from the mechanical block (with its
-    // list marker) to the model's quote, so the old text is retired.
-    assert_eq!((second.unchanged, second.added, second.retired), (1, 1, 1));
+    // Rules are slices of the source, so the model's split of Style matches
+    // the mechanical block it replaces.
+    assert_eq!((second.unchanged, second.added, second.retired), (2, 0, 0));
     assert!(second.fallbacks.is_empty());
 
-    let edited = DOC.replace("## Style\n- Write in English.\n", "");
-    let third = store
-        .import_rules_with(&llm, Some(project), "AGENTS.md", &edited)
-        .await
-        .expect("import");
+    let third = import(DOC.replace("## Style\n- Write in English.\n", "")).await;
     assert_eq!(calls.load(Ordering::SeqCst), 3);
     assert_eq!(
         (third.unchanged, third.retired),
@@ -132,7 +141,51 @@ async fn the_model_splits_by_quotation_and_unchanged_sections_are_not_resent() {
     );
 
     drop(store);
-    for suffix in ["", "-wal", "-shm"] {
-        let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+    remove(&path);
+}
+
+/// Imports this repository's AGENTS.md through the provider configured in
+/// the environment and prints what the model made of it. Ignored because it
+/// needs network access and a credential; run it by hand.
+#[tokio::test]
+#[ignore = "requires a provider credential; run by hand"]
+async fn live_split_of_this_repository_agents_md() {
+    let markdown = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../AGENTS.md"))
+        .expect("AGENTS.md");
+    let llm = Arc::new(Llm::from_env().expect("provider"));
+    let path = database();
+    let store = Store::open(&path).await.expect("store");
+    let project = store.project("inocode").await.expect("project");
+    let started = std::time::Instant::now();
+    let report = store
+        .import_rules_with(llm, Some(project), "AGENTS.md", &markdown)
+        .await
+        .expect("import");
+    println!("elapsed: {:?}", started.elapsed());
+    println!("rules added: {}", report.added);
+    println!("sections split mechanically: {}", report.fallbacks.len());
+    for (section, reason) in &report.fallbacks {
+        println!("  fallback [{section}]: {reason}");
     }
+    println!("unassigned fragments: {}", report.unassigned.len());
+    for fragment in &report.unassigned {
+        let shown: String = fragment.chars().take(80).collect();
+        println!("  unassigned: {shown:?}");
+    }
+    for query in ["コミット", "研究根拠", "変更履歴"] {
+        let found = store
+            .rules_for(Some(project), query, 3, Duration::from_secs(5), None)
+            .await
+            .expect("rules");
+        for hit in found.items {
+            let note = store.note(hit.id).await.expect("note").expect("exists");
+            let first: String = note.body.chars().take(60).collect();
+            println!(
+                "  [{query}] {} | when: {} | {first:?}",
+                note.title, note.condition
+            );
+        }
+    }
+    drop(store);
+    remove(&path);
 }
