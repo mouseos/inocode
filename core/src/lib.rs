@@ -10,6 +10,7 @@ pub mod deepai;
 mod llm;
 pub mod oauth;
 pub mod reasoning;
+pub mod rules;
 mod sse;
 pub mod store;
 mod usage;

@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use crate::conversation::{AssistantPart, Body, Message};
 use crate::ErrorInfo;
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 /// Tool results above this size are stored once in `blobs` and referenced.
 const BLOB_THRESHOLD: usize = 16 * 1024;
 /// Text indexed per message; the rest stays readable but unsearchable.
@@ -118,6 +118,44 @@ CREATE TABLE links(
 CREATE INDEX links_dst ON links(dst, src);
 "#;
 
+/// Rules (their origin, strength and enforcement), issue priorities, and
+/// the event log of rule applications and issue changes.
+const SCHEMA_V2: &str = r#"
+CREATE TABLE rules(
+    note_id INTEGER PRIMARY KEY REFERENCES notes(id),
+    strength TEXT NOT NULL,
+    origin_path TEXT,
+    origin_start INTEGER,
+    origin_end INTEGER,
+    section TEXT NOT NULL DEFAULT '',
+    ordinal INTEGER,
+    trigger_tool TEXT,
+    patterns TEXT,
+    action TEXT,
+    enforcement TEXT
+);
+CREATE INDEX rules_origin ON rules(origin_path, section, ordinal);
+CREATE INDEX rules_enforcement ON rules(enforcement, trigger_tool);
+CREATE TABLE issues(
+    note_id INTEGER PRIMARY KEY REFERENCES notes(id),
+    priority INTEGER NOT NULL
+);
+CREATE TABLE note_events(
+    id INTEGER PRIMARY KEY,
+    note_id INTEGER NOT NULL REFERENCES notes(id),
+    at INTEGER NOT NULL,
+    event TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    session_id INTEGER,
+    seq INTEGER,
+    detail TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX note_events_note ON note_events(note_id, at);
+"#;
+
+/// Schema steps; step `i` brings the database to version `i + 1`.
+const MIGRATIONS: [&str; 2] = [SCHEMA, SCHEMA_V2];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ProjectId(pub i64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -143,6 +181,10 @@ pub enum NoteKind {
     Claim,
     /// Reference knowledge about a named subject.
     Knowledge,
+    /// Something to keep to (`crate::rules`).
+    Rule,
+    /// Work that outlives a conversation (`crate::rules`).
+    Issue,
 }
 
 impl NoteKind {
@@ -152,23 +194,28 @@ impl NoteKind {
             Self::Procedure => "procedure",
             Self::Claim => "claim",
             Self::Knowledge => "knowledge",
+            Self::Rule => "rule",
+            Self::Issue => "issue",
         }
     }
 
-    fn parse(text: &str) -> Option<Self> {
+    pub(crate) fn parse(text: &str) -> Option<Self> {
         Some(match text {
             "lesson" => Self::Lesson,
             "procedure" => Self::Procedure,
             "claim" => Self::Claim,
             "knowledge" => Self::Knowledge,
+            "rule" => Self::Rule,
+            "issue" => Self::Issue,
             _ => return None,
         })
     }
 
     /// Statuses the kind may take, the usable ones first.
-    fn statuses(self) -> &'static [&'static str] {
+    pub(crate) fn statuses(self) -> &'static [&'static str] {
         match self {
-            Self::Lesson | Self::Procedure => &["active", "candidate", "retired"],
+            Self::Lesson | Self::Procedure | Self::Rule => &["active", "candidate", "retired"],
+            Self::Issue => &["open", "in_progress", "blocked", "done", "wontfix"],
             Self::Claim => &["verified", "approved", "assumed", "unverified", "retired"],
             Self::Knowledge => &["active", "retired"],
         }
@@ -185,7 +232,7 @@ pub enum Source {
 }
 
 impl Source {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Person => "person",
             Self::Verified => "verified",
@@ -196,8 +243,11 @@ impl Source {
 
 fn initial_status(kind: NoteKind, source: Source) -> &'static str {
     match (kind, source) {
-        (NoteKind::Lesson | NoteKind::Procedure, Source::Model) => "candidate",
-        (NoteKind::Lesson | NoteKind::Procedure | NoteKind::Knowledge, _) => "active",
+        (NoteKind::Lesson | NoteKind::Procedure | NoteKind::Rule, Source::Model) => "candidate",
+        (NoteKind::Lesson | NoteKind::Procedure | NoteKind::Rule | NoteKind::Knowledge, _) => {
+            "active"
+        }
+        (NoteKind::Issue, _) => "open",
         (NoteKind::Claim, Source::Verified) => "verified",
         (NoteKind::Claim, Source::Person) => "approved",
         (NoteKind::Claim, Source::Model) => "unverified",
@@ -327,7 +377,7 @@ impl Store {
         })
     }
 
-    async fn write<T: Send + 'static>(
+    pub(crate) async fn write<T: Send + 'static>(
         &self,
         work: impl FnOnce(&mut Connection) -> Result<T, ErrorInfo> + Send + 'static,
     ) -> Result<T, ErrorInfo> {
@@ -340,7 +390,7 @@ impl Store {
     }
 
     /// Runs `work` on a reader that SQLite interrupts once `budget` passes.
-    async fn read<T: Send + 'static>(
+    pub(crate) async fn read<T: Send + 'static>(
         &self,
         budget: Duration,
         work: impl FnOnce(&Connection) -> Result<T, ErrorInfo> + Send + 'static,
@@ -998,22 +1048,22 @@ fn migrate(connection: &mut Connection) -> Result<(), ErrorInfo> {
     let version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(store_error)?;
-    match version {
-        0 => {
-            let tx = connection.transaction().map_err(store_error)?;
-            tx.execute_batch(SCHEMA).map_err(store_error)?;
-            tx.pragma_update(None, "user_version", SCHEMA_VERSION)
-                .map_err(store_error)?;
-            tx.commit().map_err(store_error)
-        }
-        SCHEMA_VERSION => Ok(()),
-        other => Err(ErrorInfo::new(
+    if version > SCHEMA_VERSION {
+        return Err(ErrorInfo::new(
             "store",
             format!(
-                "the database schema version {other} is newer than this build ({SCHEMA_VERSION})"
+                "the database schema version {version} is newer than this build ({SCHEMA_VERSION})"
             ),
-        )),
+        ));
     }
+    for (step, sql) in MIGRATIONS.iter().enumerate().skip(version as usize) {
+        let tx = connection.transaction().map_err(store_error)?;
+        tx.execute_batch(sql).map_err(store_error)?;
+        tx.pragma_update(None, "user_version", step as i64 + 1)
+            .map_err(store_error)?;
+        tx.commit().map_err(store_error)?;
+    }
+    Ok(())
 }
 
 /// The JSON stored for a message, with large tool results moved to `blobs`.
@@ -1129,7 +1179,7 @@ fn note_kind(db: &Connection, id: NoteId) -> Result<NoteKind, ErrorInfo> {
         .ok_or_else(|| ErrorInfo::new("store", format!("unknown note kind {kind}")))
 }
 
-fn load_note(db: &Connection, id: NoteId) -> Result<Option<Note>, ErrorInfo> {
+pub(crate) fn load_note(db: &Connection, id: NoteId) -> Result<Option<Note>, ErrorInfo> {
     db.query_row(
         "SELECT id, project_id, kind, title, summary, keywords, condition, body, tags, status,
                 source, up, down, created, last_used, superseded_by
@@ -1171,7 +1221,7 @@ fn normalize_tag(tag: &str) -> String {
         .join("-")
 }
 
-fn normalize_tags(db: &Connection, tags: &[String]) -> Result<Vec<String>, ErrorInfo> {
+pub(crate) fn normalize_tags(db: &Connection, tags: &[String]) -> Result<Vec<String>, ErrorInfo> {
     let mut out: Vec<String> = Vec::with_capacity(tags.len());
     for tag in tags {
         let tag = normalize_tag(tag);
@@ -1196,7 +1246,7 @@ fn normalize_tags(db: &Connection, tags: &[String]) -> Result<Vec<String>, Error
 
 /// An FTS5 query matching any of the terms. The trigram index needs three
 /// characters, so shorter terms are dropped; `None` when none remain.
-fn fts_query(text: &str) -> Option<String> {
+pub(crate) fn fts_query(text: &str) -> Option<String> {
     let terms: Vec<String> = text
         .split_whitespace()
         .filter(|term| term.chars().count() >= 3)
@@ -1206,7 +1256,7 @@ fn fts_query(text: &str) -> Option<String> {
 }
 
 /// Rows read before an interrupt are kept and flagged as truncated.
-fn collect<T>(
+pub(crate) fn collect<T>(
     rows: rusqlite::Result<
         rusqlite::MappedRows<'_, impl FnMut(&rusqlite::Row) -> rusqlite::Result<T>>,
     >,
@@ -1252,11 +1302,11 @@ async fn blocking<T: Send + 'static>(
         .map_err(|error| ErrorInfo::new("store", format!("the store task failed: {error}")))?
 }
 
-fn now() -> i64 {
+pub(crate) fn now() -> i64 {
     crate::oauth::now_ms() as i64
 }
 
-fn store_error(error: rusqlite::Error) -> ErrorInfo {
+pub(crate) fn store_error(error: rusqlite::Error) -> ErrorInfo {
     ErrorInfo::new("store", error.to_string())
 }
 
@@ -1713,5 +1763,44 @@ mod measure {
                     found.truncated
                 );
             });
+    }
+}
+
+#[cfg(test)]
+mod migration {
+    use super::*;
+
+    #[test]
+    fn a_version_one_database_is_upgraded_in_place() {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("old.db");
+        {
+            let connection = connect(&path).expect("db");
+            connection.execute_batch(MIGRATIONS[0]).expect("v1");
+            connection
+                .pragma_update(None, "user_version", 1)
+                .expect("version");
+            connection
+                .execute("INSERT INTO projects(key, created) VALUES ('kept', 1)", [])
+                .expect("row");
+        }
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let store = Store::open(&path).await.expect("open");
+                assert_eq!(store.project("kept").await.expect("project"), ProjectId(1));
+            });
+        let connection = connect(&path).expect("db");
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("version");
+        assert_eq!(version, SCHEMA_VERSION);
+        connection
+            .query_row("SELECT COUNT(*) FROM note_events", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("the version 2 tables exist");
     }
 }

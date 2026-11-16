@@ -128,4 +128,4 @@ LOGFARE_API_KEY=... cargo test --release -p inocode-server --test live_api -- --
 
 ## 現状の範囲
 
-実装済み: フレームプロトコル、Server / Core、OpenAI 互換 API 接続と逐次配送、Anthropic Messages 互換接続、Responses 接続、Claude OAuth・GPT OAuth・Muse Code・DeepAI Code のログインと要求時認証、使用量の取得、モデル一覧取得（全方式。思考の深さの一覧と既定値を含む）、中断、複数クライアント。core のみ: 会話の型と 3 形式への変換、ツール定義の送信とストリームからのツール呼び出しの組み立て、思考の指定、SQLite の保存層（履歴・記憶・検索・連想）。未実装: TCP での会話・ツールの公開、エージェントループとツールの実行、規則とローカル issue、MCP、GUI、製品用 CLI。
+実装済み: フレームプロトコル、Server / Core、OpenAI 互換 API 接続と逐次配送、Anthropic Messages 互換接続、Responses 接続、Claude OAuth・GPT OAuth・Muse Code・DeepAI Code のログインと要求時認証、使用量の取得、モデル一覧取得（全方式。思考の深さの一覧と既定値を含む）、中断、複数クライアント。core のみ: 会話の型と 3 形式への変換、ツール定義の送信とストリームからのツール呼び出しの組み立て、思考の指定、SQLite の保存層（履歴・記憶・検索・連想）、規則（AGENTS.md からの取り込み・必須の規則の判定・適用の記録）とローカル issue。未実装: TCP での会話・ツールの公開、エージェントループとツールの実行、MCP、GUI、製品用 CLI。

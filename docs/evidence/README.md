@@ -36,9 +36,9 @@
 | [conversation-model.md](conversation-model.md) | 会話の型と 3 形式への変換、自走性の研究の整理 | UNSUPPORTED_APPROVED（判断 6・9 は研究で一部支持） | `core/src/conversation.rs` |
 | [tool-calling.md](tool-calling.md) | ツール定義の送信とストリームからの組み立て | UNSUPPORTED_APPROVED | `core/src/conversation.rs`、`core/src/llm.rs` |
 | [reasoning-controls.md](reasoning-controls.md) | 思考・推論の指定、モデルの深さ一覧と既定値 | UNSUPPORTED_APPROVED | `core/src/reasoning.rs` |
-| [conversation-state.md](conversation-state.md) | 会話の状態をサーバーが持つ判断、Codex の保存の問題 | UNSUPPORTED_APPROVED（注記あり） | 保存層のみ |
+| [conversation-state.md](conversation-state.md) | 会話の状態をサーバーが持つ判断、Codex の保存の問題 | UNSUPPORTED_APPROVED | 保存層のみ |
 | [project-memory.md](project-memory.md) | SQLite の保存層：履歴・大きな中身・教訓・手順・根拠台帳・知識・タグ・リンク・検索・連想 | 部分ごと（RESEARCH_SUPPORTED と UNSUPPORTED_APPROVED） | `core/src/store.rs` |
-| [rules-and-local-issues.md](rules-and-local-issues.md) | 守ってほしいこと（規則）とローカル issue | UNSUPPORTED_PENDING（未実装） | 未実装 |
+| [rules-and-local-issues.md](rules-and-local-issues.md) | 守ってほしいこと（規則）とローカル issue | UNSUPPORTED_APPROVED（規則の一部は研究で支持） | `core/src/rules.rs` |
 
 ## 状態の判定
 
