@@ -18,7 +18,7 @@ fn database() -> std::path::PathBuf {
         .expect("clock")
         .as_nanos();
     let index = NEXT.fetch_add(1, Ordering::SeqCst);
-    std::env::temp_dir().join(format!(
+    std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
         "inocode-turn-{}-{nanos}-{index}.db",
         std::process::id()
     ))
@@ -338,7 +338,7 @@ async fn recall_reads_earlier_messages_word_for_word() {
 #[tokio::test]
 async fn lessons_need_a_condition_and_rules_are_not_duplicated() {
     with_timeout(async {
-        let project = std::env::temp_dir().join(format!(
+        let project = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
             "inocode-project-{}-{}",
             std::process::id(),
             database().file_name().unwrap().to_string_lossy()
