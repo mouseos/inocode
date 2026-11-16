@@ -146,6 +146,14 @@ fn fold(text: &str) -> Folded {
     folded
 }
 
+/// Whether `passage` occurs in `document`, ignoring markup and whitespace
+/// differences.
+pub(crate) fn quotes(document: &str, passage: &str) -> bool {
+    let passage = fold(passage);
+    let passage = passage.text.trim();
+    !passage.is_empty() && fold(document).text.contains(passage)
+}
+
 /// Finds a source passage in the document: verbatim first, then with markup
 /// and whitespace differences ignored. Unclaimed occurrences are preferred.
 /// Returns the byte range in the original document.

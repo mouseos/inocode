@@ -5,6 +5,7 @@
 //! with a stream of [`EventPayload`] events. The core knows nothing about TCP,
 //! framing, or connections, so the server owns all transport concerns.
 
+mod agent_tools;
 pub mod conversation;
 pub mod deepai;
 mod llm;
@@ -70,6 +71,20 @@ impl Request {
             .and_then(Value::as_i64)
             .map(store::SessionId)
             .ok_or_else(|| ErrorInfo::new("invalid_params", "requires a \"thread_id\" number"))
+    }
+
+    /// The `ask` rules a `turn/start` request approves for that turn
+    /// (`allow`, rule ids); none when absent.
+    pub fn allowed_rules(&self) -> Result<Vec<store::NoteId>, ErrorInfo> {
+        let invalid = || ErrorInfo::new("invalid_params", "\"allow\" must be a list of rule ids");
+        match self.params.as_ref().and_then(|params| params.get("allow")) {
+            None | Some(Value::Null) => Ok(Vec::new()),
+            Some(Value::Array(ids)) => ids
+                .iter()
+                .map(|id| id.as_i64().map(store::NoteId).ok_or_else(invalid))
+                .collect(),
+            Some(_) => Err(invalid()),
+        }
     }
 
     /// Request id that a `cancel` request refers to.
@@ -138,6 +153,9 @@ pub struct EventPayload {
     pub reason: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<turn::TurnUsage>,
+    /// Calls of a turn that wait for the person's approval.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub held: Option<Vec<turn::Held>>,
 }
 
 impl EventPayload {
@@ -160,10 +178,16 @@ impl EventPayload {
     }
 
     /// The end of a turn that was neither interrupted nor failed.
-    pub fn turn_completed(id: u64, reason: &'static str, usage: turn::TurnUsage) -> Self {
+    pub fn turn_completed(
+        id: u64,
+        reason: &'static str,
+        usage: turn::TurnUsage,
+        held: Vec<turn::Held>,
+    ) -> Self {
         Self {
             reason: Some(reason),
             usage: Some(usage),
+            held: Some(held),
             ..Self::new(id, "completed")
         }
     }
@@ -192,6 +216,7 @@ impl EventPayload {
             message: None,
             reason: None,
             usage: None,
+            held: None,
         }
     }
 }
@@ -365,17 +390,19 @@ impl Core {
         &self,
         thread: SessionId,
         prompt: String,
+        allowed: Vec<store::NoteId>,
         steer: mpsc::UnboundedReceiver<String>,
         cancel: watch::Receiver<bool>,
         events: mpsc::Sender<TurnEvent>,
     ) -> Outcome {
         match (self.llm(), self.store()) {
             (Ok(llm), Ok(store)) => {
-                turn::run(llm, store, thread, prompt, steer, cancel, events).await
+                turn::run(llm, store, thread, prompt, allowed, steer, cancel, events).await
             }
             (Err(error), _) | (_, Err(error)) => Outcome {
                 ending: turn::Ending::Failed(error),
                 usage: Default::default(),
+                held: Vec::new(),
             },
         }
     }

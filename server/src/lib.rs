@@ -417,9 +417,16 @@ async fn start_turn(
     queue: &mpsc::Sender<Outgoing>,
     in_flight: &InFlight,
 ) -> bool {
-    let (thread, prompt) = match (request.thread(), request.prompt()) {
-        (Ok(thread), Ok(prompt)) => (thread, prompt.to_string()),
-        (Err(error), _) | (_, Err(error)) => {
+    let parsed = request.thread().and_then(|thread| {
+        Ok((
+            thread,
+            request.prompt()?.to_string(),
+            request.allowed_rules()?,
+        ))
+    });
+    let (thread, prompt, allowed) = match parsed {
+        Ok(parsed) => parsed,
+        Err(error) => {
             let event = EventPayload::failed(request.id, error);
             return send_event(queue, stream_id, event).await.is_ok();
         }
@@ -439,7 +446,7 @@ async fn start_turn(
     tokio::spawn(run_turn(
         id,
         thread,
-        prompt,
+        (prompt, allowed),
         stream_id,
         Arc::clone(core),
         queue.clone(),
@@ -455,7 +462,7 @@ async fn start_turn(
 async fn run_turn(
     id: u64,
     thread: inocode_core::store::SessionId,
-    prompt: String,
+    (prompt, allowed): (String, Vec<inocode_core::store::NoteId>),
     stream_id: u64,
     core: Arc<Core>,
     queue: mpsc::Sender<Outgoing>,
@@ -484,7 +491,7 @@ async fn run_turn(
         TurnEvent::Message { seq, message } => EventPayload::message(id, seq, &message),
     };
     let outcome = {
-        let run = core.run_turn(thread, prompt, steer, cancelled.clone(), events);
+        let run = core.run_turn(thread, prompt, allowed, steer, cancelled.clone(), events);
         tokio::pin!(run);
         loop {
             tokio::select! {
@@ -509,6 +516,7 @@ async fn run_turn(
             id,
             ending.as_str(),
             outcome.usage,
+            outcome.held,
         )),
     };
     settle(id, stream_id, &queue, &in_flight, cancelled, terminal).await;

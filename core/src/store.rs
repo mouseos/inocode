@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use crate::conversation::{AssistantPart, Body, Message};
 use crate::ErrorInfo;
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 /// Tool results above this size are stored once in `blobs` and referenced.
 const BLOB_THRESHOLD: usize = 16 * 1024;
 /// Text indexed per message; the rest stays readable but unsearchable.
@@ -169,8 +169,18 @@ CREATE TABLE rule_sections(
 /// The model's fields of an extracted rule, as JSON.
 const SCHEMA_V4: &str = "ALTER TABLE rules ADD COLUMN details TEXT NOT NULL DEFAULT '{}';";
 
+/// The work list of a thread, kept apart from its history so it survives
+/// compaction as written.
+const SCHEMA_V5: &str = r#"
+CREATE TABLE plans(
+    session_id INTEGER PRIMARY KEY REFERENCES sessions(id),
+    items TEXT NOT NULL,
+    updated INTEGER NOT NULL
+);
+"#;
+
 /// Schema steps; step `i` brings the database to version `i + 1`.
-const MIGRATIONS: [&str; 4] = [SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4];
+const MIGRATIONS: [&str; 5] = [SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ProjectId(pub i64);
@@ -477,6 +487,51 @@ impl Store {
                 [session.0],
                 |row| row.get(0),
             )
+            .map_err(store_error)
+        })
+        .await
+    }
+
+    /// The project of `session` and its key, when it has one.
+    pub async fn session_project(
+        &self,
+        session: SessionId,
+    ) -> Result<Option<(ProjectId, String)>, ErrorInfo> {
+        self.read(Duration::from_secs(5), move |db| {
+            db.query_row(
+                "SELECT p.id, p.key FROM sessions s JOIN projects p ON p.id = s.project_id
+                 WHERE s.id = ?1",
+                [session.0],
+                |row| Ok((ProjectId(row.get(0)?), row.get(1)?)),
+            )
+            .optional()
+            .map_err(store_error)
+        })
+        .await
+    }
+
+    /// Replaces the work list of `session` (JSON written by the harness).
+    pub async fn set_plan(&self, session: SessionId, items: String) -> Result<(), ErrorInfo> {
+        self.write(move |db| {
+            db.execute(
+                "INSERT INTO plans(session_id, items, updated) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(session_id) DO UPDATE SET items = ?2, updated = ?3",
+                params![session.0, items, now()],
+            )
+            .map(drop)
+            .map_err(store_error)
+        })
+        .await
+    }
+
+    pub async fn plan(&self, session: SessionId) -> Result<Option<String>, ErrorInfo> {
+        self.read(Duration::from_secs(5), move |db| {
+            db.query_row(
+                "SELECT items FROM plans WHERE session_id = ?1",
+                [session.0],
+                |row| row.get(0),
+            )
+            .optional()
             .map_err(store_error)
         })
         .await
