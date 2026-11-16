@@ -568,6 +568,50 @@ async fn gpt_chat_sends_the_account_id_header() {
 }
 
 #[tokio::test]
+async fn gpt_chat_without_a_chosen_effort_uses_the_model_default() {
+    let mock = start_mock(|request: &MockRequest| {
+        if request.path.starts_with("/v1/models") {
+            return MockReply::status(
+                200,
+                r#"{"models":[{"slug":"gpt-5.2-codex","supported_in_api":true,"visibility":"show","display_name":"GPT-5.2 Codex","supported_reasoning_levels":[{"effort":"low","description":""},{"effort":"high","description":""}],"default_reasoning_level":"high"}]}"#,
+            );
+        }
+        assert_eq!(request.path, "/v1/responses");
+        assert_eq!(
+            request.body["reasoning"],
+            json!({"effort": "high", "summary": "auto"})
+        );
+        MockReply::stream(responses_sse("deep reply"))
+    })
+    .await;
+    let store_path = temp_store_path("gpt-default-effort");
+    write_store(&store_path, "gpt-oauth", credential_for_store());
+    let llm = Llm::new(LlmConfig {
+        provider: ProviderKind::Responses,
+        auth: inocode_core::oauth::AuthKind::GptOauth,
+        base_url: mock.base_url.clone(),
+        model: "gpt-5.2-codex".to_string(),
+        api_key: String::new(),
+        auth_store_path: Some(store_path.clone()),
+        reasoning: Default::default(),
+    })
+    .expect("build the client");
+    let core = Arc::new(Core::with_llm(llm));
+    for _ in 0..2 {
+        let (deltas, _) = chat_deltas(Arc::clone(&core), "hello").await;
+        assert_eq!(deltas, vec!["deep reply".to_string()]);
+    }
+    // The catalog is read once, then remembered.
+    let listings = mock
+        .requests()
+        .iter()
+        .filter(|request| request.path.starts_with("/v1/models"))
+        .count();
+    assert_eq!(listings, 1);
+    let _ = std::fs::remove_file(&store_path);
+}
+
+#[tokio::test]
 async fn responses_with_an_api_key_sends_the_key_without_a_credential_store() {
     let mock = start_mock(|request: &MockRequest| {
         assert_eq!(request.path, "/v1/responses");
@@ -718,6 +762,12 @@ async fn muse_models_uses_the_subscription_key_and_muse_headers() {
     assert_eq!(models.len(), 2);
     assert_eq!(models[0]["id"], "muse-spark-1.3");
     assert_eq!(models[0]["owned_by"], "meta");
+    // No published list: every effort is offered, with no default.
+    assert_eq!(
+        models[0]["reasoning_levels"],
+        json!(["none", "minimal", "low", "medium", "high", "xhigh", "max"])
+    );
+    assert_eq!(models[0]["default_reasoning"], Value::Null);
     let _ = std::fs::remove_file(&store_path);
 }
 

@@ -230,10 +230,20 @@ async fn list_models(id: u64, stream_id: u64, core: Arc<Core>, queue: mpsc::Send
             let listed: Vec<Value> = models
                 .iter()
                 .map(|model| {
+                    // A model without a published list may be asked for
+                    // any effort; the provider reports what it refuses.
+                    let levels = model.reasoning_levels.clone().unwrap_or_else(|| {
+                        inocode_core::reasoning::ALL_EFFORTS
+                            .iter()
+                            .map(|effort| effort.as_str().to_string())
+                            .collect()
+                    });
                     json!({
                         "id": model.id,
                         "display_name": model.display_name,
                         "owned_by": model.owned_by,
+                        "reasoning_levels": levels,
+                        "default_reasoning": model.default_reasoning,
                     })
                 })
                 .collect();

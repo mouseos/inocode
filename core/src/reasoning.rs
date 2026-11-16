@@ -89,18 +89,33 @@ impl Summary {
     }
 }
 
+/// Every effort, for models whose provider publishes no list.
+pub const ALL_EFFORTS: [Effort; 7] = [
+    Effort::None,
+    Effort::Minimal,
+    Effort::Low,
+    Effort::Medium,
+    Effort::High,
+    Effort::Xhigh,
+    Effort::Max,
+];
+
+/// The effort used when neither the user nor the model's catalog chooses
+/// one (opencodex `codex/catalog/effort.ts` falls back to medium).
+pub const FALLBACK_EFFORT: Effort = Effort::Medium;
+
 /// Reasoning settings of one client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Reasoning {
-    pub effort: Effort,
+    /// `None` uses the model's catalog default, else [`FALLBACK_EFFORT`].
+    pub effort: Option<Effort>,
     pub summary: Summary,
 }
 
 impl Default for Reasoning {
-    /// The catalog default opencodex clients send when nothing is chosen.
     fn default() -> Self {
         Self {
-            effort: Effort::Medium,
+            effort: None,
             summary: Summary::Auto,
         }
     }
@@ -110,12 +125,12 @@ impl Reasoning {
     pub fn from_env() -> Result<Self, ErrorInfo> {
         let mut reasoning = Self::default();
         if let Ok(text) = std::env::var(EFFORT_ENV) {
-            reasoning.effort = Effort::parse(&text).ok_or_else(|| {
+            reasoning.effort = Some(Effort::parse(&text).ok_or_else(|| {
                 ErrorInfo::new(
                     "provider_config",
                     format!("{EFFORT_ENV} must be none, minimal, low, medium, high, xhigh, max, or ultra"),
                 )
-            })?;
+            })?);
         }
         if let Ok(text) = std::env::var(SUMMARY_ENV) {
             reasoning.summary = Summary::parse(&text).ok_or_else(|| {
@@ -138,18 +153,25 @@ pub(crate) struct Destination<'a> {
     pub first_party_anthropic: bool,
 }
 
-/// Adds the reasoning fields (and Anthropic's `max_tokens`) to `body`.
-pub(crate) fn apply(body: &mut Map<String, Value>, to: &Destination, reasoning: Reasoning) {
+/// Adds the reasoning fields (and Anthropic's `max_tokens`) to `body`. The
+/// effort is sent as chosen: a provider that does not accept it answers with
+/// its own error.
+pub(crate) fn apply(
+    body: &mut Map<String, Value>,
+    to: &Destination,
+    effort: Effort,
+    summary: Summary,
+) {
     match to.format {
-        ProviderKind::Anthropic => anthropic(body, to, reasoning),
-        ProviderKind::Responses => responses(body, to, reasoning),
-        ProviderKind::OpenAi => chat(body, to.model, reasoning.effort),
+        ProviderKind::Anthropic => anthropic(body, to, effort, summary),
+        ProviderKind::Responses => responses(body, to, effort, summary),
+        ProviderKind::OpenAi => chat(body, effort),
     }
 }
 
 /// The extra `anthropic-beta` a request needs for its thinking display.
-pub(crate) fn anthropic_beta(to: &Destination, reasoning: Reasoning) -> Option<&'static str> {
-    (native_opus_display(to, reasoning) == Some("updates")).then_some(DISPLAY_UPDATES_BETA)
+pub(crate) fn anthropic_beta(to: &Destination, summary: Summary) -> Option<&'static str> {
+    (native_opus_display(to, summary) == Some("updates")).then_some(DISPLAY_UPDATES_BETA)
 }
 
 /// Family and version of a Claude model id (`claude-sonnet-4-5`,
@@ -203,21 +225,18 @@ fn explicit_disable(model: &str) -> bool {
 }
 
 /// The `display` Opus 5.5 always gets on the first-party API.
-fn native_opus_display(to: &Destination, reasoning: Reasoning) -> Option<&'static str> {
-    (to.first_party_anthropic && at_least(to.model, "opus", (5, 5))).then_some(
-        match reasoning.summary {
-            Summary::Concise | Summary::Detailed => "summarized",
-            _ => "updates",
-        },
-    )
+fn native_opus_display(to: &Destination, summary: Summary) -> Option<&'static str> {
+    (to.first_party_anthropic && at_least(to.model, "opus", (5, 5))).then_some(match summary {
+        Summary::Concise | Summary::Detailed => "summarized",
+        _ => "updates",
+    })
 }
 
-fn anthropic(body: &mut Map<String, Value>, to: &Destination, reasoning: Reasoning) {
-    let effort = reasoning.effort;
+fn anthropic(body: &mut Map<String, Value>, to: &Destination, effort: Effort, summary: Summary) {
     let adaptive_max = |effort: Effort| {
         ADAPTIVE_CEILING.min(BASE_MAX_TOKENS.max(effort.budget() + ANSWER_HEADROOM))
     };
-    if let Some(display) = native_opus_display(to, reasoning) {
+    if let Some(display) = native_opus_display(to, summary) {
         body.insert(
             "thinking".into(),
             json!({ "type": "adaptive", "display": display }),
@@ -244,7 +263,7 @@ fn anthropic(body: &mut Map<String, Value>, to: &Destination, reasoning: Reasoni
             BASE_MAX_TOKENS
         }
         _ if adaptive(to.model) => {
-            let thinking = match reasoning.summary {
+            let thinking = match summary {
                 Summary::None => json!({ "type": "adaptive" }),
                 _ => json!({ "type": "adaptive", "display": "summarized" }),
             };
@@ -277,15 +296,15 @@ fn output_effort(effort: Effort) -> &'static str {
     }
 }
 
-fn responses(body: &mut Map<String, Value>, to: &Destination, reasoning: Reasoning) {
-    let effort = match (to.auth, reasoning.effort) {
-        // The ChatGPT backend accepts `none`; `max` only on the 5.6 ladder.
-        (AuthKind::GptOauth, Effort::Max) if !to.model.contains("5.6") => Some(Effort::Xhigh),
+fn responses(body: &mut Map<String, Value>, to: &Destination, effort: Effort, summary: Summary) {
+    // The ChatGPT backend takes `none` as a level; elsewhere it means
+    // sending no reasoning at all.
+    let effort = match (to.auth, effort) {
         (AuthKind::GptOauth, effort) => Some(effort),
         (_, Effort::None) => None,
         (_, effort) => Some(effort),
     };
-    let summary = match reasoning.summary {
+    let summary = match summary {
         Summary::Auto => Some("auto"),
         Summary::Concise => Some("concise"),
         Summary::Detailed => Some("detailed"),
@@ -303,19 +322,10 @@ fn responses(body: &mut Map<String, Value>, to: &Destination, reasoning: Reasoni
     }
 }
 
-fn chat(body: &mut Map<String, Value>, model: &str, effort: Effort) {
-    let effort = match effort {
-        Effort::None => return,
-        // DeepSeek's ladder is low / high / max.
-        Effort::Medium | Effort::High | Effort::Xhigh
-            if model.to_ascii_lowercase().contains("deepseek") =>
-        {
-            Effort::High
-        }
-        Effort::Minimal if model.to_ascii_lowercase().contains("deepseek") => Effort::Low,
-        other => other,
-    };
-    body.insert("reasoning_effort".into(), json!(effort.as_str()));
+fn chat(body: &mut Map<String, Value>, effort: Effort) {
+    if effort != Effort::None {
+        body.insert("reasoning_effort".into(), json!(effort.as_str()));
+    }
 }
 
 #[cfg(test)]
@@ -333,7 +343,7 @@ mod tests {
 
     fn body(to: &Destination, effort: Effort, summary: Summary) -> Value {
         let mut body = Map::new();
-        apply(&mut body, to, Reasoning { effort, summary });
+        apply(&mut body, to, effort, summary);
         Value::Object(body)
     }
 
@@ -417,27 +427,22 @@ mod tests {
             AuthKind::ClaudeOauth,
             "claude-opus-5-5",
         );
-        let reasoning = Reasoning::default();
         let mut fields = Map::new();
-        apply(&mut fields, &native, reasoning);
+        apply(&mut fields, &native, FALLBACK_EFFORT, Summary::Auto);
         assert_eq!(
             fields["thinking"],
             json!({"type": "adaptive", "display": "updates"})
         );
         assert_eq!(
-            anthropic_beta(&native, reasoning),
+            anthropic_beta(&native, Summary::Auto),
             Some(DISPLAY_UPDATES_BETA)
         );
-        let concise = Reasoning {
-            summary: Summary::Concise,
-            ..reasoning
-        };
-        assert_eq!(anthropic_beta(&native, concise), None);
+        assert_eq!(anthropic_beta(&native, Summary::Concise), None);
         let proxied = Destination {
             first_party_anthropic: false,
             ..native
         };
-        assert_eq!(anthropic_beta(&proxied, reasoning), None);
+        assert_eq!(anthropic_beta(&proxied, Summary::Auto), None);
     }
 
     #[test]
@@ -445,7 +450,8 @@ mod tests {
         let codex = to(ProviderKind::Responses, AuthKind::GptOauth, "gpt-5.2-codex");
         assert_eq!(
             body(&codex, Effort::Max, Summary::Auto)["reasoning"],
-            json!({"effort": "xhigh", "summary": "auto"})
+            json!({"effort": "max", "summary": "auto"}),
+            "sent as chosen; the provider rejects what it does not take"
         );
         assert_eq!(
             body(&codex, Effort::None, Summary::Auto)["reasoning"],
@@ -472,7 +478,7 @@ mod tests {
             )
         };
         assert_eq!(chat("glm-5.3-flash")["reasoning_effort"], "medium");
-        assert_eq!(chat("deepseek-v4-pro")["reasoning_effort"], "high");
+        assert_eq!(chat("deepseek-v4-pro")["reasoning_effort"], "medium");
         assert!(body(
             &to(ProviderKind::OpenAi, AuthKind::ApiKey, "m"),
             Effort::None,

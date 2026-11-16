@@ -210,6 +210,8 @@ pub struct Llm {
     config: LlmConfig,
     /// Check-in, catalog and slot state of a DeepAI account.
     deepai: Option<Box<crate::deepai::Session>>,
+    /// The configured model's catalog default effort, looked up once.
+    catalog_effort: tokio::sync::OnceCell<Option<crate::reasoning::Effort>>,
 }
 
 impl Llm {
@@ -229,6 +231,7 @@ impl Llm {
             client,
             config,
             deepai,
+            catalog_effort: tokio::sync::OnceCell::new(),
         })
     }
 
@@ -263,13 +266,39 @@ impl Llm {
             return self.deepai_chat(session, conversation, tools).await;
         }
         let format = self.config.provider;
-        let body = request_body(format, &self.config, conversation, tools)?;
+        let effort = self.effort().await;
+        let body = request_body(format, &self.config, effort, conversation, tools)?;
         let response = match format {
             ProviderKind::OpenAi => self.openai_chat(&body).await,
             ProviderKind::Anthropic => self.anthropic_chat(body).await,
             ProviderKind::Responses => self.responses_chat(&body).await,
         }?;
         Ok(ChatStream::new(format, &self.config.model, response))
+    }
+
+    /// The effort to send: the configured one, else the model's catalog
+    /// default, else [`crate::reasoning::FALLBACK_EFFORT`]. Only the ChatGPT
+    /// roster publishes defaults, so only it is consulted; a failed lookup
+    /// counts as no catalog.
+    async fn effort(&self) -> crate::reasoning::Effort {
+        if let Some(effort) = self.config.reasoning.effort {
+            return effort;
+        }
+        let catalog = if self.config.auth == AuthKind::GptOauth {
+            *self
+                .catalog_effort
+                .get_or_init(|| async {
+                    let models = self.models().await.ok()?;
+                    let model = models
+                        .into_iter()
+                        .find(|model| model.id == self.config.model)?;
+                    crate::reasoning::Effort::parse(&model.default_reasoning?)
+                })
+                .await
+        } else {
+            None
+        };
+        catalog.unwrap_or(crate::reasoning::FALLBACK_EFFORT)
     }
 
     /// Loads the credential for an OAuth kind, refreshing it first when it is
@@ -348,7 +377,7 @@ impl Llm {
 
     async fn anthropic_chat(&self, mut body: Value) -> Result<reqwest::Response, ErrorInfo> {
         let destination = destination(ProviderKind::Anthropic, &self.config);
-        let reasoning = self.config.reasoning;
+        let summary = self.config.reasoning.summary;
         let mut request = self.client.post(self.anthropic_url());
         if self.config.auth == AuthKind::ClaudeOauth {
             // OAuth bearers are only accepted with the beta opt-in and the
@@ -362,7 +391,7 @@ impl Llm {
                 system.push(json!({ "type": "text", "text": text }));
             }
             body["system"] = Value::Array(system);
-            let beta = match crate::reasoning::anthropic_beta(&destination, reasoning) {
+            let beta = match crate::reasoning::anthropic_beta(&destination, summary) {
                 Some(extra) => format!("{},{extra}", crate::oauth::CLAUDE_CODE_BETA),
                 None => crate::oauth::CLAUDE_CODE_BETA.to_string(),
             };
@@ -371,7 +400,7 @@ impl Llm {
                 .header("anthropic-beta", beta);
         } else {
             request = request.header("x-api-key", &self.config.api_key);
-            if let Some(beta) = crate::reasoning::anthropic_beta(&destination, reasoning) {
+            if let Some(beta) = crate::reasoning::anthropic_beta(&destination, summary) {
                 request = request.header("anthropic-beta", beta);
             }
         }
@@ -506,7 +535,13 @@ impl Llm {
         } else {
             (ProviderKind::OpenAi, self.url("chat/completions"))
         };
-        let body = request_body(format, &self.config, conversation, tools)?;
+        let body = request_body(
+            format,
+            &self.config,
+            self.effort().await,
+            conversation,
+            tools,
+        )?;
         loop {
             session
                 .ensure_checked_in(&self.client, base, &api_key)
@@ -614,6 +649,8 @@ impl Llm {
                     id: model.id,
                     display_name: model.name,
                     owned_by: None,
+                    reasoning_levels: None,
+                    default_reasoning: None,
                 })
                 .collect());
         }
@@ -677,6 +714,7 @@ type UsageParser = fn(&Value) -> Result<crate::Usage, ErrorInfo>;
 fn request_body(
     format: ProviderKind,
     config: &LlmConfig,
+    effort: crate::reasoning::Effort,
     conversation: &Conversation,
     tools: &[ToolSpec],
 ) -> Result<Value, ErrorInfo> {
@@ -692,7 +730,12 @@ fn request_body(
         body.insert("store".into(), json!(false));
         body.insert("include".into(), json!(["reasoning.encrypted_content"]));
     }
-    crate::reasoning::apply(&mut body, &destination(format, config), config.reasoning);
+    crate::reasoning::apply(
+        &mut body,
+        &destination(format, config),
+        effort,
+        config.reasoning.summary,
+    );
     if !tools.is_empty() {
         body.insert(
             "tools".into(),
@@ -748,6 +791,11 @@ pub struct ModelInfo {
     pub id: String,
     pub display_name: Option<String>,
     pub owned_by: Option<String>,
+    /// Reasoning efforts the provider lists for the model, as it writes
+    /// them; `None` when it publishes no list.
+    pub reasoning_levels: Option<Vec<String>>,
+    /// The provider's default effort for the model.
+    pub default_reasoning: Option<String>,
 }
 
 /// Extracts the model list from a discovery payload. OpenAI-style responses
@@ -790,6 +838,22 @@ fn models_from_json(value: &Value) -> Result<Vec<ModelInfo>, ErrorInfo> {
                     .map(str::to_string),
                 owned_by: item
                     .get("owned_by")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                // ChatGPT roster rows: `[{effort, description}]` (reference
+                // `validateDiscoveredNativeRows`).
+                reasoning_levels: item
+                    .get("supported_reasoning_levels")
+                    .and_then(Value::as_array)
+                    .map(|levels| {
+                        levels
+                            .iter()
+                            .filter_map(|level| level.get("effort")?.as_str())
+                            .map(str::to_string)
+                            .collect()
+                    }),
+                default_reasoning: item
+                    .get("default_reasoning_level")
                     .and_then(Value::as_str)
                     .map(str::to_string),
             })
@@ -1566,7 +1630,9 @@ mod tests {
         // Codex roster shape: `models` with gated `slug` rows (the account may
         // only use API-enabled, visible models).
         let codex = serde_json::json!({"models": [
-            {"slug": "gpt-5.2-codex", "supported_in_api": true, "visibility": "show", "display_name": "GPT-5.2 Codex"},
+            {"slug": "gpt-5.2-codex", "supported_in_api": true, "visibility": "show", "display_name": "GPT-5.2 Codex",
+             "supported_reasoning_levels": [{"effort": "low", "description": "Fast"}, {"effort": "xhigh", "description": "Deep"}, {"no-effort": 1}],
+             "default_reasoning_level": "xhigh"},
             {"slug": "hidden-model", "supported_in_api": true, "visibility": "hide"},
             {"slug": "api-only", "supported_in_api": false, "visibility": "show"},
             {"slug": "no-flag"},
@@ -1575,6 +1641,11 @@ mod tests {
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].id, "gpt-5.2-codex");
         assert_eq!(models[0].display_name.as_deref(), Some("GPT-5.2 Codex"));
+        assert_eq!(
+            models[0].reasoning_levels.as_deref(),
+            Some(["low".to_string(), "xhigh".to_string()].as_slice())
+        );
+        assert_eq!(models[0].default_reasoning.as_deref(), Some("xhigh"));
         // A payload without a model list is invalid.
         let error = models_from_json(&serde_json::json!({"other": []})).expect_err("no list");
         assert_eq!(error.code, "provider_protocol");
@@ -1974,12 +2045,24 @@ mod tests {
             description: "Reads a file".to_string(),
             parameters: json!({"type": "object", "properties": {}}),
         }];
-        let chat =
-            request_body(ProviderKind::OpenAi, &config, &conversation, &tools).expect("body");
+        let chat = request_body(
+            ProviderKind::OpenAi,
+            &config,
+            crate::reasoning::FALLBACK_EFFORT,
+            &conversation,
+            &tools,
+        )
+        .expect("body");
         assert_eq!(chat["tools"][0]["function"]["name"], "read");
         assert_eq!(chat["messages"][0]["role"], "system");
-        let anthropic =
-            request_body(ProviderKind::Anthropic, &config, &conversation, &tools).expect("body");
+        let anthropic = request_body(
+            ProviderKind::Anthropic,
+            &config,
+            crate::reasoning::FALLBACK_EFFORT,
+            &conversation,
+            &tools,
+        )
+        .expect("body");
         assert_eq!(anthropic["tools"][0]["input_schema"]["type"], "object");
         assert_eq!(
             anthropic["thinking"],
@@ -1987,8 +2070,14 @@ mod tests {
         );
         assert_eq!(anthropic["max_tokens"], 16_384);
         assert_eq!(chat["reasoning_effort"], "medium");
-        let responses =
-            request_body(ProviderKind::Responses, &config, &conversation, &tools).expect("body");
+        let responses = request_body(
+            ProviderKind::Responses,
+            &config,
+            crate::reasoning::FALLBACK_EFFORT,
+            &conversation,
+            &tools,
+        )
+        .expect("body");
         assert_eq!(
             responses["reasoning"],
             json!({"effort": "medium", "summary": "auto"})
@@ -1997,10 +2086,24 @@ mod tests {
         assert_eq!(responses["instructions"], "sys");
         assert_eq!(responses["store"], false);
         assert_eq!(responses["include"], json!(["reasoning.encrypted_content"]));
-        let bare = request_body(ProviderKind::OpenAi, &config, &conversation, &[]).expect("body");
+        let bare = request_body(
+            ProviderKind::OpenAi,
+            &config,
+            crate::reasoning::FALLBACK_EFFORT,
+            &conversation,
+            &[],
+        )
+        .expect("body");
         assert!(bare.get("tools").is_none());
         let twice = [tools[0].clone(), tools[0].clone()];
-        assert!(request_body(ProviderKind::OpenAi, &config, &conversation, &twice).is_err());
+        assert!(request_body(
+            ProviderKind::OpenAi,
+            &config,
+            crate::reasoning::FALLBACK_EFFORT,
+            &conversation,
+            &twice
+        )
+        .is_err());
     }
 
     /// Release-mode parsing measurements for the streaming path. They print
