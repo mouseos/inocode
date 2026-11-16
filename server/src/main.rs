@@ -9,13 +9,14 @@
 //!
 //! `login claude|gpt|muse-code` runs the interactive subscription/OAuth login
 //! instead of serving, storing the credential at `~/.inocode/auth.json`.
+//! `models` lists the models the configured provider advertises.
 
 use std::env;
 use std::io;
 use std::sync::Arc;
 
 use inocode_core::oauth::{self, FlowEndpoints, MuseEndpoints, Store};
-use inocode_core::Core;
+use inocode_core::{Core, Llm, LlmConfig};
 use tokio::net::TcpListener;
 
 const DEFAULT_PORT: u16 = 8787;
@@ -25,8 +26,28 @@ async fn main() -> io::Result<()> {
     let mut args = env::args().skip(1);
     match args.next().as_deref() {
         Some("login") => login_command(args.next().as_deref(), args.next().as_deref()).await,
+        Some("models") => models_command().await,
         _ => serve().await,
     }
+}
+
+/// Lists the models the configured provider advertises. Prints model ids
+/// only; credentials are never displayed.
+async fn models_command() -> io::Result<()> {
+    let llm = Llm::new(LlmConfig::from_env().map_err(|error| io::Error::other(error.message))?)
+        .map_err(|error| io::Error::other(error.message))?;
+    let models = llm
+        .models()
+        .await
+        .map_err(|error| io::Error::other(error.message))?;
+    for model in &models {
+        match &model.display_name {
+            Some(name) => println!("{} — {name}", model.id),
+            None => println!("{}", model.id),
+        }
+    }
+    println!("{} models", models.len());
+    Ok(())
 }
 
 async fn serve() -> io::Result<()> {

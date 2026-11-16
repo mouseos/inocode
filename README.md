@@ -84,6 +84,16 @@ cargo run --release -p inocode-server -- login muse-code    # デバイスコー
 
 認証情報はファイルに保存される（秘密値は Debug 出力・ログに出ない）。トークンは要求時に失効を確認し、期限切れなら更新トークンで自動更新する。
 
+### モデル一覧の取得
+
+`models` で接続先が提供するモデル一覧を取得できる。CLI では:
+
+```bash
+cargo run --release -p inocode-server -- models
+```
+
+TCP プロトコルでは `models` メソッド（即時応答、`{"id": n, "method": "models"}`）で、応答の `result.models` に `id` / `display_name` / `owned_by` が入る。エンドポイントは方式ごとに OpenAI 標準の `{base}/models`（Muse・GPT・Chat Completions）または Anthropic の `{base}/v1/models?limit=1000`（Messages）で、認証は chat と同一（Muse は `LLM|` キー、OAuth は保存済みトークン）。取得は常に実通信で行い、応答は 16 MiB で上限を切る。
+
 ```bash
 export LOGFARE_API_KEY=...            # 環境変数からのみ読む。リポジトリに書かない
 cargo run --release -p inocode-server
@@ -117,4 +127,4 @@ LOGFARE_API_KEY=... cargo test --release -p inocode-server --test live_api -- --
 
 ## 現状の範囲
 
-実装済み: フレームプロトコル、Server / Core、OpenAI 互換 API 接続と逐次配送、Anthropic Messages 互換接続、Claude OAuth・GPT OAuth・Muse Code のログインと要求時認証、中断、複数クライアント。未実装: 会話履歴、ツール実行、RAG、MCP、GUI、製品用 CLI。
+実装済み: フレームプロトコル、Server / Core、OpenAI 互換 API 接続と逐次配送、Anthropic Messages 互換接続、Claude OAuth・GPT OAuth・Muse Code のログインと要求時認証、モデル一覧取得（全方式）、中断、複数クライアント。未実装: 会話履歴、ツール実行、RAG、MCP、GUI、製品用 CLI。

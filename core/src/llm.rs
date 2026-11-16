@@ -401,6 +401,145 @@ impl Llm {
             }),
         })
     }
+
+    /// The discovery endpoint for the configured kind, following the
+    /// reference `buildModelsRequest`: OpenAI-style `{base}/models` for
+    /// everything except Anthropic, whose endpoint is `{base}/v1/models`
+    /// with the maximum page size.
+    fn models_url(&self) -> String {
+        let base = self.config.base_url.trim_end_matches('/');
+        match self.config.provider {
+            ProviderKind::Anthropic => {
+                let base = base.strip_suffix("/v1").unwrap_or(base);
+                format!("{base}/v1/models?limit=1000")
+            }
+            _ => {
+                // The reference `providerModelsUrl` also tolerates a base that
+                // already ends in `/models`.
+                let base = base.strip_suffix("/models").unwrap_or(base);
+                format!("{base}/models")
+            }
+        }
+    }
+
+    /// Lists the models the configured endpoint advertises.
+    pub async fn models(&self) -> Result<Vec<ModelInfo>, ErrorInfo> {
+        let mut request = self
+            .client
+            .get(self.models_url())
+            .header("accept", "application/json");
+        request = match (self.config.provider, self.config.auth) {
+            (ProviderKind::Anthropic, AuthKind::ClaudeOauth) => {
+                let credential = self.credential().await?;
+                request
+                    .bearer_auth(&credential.access)
+                    .header("anthropic-beta", crate::oauth::CLAUDE_CODE_BETA)
+            }
+            (ProviderKind::Anthropic, _) => request
+                .header("x-api-key", &self.config.api_key)
+                .header("anthropic-version", ANTHROPIC_VERSION),
+            (_, AuthKind::MuseSubscription) => {
+                // The Meta account token is rejected by `/v1/models`; the
+                // subscription key is the bearer, as for inference.
+                let credential = self.credential().await?;
+                let api_key = credential.api_key.clone().ok_or_else(|| {
+                    ErrorInfo::new(
+                        "provider_config",
+                        "the stored Muse credential has no api_key; run the login again",
+                    )
+                })?;
+                request
+                    .bearer_auth(api_key)
+                    .header("user-agent", crate::oauth::MUSE_USER_AGENT)
+                    .header("x-api-version", crate::oauth::MUSE_API_VERSION)
+            }
+            (_, AuthKind::GptOauth) => {
+                let credential = self.credential().await?;
+                let account = credential.account_id.clone().ok_or_else(|| {
+                    ErrorInfo::new(
+                        "provider_config",
+                        "the stored ChatGPT credential has no account id; run the login again",
+                    )
+                })?;
+                request
+                    .bearer_auth(&credential.access)
+                    .header("chatgpt-account-id", account)
+            }
+            _ => request.bearer_auth(&self.config.api_key),
+        };
+        let response = request
+            .send()
+            .await
+            .map_err(|error| ErrorInfo::new("provider_http", format!("request failed: {error}")))?;
+        let response = require_success(response).await?;
+        let body = read_bounded_body(response).await?;
+        let value: Value = serde_json::from_str(&body).map_err(|error| {
+            ErrorInfo::new(
+                "provider_protocol",
+                format!("invalid discovery payload: {error}"),
+            )
+        })?;
+        models_from_json(&value)
+    }
+}
+
+/// One model advertised by the provider's discovery endpoint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelInfo {
+    pub id: String,
+    pub display_name: Option<String>,
+    pub owned_by: Option<String>,
+}
+
+/// Extracts the model list from a discovery payload. OpenAI-style responses
+/// carry `owned_by`, Anthropic's carry `display_name`; entries without a
+/// usable `id` are skipped, and a payload without a `data` array is invalid.
+fn models_from_json(value: &Value) -> Result<Vec<ModelInfo>, ErrorInfo> {
+    let data = value.get("data").and_then(Value::as_array).ok_or_else(|| {
+        ErrorInfo::new("provider_protocol", "discovery response has no model list")
+    })?;
+    Ok(data
+        .iter()
+        .filter_map(|item| {
+            let id = item.get("id").and_then(Value::as_str)?.trim();
+            if id.is_empty() {
+                return None;
+            }
+            Some(ModelInfo {
+                id: id.to_string(),
+                display_name: item
+                    .get("display_name")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                owned_by: item
+                    .get("owned_by")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            })
+        })
+        .collect())
+}
+
+/// Reads the response body with the same 16 MiB cap as the SSE streams, so a
+/// discovery endpoint cannot make the client allocate without bound.
+async fn read_bounded_body(mut response: reqwest::Response) -> Result<String, ErrorInfo> {
+    const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
+    let mut body: Vec<u8> = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| ErrorInfo::new("provider_stream", format!("stream failed: {error}")))?
+    {
+        if body.len() + chunk.len() > MAX_BODY_BYTES {
+            return Err(ErrorInfo::new(
+                "provider_protocol",
+                "discovery response exceeds 16 MiB",
+            ));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    String::from_utf8(body)
+        .map_err(|_| ErrorInfo::new("provider_protocol", "discovery response is not valid UTF-8"))
 }
 
 async fn require_success(response: reqwest::Response) -> Result<reqwest::Response, ErrorInfo> {
@@ -872,6 +1011,73 @@ mod tests {
         .expect_err("error event");
         assert_eq!(error.code, "provider_stream");
         assert_eq!(error.message, "quota exceeded");
+    }
+
+    #[test]
+    fn models_url_follows_the_reference_discovery_shapes() {
+        let build = |provider: ProviderKind, base: &str| {
+            Llm::new(LlmConfig {
+                provider,
+                auth: AuthKind::ApiKey,
+                base_url: base.to_string(),
+                model: "test-model".to_string(),
+                api_key: "test-key".to_string(),
+                auth_store_path: None,
+            })
+            .expect("build the client")
+        };
+        // OpenAI-style: `{base}/models`, tolerating a base that already ends
+        // in `/models`.
+        assert_eq!(
+            build(ProviderKind::OpenAi, "https://api.example.test/v1").models_url(),
+            "https://api.example.test/v1/models"
+        );
+        assert_eq!(
+            build(ProviderKind::Responses, "https://api.meta.ai/v1").models_url(),
+            "https://api.meta.ai/v1/models"
+        );
+        assert_eq!(
+            build(
+                ProviderKind::Responses,
+                "https://chatgpt.com/backend-api/codex/"
+            )
+            .models_url(),
+            "https://chatgpt.com/backend-api/codex/models"
+        );
+        // Anthropic: the base loses `/v1`, then `/v1/models` with the maximum
+        // page size.
+        assert_eq!(
+            build(ProviderKind::Anthropic, "https://api.anthropic.com").models_url(),
+            "https://api.anthropic.com/v1/models?limit=1000"
+        );
+        assert_eq!(
+            build(ProviderKind::Anthropic, "https://logfare.ai/v1").models_url(),
+            "https://logfare.ai/v1/models?limit=1000"
+        );
+    }
+
+    #[test]
+    fn models_from_json_reads_both_shapes_and_skips_unusable_entries() {
+        // OpenAI shape: id + owned_by.
+        let openai = serde_json::json!({"data": [
+            {"id": "muse-spark-1.3", "owned_by": "meta"},
+            {"id": ""},
+            {"no-id": true},
+        ]});
+        let models = models_from_json(&openai).expect("openai shape");
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "muse-spark-1.3");
+        assert_eq!(models[0].owned_by.as_deref(), Some("meta"));
+        assert_eq!(models[0].display_name, None);
+        // Anthropic shape: id + display_name.
+        let anthropic = serde_json::json!({"data": [
+            {"type": "model", "id": "claude-sonnet-5", "display_name": "Claude Sonnet 5"},
+        ]});
+        let models = models_from_json(&anthropic).expect("anthropic shape");
+        assert_eq!(models[0].display_name.as_deref(), Some("Claude Sonnet 5"));
+        // A payload without a data array is invalid.
+        let error = models_from_json(&serde_json::json!({"models": []})).expect_err("no list");
+        assert_eq!(error.code, "provider_protocol");
     }
 
     #[test]

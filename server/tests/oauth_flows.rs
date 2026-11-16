@@ -603,3 +603,191 @@ async fn chat_without_a_stored_credential_reports_provider_config() {
     assert_eq!(error.code, "provider_config");
     let _ = std::fs::remove_file(&store_path);
 }
+
+// ---------------------------------------------------------------------------
+// Model discovery (`models`)
+// ---------------------------------------------------------------------------
+
+/// Calls the `models` method over TCP and returns the result list.
+async fn models_call(core: Arc<Core>) -> Vec<Value> {
+    let (addr, stop, _handle) = start_server(core).await;
+    let mut client = connect(addr).await;
+    let response = call(&mut client, 9, json!({"id": 9, "method": "models"})).await;
+    assert!(
+        response.get("result").is_some(),
+        "models must answer with a result: {response}"
+    );
+    let models = response["result"]["models"]
+        .as_array()
+        .expect("model list")
+        .clone();
+    drop(client);
+    let _ = stop.send(());
+    models
+}
+
+#[tokio::test]
+async fn muse_models_uses_the_subscription_key_and_muse_headers() {
+    let mock = start_mock(|request: &MockRequest| {
+        assert_eq!(request.path, "/v1/models");
+        assert_eq!(
+            request.authorization.as_deref(),
+            Some("Bearer LLM|stored-key")
+        );
+        assert_eq!(
+            request.headers.get("user-agent").map(String::as_str),
+            Some(oauth::MUSE_USER_AGENT)
+        );
+        assert_eq!(request.headers.get("x-api-version").map(String::as_str), Some("1.0.0"));
+        MockReply::status(
+            200,
+            r#"{"object":"list","data":[{"id":"muse-spark-1.3","owned_by":"meta"},{"id":"muse-wonder-1.0"}]}"#,
+        )
+    })
+    .await;
+    let store_path = temp_store_path("muse-models");
+    write_store(
+        &store_path,
+        "muse-code",
+        Credential {
+            access: String::new(),
+            refresh: String::new(),
+            expires_at_ms: None,
+            account_id: None,
+            email: None,
+            api_key: Some("LLM|stored-key".to_string()),
+            oauth_access_token: Some("meta-account-token".to_string()),
+        },
+    );
+    let llm = Llm::new(LlmConfig {
+        provider: ProviderKind::Responses,
+        auth: inocode_core::oauth::AuthKind::MuseSubscription,
+        base_url: mock.base_url.clone(),
+        model: "muse-spark-1.3".to_string(),
+        api_key: String::new(),
+        auth_store_path: Some(store_path.clone()),
+    })
+    .expect("build the client");
+    let models = models_call(Arc::new(Core::with_llm(llm))).await;
+    assert_eq!(models.len(), 2);
+    assert_eq!(models[0]["id"], "muse-spark-1.3");
+    assert_eq!(models[0]["owned_by"], "meta");
+    let _ = std::fs::remove_file(&store_path);
+}
+
+#[tokio::test]
+async fn gpt_models_sends_the_account_id_header() {
+    let mock = start_mock(|request: &MockRequest| {
+        assert_eq!(request.path, "/v1/models");
+        assert_eq!(
+            request.authorization.as_deref(),
+            Some("Bearer stored-access")
+        );
+        assert_eq!(
+            request
+                .headers
+                .get("chatgpt-account-id")
+                .map(String::as_str),
+            Some("acct_test")
+        );
+        MockReply::status(
+            200,
+            r#"{"object":"list","data":[{"id":"gpt-5.2-codex","owned_by":"openai"}]}"#,
+        )
+    })
+    .await;
+    let store_path = temp_store_path("gpt-models");
+    write_store(&store_path, "gpt-oauth", credential_for_store());
+    let llm = Llm::new(LlmConfig {
+        provider: ProviderKind::Responses,
+        auth: inocode_core::oauth::AuthKind::GptOauth,
+        base_url: mock.base_url.clone(),
+        model: "gpt-5.2-codex".to_string(),
+        api_key: String::new(),
+        auth_store_path: Some(store_path.clone()),
+    })
+    .expect("build the client");
+    let models = models_call(Arc::new(Core::with_llm(llm))).await;
+    assert_eq!(models.len(), 1);
+    assert_eq!(models[0]["id"], "gpt-5.2-codex");
+    let _ = std::fs::remove_file(&store_path);
+}
+
+#[tokio::test]
+async fn claude_oauth_models_sends_the_bearer_and_beta_header() {
+    let mock = start_mock(|request: &MockRequest| {
+        assert_eq!(request.path, "/v1/models?limit=1000");
+        assert_eq!(request.authorization.as_deref(), Some("Bearer stored-access"));
+        assert_eq!(
+            request.headers.get("anthropic-beta").map(String::as_str),
+            Some(oauth::CLAUDE_CODE_BETA)
+        );
+        MockReply::status(
+            200,
+            r#"{"data":[{"type":"model","id":"claude-sonnet-5","display_name":"Claude Sonnet 5"}],"has_more":false}"#,
+        )
+    })
+    .await;
+    let store_path = temp_store_path("claude-models");
+    write_store(&store_path, "claude-oauth", credential_for_store());
+    let llm = Llm::new(LlmConfig {
+        provider: ProviderKind::Anthropic,
+        auth: inocode_core::oauth::AuthKind::ClaudeOauth,
+        base_url: mock.base_url.clone(),
+        model: "claude-sonnet-5".to_string(),
+        api_key: String::new(),
+        auth_store_path: Some(store_path.clone()),
+    })
+    .expect("build the client");
+    let models = models_call(Arc::new(Core::with_llm(llm))).await;
+    assert_eq!(models.len(), 1);
+    assert_eq!(models[0]["id"], "claude-sonnet-5");
+    assert_eq!(models[0]["display_name"], "Claude Sonnet 5");
+    let _ = std::fs::remove_file(&store_path);
+}
+
+#[tokio::test]
+async fn api_key_models_use_x_api_key_or_bearer_per_format() {
+    // OpenAI Chat Completions: bearer on `{base}/models`.
+    let mock = start_mock(|request: &MockRequest| {
+        assert_eq!(request.path, "/v1/models");
+        assert_eq!(request.authorization.as_deref(), Some("Bearer test-key"));
+        MockReply::status(200, r#"{"data":[{"id":"logfare/auto"}]}"#)
+    })
+    .await;
+    let llm = Llm::new(LlmConfig {
+        provider: ProviderKind::OpenAi,
+        auth: inocode_core::oauth::AuthKind::ApiKey,
+        base_url: mock.base_url.clone(),
+        model: "logfare/auto".to_string(),
+        api_key: "test-key".to_string(),
+        auth_store_path: None,
+    })
+    .expect("build the client");
+    let models = models_call(Arc::new(Core::with_llm(llm))).await;
+    assert_eq!(models.len(), 1);
+    assert_eq!(models[0]["id"], "logfare/auto");
+
+    // Anthropic Messages: `x-api-key` on `{base}/v1/models?limit=1000`.
+    let mock = start_mock(|request: &MockRequest| {
+        assert_eq!(request.path, "/v1/models?limit=1000");
+        assert!(request.authorization.is_none());
+        MockReply::status(
+            200,
+            r#"{"data":[{"type":"model","id":"claude-haiku-5-5"}],"has_more":false}"#,
+        )
+    })
+    .await;
+    let llm = Llm::new(LlmConfig {
+        provider: ProviderKind::Anthropic,
+        auth: inocode_core::oauth::AuthKind::ApiKey,
+        base_url: mock.base_url.clone(),
+        model: "claude-haiku-5-5".to_string(),
+        api_key: "test-key".to_string(),
+        auth_store_path: None,
+    })
+    .expect("build the client");
+    let models = models_call(Arc::new(Core::with_llm(llm))).await;
+    assert_eq!(models.len(), 1);
+    assert_eq!(models[0]["id"], "claude-haiku-5-5");
+}

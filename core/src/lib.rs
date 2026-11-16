@@ -10,7 +10,8 @@ pub mod oauth;
 mod sse;
 
 pub use llm::{
-    ChatStream, Llm, LlmConfig, ProviderKind, DEFAULT_BASE_URL, DEFAULT_MAX_TOKENS, DEFAULT_MODEL,
+    ChatStream, Llm, LlmConfig, ModelInfo, ProviderKind, DEFAULT_BASE_URL, DEFAULT_MAX_TOKENS,
+    DEFAULT_MODEL,
 };
 
 use serde::{Deserialize, Serialize};
@@ -214,6 +215,18 @@ impl Core {
     pub async fn chat(&self, prompt: &str) -> Result<ChatStream, ErrorInfo> {
         match &self.provider {
             Provider::Ready(llm) => llm.chat(prompt).await,
+            Provider::Unavailable(error) => Err(error.clone()),
+            Provider::Unconfigured => Err(ErrorInfo::new(
+                "provider_unconfigured",
+                "no LLM provider is configured",
+            )),
+        }
+    }
+
+    /// Lists the models the configured provider advertises.
+    pub async fn models(&self) -> Result<Vec<ModelInfo>, ErrorInfo> {
+        match &self.provider {
+            Provider::Ready(llm) => llm.models().await,
             Provider::Unavailable(error) => Err(error.clone()),
             Provider::Unconfigured => Err(ErrorInfo::new(
                 "provider_unconfigured",

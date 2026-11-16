@@ -157,6 +157,27 @@ async fn dispatch(
     match request.method.as_str() {
         "chat" => start_chat(request, stream_id, core, queue, in_flight).await,
         "cancel" => cancel(request, stream_id, queue, in_flight).await,
+        "models" => {
+            let payload = match core.models().await {
+                Ok(models) => {
+                    let listed: Vec<Value> = models
+                        .iter()
+                        .map(|model| {
+                            json!({
+                                "id": model.id,
+                                "display_name": model.display_name,
+                                "owned_by": model.owned_by,
+                            })
+                        })
+                        .collect();
+                    json!({ "id": request.id, "result": { "models": listed } })
+                }
+                Err(error) => {
+                    json!({ "id": request.id, "error": error })
+                }
+            };
+            send(queue, stream_id, payload).await
+        }
         _ => {
             let response = core.handle(request);
             let payload = serde_json::to_value(response).unwrap_or(Value::Null);
