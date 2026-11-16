@@ -228,7 +228,7 @@ enum Provider {
     Unconfigured,
     /// Configuration was attempted and failed; the error is reported as is.
     Unavailable(ErrorInfo),
-    Ready(Llm),
+    Ready(Box<Llm>),
 }
 
 /// Request processor.
@@ -250,7 +250,7 @@ impl Core {
     }
 
     pub fn with_llm(llm: Llm) -> Self {
-        Self::with_provider(Provider::Ready(llm))
+        Self::with_provider(Provider::Ready(Box::new(llm)))
     }
 
     fn with_provider(provider: Provider) -> Self {
@@ -309,7 +309,7 @@ impl Core {
 
     fn llm(&self) -> Result<&Llm, ErrorInfo> {
         match &self.provider {
-            Provider::Ready(llm) => Ok(llm),
+            Provider::Ready(llm) => Ok(llm.as_ref()),
             Provider::Unavailable(error) => Err(error.clone()),
             Provider::Unconfigured => Err(ErrorInfo::new(
                 "provider_unconfigured",
