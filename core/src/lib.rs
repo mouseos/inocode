@@ -14,6 +14,7 @@ pub mod rules;
 mod rules_import;
 mod sse;
 pub mod store;
+pub mod turn;
 mod usage;
 
 pub use usage::{Usage, UsageWindow};
@@ -23,8 +24,15 @@ pub use llm::{
     DEFAULT_MAX_TOKENS, DEFAULT_MODEL,
 };
 
+use std::collections::HashMap;
+use std::sync::Mutex;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tokio::sync::{mpsc, watch};
+
+use store::{SessionId, Store, StoredMessage};
+use turn::{Outcome, TurnEvent};
 
 /// One request decoded from a JSON frame payload.
 ///
@@ -50,11 +58,18 @@ impl Request {
             .and_then(Value::as_str)
             .filter(|prompt| !prompt.trim().is_empty())
             .ok_or_else(|| {
-                ErrorInfo::new(
-                    "invalid_params",
-                    "chat requires a non-empty \"prompt\" string",
-                )
+                ErrorInfo::new("invalid_params", "requires a non-empty \"prompt\" string")
             })
+    }
+
+    /// The thread a `thread/read` or `turn/*` request names.
+    pub fn thread(&self) -> Result<store::SessionId, ErrorInfo> {
+        self.params
+            .as_ref()
+            .and_then(|params| params.get("thread_id"))
+            .and_then(Value::as_i64)
+            .map(store::SessionId)
+            .ok_or_else(|| ErrorInfo::new("invalid_params", "requires a \"thread_id\" number"))
     }
 
     /// Request id that a `cancel` request refers to.
@@ -115,6 +130,14 @@ pub struct EventPayload {
     pub text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<ErrorInfo>,
+    /// A stored message of a turn, as `{seq, message}`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<Value>,
+    /// Why a turn completed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<turn::TurnUsage>,
 }
 
 impl EventPayload {
@@ -124,10 +147,24 @@ impl EventPayload {
 
     pub fn delta(id: u64, text: impl Into<String>) -> Self {
         Self {
-            id,
-            event: "delta",
             text: Some(text.into()),
-            error: None,
+            ..Self::new(id, "delta")
+        }
+    }
+
+    pub fn message(id: u64, seq: i64, message: &conversation::Message) -> Self {
+        Self {
+            message: Some(json!({ "seq": seq, "message": message })),
+            ..Self::new(id, "message")
+        }
+    }
+
+    /// The end of a turn that was neither interrupted nor failed.
+    pub fn turn_completed(id: u64, reason: &'static str, usage: turn::TurnUsage) -> Self {
+        Self {
+            reason: Some(reason),
+            usage: Some(usage),
+            ..Self::new(id, "completed")
         }
     }
 
@@ -141,10 +178,8 @@ impl EventPayload {
 
     pub fn failed(id: u64, error: ErrorInfo) -> Self {
         Self {
-            id,
-            event: "failed",
-            text: None,
             error: Some(error),
+            ..Self::new(id, "failed")
         }
     }
 
@@ -154,6 +189,9 @@ impl EventPayload {
             event,
             text: None,
             error: None,
+            message: None,
+            reason: None,
+            usage: None,
         }
     }
 }
@@ -174,29 +212,40 @@ enum Provider {
 /// a completion from the configured provider.
 pub struct Core {
     provider: Provider,
+    store: Option<Store>,
+    /// Where steering input goes, for each thread with a running turn.
+    turns: Mutex<HashMap<SessionId, mpsc::UnboundedSender<String>>>,
 }
 
 impl Core {
     /// Core without a provider: `chat` reports `provider_unconfigured`.
     pub fn without_llm() -> Self {
-        Self {
-            provider: Provider::Unconfigured,
-        }
+        Self::with_provider(Provider::Unconfigured)
     }
 
     pub fn with_llm(llm: Llm) -> Self {
+        Self::with_provider(Provider::Ready(llm))
+    }
+
+    fn with_provider(provider: Provider) -> Self {
         Self {
-            provider: Provider::Ready(llm),
+            provider,
+            store: None,
+            turns: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Keeps threads in `store`.
+    pub fn with_store(mut self, store: Store) -> Self {
+        self.store = Some(store);
+        self
     }
 
     /// Core configured from the environment, or from the recorded failure.
     pub fn from_env() -> Self {
         match Llm::from_env() {
             Ok(llm) => Self::with_llm(llm),
-            Err(error) => Self {
-                provider: Provider::Unavailable(error),
-            },
+            Err(error) => Self::with_provider(Provider::Unavailable(error)),
         }
     }
 
@@ -232,6 +281,105 @@ impl Core {
         }
     }
 
+    fn llm(&self) -> Result<&Llm, ErrorInfo> {
+        match &self.provider {
+            Provider::Ready(llm) => Ok(llm),
+            Provider::Unavailable(error) => Err(error.clone()),
+            Provider::Unconfigured => Err(ErrorInfo::new(
+                "provider_unconfigured",
+                "no LLM provider is configured",
+            )),
+        }
+    }
+
+    fn store(&self) -> Result<&Store, ErrorInfo> {
+        self.store
+            .as_ref()
+            .ok_or_else(|| ErrorInfo::new("store_unconfigured", "no thread store is open"))
+    }
+
+    /// Creates a thread, in the project named `project` when given.
+    pub async fn start_thread(&self, project: Option<&str>) -> Result<SessionId, ErrorInfo> {
+        let store = self.store()?;
+        let project = match project {
+            Some(key) => Some(store.project(key).await?),
+            None => None,
+        };
+        store.start_session(project, "").await
+    }
+
+    /// Up to `limit` messages of `thread` before `before` (the latest when
+    /// `None`), oldest first.
+    pub async fn read_thread(
+        &self,
+        thread: SessionId,
+        before: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<StoredMessage>, ErrorInfo> {
+        let store = self.store()?;
+        if !store.session_exists(thread).await? {
+            return Err(unknown_thread());
+        }
+        store.page(thread, before, limit).await
+    }
+
+    /// Claims `thread` for a new turn and returns where its steering input
+    /// arrives. One turn runs per thread; [`Self::end_turn`] releases it.
+    pub async fn begin_turn(
+        &self,
+        thread: SessionId,
+    ) -> Result<mpsc::UnboundedReceiver<String>, ErrorInfo> {
+        self.llm()?;
+        if !self.store()?.session_exists(thread).await? {
+            return Err(unknown_thread());
+        }
+        let mut turns = self.turns.lock().map_err(|_| poisoned_turns())?;
+        if turns.contains_key(&thread) {
+            return Err(ErrorInfo::new(
+                "turn_running",
+                "a turn is already running in this thread",
+            ));
+        }
+        let (sender, receiver) = mpsc::unbounded_channel();
+        turns.insert(thread, sender);
+        Ok(receiver)
+    }
+
+    pub fn end_turn(&self, thread: SessionId) {
+        if let Ok(mut turns) = self.turns.lock() {
+            turns.remove(&thread);
+        }
+    }
+
+    /// Adds `text` to the running turn of `thread`; `false` when none runs.
+    pub fn steer(&self, thread: SessionId, text: String) -> bool {
+        self.turns
+            .lock()
+            .ok()
+            .and_then(|turns| turns.get(&thread).map(|sender| sender.send(text).is_ok()))
+            .unwrap_or(false)
+    }
+
+    /// Runs the turn [`Self::begin_turn`] claimed.
+    pub async fn run_turn(
+        &self,
+        thread: SessionId,
+        prompt: String,
+        steer: mpsc::UnboundedReceiver<String>,
+        cancel: watch::Receiver<bool>,
+        events: mpsc::Sender<TurnEvent>,
+    ) -> Outcome {
+        match (self.llm(), self.store()) {
+            (Ok(llm), Ok(store)) => {
+                turn::run(llm, store, thread, prompt, steer, cancel, events).await
+            }
+            (Err(error), _) | (_, Err(error)) => Outcome {
+                ending: turn::Ending::Failed(error),
+                usage: Default::default(),
+            },
+        }
+    }
+
     /// Lists the models the configured provider advertises.
     pub async fn models(&self) -> Result<Vec<ModelInfo>, ErrorInfo> {
         match &self.provider {
@@ -255,6 +403,14 @@ impl Core {
             )),
         }
     }
+}
+
+fn unknown_thread() -> ErrorInfo {
+    ErrorInfo::new("unknown_thread", "no thread has this id")
+}
+
+fn poisoned_turns() -> ErrorInfo {
+    ErrorInfo::new("internal", "the turn registry is unusable")
 }
 
 #[cfg(test)]

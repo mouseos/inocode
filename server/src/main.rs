@@ -82,11 +82,27 @@ async fn serve() -> io::Result<()> {
     };
     let listener = TcpListener::bind(("127.0.0.1", port)).await?;
     println!("inocode-server listening on {}", listener.local_addr()?);
-    let core = Arc::new(Core::from_env());
+    let mut core = Core::from_env();
+    match thread_store_path() {
+        Ok(path) => match inocode_core::store::Store::open(&path).await {
+            Ok(store) => core = core.with_store(store),
+            Err(error) => eprintln!("threads unavailable: {}", error.message),
+        },
+        Err(error) => eprintln!("threads unavailable: {error}"),
+    }
+    let core = Arc::new(core);
     inocode_server::run(listener, core, async {
         let _ = tokio::signal::ctrl_c().await;
     })
     .await
+}
+
+/// `~/.inocode/inocode.db`, beside `auth.json`.
+fn thread_store_path() -> Result<std::path::PathBuf, String> {
+    let auth = Store::default_path()?;
+    let directory = auth.parent().ok_or("no directory for the thread store")?;
+    std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+    Ok(directory.join("inocode.db"))
 }
 
 /// Runs one login flow and stores its credential. Tokens and keys are never

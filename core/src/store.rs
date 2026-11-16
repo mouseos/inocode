@@ -470,6 +470,18 @@ impl Store {
         .await
     }
 
+    pub async fn session_exists(&self, session: SessionId) -> Result<bool, ErrorInfo> {
+        self.read(Duration::from_secs(5), move |db| {
+            db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?1)",
+                [session.0],
+                |row| row.get(0),
+            )
+            .map_err(store_error)
+        })
+        .await
+    }
+
     /// Appends messages in one transaction and returns their positions.
     pub async fn append(
         &self,
