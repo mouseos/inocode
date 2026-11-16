@@ -18,6 +18,7 @@ pub(crate) const MAX_EVENT_LEN: usize = 16 * 1024 * 1024;
 
 struct Event {
     data_lines: Vec<String>,
+    /// Bytes of the data lines collected so far.
     bytes: usize,
 }
 
@@ -34,6 +35,8 @@ pub(crate) struct SseParser {
     buffer: Vec<u8>,
     event: Event,
     ended: bool,
+    /// No line has been interpreted yet, so a BOM may still be present.
+    at_stream_start: bool,
 }
 
 impl SseParser {
@@ -42,12 +45,12 @@ impl SseParser {
             buffer: Vec::new(),
             event: Event::new(),
             ended: false,
+            at_stream_start: true,
         }
     }
 
     pub(crate) fn push(&mut self, bytes: &[u8]) {
         self.buffer.extend_from_slice(bytes);
-        self.event.bytes += bytes.len();
     }
 
     /// Marks the end of the body so a last line without a terminator is still parsed.
@@ -59,7 +62,9 @@ impl SseParser {
     /// needed.
     pub(crate) fn next_item(&mut self) -> Option<Result<String, ErrorInfo>> {
         loop {
-            if self.event.bytes > MAX_EVENT_LEN || self.buffer.len() > MAX_EVENT_LEN {
+            // The collected data plus the unterminated rest is what the
+            // current event can still grow to.
+            if self.event.bytes + self.buffer.len() > MAX_EVENT_LEN {
                 return Some(Err(ErrorInfo::new(
                     "provider_protocol",
                     format!("SSE event exceeds the limit of {MAX_EVENT_LEN} bytes"),
@@ -131,7 +136,11 @@ impl SseParser {
             }
         };
         // The standard allows one BOM at the very start of the stream.
-        let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+        let text = if std::mem::take(&mut self.at_stream_start) {
+            text.strip_prefix('\u{feff}').unwrap_or(text)
+        } else {
+            text
+        };
         if text.is_empty() {
             if self.event.data_lines.is_empty() {
                 return Ok(None);
@@ -149,6 +158,7 @@ impl SseParser {
             // Other fields and `:` comments carry nothing for this protocol.
             return Ok(None);
         }
+        self.event.bytes += value.len();
         self.event.data_lines.push(value.to_string());
         Ok(None)
     }
@@ -220,6 +230,28 @@ mod tests {
         let mut parser = SseParser::new();
         parser.push("\u{feff}data: a\n\ndata: b\n\n".as_bytes());
         assert_eq!(drain(&mut parser), ["a", "b"]);
+    }
+
+    #[test]
+    fn keeps_a_byte_order_mark_after_the_first_line() {
+        let mut parser = SseParser::new();
+        parser.push("data: a\n\n\u{feff}data: b\n\n".as_bytes());
+        parser.end();
+        // Only the stream's first BOM is dropped; a later one makes the line
+        // an unknown field, which carries nothing.
+        assert_eq!(drain(&mut parser), vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn heartbeat_comments_do_not_count_toward_the_event_limit() {
+        let heartbeat = format!(": {}\n\n", "p".repeat(1024));
+        let mut parser = SseParser::new();
+        for _ in 0..(MAX_EVENT_LEN / 1024 + 16) {
+            parser.push(heartbeat.as_bytes());
+            assert!(parser.next_item().is_none(), "comments carry no event");
+        }
+        parser.push(b"data: after\n\n");
+        assert_eq!(drain(&mut parser), vec!["after".to_string()]);
     }
 
     #[test]

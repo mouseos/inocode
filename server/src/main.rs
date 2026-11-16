@@ -72,7 +72,8 @@ async fn serve() -> io::Result<()> {
 /// Runs one login flow and stores its credential. Tokens and keys are never
 /// printed; only provider names and the storage path are.
 async fn login_command(provider: Option<&str>, option: Option<&str>) -> io::Result<()> {
-    let mut store = Store::load(Store::default_path().map_err(io::Error::other)?);
+    let mut store =
+        Store::load(Store::default_path().map_err(io::Error::other)?).map_err(io::Error::other)?;
     let (name, credential) = match provider {
         Some("claude") => {
             let code_mode = option == Some("--code");

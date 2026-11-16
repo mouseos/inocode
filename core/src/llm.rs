@@ -213,7 +213,8 @@ impl Llm {
             None => crate::oauth::Store::default_path()
                 .map_err(|error| ErrorInfo::new("provider_config", error))?,
         };
-        let mut store = crate::oauth::Store::load(path);
+        let mut store = crate::oauth::Store::load(path)
+            .map_err(|error| ErrorInfo::new("provider_config", error))?;
         let name = self.config.auth.store_name();
         let credential = store.credential(name).cloned().ok_or_else(|| {
             ErrorInfo::new(
@@ -592,28 +593,41 @@ fn codex_client_version() -> String {
 /// discovery endpoint cannot make the client allocate without bound.
 async fn read_bounded_body(mut response: reqwest::Response) -> Result<String, ErrorInfo> {
     const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
-    let mut body: Vec<u8> = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
+    let body = read_capped(&mut response, MAX_BODY_BYTES)
         .await
         .map_err(|error| ErrorInfo::new("provider_stream", format!("stream failed: {error}")))?
-    {
-        if body.len() + chunk.len() > MAX_BODY_BYTES {
-            return Err(ErrorInfo::new(
-                "provider_protocol",
-                "discovery response exceeds 16 MiB",
-            ));
-        }
-        body.extend_from_slice(&chunk);
-    }
+        .ok_or_else(|| ErrorInfo::new("provider_protocol", "discovery response exceeds 16 MiB"))?;
     String::from_utf8(body)
         .map_err(|_| ErrorInfo::new("provider_protocol", "discovery response is not valid UTF-8"))
 }
 
-async fn require_success(response: reqwest::Response) -> Result<reqwest::Response, ErrorInfo> {
+/// Largest error body read for the failure message (reference
+/// `CHATGPT_ERROR_BODY_MAX_BYTES`); only a short snippet is shown anyway.
+pub(crate) const ERROR_BODY_MAX_BYTES: usize = 16 * 1024;
+
+/// Reads at most `max` body bytes. `None` means the body is longer: reading
+/// stops there, so an oversized body never costs more than `max` bytes.
+pub(crate) async fn read_capped(
+    response: &mut reqwest::Response,
+    max: usize,
+) -> Result<Option<Vec<u8>>, reqwest::Error> {
+    let mut body: Vec<u8> = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if body.len() + chunk.len() > max {
+            return Ok(None);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(Some(body))
+}
+
+async fn require_success(mut response: reqwest::Response) -> Result<reqwest::Response, ErrorInfo> {
     let status = response.status();
     if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
+        let body = match read_capped(&mut response, ERROR_BODY_MAX_BYTES).await {
+            Ok(Some(bytes)) => String::from_utf8_lossy(&bytes).into_owned(),
+            Ok(None) | Err(_) => String::new(),
+        };
         return Err(ErrorInfo::new(
             "provider_http",
             format!(

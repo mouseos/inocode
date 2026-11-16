@@ -166,7 +166,7 @@ fn credential_for_store() -> Credential {
 }
 
 fn write_store(path: &std::path::Path, provider: &str, credential: Credential) {
-    let mut store = Store::load(path.to_path_buf());
+    let mut store = Store::load(path.to_path_buf()).expect("load the test store");
     store.save(provider, credential).expect("write the store");
 }
 
@@ -276,7 +276,9 @@ async fn claude_code_mode_exchanges_the_pasted_code() {
         assert_eq!(request.path, "/v1/oauth/token");
         let body: Value = serde_json::from_str(&request.body).expect("json token request");
         assert_eq!(body["code"], "displayed-code");
-        assert_eq!(body["state"], "fragment-state");
+        assert!(body["state"]
+            .as_str()
+            .is_some_and(|state| state.starts_with("inocode-")));
         assert_eq!(body["grant_type"], "authorization_code");
         (
             200,
@@ -293,13 +295,16 @@ async fn claude_code_mode_exchanges_the_pasted_code() {
         code_redirect_uri: Some("https://platform.claude.com/oauth/code/callback".to_string()),
     };
     let start = oauth::claude_login_start(&endpoints, true);
-    let credential = oauth::claude_login_finish(
-        &endpoints,
-        start,
-        Some("displayed-code#fragment-state".to_string()),
-    )
-    .await
-    .expect("the flow completes");
+    // As typed at the prompt: the fragment echoes this login's state and the
+    // line still carries its terminator.
+    let pasted = format!(
+        "displayed-code#{}
+",
+        start.state
+    );
+    let credential = oauth::claude_login_finish(&endpoints, start, Some(pasted))
+        .await
+        .expect("the flow completes");
     assert_eq!(credential.access, "at-display");
 }
 
@@ -803,4 +808,122 @@ async fn api_key_models_use_x_api_key_or_bearer_per_format() {
     let models = models_call(Arc::new(Core::with_llm(llm))).await;
     assert_eq!(models.len(), 1);
     assert_eq!(models[0]["id"], "claude-haiku-5-5");
+}
+
+#[tokio::test]
+async fn slow_discovery_does_not_block_the_connection() {
+    let mock = start_mock(|_request: &MockRequest| {
+        MockReply::status(200, r#"{"data":[{"id":"late-model"}]}"#)
+            .with_head_delay(Duration::from_secs(3))
+    })
+    .await;
+    let llm = Llm::new(LlmConfig {
+        provider: ProviderKind::OpenAi,
+        auth: inocode_core::oauth::AuthKind::ApiKey,
+        base_url: mock.base_url.clone(),
+        model: "late-model".to_string(),
+        api_key: "test-key".to_string(),
+        auth_store_path: None,
+    })
+    .expect("build the client");
+    let (addr, _stop, _server) = start_server(Arc::new(Core::with_llm(llm))).await;
+    let mut client = connect(addr).await;
+    client
+        .1
+        .write_json(1, &json!({"id": 1, "method": "models"}))
+        .await
+        .expect("send models");
+    // The ping is answered while discovery is still waiting on the provider.
+    let pong = with_timeout_of(
+        Duration::from_secs(1),
+        call(&mut client, 2, json!({"id": 2, "method": "ping"})),
+    )
+    .await;
+    assert_eq!(pong["result"]["pong"], true);
+    let models = with_timeout(next_message(&mut client, 1)).await;
+    assert_eq!(models["result"]["models"][0]["id"], "late-model");
+}
+
+#[tokio::test]
+async fn an_idle_connection_does_not_hold_up_the_callback() {
+    let (base, _log) = start_raw_mock(Arc::new(|_request: &RawRequest| {
+        (
+            200,
+            json!({"access_token": "at-idle", "refresh_token": "rt-idle", "expires_in": 3600})
+                .to_string(),
+        )
+    }))
+    .await;
+    let port = free_port().await;
+    let endpoints = FlowEndpoints {
+        authorize_url: format!("{base}/authorize"),
+        token_url: format!("{base}/oauth/token"),
+        callback_port: port,
+        callback_path: "/auth/callback".to_string(),
+        code_redirect_uri: None,
+    };
+    let start = oauth::gpt_login_start(&endpoints);
+    let state = start.state.clone();
+    let flow = tokio::spawn(async move { oauth::gpt_login_finish(&endpoints, start, None).await });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    // A preconnected socket that never sends a request stays open.
+    let _idle = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("open the idle connection");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let mut browser = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect the callback");
+    browser
+        .write_all(
+            format!("GET /auth/callback?code=c&state={state} HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                .as_bytes(),
+        )
+        .await
+        .expect("send the redirect");
+    let credential = with_timeout_of(Duration::from_secs(5), flow)
+        .await
+        .expect("the flow task completes")
+        .expect("the flow completes");
+    assert_eq!(credential.access, "at-idle");
+}
+
+#[tokio::test]
+async fn oversized_bodies_are_not_read_whole() {
+    // An error body past the cap is dropped instead of being read for the
+    // snippet.
+    let huge = "x".repeat(100 * 1024);
+    let error_body = huge.clone();
+    let mock = start_mock(move |_request: &MockRequest| MockReply::status(500, &error_body)).await;
+    let llm = Llm::new(LlmConfig {
+        provider: ProviderKind::OpenAi,
+        auth: inocode_core::oauth::AuthKind::ApiKey,
+        base_url: mock.base_url.clone(),
+        model: "m".to_string(),
+        api_key: "test-key".to_string(),
+        auth_store_path: None,
+    })
+    .expect("build the client");
+    let error = llm.models().await.expect_err("HTTP 500 fails");
+    assert_eq!(error.message, "provider returned HTTP 500: ");
+
+    // A token response past the cap is rejected rather than parsed.
+    let token_body = format!(r#"{{"access_token":"at","padding":"{huge}"}}"#);
+    let (base, _log) = start_raw_mock(Arc::new(move |_request: &RawRequest| {
+        (200, token_body.clone())
+    }))
+    .await;
+    let error = oauth::refresh_gpt(
+        &FlowEndpoints {
+            authorize_url: format!("{base}/authorize"),
+            token_url: format!("{base}/oauth/token"),
+            callback_port: 0,
+            callback_path: "/auth/callback".to_string(),
+            code_redirect_uri: None,
+        },
+        "rt",
+    )
+    .await
+    .expect_err("an oversized token response fails");
+    assert!(error.contains("exceeds"), "{error}");
 }

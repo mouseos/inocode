@@ -128,12 +128,12 @@ impl Store {
         Ok(PathBuf::from(home).join(".inocode").join("auth.json"))
     }
 
-    pub fn load(path: PathBuf) -> Self {
-        let entries = std::fs::read(&path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<BTreeMap<String, Credential>>(&bytes).ok())
-            .unwrap_or_default();
-        Self { path, entries }
+    /// Opens the store at `path`. A missing file is an empty store; a file
+    /// that cannot be read or parsed is an error, because treating it as empty
+    /// would make the next save discard every other provider's credential.
+    pub fn load(path: PathBuf) -> Result<Self, String> {
+        let entries = read_entries(&path)?;
+        Ok(Self { path, entries })
     }
 
     pub fn credential(&self, provider: &str) -> Option<&Credential> {
@@ -145,33 +145,28 @@ impl Store {
         &self.path
     }
 
-    /// Persists one provider's credential, creating the file with owner-only
-    /// permissions where the platform supports it.
+    /// Persists one provider's credential.
+    ///
+    /// The file is re-read first and only this provider's entry is replaced,
+    /// so entries written by another process since this store was loaded (a
+    /// login running next to a server that refreshed a token) are kept. The
+    /// new content is written to a sibling file created owner-only where the
+    /// platform supports it, then renamed over the store, so a crash never
+    /// leaves a truncated file and the credential is never world-readable.
     pub fn save(&mut self, provider: &str, credential: Credential) -> Result<(), String> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        self.entries.insert(provider.to_string(), credential);
-        let serialized = serde_json::to_vec_pretty(&self.entries).map_err(|e| e.to_string())?;
-        std::fs::write(&self.path, &serialized).map_err(|e| e.to_string())?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(0o600));
-        }
-        Ok(())
+        self.update(provider, |stored| *stored = credential)
     }
 
-    /// Replaces one provider's credential and persists it.
+    /// Edits one provider's credential as currently stored on disk and
+    /// persists it the same way as [`Store::save`].
     pub fn update<F>(&mut self, provider: &str, edit: F) -> Result<(), String>
     where
         F: FnOnce(&mut Credential),
     {
-        let mut credential = self
-            .entries
-            .get(provider)
-            .cloned()
-            .unwrap_or_else(|| Credential {
+        let mut entries = read_entries(&self.path)?;
+        let credential = entries
+            .entry(provider.to_string())
+            .or_insert_with(|| Credential {
                 access: String::new(),
                 refresh: String::new(),
                 expires_at_ms: None,
@@ -180,9 +175,57 @@ impl Store {
                 api_key: None,
                 oauth_access_token: None,
             });
-        edit(&mut credential);
-        self.save(provider, credential)
+        edit(credential);
+        let serialized = serde_json::to_vec_pretty(&entries).map_err(|e| e.to_string())?;
+        write_replacing(&self.path, &serialized)?;
+        self.entries = entries;
+        Ok(())
     }
+}
+
+fn read_entries(path: &std::path::Path) -> Result<BTreeMap<String, Credential>, String> {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|e| format!("the credential store {} is not valid: {e}", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+        Err(error) => Err(format!(
+            "cannot read the credential store {}: {error}",
+            path.display()
+        )),
+    }
+}
+
+fn write_replacing(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let mut temp = path.as_os_str().to_owned();
+    temp.push(format!(".tmp-{}", std::process::id()));
+    let temp = PathBuf::from(temp);
+    // A leftover from an interrupted save may carry other permissions; the
+    // file must be created fresh for the owner-only mode to apply.
+    let _ = std::fs::remove_file(&temp);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let written = options.open(&temp).and_then(|mut file| {
+        file.write_all(bytes)?;
+        file.sync_all()
+    });
+    let result = written.and_then(|()| std::fs::rename(&temp, path));
+    if let Err(error) = result {
+        let _ = std::fs::remove_file(&temp);
+        return Err(format!(
+            "cannot write the credential store {}: {error}",
+            path.display()
+        ));
+    }
+    Ok(())
 }
 
 /// PKCE verifier/challenge pair (RFC 7636 `S256`).
@@ -292,6 +335,26 @@ struct Callback {
     state: String,
 }
 
+/// Interprets a pasted code. A `code#state` paste is an authorization
+/// response and must echo this login's state; a bare code belongs to the same
+/// PKCE session and inherits it (reference `#waitForCallback` manual input).
+fn pasted_callback(pasted: &str, expected_state: &str) -> Result<Callback, String> {
+    let (code, state) = split_code_fragment(pasted.trim());
+    if code.is_empty() {
+        return Err("the pasted input contains no authorization code".to_string());
+    }
+    match state {
+        Some(state) if state != expected_state => {
+            Err("state mismatch - possible CSRF attack".to_string())
+        }
+        Some(state) => Ok(Callback { code, state }),
+        None => Ok(Callback {
+            code,
+            state: expected_state.to_string(),
+        }),
+    }
+}
+
 /// Runs a one-shot localhost callback listener and returns the browser redirect.
 /// Runs the localhost callback listeners (IPv4 and, where supported, IPv6 —
 /// the advertised redirect is `localhost`, which browsers may resolve to
@@ -307,18 +370,28 @@ async fn await_callback(port: u16, path: &str, shutdown: Duration) -> Result<Cal
     if let Ok(v6) = tokio::net::TcpListener::bind(("::1", port)).await {
         listeners.push(v6);
     }
+    // Dropping the set when this function returns stops every listener and
+    // every connection still open, so nothing keeps the ports after the flow.
+    let mut tasks = tokio::task::JoinSet::new();
     for listener in listeners {
         let sender = sender.clone();
         let path = path.clone();
-        tokio::spawn(async move {
+        tasks.spawn(async move {
+            // Each connection is served on its own, so a socket that never
+            // sends a request (a browser preconnect) cannot hold up the
+            // redirect arriving on another one.
+            let mut connections = tokio::task::JoinSet::new();
             loop {
                 let Ok((mut socket, _)) = listener.accept().await else {
                     return;
                 };
-                if let Some(result) = handle_callback_connection(&mut socket, &path).await {
-                    let _ = sender.send(result);
-                    return;
-                }
+                let sender = sender.clone();
+                let path = path.clone();
+                connections.spawn(async move {
+                    if let Some(result) = handle_callback_connection(&mut socket, &path).await {
+                        let _ = sender.send(result);
+                    }
+                });
             }
         });
     }
@@ -418,12 +491,23 @@ fn urldecode(value: &str) -> String {
 /// One-shot client for the token endpoints: no redirect following (the
 /// reference treats a redirect after token rotation as an unknown outcome)
 /// and a bounded 30-second request window.
-fn token_client() -> reqwest::Client {
+fn token_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(30))
         .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
+        .map_err(|e| format!("cannot build the token HTTP client: {e}"))
+}
+
+/// Largest successful body accepted from the login endpoints (reference
+/// `CHATGPT_SUCCESS_BODY_MAX_BYTES`); token and key payloads are far smaller.
+const SUCCESS_BODY_MAX_BYTES: usize = 64 * 1024;
+
+async fn read_success_body(mut response: reqwest::Response, what: &str) -> Result<Vec<u8>, String> {
+    crate::llm::read_capped(&mut response, SUCCESS_BODY_MAX_BYTES)
+        .await
+        .map_err(|e| format!("reading the {what} failed: {e}"))?
+        .ok_or_else(|| format!("the {what} exceeds {SUCCESS_BODY_MAX_BYTES} bytes"))
 }
 
 async fn post_token_json(
@@ -440,12 +524,12 @@ async fn post_token_json(
         .await
         .map_err(|e| format!("token request failed: {e}"))?;
     let status = response.status();
-    let text = response.text().await.unwrap_or_default();
     if !status.is_success() {
         // Never echo the body: it can carry request material.
         return Err(format!("token request returned HTTP {}", status.as_u16()));
     }
-    serde_json::from_str(&text).map_err(|_| "token response was not valid JSON".to_string())
+    let bytes = read_success_body(response, "token response").await?;
+    serde_json::from_slice(&bytes).map_err(|_| "token response was not valid JSON".to_string())
 }
 
 async fn post_token_form(
@@ -473,11 +557,11 @@ async fn post_token_form(
         .await
         .map_err(|e| format!("token request failed: {e}"))?;
     let status = response.status();
-    let text = response.text().await.unwrap_or_default();
     if !status.is_success() {
         return Err(format!("token request returned HTTP {}", status.as_u16()));
     }
-    serde_json::from_str(&text).map_err(|_| "token response was not valid JSON".to_string())
+    let bytes = read_success_body(response, "token response").await?;
+    serde_json::from_slice(&bytes).map_err(|_| "token response was not valid JSON".to_string())
 }
 
 fn urlencode(value: &str) -> String {
@@ -612,15 +696,8 @@ pub async fn claude_login_finish(
     start: ClaudeLoginStart,
     pasted: Option<String>,
 ) -> Result<Credential, String> {
-    let is_pasted = pasted.is_some();
     let callback = match pasted {
-        Some(pasted) => {
-            let (code, fragment_state) = split_code_fragment(&pasted);
-            Callback {
-                code,
-                state: fragment_state.unwrap_or_else(|| start.state.clone()),
-            }
-        }
+        Some(pasted) => pasted_callback(&pasted, &start.state)?,
         None => {
             await_callback(
                 start.callback_port,
@@ -631,12 +708,11 @@ pub async fn claude_login_finish(
         }
     };
     // CSRF check: the callback must echo the state this login generated
-    // (reference `stateMatches`). Code-display mode carries the state in the
-    // pasted `code#state` instead.
-    if !is_pasted && callback.state != start.state {
+    // (reference `stateMatches`).
+    if callback.state != start.state {
         return Err("state mismatch - possible CSRF attack".to_string());
     }
-    let client = token_client();
+    let client = token_client()?;
     let token = post_token_json(
         &client,
         &endpoints.token_url,
@@ -669,7 +745,7 @@ pub async fn refresh_claude(
     endpoints: &FlowEndpoints,
     refresh: &str,
 ) -> Result<Credential, String> {
-    let client = token_client();
+    let client = token_client()?;
     let token = post_token_json(
         &client,
         &endpoints.token_url,
@@ -728,15 +804,8 @@ pub async fn gpt_login_finish(
     start: GptLoginStart,
     pasted: Option<String>,
 ) -> Result<Credential, String> {
-    let is_pasted = pasted.is_some();
     let callback = match pasted {
-        Some(pasted) => {
-            let (code, fragment_state) = split_code_fragment(&pasted);
-            Callback {
-                code,
-                state: fragment_state.unwrap_or_else(|| start.state.clone()),
-            }
-        }
+        Some(pasted) => pasted_callback(&pasted, &start.state)?,
         None => {
             await_callback(
                 start.callback_port,
@@ -746,11 +815,11 @@ pub async fn gpt_login_finish(
             .await?
         }
     };
-    if !is_pasted && callback.state != start.state {
+    if callback.state != start.state {
         return Err("state mismatch - possible CSRF attack".to_string());
     }
     let token = post_token_form(
-        &token_client(),
+        &token_client()?,
         &endpoints.token_url,
         &[
             ("grant_type", "authorization_code"),
@@ -774,7 +843,7 @@ pub async fn gpt_login_finish(
 
 /// Refreshes a ChatGPT OAuth credential.
 pub async fn refresh_gpt(endpoints: &FlowEndpoints, refresh: &str) -> Result<Credential, String> {
-    let client = token_client();
+    let client = token_client()?;
     let token = post_token_form(
         &client,
         &endpoints.token_url,
@@ -839,14 +908,14 @@ pub async fn muse_device_authorization(
         .await
         .map_err(|e| format!("device authorization request failed: {e}"))?;
     let status = response.status();
-    let text = response.text().await.unwrap_or_default();
     if !status.is_success() {
         return Err(format!(
             "device authorization returned HTTP {}",
             status.as_u16()
         ));
     }
-    let payload: Value = serde_json::from_str(&text)
+    let bytes = read_success_body(response, "device authorization response").await?;
+    let payload: Value = serde_json::from_slice(&bytes)
         .map_err(|_| "device authorization response was not valid JSON".to_string())?;
     let device_code = payload
         .get("device_code")
@@ -911,8 +980,17 @@ pub async fn muse_device_token(
             .await
             .map_err(|e| format!("device token poll failed: {e}"))?;
         let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        let payload: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+        let max = if status.is_success() {
+            SUCCESS_BODY_MAX_BYTES
+        } else {
+            crate::llm::ERROR_BODY_MAX_BYTES
+        };
+        let mut response = response;
+        let bytes = crate::llm::read_capped(&mut response, max)
+            .await
+            .map_err(|e| format!("device token poll failed: {e}"))?
+            .unwrap_or_default();
+        let payload: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         if status.is_success() {
             return payload
                 .get("access_token")
@@ -969,7 +1047,6 @@ pub async fn muse_mint_key(
         .await
         .map_err(|e| format!("the Muse key request failed: {e}"))?;
     let status = response.status();
-    let text = response.text().await.unwrap_or_default();
     if !status.is_success() {
         // The body can contain the key itself; report the status only.
         return Err(format!(
@@ -977,7 +1054,8 @@ pub async fn muse_mint_key(
             status.as_u16()
         ));
     }
-    let payload: Value = serde_json::from_str(&text)
+    let bytes = read_success_body(response, "Muse key response").await?;
+    let payload: Value = serde_json::from_slice(&bytes)
         .map_err(|_| "the Muse key response was not valid JSON".to_string())?;
     let api_key = payload
         .get("api_key")
@@ -1004,7 +1082,12 @@ pub async fn muse_mint_key(
 
 /// Full Muse Code login: device approval, then the subscription key mint.
 pub async fn login_muse(endpoints: &MuseEndpoints) -> Result<Credential, String> {
-    let client = reqwest::Client::new();
+    // Every Muse login request is bounded (reference `REQUEST_TIMEOUT_MS`),
+    // so a stalled endpoint cannot park the login indefinitely.
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("cannot build the Muse HTTP client: {e}"))?;
     let device = muse_device_authorization(&client, endpoints).await?;
     println!(
         "Open {} and approve the code: {}",
@@ -1037,6 +1120,32 @@ mod tests {
     }
 
     #[test]
+    fn pasted_code_is_trimmed_and_must_echo_the_login_state() {
+        let callback = pasted_callback(
+            "abc#expected
+",
+            "expected",
+        )
+        .expect("matching state");
+        assert_eq!(callback.code, "abc");
+        assert_eq!(callback.state, "expected");
+        let callback = pasted_callback(
+            "  bare-code
+",
+            "expected",
+        )
+        .expect("bare code");
+        assert_eq!(callback.code, "bare-code");
+        assert_eq!(callback.state, "expected");
+        assert!(pasted_callback("abc#forged", "expected").is_err());
+        assert!(pasted_callback(
+            "
+", "expected"
+        )
+        .is_err());
+    }
+
+    #[test]
     fn jwt_claims_yield_the_chatgpt_account_id() {
         // payload: {"https://api.openai.com/auth":{"chatgpt_account_id":"acc-1"}}
         let payload = r#"{"https://api.openai.com/auth":{"chatgpt_account_id":"acc-1"}}"#;
@@ -1057,7 +1166,7 @@ mod tests {
                 .expect("clock")
                 .as_nanos()
         ));
-        let mut store = Store::load(path.clone());
+        let mut store = Store::load(path.clone()).expect("load the test store");
         store
             .save(
                 "claude-oauth",
@@ -1078,11 +1187,90 @@ mod tests {
         assert!(rendered.contains("claude-oauth"));
 
         // A reload round-trips the values without leaking them in Debug.
-        let reloaded = Store::load(path.clone());
+        let reloaded = Store::load(path.clone()).expect("load the test store");
         let credential = reloaded.credential("claude-oauth").expect("entry");
         assert_eq!(credential.access, "super-secret-access");
         assert_eq!(credential.api_key.as_deref(), Some("LLM|secret"));
         std::fs::remove_file(&path).expect("remove the test store");
+    }
+
+    fn temp_store_path(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "inocode-store-{tag}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ))
+    }
+
+    fn sample_credential(access: &str) -> Credential {
+        Credential {
+            access: access.to_string(),
+            refresh: String::new(),
+            expires_at_ms: None,
+            account_id: None,
+            email: None,
+            api_key: None,
+            oauth_access_token: None,
+        }
+    }
+
+    #[test]
+    fn unreadable_store_is_an_error_and_is_never_overwritten() {
+        let path = temp_store_path("corrupt");
+        std::fs::write(&path, b"{not json").expect("write");
+        assert!(Store::load(path.clone()).is_err());
+        let mut store = Store {
+            path: path.clone(),
+            entries: BTreeMap::new(),
+        };
+        assert!(store.save("gpt-oauth", sample_credential("a")).is_err());
+        assert_eq!(std::fs::read(&path).expect("read"), b"{not json");
+        std::fs::remove_file(&path).expect("remove");
+    }
+
+    #[test]
+    fn saving_keeps_entries_written_after_this_store_was_loaded() {
+        let path = temp_store_path("merge");
+        let mut early = Store::load(path.clone()).expect("load");
+        let mut other = Store::load(path.clone()).expect("load");
+        other
+            .save("claude-oauth", sample_credential("refreshed"))
+            .expect("save");
+        early
+            .save("gpt-oauth", sample_credential("logged-in"))
+            .expect("save");
+        let reloaded = Store::load(path.clone()).expect("load");
+        assert_eq!(
+            reloaded
+                .credential("claude-oauth")
+                .map(|c| c.access.as_str()),
+            Some("refreshed")
+        );
+        assert_eq!(
+            reloaded.credential("gpt-oauth").map(|c| c.access.as_str()),
+            Some("logged-in")
+        );
+        let leftovers = std::fs::read_dir(std::env::temp_dir())
+            .expect("list")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry.file_name().to_string_lossy().starts_with(&format!(
+                    "{}.tmp-",
+                    path.file_name().unwrap().to_string_lossy()
+                ))
+            })
+            .count();
+        assert_eq!(leftovers, 0);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).expect("stat").permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        std::fs::remove_file(&path).expect("remove");
     }
 
     #[test]

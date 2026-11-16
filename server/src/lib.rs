@@ -23,6 +23,9 @@ use tokio::sync::{mpsc, watch, Mutex};
 /// Frames buffered per connection before a slow client blocks its senders.
 const SEND_QUEUE_CAPACITY: usize = 64;
 
+/// Pause after an accept error that is not about a single connection.
+const ACCEPT_ERROR_PAUSE: std::time::Duration = std::time::Duration::from_secs(1);
+
 struct Outgoing {
     stream_id: u64,
     payload: Value,
@@ -43,7 +46,8 @@ enum Generation {
 /// Cancel handles of the generations running on one connection.
 type InFlight = Arc<Mutex<HashMap<u64, Generation>>>;
 
-/// Accepts connections until `shutdown` completes, then returns.
+/// Accepts connections until `shutdown` completes, then returns. Accept
+/// errors never end the server.
 ///
 /// Each connection runs in its own task, so one client closing or sending a
 /// broken frame does not affect the others.
@@ -55,7 +59,19 @@ where
     loop {
         tokio::select! {
             accepted = listener.accept() => {
-                let (stream, _) = accepted?;
+                let stream = match accepted {
+                    Ok((stream, _)) => stream,
+                    Err(error) if is_connection_error(&error) => continue,
+                    Err(_) => {
+                        // Resource exhaustion such as EMFILE clears as other
+                        // connections close; pausing keeps the loop from
+                        // spinning on the same error (axum `serve`).
+                        tokio::select! {
+                            () = tokio::time::sleep(ACCEPT_ERROR_PAUSE) => continue,
+                            () = &mut shutdown => return Ok(()),
+                        }
+                    }
+                };
                 // A socket option failure affects only this connection: drop
                 // it and keep serving the others instead of ending the server.
                 if stream.set_nodelay(true).is_err() {
@@ -66,6 +82,16 @@ where
             () = &mut shutdown => return Ok(()),
         }
     }
+}
+
+/// Errors that concern only the connection being accepted, not the listener.
+fn is_connection_error(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::ConnectionRefused
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::ConnectionReset
+    )
 }
 
 async fn serve_connection(stream: TcpStream, core: Arc<Core>) {
@@ -158,25 +184,16 @@ async fn dispatch(
         "chat" => start_chat(request, stream_id, core, queue, in_flight).await,
         "cancel" => cancel(request, stream_id, queue, in_flight).await,
         "models" => {
-            let payload = match core.models().await {
-                Ok(models) => {
-                    let listed: Vec<Value> = models
-                        .iter()
-                        .map(|model| {
-                            json!({
-                                "id": model.id,
-                                "display_name": model.display_name,
-                                "owned_by": model.owned_by,
-                            })
-                        })
-                        .collect();
-                    json!({ "id": request.id, "result": { "models": listed } })
-                }
-                Err(error) => {
-                    json!({ "id": request.id, "error": error })
-                }
-            };
-            send(queue, stream_id, payload).await
+            // Discovery is an HTTP round trip: it runs beside the read loop,
+            // like `chat`, so the connection keeps reading `cancel` and other
+            // requests while the provider answers.
+            tokio::spawn(list_models(
+                request.id,
+                stream_id,
+                Arc::clone(core),
+                queue.clone(),
+            ));
+            true
         }
         _ => {
             let response = core.handle(request);
@@ -184,6 +201,29 @@ async fn dispatch(
             send(queue, stream_id, payload).await
         }
     }
+}
+
+async fn list_models(id: u64, stream_id: u64, core: Arc<Core>, queue: mpsc::Sender<Outgoing>) {
+    let payload = match core.models().await {
+        Ok(models) => {
+            let listed: Vec<Value> = models
+                .iter()
+                .map(|model| {
+                    json!({
+                        "id": model.id,
+                        "display_name": model.display_name,
+                        "owned_by": model.owned_by,
+                    })
+                })
+                .collect();
+            json!({ "id": id, "result": { "models": listed } })
+        }
+        Err(error) => {
+            json!({ "id": id, "error": error })
+        }
+    };
+    // A closed connection has nobody to answer.
+    let _ = send(&queue, stream_id, payload).await;
 }
 
 async fn start_chat(

@@ -66,7 +66,7 @@
   - これを受け、Responses パーサを参照実装の passthrough アダプタ（`src/adapters/openai-responses/passthrough.ts` の `parseStream`）どおりに修正: **非JSON data 行は無視**（`JSON.parse` 失敗で `continue`、`[DONE]` もここで吸収）、**EOF で正常終了**（`response.completed` を待たない。`response.failed`/`error` のみ中途中断、`response.incomplete` は正常終了）、失敗メッセージは `error`（文字列）→ `error.message` → `incomplete_details.reason` の順。InoCode の旧規則（非JSON＝`provider_protocol` エラー、無终端EOF＝`provider_stream` 失敗）は OpenAI Chat Completions／Anthropic Messages に対しては維持する。
 - **Claude/GPT OAuth のフォーク再確認修正（2026-11-16、実ログイン前）**: `src/oauth/anthropic.ts`・`callback-server.ts`・`chatgpt.ts` を精読し、InoCode 実装を参照どおりに修正:
   - CSRF state を OS CSPRNG 16 バイト hex に（参照 `generateState`。旧実装は時刻+PID で予測可能だった）。
-  - コールバックで state 一致を検証（参照 `stateMatches`、不一致は「state mismatch - possible CSRF attack」で失敗）。コード表示モードは貼り付けられた `code#state` の state を使用。
+  - コールバックで state 一致を検証（参照 `stateMatches`、不一致は「state mismatch - possible CSRF attack」で失敗）。貼り付け入力は前後の空白・改行を除去し、`code#state` の state が発行した state と一致しなければ同じ理由で失敗、state の無い生のコードは同一 PKCE セッションとして発行した state を使う（参照 `callback-server.ts` の `#waitForCallback` 手動入力: 「A raw paste with an explicit code#state suffix is state-bearing too」、`parseCallbackInput` の `input.trim()`）。
   - redirect_uri の広告を `http://localhost:{port}{path}` に（参照注記「OAuth アプリが登録した URI は localhost」。旧実装は 127.0.0.1）。リスナーは `127.0.0.1`＋`::1` の dual bind（Windows は localhost→`::1` 優先。参照 `loopbackBindHostnames`）。
   - ポート使用中はエフェメラルポートへフォールバック（固定 redirect URI でない場合のみ。参照 `#startCallbackServer`）。
   - `expires_in` 欠落・不正時は既定 3600 秒（参照 `credsFrom`）。
