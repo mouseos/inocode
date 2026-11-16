@@ -1304,4 +1304,211 @@ mod tests {
         assert_eq!(error.code, "provider_stream");
         assert_eq!(error.message, "rate limited");
     }
+
+    /// Release-mode parsing measurements for the streaming path. They print
+    /// numbers instead of asserting; run them with
+    /// `cargo test --release -p inocode-core measure_ -- --ignored --nocapture --test-threads=1`.
+    mod measure {
+        use super::super::*;
+        use std::time::Instant;
+
+        const ROUNDS: usize = 7;
+
+        /// Runs `body` ROUNDS times and returns the median and minimum seconds.
+        fn timed(mut body: impl FnMut()) -> (f64, f64) {
+            let mut samples: Vec<f64> = (0..ROUNDS)
+                .map(|_| {
+                    let started = Instant::now();
+                    body();
+                    started.elapsed().as_secs_f64()
+                })
+                .collect();
+            samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            (samples[ROUNDS / 2], samples[0])
+        }
+
+        fn report(name: &str, bytes: usize, events: usize, (median, min): (f64, f64)) {
+            println!(
+                "{name:<44} median {:>9.3} ms  min {:>9.3} ms  {:>8.1} MiB/s  {:>6.0} ns/event",
+                median * 1e3,
+                min * 1e3,
+                bytes as f64 / median / (1024.0 * 1024.0),
+                median * 1e9 / events.max(1) as f64,
+            );
+        }
+
+        /// Feeds `body` in `chunk`-byte pushes, draining after each push the
+        /// way the stream does, and returns the number of data payloads.
+        fn parse(body: &[u8], chunk: usize, mut each: impl FnMut(&str)) -> usize {
+            let mut parser = SseParser::new();
+            let mut count = 0;
+            for piece in body.chunks(chunk) {
+                parser.push(piece);
+                while let Some(item) = parser.next_item() {
+                    each(&item.expect("valid SSE"));
+                    count += 1;
+                }
+            }
+            parser.end();
+            while let Some(item) = parser.next_item() {
+                each(&item.expect("valid SSE"));
+                count += 1;
+            }
+            count
+        }
+
+        fn openai_body(events: usize) -> Vec<u8> {
+            let mut body = Vec::new();
+            for index in 0..events {
+                let payload = json!({
+                    "id": "chatcmpl-measure",
+                    "object": "chat.completion.chunk",
+                    "model": "measure-model",
+                    "choices": [{ "index": 0, "delta": { "content": format!("word{index} ") }, "finish_reason": null }],
+                });
+                body.extend_from_slice(format!("data: {payload}\n\n").as_bytes());
+            }
+            body.extend_from_slice(b"data: [DONE]\n\n");
+            body
+        }
+
+        fn responses_body(events: usize) -> Vec<u8> {
+            let mut body = Vec::new();
+            for index in 0..events {
+                let payload = json!({
+                    "type": "response.output_text.delta",
+                    "item_id": "msg_measure",
+                    "output_index": 0,
+                    "content_index": 0,
+                    "delta": format!("word{index} "),
+                    "sequence_number": index,
+                });
+                body.extend_from_slice(
+                    format!("event: response.output_text.delta\ndata: {payload}\n\n").as_bytes(),
+                );
+            }
+            body
+        }
+
+        fn anthropic_body(events: usize) -> Vec<u8> {
+            let mut body = Vec::new();
+            for index in 0..events {
+                let payload = json!({
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": { "type": "text_delta", "text": format!("word{index} ") },
+                });
+                body.extend_from_slice(
+                    format!("event: content_block_delta\ndata: {payload}\n\n").as_bytes(),
+                );
+            }
+            body.extend_from_slice(b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n");
+            body
+        }
+
+        #[test]
+        #[ignore = "measurement: run with --release --ignored --nocapture --test-threads=1"]
+        fn measure_stream_parsing() {
+            const EVENTS: usize = 50_000;
+            println!();
+            for (name, body) in [
+                ("openai 50k deltas, 16 KiB pushes", openai_body(EVENTS)),
+                (
+                    "responses 50k deltas, 16 KiB pushes",
+                    responses_body(EVENTS),
+                ),
+                (
+                    "anthropic 50k deltas, 16 KiB pushes",
+                    anthropic_body(EVENTS),
+                ),
+            ] {
+                let mut count = 0;
+                let times = timed(|| count = parse(&body, 16 * 1024, |_| {}));
+                report(&format!("sse only: {name}"), body.len(), count, times);
+            }
+
+            let body = openai_body(EVENTS);
+            let mut count = 0;
+            let times = timed(|| {
+                let (mut done, mut signalled) = (false, false);
+                count = parse(&body, 16 * 1024, |data| {
+                    let _ = openai_delta(data, &mut done, &mut signalled).expect("valid");
+                });
+            });
+            report("sse + interpret: openai", body.len(), count, times);
+            let body = responses_body(EVENTS);
+            let times = timed(|| {
+                let (mut done, mut signalled) = (false, false);
+                count = parse(&body, 16 * 1024, |data| {
+                    let _ = responses_delta(data, &mut done, &mut signalled).expect("valid");
+                });
+            });
+            report("sse + interpret: responses", body.len(), count, times);
+            let body = anthropic_body(EVENTS);
+            let times = timed(|| {
+                count = parse(&body, 16 * 1024, |data| {
+                    let _ = anthropic_event(data).expect("valid");
+                });
+            });
+            report("sse + interpret: anthropic", body.len(), count, times);
+        }
+
+        #[test]
+        #[ignore = "measurement: run with --release --ignored --nocapture --test-threads=1"]
+        fn measure_credential_store_read() {
+            const LOADS: usize = 1000;
+            let path =
+                std::env::temp_dir().join(format!("inocode-measure-store-{}", std::process::id()));
+            let mut store = crate::oauth::Store::load(path.clone()).expect("load");
+            for name in ["claude-oauth", "gpt-oauth", "muse-code"] {
+                store
+                    .update(name, |credential| {
+                        credential.access = "a".repeat(1500);
+                        credential.refresh = "r".repeat(100);
+                        credential.expires_at_ms = Some(u64::MAX);
+                    })
+                    .expect("save");
+            }
+            let bytes = std::fs::metadata(&path).expect("stat").len() as usize;
+            let times = timed(|| {
+                for _ in 0..LOADS {
+                    let store = crate::oauth::Store::load(path.clone()).expect("load");
+                    assert!(store.credential("gpt-oauth").is_some());
+                }
+            });
+            println!();
+            report(
+                &format!("Store::load of a {bytes}-byte auth.json x{LOADS}"),
+                bytes * LOADS,
+                LOADS,
+                times,
+            );
+            std::fs::remove_file(&path).expect("remove");
+        }
+
+        #[test]
+        #[ignore = "measurement: run with --release --ignored --nocapture --test-threads=1"]
+        fn measure_sse_worst_cases() {
+            println!();
+            // One long data line arriving in small pieces: every push rescans
+            // the whole pending line.
+            let mut long = b"data: ".to_vec();
+            long.extend(std::iter::repeat_n(b'a', 4 * 1024 * 1024));
+            long.extend_from_slice(b"\n\n");
+            let times = timed(|| {
+                parse(&long, 4 * 1024, |_| {});
+            });
+            report("one 4 MiB line, 4 KiB pushes", long.len(), 1, times);
+
+            // Many short events in one large push: every line shifts the rest
+            // of the buffer.
+            let mut many = Vec::new();
+            for index in 0..20_000 {
+                many.extend_from_slice(format!("data: {index}\n\n").as_bytes());
+            }
+            let mut count = 0;
+            let times = timed(|| count = parse(&many, many.len(), |_| {}));
+            report("20k short events in one push", many.len(), count, times);
+        }
+    }
 }

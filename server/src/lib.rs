@@ -28,7 +28,15 @@ const ACCEPT_ERROR_PAUSE: std::time::Duration = std::time::Duration::from_secs(1
 
 struct Outgoing {
     stream_id: u64,
-    payload: Value,
+    payload: Payload,
+}
+
+/// A frame body waiting for the writer. Chat events stay typed until they
+/// are serialized into the frame, so a delta is not first copied into a
+/// `serde_json::Value` tree.
+enum Payload {
+    Value(Value),
+    Event(EventPayload),
 }
 
 /// Registry entry of one generation on a connection.
@@ -101,11 +109,11 @@ async fn serve_connection(stream: TcpStream, core: Arc<Core>) {
     let (queue, mut queued) = mpsc::channel::<Outgoing>(SEND_QUEUE_CAPACITY);
     let writer_task = tokio::spawn(async move {
         while let Some(message) = queued.recv().await {
-            if writer
-                .write_json(message.stream_id, &message.payload)
-                .await
-                .is_err()
-            {
+            let written = match &message.payload {
+                Payload::Value(value) => writer.write_json(message.stream_id, value).await,
+                Payload::Event(event) => writer.write_json(message.stream_id, event).await,
+            };
+            if written.is_err() {
                 break;
             }
         }
@@ -125,7 +133,10 @@ async fn serve_connection(stream: TcpStream, core: Arc<Core>) {
             }
             let message = Outgoing {
                 stream_id: header.stream_id,
-                payload: error_value("invalid_request", "Only JSON request frames are accepted"),
+                payload: Payload::Value(error_value(
+                    "invalid_request",
+                    "Only JSON request frames are accepted",
+                )),
             };
             if queue.send(message).await.is_err() {
                 break;
@@ -466,7 +477,13 @@ async fn cancel(
 }
 
 async fn send(queue: &mpsc::Sender<Outgoing>, stream_id: u64, payload: Value) -> bool {
-    queue.send(Outgoing { stream_id, payload }).await.is_ok()
+    queue
+        .send(Outgoing {
+            stream_id,
+            payload: Payload::Value(payload),
+        })
+        .await
+        .is_ok()
 }
 
 async fn send_event(
@@ -474,9 +491,11 @@ async fn send_event(
     stream_id: u64,
     event: EventPayload,
 ) -> Result<(), ()> {
-    let payload = serde_json::to_value(event).map_err(|_| ())?;
     queue
-        .send(Outgoing { stream_id, payload })
+        .send(Outgoing {
+            stream_id,
+            payload: Payload::Event(event),
+        })
         .await
         .map_err(|_| ())
 }

@@ -16,23 +16,24 @@ use crate::ErrorInfo;
 /// anyway, and without a bound a peer could grow the buffer without limit.
 pub(crate) const MAX_EVENT_LEN: usize = 16 * 1024 * 1024;
 
+#[derive(Default)]
 struct Event {
-    data_lines: Vec<String>,
-    /// Bytes of the data lines collected so far.
+    /// The data lines collected so far, joined with LF.
+    data: String,
+    /// At least one data line arrived, so the event dispatches even when
+    /// its joined data is empty.
+    has_data: bool,
+    /// Bytes of the data line values collected so far.
     bytes: usize,
-}
-
-impl Event {
-    fn new() -> Self {
-        Self {
-            data_lines: Vec::new(),
-            bytes: 0,
-        }
-    }
 }
 
 pub(crate) struct SseParser {
     buffer: Vec<u8>,
+    /// Start of the unconsumed bytes in `buffer`.
+    start: usize,
+    /// Bytes of the pending line already searched for a terminator, so a
+    /// long line arriving in pieces is scanned once rather than per piece.
+    scanned: usize,
     event: Event,
     ended: bool,
     /// No line has been interpreted yet, so a BOM may still be present.
@@ -43,13 +44,21 @@ impl SseParser {
     pub(crate) fn new() -> Self {
         Self {
             buffer: Vec::new(),
-            event: Event::new(),
+            start: 0,
+            scanned: 0,
+            event: Event::default(),
             ended: false,
             at_stream_start: true,
         }
     }
 
     pub(crate) fn push(&mut self, bytes: &[u8]) {
+        // Dropping consumed bytes once they outweigh the pending ones keeps
+        // the copying amortized constant per byte.
+        if self.start > 0 && self.start >= self.buffer.len() - self.start {
+            self.buffer.drain(..self.start);
+            self.start = 0;
+        }
         self.buffer.extend_from_slice(bytes);
     }
 
@@ -64,14 +73,18 @@ impl SseParser {
         loop {
             // The collected data plus the unterminated rest is what the
             // current event can still grow to.
-            if self.event.bytes + self.buffer.len() > MAX_EVENT_LEN {
+            if self.event.bytes + (self.buffer.len() - self.start) > MAX_EVENT_LEN {
                 return Some(Err(ErrorInfo::new(
                     "provider_protocol",
                     format!("SSE event exceeds the limit of {MAX_EVENT_LEN} bytes"),
                 )));
             }
-            if let Some(line) = self.next_line() {
-                match self.line_item(&line) {
+            if let Some((line_start, line_end)) = self.next_line() {
+                match line_item(
+                    &mut self.event,
+                    &mut self.at_stream_start,
+                    &self.buffer[line_start..line_end],
+                ) {
                     Ok(Some(event)) => return Some(Ok(event)),
                     Ok(None) => continue,
                     Err(error) => return Some(Err(error)),
@@ -80,16 +93,22 @@ impl SseParser {
             if self.ended {
                 // The body is over: a final line without a terminator and an
                 // event without its dispatching empty line are still events.
-                if !self.buffer.is_empty() {
-                    let line = std::mem::take(&mut self.buffer);
-                    match self.line_item(&line) {
+                if self.start < self.buffer.len() {
+                    let (line_start, line_end) = (self.start, self.buffer.len());
+                    self.start = line_end;
+                    self.scanned = 0;
+                    match line_item(
+                        &mut self.event,
+                        &mut self.at_stream_start,
+                        &self.buffer[line_start..line_end],
+                    ) {
                         Ok(Some(event)) => return Some(Ok(event)),
                         Ok(None) => {}
                         Err(error) => return Some(Err(error)),
                     }
                 }
-                if !self.event.data_lines.is_empty() {
-                    let data = self.take_event();
+                if self.event.has_data {
+                    let data = std::mem::take(&mut self.event).data;
                     if !data.is_empty() {
                         return Some(Ok(data));
                     }
@@ -99,75 +118,86 @@ impl SseParser {
         }
     }
 
-    /// Extracts the next complete line, or `None` while more bytes are needed.
+    /// Consumes the next complete line and returns its range in `buffer`
+    /// without the terminator, or `None` while more bytes are needed.
     ///
     /// A trailing CR at the end of the buffer waits for the next byte, because
     /// it may be the first half of a CRLF pair.
-    fn next_line(&mut self) -> Option<Vec<u8>> {
-        let end = self
-            .buffer
+    fn next_line(&mut self) -> Option<(usize, usize)> {
+        let from = self.start + self.scanned;
+        let Some(offset) = self.buffer[from..]
             .iter()
-            .position(|byte| *byte == b'\n' || *byte == b'\r')?;
+            .position(|byte| *byte == b'\n' || *byte == b'\r')
+        else {
+            self.scanned = self.buffer.len() - self.start;
+            return None;
+        };
+        let end = from + offset;
         let is_lf = self.buffer[end] == b'\n';
         let consume = if !is_lf && end + 1 < self.buffer.len() && self.buffer[end + 1] == b'\n' {
             2
         } else if !is_lf && end + 1 == self.buffer.len() && !self.ended {
+            // Rescan the CR once the next byte arrives.
+            self.scanned = end - self.start;
             return None;
         } else {
             1
         };
-        let mut line: Vec<u8> = self.buffer.drain(..end + consume).collect();
-        line.truncate(end);
-        Some(line)
+        let line_start = self.start;
+        self.start = end + consume;
+        self.scanned = 0;
+        Some((line_start, end))
     }
+}
 
-    /// Interprets one line of the current event.
-    ///
-    /// `Ok(None)` means the line produced no item yet; an empty line dispatches
-    /// the accumulated event.
-    fn line_item(&mut self, line: &[u8]) -> Result<Option<String>, ErrorInfo> {
-        let text = match std::str::from_utf8(line) {
-            Ok(text) => text,
-            Err(_) => {
-                return Err(ErrorInfo::new(
-                    "provider_protocol",
-                    "SSE line is not valid UTF-8",
-                ))
-            }
-        };
-        // The standard allows one BOM at the very start of the stream.
-        let text = if std::mem::take(&mut self.at_stream_start) {
-            text.strip_prefix('\u{feff}').unwrap_or(text)
-        } else {
-            text
-        };
-        if text.is_empty() {
-            if self.event.data_lines.is_empty() {
-                return Ok(None);
-            }
-            // An event whose only data is an empty string carries nothing for
-            // either API format.
-            let data = self.take_event();
-            return Ok(if data.is_empty() { None } else { Some(data) });
+/// Interprets one line of the current event.
+///
+/// `Ok(None)` means the line produced no item yet; an empty line dispatches
+/// the accumulated event.
+fn line_item(
+    event: &mut Event,
+    at_stream_start: &mut bool,
+    line: &[u8],
+) -> Result<Option<String>, ErrorInfo> {
+    let text = match std::str::from_utf8(line) {
+        Ok(text) => text,
+        Err(_) => {
+            return Err(ErrorInfo::new(
+                "provider_protocol",
+                "SSE line is not valid UTF-8",
+            ))
         }
-        let (field, value) = match text.split_once(':') {
-            Some((field, value)) => (field, value.strip_prefix(' ').unwrap_or(value)),
-            None => (text, ""),
-        };
-        if field != "data" {
-            // Other fields and `:` comments carry nothing for this protocol.
+    };
+    // The standard allows one BOM at the very start of the stream.
+    let text = if std::mem::take(at_stream_start) {
+        text.strip_prefix('\u{feff}').unwrap_or(text)
+    } else {
+        text
+    };
+    if text.is_empty() {
+        if !event.has_data {
             return Ok(None);
         }
-        self.event.bytes += value.len();
-        self.event.data_lines.push(value.to_string());
-        Ok(None)
+        // An event whose only data is an empty string carries nothing for
+        // either API format.
+        let data = std::mem::take(event).data;
+        return Ok(if data.is_empty() { None } else { Some(data) });
     }
-
-    fn take_event(&mut self) -> String {
-        let data = self.event.data_lines.join("\n");
-        self.event = Event::new();
-        data
+    let (field, value) = match text.split_once(':') {
+        Some((field, value)) => (field, value.strip_prefix(' ').unwrap_or(value)),
+        None => (text, ""),
+    };
+    if field != "data" {
+        // Other fields and `:` comments carry nothing for this protocol.
+        return Ok(None);
     }
+    if event.has_data {
+        event.data.push('\n');
+    }
+    event.data.push_str(value);
+    event.has_data = true;
+    event.bytes += value.len();
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -194,6 +224,22 @@ mod tests {
             items.extend(drain(&mut parser));
             assert_eq!(items, ["one", "こん", "にちは"], "split at {split}");
         }
+    }
+
+    #[test]
+    fn mixed_terminators_parse_the_same_when_fed_byte_by_byte() {
+        let stream = "data: a\r\n\r\ndata: b\r\rdata: c\ndata: d\n\n: note\r\ndata: e\r\n\r\n";
+        let expected = ["a", "b", "c\nd", "e"];
+        let mut whole = SseParser::new();
+        whole.push(stream.as_bytes());
+        assert_eq!(drain(&mut whole), expected);
+        let mut parser = SseParser::new();
+        let mut items = Vec::new();
+        for byte in stream.as_bytes() {
+            parser.push(std::slice::from_ref(byte));
+            items.extend(drain(&mut parser));
+        }
+        assert_eq!(items, expected);
     }
 
     #[test]
