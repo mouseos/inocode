@@ -12,7 +12,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
-zero-search = { git = "https://github.com/mouseos/ZeroSearch_MCP", rev = "9dc379ae6c49494c9e10baf1c403d93635d03380" }
+zero-search = { git = "https://github.com/mouseos/ZeroSearch_MCP", rev = "7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46" }
 
 [dev-dependencies]
 tempfile = "3.27.0"
