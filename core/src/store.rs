@@ -385,10 +385,10 @@ struct Inner {
 }
 
 impl Store {
-    /// The folder that holds the database; files that belong with the
-    /// threads, such as command logs, are kept beside it.
-    pub(crate) fn folder(&self) -> &Path {
-        self.inner.path.parent().unwrap_or_else(|| Path::new("."))
+    /// The folder for files that belong with this database's threads, such
+    /// as command logs: beside the database, named after it.
+    pub(crate) fn files_folder(&self) -> PathBuf {
+        self.inner.path.with_extension("files")
     }
 
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, ErrorInfo> {

@@ -76,7 +76,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 [[package]]
 name = "baidu-mcp-provider"
 version = "0.1.1"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46#7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
 dependencies = [
  "aes",
  "base64 0.22.1",
@@ -121,13 +121,13 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 [[package]]
 name = "bilibili-provider"
 version = "0.1.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46#7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
  "bytes",
  "hpack",
- "md-5",
+ "md5",
  "prost",
  "rand 0.8.8",
  "rustls",
@@ -141,7 +141,7 @@ dependencies = [
 [[package]]
 name = "bing-mcp-provider"
 version = "0.1.2"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46#7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -152,6 +152,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "url",
+ "zero-search-common",
  "zero-search-tls",
 ]
 
@@ -401,12 +402,12 @@ dependencies = [
 [[package]]
 name = "csdn-provider"
 version = "0.1.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46#7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
  "hmac",
- "md-5",
+ "md5",
  "reqwest",
  "serde",
  "serde_json",
@@ -1279,16 +1280,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "md-5"
-version = "0.10.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
-dependencies = [
- "cfg-if",
- "digest",
-]
-
-[[package]]
 name = "md5"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1346,7 +1337,7 @@ checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 [[package]]
 name = "naver-mcp-provider"
 version = "0.1.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46#7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
 dependencies = [
  "anyhow",
  "regex",
@@ -1356,6 +1347,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "url",
+ "zero-search-common",
  "zero-search-tls",
 ]
 
@@ -2178,9 +2170,10 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 [[package]]
 name = "shopping-mcp-aliexpress"
 version = "0.1.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46#7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
 dependencies = [
  "anyhow",
+ "md5",
  "regex",
  "reqwest",
  "serde",
@@ -2193,7 +2186,7 @@ dependencies = [
 [[package]]
 name = "shopping-mcp-amazon"
 version = "0.1.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46#7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
 dependencies = [
  "anyhow",
  "regex",
@@ -2201,13 +2194,14 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "zero-search-common",
  "zero-search-tls",
 ]
 
 [[package]]
 name = "shopping-mcp-goofish"
 version = "0.1.1"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46#7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
 dependencies = [
  "anyhow",
  "flate2",
@@ -2228,7 +2222,7 @@ dependencies = [
 [[package]]
 name = "shopping-mcp-mercari"
 version = "0.1.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46#7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2247,7 +2241,7 @@ dependencies = [
 [[package]]
 name = "shopping-mcp-qoo10"
 version = "0.1.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46#7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2263,7 +2257,7 @@ dependencies = [
 [[package]]
 name = "shopping-mcp-rakuma"
 version = "0.1.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46#7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
 dependencies = [
  "anyhow",
  "regex",
@@ -2277,7 +2271,7 @@ dependencies = [
 [[package]]
 name = "shopping-mcp-rakuten"
 version = "0.1.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46#7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
 dependencies = [
  "anyhow",
  "reqwest",
@@ -2290,7 +2284,7 @@ dependencies = [
 [[package]]
 name = "shopping-mcp-yahoo-auctions"
 version = "0.1.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46#7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
 dependencies = [
  "anyhow",
  "regex",
@@ -2304,7 +2298,7 @@ dependencies = [
 [[package]]
 name = "shopping-mcp-yahoo-flea"
 version = "0.1.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46#7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
 dependencies = [
  "anyhow",
  "regex",
@@ -2318,7 +2312,7 @@ dependencies = [
 [[package]]
 name = "shopping-mcp-yahoo-shopping"
 version = "0.1.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46#7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
 dependencies = [
  "anyhow",
  "reqwest",
@@ -3160,7 +3154,7 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 [[package]]
 name = "yahoo-search-mcp-provider"
 version = "0.1.1"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46#7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
 dependencies = [
  "anyhow",
  "regex",
@@ -3168,13 +3162,14 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "zero-search-common",
  "zero-search-tls",
 ]
 
 [[package]]
 name = "yahoo-us-mcp-provider"
 version = "0.1.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46#7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
 dependencies = [
  "anyhow",
  "regex",
@@ -3183,13 +3178,14 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "zero-search-common",
  "zero-search-tls",
 ]
 
 [[package]]
 name = "yandex-mcp-provider"
 version = "0.1.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46#7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
 dependencies = [
  "anyhow",
  "regex",
@@ -3197,6 +3193,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "zero-search-common",
  "zero-search-tls",
 ]
 
@@ -3226,7 +3223,7 @@ dependencies = [
 [[package]]
 name = "youtube-mcp-provider"
 version = "0.1.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46#7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3240,13 +3237,14 @@ dependencies = [
 [[package]]
 name = "zero-search"
 version = "0.6.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46#7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
 dependencies = [
  "anyhow",
  "baidu-mcp-provider",
  "bilibili-provider",
  "bing-mcp-provider",
  "csdn-provider",
+ "futures-util",
  "naver-mcp-provider",
  "serde",
  "serde_json",
@@ -3268,9 +3266,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "zero-search-common"
+version = "0.1.0"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
+dependencies = [
+ "regex",
+]
+
+[[package]]
 name = "zero-search-tls"
 version = "0.1.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46#7e0aae61fc49715d3a53aa559bfa5c5b15fd5e46"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
 dependencies = [
  "reqwest",
  "rustls",

@@ -241,7 +241,7 @@ impl Thread<'_> {
     /// prefix intact.
     async fn state(&self) -> Result<Option<String>, ErrorInfo> {
         let plan = agent_tools::render_plan(self.store, self.session).await?;
-        let jobs = shell::render_jobs(self.session);
+        let jobs = shell::render_jobs(&self.store.files_folder().join("logs"), self.session);
         let parts: Vec<&str> = [plan.as_deref(), jobs.as_deref(), self.lessons.as_deref()]
             .into_iter()
             .flatten()
@@ -428,7 +428,7 @@ pub async fn run(
     )
     .await;
     if ending == Ending::Interrupted {
-        shell::stop_all(session);
+        shell::stop_all(&store.files_folder().join("logs"), session);
     }
     Outcome {
         ending,

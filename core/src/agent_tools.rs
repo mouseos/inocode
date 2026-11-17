@@ -145,7 +145,7 @@ fn place<'a>(context: &Context<'a>) -> shell::Place<'a> {
     shell::Place {
         session: context.session,
         folder: context.folder,
-        logs: context.store.folder().join("logs"),
+        logs: context.store.files_folder().join("logs"),
         cancel: context.cancel.clone(),
     }
 }

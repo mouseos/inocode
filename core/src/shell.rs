@@ -86,21 +86,25 @@ struct Job {
     reported: Mutex<bool>,
 }
 
+/// Jobs are kept per log folder (one per database) and thread, so threads
+/// of different databases in one process never see each other's jobs.
+type Key = (PathBuf, SessionId);
+
 #[derive(Default)]
 struct Jobs {
     next: u64,
     jobs: Vec<Arc<Job>>,
 }
 
-fn registry() -> &'static Mutex<HashMap<SessionId, Jobs>> {
-    static JOBS: OnceLock<Mutex<HashMap<SessionId, Jobs>>> = OnceLock::new();
+fn registry() -> &'static Mutex<HashMap<Key, Jobs>> {
+    static JOBS: OnceLock<Mutex<HashMap<Key, Jobs>>> = OnceLock::new();
     JOBS.get_or_init(Default::default)
 }
 
-fn find(session: SessionId, id: u64) -> Option<Arc<Job>> {
+fn find(key: &Key, id: u64) -> Option<Arc<Job>> {
     let registry = registry().lock().ok()?;
     registry
-        .get(&session)?
+        .get(key)?
         .jobs
         .iter()
         .find(|job| job.id == id)
@@ -112,7 +116,7 @@ pub(crate) struct Place<'a> {
     pub session: SessionId,
     /// The project folder, where commands run.
     pub folder: Option<&'a Path>,
-    /// Where logs are written.
+    /// Where logs are written; it also tells the database apart.
     pub logs: PathBuf,
     pub cancel: watch::Receiver<bool>,
 }
@@ -154,14 +158,14 @@ pub(crate) async fn shell(place: Place<'_>, arguments: &str) -> Result<String, S
         .folder
         .filter(|folder| folder.is_dir())
         .ok_or("commands need a project folder, and this thread has none")?;
-    let job = start(place.session, folder, &place.logs, arguments.command)?;
+    let job = start((place.logs, place.session), folder, arguments.command)?;
     let wait = wait_time(arguments.wait_seconds, DEFAULT_WAIT);
     Ok(settle(&job, wait, place.cancel).await)
 }
 
 pub(crate) async fn job(place: Place<'_>, arguments: &str) -> Result<String, String> {
     let arguments: JobArguments = parse(arguments)?;
-    let job = find(place.session, arguments.id)
+    let job = find(&(place.logs, place.session), arguments.id)
         .ok_or_else(|| format!("no job {} in this thread", arguments.id))?;
     let mut bytes = arguments.input.unwrap_or_default().into_bytes();
     for key in &arguments.keys {
@@ -194,9 +198,9 @@ pub(crate) async fn job(place: Place<'_>, arguments: &str) -> Result<String, Str
 
 /// The jobs of a thread the model has not yet seen end, and the ones still
 /// running, for the state shown with each request.
-pub(crate) fn render_jobs(session: SessionId) -> Option<String> {
+pub(crate) fn render_jobs(logs: &Path, session: SessionId) -> Option<String> {
     let registry = registry().lock().ok()?;
-    let jobs = &registry.get(&session)?.jobs;
+    let jobs = &registry.get(&(logs.to_path_buf(), session))?.jobs;
     let mut lines = Vec::new();
     for job in jobs {
         let reported = job.reported.lock().map(|r| *r).unwrap_or(true);
@@ -218,11 +222,11 @@ pub(crate) fn render_jobs(session: SessionId) -> Option<String> {
 }
 
 /// Stops every command a thread still runs.
-pub(crate) fn stop_all(session: SessionId) {
+pub(crate) fn stop_all(logs: &Path, session: SessionId) {
     let Ok(registry) = registry().lock() else {
         return;
     };
-    let Some(jobs) = registry.get(&session) else {
+    let Some(jobs) = registry.get(&(logs.to_path_buf(), session)) else {
         return;
     };
     for job in &jobs.jobs {
@@ -234,19 +238,14 @@ pub(crate) fn stop_all(session: SessionId) {
     }
 }
 
-fn start(
-    session: SessionId,
-    folder: &Path,
-    logs: &Path,
-    command: String,
-) -> Result<Arc<Job>, String> {
+fn start(key: Key, folder: &Path, command: String) -> Result<Arc<Job>, String> {
     let id = {
         let mut registry = registry().lock().map_err(|_| "the job list is unusable")?;
-        let jobs = registry.entry(session).or_default();
+        let jobs = registry.entry(key.clone()).or_default();
         jobs.next += 1;
         jobs.next
     };
-    let logs = logs.join(format!("thread-{}", session.0));
+    let logs = key.0.join(format!("thread-{}", key.1 .0));
     std::fs::create_dir_all(&logs)
         .map_err(|error| format!("could not create {}: {error}", logs.display()))?;
     let log = logs.join(format!("job-{id}.log"));
@@ -293,7 +292,7 @@ fn start(
     registry()
         .lock()
         .map_err(|_| "the job list is unusable")?
-        .entry(session)
+        .entry(key)
         .or_default()
         .jobs
         .push(Arc::clone(&job));
