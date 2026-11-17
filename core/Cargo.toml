@@ -18,7 +18,7 @@ sha2 = "0.10"
 strip-ansi-escapes = "0.2"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 vt100 = "0.18"
-zero-search = { git = "https://github.com/mouseos/ZeroSearch_MCP", rev = "96fb6cc3aeec224b54d1aaae357c1f19aa01555d" }
+zero-search = { git = "https://github.com/mouseos/ZeroSearch_MCP", rev = "7288401092daca571865f3a0419afc85acee9e14" }
 
 [dev-dependencies]
 tempfile = "3.27.0"

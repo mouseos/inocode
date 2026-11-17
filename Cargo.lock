@@ -76,7 +76,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 [[package]]
 name = "baidu-mcp-provider"
 version = "0.1.1"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7288401092daca571865f3a0419afc85acee9e14#7288401092daca571865f3a0419afc85acee9e14"
 dependencies = [
  "aes",
  "base64 0.22.1",
@@ -121,27 +121,25 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 [[package]]
 name = "bilibili-provider"
 version = "0.1.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7288401092daca571865f3a0419afc85acee9e14#7288401092daca571865f3a0419afc85acee9e14"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
  "bytes",
- "hpack",
+ "http-body-util",
  "md5",
  "prost",
  "rand 0.8.8",
- "rustls",
+ "reqwest",
  "serde_json",
  "tokio",
- "tokio-rustls",
- "tokio-socks",
- "webpki-roots 0.26.11",
+ "zero-search-tls",
 ]
 
 [[package]]
 name = "bing-mcp-provider"
 version = "0.1.2"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7288401092daca571865f3a0419afc85acee9e14#7288401092daca571865f3a0419afc85acee9e14"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -324,7 +322,7 @@ dependencies = [
  "cookie",
  "document-features",
  "idna",
- "log 0.4.35",
+ "log",
  "publicsuffix",
  "serde",
  "serde_derive",
@@ -417,7 +415,7 @@ dependencies = [
 [[package]]
 name = "csdn-provider"
 version = "0.1.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7288401092daca571865f3a0419afc85acee9e14#7288401092daca571865f3a0419afc85acee9e14"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -965,15 +963,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hpack"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c68f61350ad23817dd207b035b5258d91ac5eaef69e96f906628aaed8854dda"
-dependencies = [
- "log 0.3.9",
-]
-
-[[package]]
 name = "html-escape"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -997,7 +986,7 @@ version = "0.29.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3b7410cae13cbc75623c98ac4cbfd1f0bedddf3227afc24f370cf0f50a44a11c"
 dependencies = [
- "log 0.4.35",
+ "log",
  "mac",
  "markup5ever 0.14.1",
  "match_token",
@@ -1009,7 +998,7 @@ version = "0.40.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "456a1a377e608e555d22ddab27ac0114bc7a7b4199078108e34c2aeae6c9b130"
 dependencies = [
- "log 0.4.35",
+ "log",
  "markup5ever 0.40.0",
  "memchr",
 ]
@@ -1088,7 +1077,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
- "webpki-roots 1.0.12",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -1367,15 +1356,6 @@ dependencies = [
 
 [[package]]
 name = "log"
-version = "0.3.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e19e8d5c34a3e0e2223db8e060f9e8264aeeb5c5fc64a4ee9965c062211c024b"
-dependencies = [
- "log 0.4.35",
-]
-
-[[package]]
-name = "log"
 version = "0.4.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
@@ -1398,7 +1378,7 @@ version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c7a7213d12e1864c0f002f52c2923d4556935a43dec5e71355c2760e0f6e7a18"
 dependencies = [
- "log 0.4.35",
+ "log",
  "phf 0.11.3",
  "phf_codegen 0.11.3",
  "string_cache 0.8.9",
@@ -1412,7 +1392,7 @@ version = "0.40.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ab3dc68ac4a0f5719e560136778c1ee716e296030d75dbd4484e37e39e3a842"
 dependencies = [
- "log 0.4.35",
+ "log",
  "tendril 0.5.1",
  "web_atoms",
 ]
@@ -1486,7 +1466,7 @@ checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 [[package]]
 name = "naver-mcp-provider"
 version = "0.1.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7288401092daca571865f3a0419afc85acee9e14#7288401092daca571865f3a0419afc85acee9e14"
 dependencies = [
  "anyhow",
  "regex",
@@ -1734,7 +1714,7 @@ dependencies = [
  "filedescriptor",
  "lazy_static",
  "libc",
- "log 0.4.35",
+ "log",
  "nix",
  "serial2",
  "shared_library",
@@ -2017,7 +1997,7 @@ dependencies = [
  "hyper-rustls",
  "hyper-util",
  "js-sys",
- "log 0.4.35",
+ "log",
  "mime",
  "mime_guess",
  "percent-encoding",
@@ -2041,7 +2021,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams",
  "web-sys",
- "webpki-roots 1.0.12",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -2126,7 +2106,7 @@ version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
- "log 0.4.35",
+ "log",
  "once_cell",
  "ring",
  "rustls-pki-types",
@@ -2257,7 +2237,7 @@ dependencies = [
  "cssparser 0.34.0",
  "derive_more 0.99.20",
  "fxhash",
- "log 0.4.35",
+ "log",
  "new_debug_unreachable",
  "phf 0.11.3",
  "phf_codegen 0.11.3",
@@ -2275,7 +2255,7 @@ dependencies = [
  "bitflags 2.13.2",
  "cssparser 0.38.0",
  "derive_more 2.1.1",
- "log 0.4.35",
+ "log",
  "new_debug_unreachable",
  "precomputed-hash",
  "rustc-hash",
@@ -2422,7 +2402,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 [[package]]
 name = "shopping-mcp-aliexpress"
 version = "0.1.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7288401092daca571865f3a0419afc85acee9e14#7288401092daca571865f3a0419afc85acee9e14"
 dependencies = [
  "anyhow",
  "md5",
@@ -2438,7 +2418,7 @@ dependencies = [
 [[package]]
 name = "shopping-mcp-amazon"
 version = "0.1.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7288401092daca571865f3a0419afc85acee9e14#7288401092daca571865f3a0419afc85acee9e14"
 dependencies = [
  "anyhow",
  "regex",
@@ -2453,7 +2433,7 @@ dependencies = [
 [[package]]
 name = "shopping-mcp-goofish"
 version = "0.1.1"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7288401092daca571865f3a0419afc85acee9e14#7288401092daca571865f3a0419afc85acee9e14"
 dependencies = [
  "anyhow",
  "flate2",
@@ -2474,7 +2454,7 @@ dependencies = [
 [[package]]
 name = "shopping-mcp-mercari"
 version = "0.1.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7288401092daca571865f3a0419afc85acee9e14#7288401092daca571865f3a0419afc85acee9e14"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2493,7 +2473,7 @@ dependencies = [
 [[package]]
 name = "shopping-mcp-qoo10"
 version = "0.1.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7288401092daca571865f3a0419afc85acee9e14#7288401092daca571865f3a0419afc85acee9e14"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2509,7 +2489,7 @@ dependencies = [
 [[package]]
 name = "shopping-mcp-rakuma"
 version = "0.1.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7288401092daca571865f3a0419afc85acee9e14#7288401092daca571865f3a0419afc85acee9e14"
 dependencies = [
  "anyhow",
  "regex",
@@ -2523,7 +2503,7 @@ dependencies = [
 [[package]]
 name = "shopping-mcp-rakuten"
 version = "0.1.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7288401092daca571865f3a0419afc85acee9e14#7288401092daca571865f3a0419afc85acee9e14"
 dependencies = [
  "anyhow",
  "reqwest",
@@ -2536,7 +2516,7 @@ dependencies = [
 [[package]]
 name = "shopping-mcp-yahoo-auctions"
 version = "0.1.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7288401092daca571865f3a0419afc85acee9e14#7288401092daca571865f3a0419afc85acee9e14"
 dependencies = [
  "anyhow",
  "regex",
@@ -2550,7 +2530,7 @@ dependencies = [
 [[package]]
 name = "shopping-mcp-yahoo-flea"
 version = "0.1.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7288401092daca571865f3a0419afc85acee9e14#7288401092daca571865f3a0419afc85acee9e14"
 dependencies = [
  "anyhow",
  "regex",
@@ -2564,7 +2544,7 @@ dependencies = [
 [[package]]
 name = "shopping-mcp-yahoo-shopping"
 version = "0.1.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7288401092daca571865f3a0419afc85acee9e14#7288401092daca571865f3a0419afc85acee9e14"
 dependencies = [
  "anyhow",
  "reqwest",
@@ -2945,18 +2925,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tokio-socks"
-version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7e2948f60dbe26b35f2c7fb74ac2854c1fddded0fe9d7548fcc674a246f7615"
-dependencies = [
- "either",
- "futures-util",
- "thiserror 1.0.69",
- "tokio",
-]
-
-[[package]]
 name = "tokio-util"
 version = "0.7.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3284,15 +3252,6 @@ dependencies = [
 
 [[package]]
 name = "webpki-roots"
-version = "0.26.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
-dependencies = [
- "webpki-roots 1.0.12",
-]
-
-[[package]]
-name = "webpki-roots"
 version = "1.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7265c9301c16a8711c992c2d8da90ee77ef54b1ed51482d6dfeb00dc756b1297"
@@ -3457,7 +3416,7 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 [[package]]
 name = "yahoo-search-mcp-provider"
 version = "0.1.1"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7288401092daca571865f3a0419afc85acee9e14#7288401092daca571865f3a0419afc85acee9e14"
 dependencies = [
  "anyhow",
  "regex",
@@ -3472,7 +3431,7 @@ dependencies = [
 [[package]]
 name = "yahoo-us-mcp-provider"
 version = "0.1.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7288401092daca571865f3a0419afc85acee9e14#7288401092daca571865f3a0419afc85acee9e14"
 dependencies = [
  "anyhow",
  "regex",
@@ -3488,7 +3447,7 @@ dependencies = [
 [[package]]
 name = "yandex-mcp-provider"
 version = "0.1.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7288401092daca571865f3a0419afc85acee9e14#7288401092daca571865f3a0419afc85acee9e14"
 dependencies = [
  "anyhow",
  "regex",
@@ -3526,7 +3485,7 @@ dependencies = [
 [[package]]
 name = "youtube-mcp-provider"
 version = "0.1.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7288401092daca571865f3a0419afc85acee9e14#7288401092daca571865f3a0419afc85acee9e14"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3540,7 +3499,7 @@ dependencies = [
 [[package]]
 name = "zero-search"
 version = "0.6.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7288401092daca571865f3a0419afc85acee9e14#7288401092daca571865f3a0419afc85acee9e14"
 dependencies = [
  "anyhow",
  "baidu-mcp-provider",
@@ -3571,7 +3530,7 @@ dependencies = [
 [[package]]
 name = "zero-search-common"
 version = "0.1.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7288401092daca571865f3a0419afc85acee9e14#7288401092daca571865f3a0419afc85acee9e14"
 dependencies = [
  "regex",
 ]
@@ -3579,12 +3538,12 @@ dependencies = [
 [[package]]
 name = "zero-search-tls"
 version = "0.1.0"
-source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=96fb6cc3aeec224b54d1aaae357c1f19aa01555d#96fb6cc3aeec224b54d1aaae357c1f19aa01555d"
+source = "git+https://github.com/mouseos/ZeroSearch_MCP?rev=7288401092daca571865f3a0419afc85acee9e14#7288401092daca571865f3a0419afc85acee9e14"
 dependencies = [
  "reqwest",
  "rustls",
  "rustls-native-certs",
- "webpki-roots 1.0.12",
+ "webpki-roots",
 ]
 
 [[package]]
