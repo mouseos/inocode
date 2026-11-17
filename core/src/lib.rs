@@ -18,6 +18,7 @@ mod sse;
 pub mod store;
 pub mod turn;
 mod usage;
+mod web_search;
 
 pub use usage::{Usage, UsageWindow};
 

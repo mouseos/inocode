@@ -1,6 +1,6 @@
-//! The tools the harness gives the model for keeping its place and its
-//! lessons: `plan`, `recall`, and `lesson`. Design and sources:
-//! docs/evidence/agent-tools.md.
+//! The tools the harness gives the model: `plan`, `recall`, and `lesson` for
+//! keeping its place and its lessons (docs/evidence/agent-tools.md), and
+//! `search` (docs/evidence/web-search.md).
 
 use std::time::Duration;
 
@@ -11,7 +11,7 @@ use crate::conversation::{AssistantPart, Body, Message, ToolSpec};
 use crate::store::{
     HistoryQuery, NewNote, NoteKind, NoteQuery, ProjectId, SessionId, Source, Store,
 };
-use crate::ErrorInfo;
+use crate::{web_search, ErrorInfo};
 
 /// Messages one `recall` by position returns at most.
 const RECALL_RANGE: i64 = 20;
@@ -89,6 +89,7 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
                 }
             }),
         },
+        web_search::spec(),
     ]
 }
 
@@ -124,6 +125,7 @@ pub(crate) async fn run(context: &Context<'_>, name: &str, arguments: &str) -> O
         PLAN => plan(context, arguments).await,
         RECALL => recall(context, arguments).await,
         LESSON => lesson(context, arguments).await,
+        web_search::SEARCH => web_search::run(arguments).await,
         _ => return None,
     };
     Some(answer.map_or_else(|message| (message, true), |text| (text, false)))

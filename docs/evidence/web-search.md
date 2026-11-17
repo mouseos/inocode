@@ -1,7 +1,7 @@
 # Web などの検索ツール（ZeroSearch_MCP をライブラリとして組み込む）：設計
 
 - **対象と範囲：** モデルが Web・ショッピング・メディア・記事を検索するツール。検索の実装は [mouseos/ZeroSearch_MCP](https://github.com/mouseos/ZeroSearch_MCP) の `zero-search` クレート（統一 API）を使う（2026-11-17 のユーザー指示）。ページ本文の取得（fetch）は範囲外（ZeroSearch に一般のページ取得はない。別に検討する）。
-- **関連コード：** 未実装。参照した版：`refs/zerosearch`（コミット `f6fff7c`、2026-11-13、`zero-search` 0.6.0）。
+- **関連コード：** `core/src/web_search.rs`（ツール本体）、`core/src/agent_tools.rs`（登録と振り分け）、`core/Cargo.toml`（`zero-search` を git のコミット固定で参照）。設計時に参照した版：`refs/zerosearch`（コミット `f6fff7c`、`zero-search` 0.6.0）。
 - **根拠の状態：** UNSUPPORTED_APPROVED（下の「ユーザーの承認」）。ライブラリの採用はユーザーの指示。
 
 ## ZeroSearch の確認した事実（ソースから）
@@ -30,9 +30,17 @@
 2. **Goofish を既定で使えるようにするか**：初回に約 269MB を取得し、プロジェクト外（ホーム配下）に約 300MB を書く。C ドライブの空きがない現状では既定で外し、利用者が明示したときだけ使う案。
 3. **TLS の実装が 2 つになること**：ZeroSearch が native-tls（Linux では OpenSSL）と libcurl を使う。CI の 3 OS でビルドできるか、バイナリがどれだけ大きくなるかは未確認（実装時に測る）。
 
-## テストの方針（予定）
+## 実装での決定（工学上の選択、研究なし）
 
-- 結果の整形（重複除去・件数・字数・区切り）は、`SearchItem` などの値を作って単体テストする。
+- source を省いた Web 検索は `search_all` の結果を、各エンジンの 1 件目、2 件目…の順に交互に取り、URL の重複を除いて `limit` 件にする。最初のエンジン（Baidu）だけで枠が埋まらないようにするため。
+- source を省いたショッピング・メディア・記事は、そのカテゴリの `*_all` を呼び、結果の JSON を 4,000 字で切る。
+- `limit` は既定 8、上限 30。
+- `Client` はプロセスで 1 つ（`OnceLock`）。作成に失敗した場合はツールの結果がエラーになる。
+- ルールの検査（`ask`・`block`）は他のツールと同じ経路（`turn.rs` の `answer`）を通る。
+
+## テストの方針
+
+- 結果の整形（交互の取り出し・重複除去・件数・字数・失敗の行）と、未知の source のエラーは、`web_search.rs` の単体テストで確認する。
 - 実際の検索は外部サイトに依存するため、通常のテストでは呼ばない（`#[ignore]`、手動）。
 
 ## ユーザーの承認
