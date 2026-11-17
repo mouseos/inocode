@@ -345,8 +345,13 @@ mod tests {
             dir.path(),
             json!({"pattern": "PARSE", "ignore_case": true, "files": "*.md"}),
         );
-        assert!(text.starts_with("README.md:1: # Parser
-README.md:3:"), "{text}");
+        assert!(
+            text.starts_with(
+                "README.md:1: # Parser
+README.md:3:"
+            ),
+            "{text}"
+        );
     }
 
     #[test]
