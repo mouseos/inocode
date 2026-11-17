@@ -42,6 +42,7 @@
 | [turn-protocol.md](turn-protocol.md) | スレッドとターンの要求、サーバー側のループと続けるかの判定 | UNSUPPORTED_APPROVED（継続の規則は実験で決める） | `core/src/turn.rs`、`server/src/lib.rs` |
 | [agent-tools.md](agent-tools.md) | 作業一覧・読み直し・教訓のツール、規則の検査と保留・事前承認、繰り返しへの注意、AGENTS.md の読み込み、圧縮後の復元 | 部分ごと（A・B・C は UNSUPPORTED_APPROVED） | `core/src/turn.rs`、`core/src/agent_tools.rs` |
 | [web-search.md](web-search.md) | Web などの検索ツール（ZeroSearch_MCP の組み込み）の設計 | UNSUPPORTED_APPROVED（既定は全エンジン） | 実装済み（単体テスト） |
+| [harness-tools.md](harness-tools.md) | ファイル・シェルなどの道具：他のハーネスとの比較と研究 | UNSUPPORTED_PENDING（提案は承認待ち） | 未実装 |
 
 ## 状態の判定
 
@@ -55,4 +56,3 @@
 論文の結果、実装上の確認、ローカルテスト、個人の判断を区別する。**研究根拠を確認できないことは「その機能に効果がない」という証明ではない。** 設計判断の追跡可能性の参考研究：Jansen, Bosch & Avgeriou (2008), [Documenting after the fact: Recovering architectural design decisions](https://doi.org/10.1016/j.jss.2007.08.025)。この研究は判断の記録を扱うもので、個々の機能の有効性を保証するものではない。
 
 ソースコードには変更履歴を書かず、必要な不変条件や理由だけをコメントする。
-| [harness-tools.md](harness-tools.md) | ファイル・シェルなどの道具：他のハーネスとの比較と研究 | UNSUPPORTED_PENDING（提案は承認待ち） | 未実装 |
