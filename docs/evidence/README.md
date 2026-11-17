@@ -43,7 +43,7 @@
 | [agent-tools.md](agent-tools.md) | 作業一覧・読み直し・教訓のツール、規則の検査と保留・事前承認、繰り返しへの注意、AGENTS.md の読み込み、圧縮後の復元 | 部分ごと（A・B・C は UNSUPPORTED_APPROVED） | `core/src/turn.rs`、`core/src/agent_tools.rs` |
 | [web-search.md](web-search.md) | Web などの検索ツール（ZeroSearch_MCP の組み込み）の設計 | UNSUPPORTED_APPROVED（既定は全エンジン） | 実装済み（単体テスト） |
 | [web-fetch.md](web-fetch.md) | Web ページ取得ツールの設計 | Markdown は UNSUPPORTED_APPROVED、抽出器はベンチマーク中 | 未実装 |
-| [harness-tools.md](harness-tools.md) | ファイル・シェルなどの道具：他のハーネスとの比較と研究 | シェルは UNSUPPORTED_APPROVED、他は UNSUPPORTED_PENDING | シェルは実装済み（TCP テスト） |
+| [harness-tools.md](harness-tools.md) | ファイル・シェルなどの道具：他のハーネスとの比較と研究 | シェルは UNSUPPORTED_APPROVED、read は RESEARCH_SUPPORTED、他は UNSUPPORTED_PENDING | シェル・read は実装済み |
 
 ## 状態の判定
 

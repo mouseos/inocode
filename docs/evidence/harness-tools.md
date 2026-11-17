@@ -1,7 +1,7 @@
 # ファイル・シェルなどの道具：他のハーネスとの比較と研究
 
 - **対象と範囲：** Web 検索以外に、inocode がモデルに渡すツールを決めるための調査。決定ではない（2026-11-17 のユーザー指示「ウェブ検索以外のツールを考えよう。各ハーネスを見てツール比較しなさい」）。
-- **関連コード：** シェルは `core/src/shell.rs`（`shell`・`job`）。`core/src/agent_tools.rs` で登録し、`core/src/turn.rs` が作業フォルダと中止を渡す。その他は未実装。既存のツールは `plan`・`recall`・`lesson`（`agent-tools.md`）と `search`（`web-search.md`）。
+- **関連コード：** シェルは `core/src/shell.rs`（`shell`・`job`）。読むツールは `core/src/read.rs`（`read`）。`core/src/agent_tools.rs` で登録し、`core/src/turn.rs` が作業フォルダと中止を渡す。その他は未実装。既存のツールは `plan`・`recall`・`lesson`（`agent-tools.md`）と `search`（`web-search.md`）。
 - **根拠の状態：** 下の提案はすべて UNSUPPORTED_PENDING（ユーザーの承認待ち）。研究で支持されるものは表に示す。
 - **調べたソース（2026-11-17）：**
   - Codex：`../codex/codex-rs`
@@ -127,4 +127,9 @@
   - 時間では打ち切らず、バックグラウンドへ移して、終わったら知らせる。
   - PTY で動かし、文字や名前つきのキー（Enter・矢印・Ctrl+C など）を送れる。画面は文字の表で返す。
   - Windows は ConPTY を使う。
-- `read`・`edit`・`write`・`find` の採否：未承認。
+- 2026-11-17：`read` を承認。一度に返すのは 100 行（RESEARCH_SUPPORTED。SWE-agent の窓 100 行）。
+  - 実装：`path`（プロジェクトからの相対パスか絶対パス）、`from`（開始行、既定 1）、`lines`（1〜100、既定 100）。
+  - 返すもの：行番号つきの行と、ファイルの総行数。
+  - 1 行は 2,000 字で切る（他のハーネスと同じ値で、研究はない）。NUL を含むファイルは文書ではないとして断る。
+  - テスト：`read.rs` の単体テスト、`turn_tcp.rs` の相対パスのエラー。
+- `edit`・`write`・`find` の採否：未承認。

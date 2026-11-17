@@ -11,6 +11,7 @@ pub mod conversation;
 pub mod deepai;
 mod llm;
 pub mod oauth;
+mod read;
 pub mod reasoning;
 pub mod rules;
 mod rules_import;

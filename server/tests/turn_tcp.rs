@@ -179,7 +179,10 @@ async fn a_turn_goes_on_after_tool_calls_and_answers_each_one() {
         let second = &chats[1].body["messages"];
         assert_eq!(second[3]["role"], "tool");
         assert_eq!(second[3]["tool_call_id"], "call_1");
-        assert_eq!(second[3]["content"], "no tool named read is available");
+        assert_eq!(
+            second[3]["content"],
+            "a is relative, and this thread has no project folder"
+        );
     })
     .await;
 }
@@ -276,7 +279,7 @@ async fn the_plan_is_shown_after_the_history_with_every_request() {
         let requests = chats(&mock);
         assert!(requests[0].body["tools"]
             .as_array()
-            .is_some_and(|tools| tools.len() == 6));
+            .is_some_and(|tools| tools.len() == 7));
         let state = last_message(&requests[1]);
         assert_eq!(state["role"], "user");
         assert_eq!(
