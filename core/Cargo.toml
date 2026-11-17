@@ -17,6 +17,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 strip-ansi-escapes = "0.2"
+syntect = { version = "5.3", default-features = false, features = ["parsing", "regex-onig", "yaml-load"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tree-sitter = "0.27"
 tree-sitter-c = "0.24"
 tree-sitter-cpp = "0.23"
@@ -28,7 +30,7 @@ tree-sitter-python = "0.25"
 tree-sitter-rust = "0.24"
 tree-sitter-tags = "0.27"
 tree-sitter-typescript = "0.23"
-tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+two-face = { version = "0.5", default-features = false, features = ["syntect-onig"] }
 vt100 = "0.18"
 zero-search = { git = "https://github.com/mouseos/ZeroSearch_MCP", rev = "7288401092daca571865f3a0419afc85acee9e14" }
 
