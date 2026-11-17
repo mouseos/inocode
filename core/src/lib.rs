@@ -14,6 +14,7 @@ pub mod oauth;
 pub mod reasoning;
 pub mod rules;
 mod rules_import;
+mod shell;
 mod sse;
 pub mod store;
 pub mod turn;

@@ -11,7 +11,7 @@ use crate::conversation::{AssistantPart, Body, Message, ToolSpec};
 use crate::store::{
     HistoryQuery, NewNote, NoteKind, NoteQuery, ProjectId, SessionId, Source, Store,
 };
-use crate::{web_search, ErrorInfo};
+use crate::{shell, web_search, ErrorInfo};
 
 /// Messages one `recall` by position returns at most.
 const RECALL_RANGE: i64 = 20;
@@ -91,6 +91,9 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
         },
         web_search::spec(),
     ]
+    .into_iter()
+    .chain(shell::specs())
+    .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,6 +117,9 @@ pub(crate) struct Context<'a> {
     pub project: Option<ProjectId>,
     /// The project's AGENTS.md, as given to the model.
     pub rules: Option<&'a str>,
+    /// The project folder, where commands run.
+    pub folder: Option<&'a std::path::Path>,
+    pub cancel: tokio::sync::watch::Receiver<bool>,
 }
 
 /// The answer to one call: its text and whether it is an error.
@@ -126,9 +132,20 @@ pub(crate) async fn run(context: &Context<'_>, name: &str, arguments: &str) -> O
         RECALL => recall(context, arguments).await,
         LESSON => lesson(context, arguments).await,
         web_search::SEARCH => web_search::run(arguments).await,
+        shell::SHELL => shell::shell(place(context), arguments).await,
+        shell::JOB => shell::job(place(context), arguments).await,
         _ => return None,
     };
     Some(answer.map_or_else(|message| (message, true), |text| (text, false)))
+}
+
+fn place<'a>(context: &Context<'a>) -> shell::Place<'a> {
+    shell::Place {
+        session: context.session,
+        folder: context.folder,
+        logs: context.store.folder().join("logs"),
+        cancel: context.cancel.clone(),
+    }
 }
 
 fn parse<T: for<'de> Deserialize<'de>>(arguments: &str) -> Result<T, String> {

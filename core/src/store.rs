@@ -385,6 +385,12 @@ struct Inner {
 }
 
 impl Store {
+    /// The folder that holds the database; files that belong with the
+    /// threads, such as command logs, are kept beside it.
+    pub(crate) fn folder(&self) -> &Path {
+        self.inner.path.parent().unwrap_or_else(|| Path::new("."))
+    }
+
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, ErrorInfo> {
         let path = path.as_ref().to_path_buf();
         let opened = path.clone();

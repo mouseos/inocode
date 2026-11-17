@@ -4,7 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::future::pending;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use tokio::sync::{mpsc, watch};
@@ -15,6 +15,7 @@ use crate::conversation::{
     AssistantPart, Body, Conversation, Message, Speaker, StopReason, ToolSpec,
 };
 use crate::rules::{Actor, Decision};
+use crate::shell;
 use crate::store::{NoteId, ProjectId, SessionId, Store};
 use crate::{ErrorInfo, Llm, TokenUsage};
 
@@ -156,7 +157,10 @@ struct Thread<'a> {
     store: &'a Store,
     session: SessionId,
     project: Option<ProjectId>,
+    /// The project folder, where commands run.
+    folder: Option<PathBuf>,
     rules: Option<String>,
+    cancel: watch::Receiver<bool>,
     /// What is sent, and the stored position of each message in it.
     conversation: Conversation,
     seqs: Vec<i64>,
@@ -237,7 +241,8 @@ impl Thread<'_> {
     /// prefix intact.
     async fn state(&self) -> Result<Option<String>, ErrorInfo> {
         let plan = agent_tools::render_plan(self.store, self.session).await?;
-        let parts: Vec<&str> = [plan.as_deref(), self.lessons.as_deref()]
+        let jobs = shell::render_jobs(self.session);
+        let parts: Vec<&str> = [plan.as_deref(), jobs.as_deref(), self.lessons.as_deref()]
             .into_iter()
             .flatten()
             .collect();
@@ -300,6 +305,8 @@ impl Thread<'_> {
             session: self.session,
             project: self.project,
             rules: self.rules.as_deref(),
+            folder: self.folder.as_deref(),
+            cancel: self.cancel.clone(),
         };
         agent_tools::run(&context, name, arguments)
             .await
@@ -401,7 +408,7 @@ pub async fn run(
     events: mpsc::Sender<TurnEvent>,
 ) -> Outcome {
     let mut usage = TurnUsage::default();
-    let mut thread = match open(store, session, &prompt, allowed, events).await {
+    let mut thread = match open(store, session, &prompt, allowed, cancel.clone(), events).await {
         Ok(thread) => thread,
         Err(error) => {
             return Outcome {
@@ -420,6 +427,9 @@ pub async fn run(
         &mut usage,
     )
     .await;
+    if ending == Ending::Interrupted {
+        shell::stop_all(session);
+    }
     Outcome {
         ending,
         usage,
@@ -432,6 +442,7 @@ async fn open<'a>(
     session: SessionId,
     prompt: &str,
     allowed: Vec<NoteId>,
+    cancel: watch::Receiver<bool>,
     events: mpsc::Sender<TurnEvent>,
 ) -> Result<Thread<'a>, ErrorInfo> {
     let project = store.session_project(session).await?;
@@ -439,6 +450,7 @@ async fn open<'a>(
         Some((_, key)) => read_rules(key).await,
         None => None,
     };
+    let folder = project.as_ref().map(|(_, key)| PathBuf::from(key));
     let project = project.map(|(id, _)| id);
     let stored = store.since(session, 0, i64::MAX as usize).await?;
     let next_seq = stored.last().map_or(1, |last| last.seq + 1);
@@ -448,6 +460,8 @@ async fn open<'a>(
         store,
         session,
         project,
+        folder,
+        cancel,
         conversation: Conversation {
             system: Some(system_prompt(rules.as_deref())),
             messages,

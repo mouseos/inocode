@@ -276,7 +276,7 @@ async fn the_plan_is_shown_after_the_history_with_every_request() {
         let requests = chats(&mock);
         assert!(requests[0].body["tools"]
             .as_array()
-            .is_some_and(|tools| tools.len() == 4));
+            .is_some_and(|tools| tools.len() == 6));
         let state = last_message(&requests[1]);
         assert_eq!(state["role"], "user");
         assert_eq!(
@@ -734,6 +734,78 @@ async fn near_the_window_older_work_is_compacted_and_the_person_kept() {
         .await;
         let stored = read["result"]["messages"].to_string();
         assert!(stored.contains("\"c1\""));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn commands_run_in_a_terminal_that_can_be_answered() {
+    with_timeout(async {
+        let project = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
+            "inocode-shell-{}-{}",
+            std::process::id(),
+            database().file_name().unwrap().to_string_lossy()
+        ));
+        std::fs::create_dir_all(&project).expect("project");
+        let prompt = if cfg!(windows) {
+            "$a = Read-Host 'continue? [y/N]'; Write-Output \"got $a\""
+        } else {
+            "printf 'continue? [y/N] '; read a; echo \"got $a\""
+        };
+        let mock = scripted(vec![
+            tool_turn(
+                "s1",
+                "shell",
+                json!({"command": "echo hello", "wait_seconds": 60}),
+            ),
+            tool_turn("s2", "shell", json!({"command": prompt, "wait_seconds": 5})),
+            tool_turn(
+                "s3",
+                "job",
+                json!({"id": 2, "input": "y", "keys": ["Enter"], "wait_seconds": 60}),
+            ),
+        ])
+        .await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let response = call(
+            &mut client,
+            1,
+            json!({"id": 1, "method": "thread/start",
+                   "params": {"project": project.to_string_lossy()}}),
+        )
+        .await;
+        let thread = response["result"]["thread_id"].as_i64().expect("thread");
+
+        let events = turn(&mut client, 2, thread, "check the build").await;
+        let results = tool_results(&events);
+        assert!(
+            results[0].starts_with("Job 1 ended with exit code 0")
+                && results[0].contains("\nhello"),
+            "{}",
+            results[0]
+        );
+        assert!(
+            results[1].starts_with("Job 2 is still running")
+                && results[1].contains("continue? [y/N]"),
+            "{}",
+            results[1]
+        );
+        assert!(
+            results[2].starts_with("Job 2 ended with exit code 0") && results[2].contains("got y"),
+            "{}",
+            results[2]
+        );
+        let chats = chats(&mock);
+        let state = last_message(&chats[2]);
+        assert!(
+            state["content"]
+                .as_str()
+                .is_some_and(|text| text.contains("- job 2 is running")),
+            "{state}"
+        );
+        let _ = std::fs::remove_dir_all(&project);
     })
     .await;
 }
