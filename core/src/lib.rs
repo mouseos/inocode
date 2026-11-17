@@ -10,6 +10,7 @@ mod compaction;
 pub mod conversation;
 pub mod deepai;
 mod fetch;
+mod find;
 mod llm;
 pub mod oauth;
 mod outline;
