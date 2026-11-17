@@ -12,6 +12,7 @@ pub mod deepai;
 mod fetch;
 mod llm;
 pub mod oauth;
+mod outline;
 mod read;
 pub mod reasoning;
 pub mod rules;

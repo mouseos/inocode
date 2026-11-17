@@ -9,6 +9,7 @@ dom_query = "0.29"
 dom_smoothie = "0.19"
 getrandom = "0.2"
 html2text = "0.17"
+ignore = "0.4"
 portable-pty = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 rusqlite = { version = "0.43", features = ["bundled", "hooks"] }
@@ -16,6 +17,17 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 strip-ansi-escapes = "0.2"
+tree-sitter = "0.27"
+tree-sitter-c = "0.24"
+tree-sitter-cpp = "0.23"
+tree-sitter-go = "0.25"
+tree-sitter-java = "0.23"
+tree-sitter-javascript = "0.25"
+tree-sitter-language = "0.1"
+tree-sitter-python = "0.25"
+tree-sitter-rust = "0.24"
+tree-sitter-tags = "0.27"
+tree-sitter-typescript = "0.23"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 vt100 = "0.18"
 zero-search = { git = "https://github.com/mouseos/ZeroSearch_MCP", rev = "7288401092daca571865f3a0419afc85acee9e14" }
