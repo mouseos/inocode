@@ -1,8 +1,8 @@
 # Web ページ取得ツール：設計（承認待ち）
 
 - **対象と範囲：** モデルが URL のページを読むツール。無駄な HTML を読ませずに圧縮する。うまくいかないときや HTML の構造を見たいときは、全体も取れるようにする（2026-11-17 のユーザー指示）。
-- **関連コード：** 未実装。
-- **根拠の状態：** 本文抽出は研究で支持。出力の形式（Markdown）は UNSUPPORTED_APPROVED。抽出器はベンチマーク中。
+- **関連コード：** `core/src/fetch.rs`（`fetch`）。`core/src/agent_tools.rs` で登録する。保存先はデータベースの横の `<データベース名>.files/fetch/thread-<スレッド>/`。
+- **根拠の状態：** 本文抽出は RESEARCH_SUPPORTED。出力の形式（Markdown）は UNSUPPORTED_APPROVED。抽出器はプロジェクト内のベンチマークで選んだ（研究ではない）。
 
 ## 研究（調査日 2026-11-17）
 
@@ -43,6 +43,59 @@
    - `dom_smoothie`（Readability.js の移植、MIT、2026-10 更新）：Readability は査読ありの研究で最も安定。
    - `rs-trafilatura`（MIT/Apache-2.0、2026-04 更新）：数値は高いが、評価が作者自身のもの。
 3. **長い結果の上限**（研究なし）：冒頭何字までを返すか。
+
+## 抽出器のベンチマーク（プロジェクト内の実測、2026-11-17）
+
+- 手順とコード：`refs/extract-bench`（git 管理外）。
+- 評価方法：
+  - 単語の袋の適合率・再現率・F1。小文字にし、`\w+` で区切る。WCXB の `evaluate.py` と同じ方法。
+  - 出力が空、エラー、panic のページは F1 を 0 とする。
+  - 正解が空の 16 ページは除く。
+- 主な結果は、どの抽出器の作者とも無関係なデータで測った。
+  - Bevendorff et al. の統合データ（SIGIR 2023）、3,975 ページ。
+  - 各抽出器は Markdown を出力する設定で動かした（llm_readability は Markdown の設定がないため文章で出力）。
+
+| 抽出器 | 平均 F1 | 中央値 F1 | F1=0 | ms/ページ |
+|---|---|---|---|---|
+| html2text（抽出なし） | .694 | .737 | panic 4 | 3.4 |
+| **dom_smoothie 0.19.0（MIT）** | **.879** | **.964** | 0 | 2.6 |
+| rs-trafilatura 0.2.2 | .768 | .928 | 空 153 | 12.1 |
+| trafilatura 0.6.0（nchapman） | .847 | .944 | 0 | 5.9 |
+| llm_readability 0.0.17 | .730 | .946 | 空 504 | 3.3 |
+
+- 補助：WCXB のテスト集合 505 ページ。rs-trafilatura の作者が作り、開発集合で調整したデータ。
+  - 平均 F1：rs-trafilatura .860、dom_smoothie .831、trafilatura .830。
+  - 文書（documentation）の 42 ページ：dom_smoothie .874、rs-trafilatura .951、trafilatura .950。
+- コードの残り方：WCXB の文書 20 ページの `<pre>` を調べた。
+  - 残ったコードのトークンの割合：dom_smoothie .890、trafilatura .897、rs-trafilatura .919、llm_readability .368。
+- 選んだもの：`dom_smoothie`。
+  - 作者と無関係なデータで最も正確。
+  - 失敗が 0 件で、最も速い。
+- 限界：
+  - 文書ページでは trafilatura 系が上だった（作者が作った補助データでの結果）。
+  - 時間は 1 回だけの計測。
+  - 言語の内訳は測っていない。空白で区切らない CJK では、この評価方法は不正確になる。
+
+## 実装（工学上の選択で研究なし）
+
+- `fetch`：`url`、`mode`（`main`／`text`／`html`、既定は `main`）。
+- 取得：http と https だけ。30 秒で打ち切り、上限は 10MB。
+- 取得した本体は、加工せずに必ずファイルに保存する。`main` と `text` では、変換した結果も `.md` に保存する。
+- モデルに返すもの：URL、状態コード、種類、題名、保存先、結果の冒頭 100 行（`read` と同じ窓）。続きは `read` で読む。
+- `main`：
+  - 隠し要素を消してから、`dom_smoothie` で本文を Markdown にする。消すのは `hidden`、`aria-hidden=true`、`template`、インラインの `display:none`・`visibility:hidden`。
+  - 本文が見つからないときは、ページ全体を文章にして、そうしたと書き添える。
+- `text`：隠し要素を消してから、`html2text` でページ全体を文章にする。
+  - `html2text` は一部の表で panic するため、その場合は HTML をそのまま返して、そうしたと書き添える。
+- ゼロ幅文字（U+200B〜U+200F、U+2060〜U+2064、U+FEFF）を消す（Guo, Wei の対策の一部）。
+- 結果は区切り記号で囲む。
+- HTML でない文書（JSON・テキストなど）はそのまま返す。画像などの文書でないものは、保存先と大きさだけを返す。
+- テスト：
+  - `fetch.rs` の単体テスト：リンク・コードが残り、隠しテキスト・ナビゲーション・フッターが消えること。冒頭 100 行の表示。
+  - `turn_tcp.rs` の `a_fetched_page_comes_as_its_main_content_and_is_saved_whole`：ローカルのサーバーからサーバー経由で取得する。
+- 未対応：
+  - 外部の CSS で隠した要素は見えない（CSS を計算しないため）。
+  - JavaScript で描くページは中身が取れない。
 
 ## ユーザーの承認
 
