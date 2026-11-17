@@ -1,6 +1,7 @@
-//! The `outline` tool: the definitions of a file or folder (functions,
-//! types, methods, document headings) as their first lines with line
-//! numbers, without bodies. Built with no model call: from syntax trees for
+//! The `outline` tool: the skeleton of a file or folder as numbered source
+//! lines without bodies: definitions (functions, types, methods, document
+//! headings), and for the tree-sitter languages also fields and the comments
+//! outside functions, as in the Agentless skeleton. Built with no model call: from syntax trees for
 //! the languages tree-sitter covers here, and otherwise from the scopes of
 //! syntax-highlighting grammars, which more grammars can extend without a
 //! rebuild. Design, sources and the comparison of the two:
@@ -111,13 +112,13 @@ fn resolve(folder: Option<&Path>, path: &str) -> Result<PathBuf, String> {
 
 fn outline(path: &Path) -> Result<String, String> {
     if path.is_file() {
-        let definitions = file_definitions(path)?
+        let skeleton = file_skeleton(path)?
             .ok_or_else(|| format!("{} is not in a supported language", path.display()))?;
-        if definitions.is_empty() {
+        if skeleton.is_empty() {
             return Ok(format!("{} has no definitions.", path.display()));
         }
         let mut lines = vec![path.display().to_string()];
-        lines.extend(definitions.iter().map(render));
+        lines.extend(skeleton.iter().map(render_line));
         return Ok(capped(lines, path));
     }
     if !path.is_dir() {
@@ -134,15 +135,15 @@ fn outline(path: &Path) -> Result<String, String> {
     files.sort();
     let mut lines = Vec::new();
     for file in files {
-        let Ok(Some(definitions)) = file_definitions(&file) else {
+        let Ok(Some(skeleton)) = file_skeleton(&file) else {
             continue;
         };
-        if definitions.is_empty() {
+        if skeleton.is_empty() {
             continue;
         }
         let shown = file.strip_prefix(path).unwrap_or(&file);
         lines.push(shown.display().to_string());
-        lines.extend(definitions.iter().map(render));
+        lines.extend(skeleton.iter().map(render_line));
         if lines.len() > MAX_LINES {
             break;
         }
@@ -156,8 +157,13 @@ fn outline(path: &Path) -> Result<String, String> {
     Ok(capped(lines, path))
 }
 
+#[cfg(test)]
 fn render(definition: &Definition) -> String {
     format!("  {}: {}", definition.line, definition.text)
+}
+
+fn render_line((line, text): &(usize, String)) -> String {
+    format!("  {line}: {text}")
 }
 
 fn capped(lines: Vec<String>, path: &Path) -> String {
@@ -175,19 +181,138 @@ fn supported(path: &Path) -> bool {
     language(path).is_some() || grammar(path).is_some()
 }
 
+/// A file's source, unless it is too large to outline.
+fn source(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    let size = std::fs::metadata(path)
+        .map_err(|error| format!("cannot read {}: {error}", path.display()))?
+        .len();
+    if size > MAX_FILE_BYTES {
+        return Ok(None);
+    }
+    std::fs::read(path)
+        .map(Some)
+        .map_err(|error| format!("cannot read {}: {error}", path.display()))
+}
+
+/// A file's skeleton as numbered lines; `None` when its language is not
+/// supported.
+fn file_skeleton(path: &Path) -> Result<Option<Vec<(usize, String)>>, String> {
+    if !supported(path) {
+        return Ok(None);
+    }
+    let Some(source) = source(path)? else {
+        return Ok(Some(Vec::new()));
+    };
+    if let Some(configuration) = language(path) {
+        return Ok(Some(skeleton(configuration, &source)));
+    }
+    Ok(grammar(path).map(|(set, syntax)| {
+        highlighted_definitions(set, syntax, &String::from_utf8_lossy(&source))
+            .into_iter()
+            .map(|definition| (definition.line, definition.text))
+            .collect()
+    }))
+}
+
+/// Node kinds that declare a field, variant or member of a type.
+const FIELD_KINDS: [&str; 10] = [
+    "field_declaration",
+    "enum_variant",
+    "enum_constant",
+    "enumerator",
+    "field_definition",
+    "public_field_definition",
+    "property_signature",
+    "method_signature",
+    "method_spec",
+    "method_elem",
+];
+
+/// Definitions, fields, and the comments outside function bodies, from the
+/// syntax tree.
+fn skeleton(configuration: &TagsConfiguration, source: &[u8]) -> Vec<(usize, String)> {
+    let mut lines: Vec<usize> = Vec::new();
+    let mut bodies: Vec<std::ops::Range<usize>> = Vec::new();
+    let mut context = TagsContext::new();
+    if let Ok((tags, _)) = context.generate_tags(configuration, source, None) {
+        for tag in tags.filter_map(Result::ok).filter(|tag| tag.is_definition) {
+            lines.push(tag.span.start.row);
+            if matches!(
+                configuration.syntax_type_name(tag.syntax_type_id),
+                "function" | "method"
+            ) {
+                bodies.push(tag.range.clone());
+            }
+        }
+    }
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&configuration.language).is_ok() {
+        if let Some(tree) = parser.parse(source, None) {
+            let inside_body = |node: &tree_sitter::Node| {
+                bodies
+                    .iter()
+                    .any(|body| node.start_byte() > body.start && node.end_byte() <= body.end)
+            };
+            let mut stack = vec![tree.root_node()];
+            while let Some(node) = stack.pop() {
+                if inside_body(&node) {
+                    continue;
+                }
+                let kind = node.kind();
+                if kind.contains("comment") {
+                    let start = node.start_position();
+                    let end = node.end_position();
+                    // A line comment can end at the start of the next line.
+                    let last = if end.column == 0 && end.row > start.row {
+                        end.row - 1
+                    } else {
+                        end.row
+                    };
+                    lines.extend(start.row..=last);
+                    continue;
+                }
+                if FIELD_KINDS.contains(&kind) || python_class_field(&node) {
+                    lines.push(node.start_position().row);
+                }
+                let mut cursor = node.walk();
+                stack.extend(node.children(&mut cursor));
+            }
+        }
+    }
+    lines.sort_unstable();
+    lines.dedup();
+    let text: Vec<&[u8]> = source.split(|&byte| byte == b'\n').collect();
+    lines
+        .into_iter()
+        .filter_map(|row| {
+            let line = text.get(row)?;
+            let line = String::from_utf8_lossy(line);
+            Some((row + 1, cut(line.trim_end())))
+        })
+        .collect()
+}
+
+/// A Python assignment directly in a class body: a class field.
+fn python_class_field(node: &tree_sitter::Node) -> bool {
+    node.kind() == "expression_statement"
+        && node
+            .child(0)
+            .is_some_and(|child| child.kind() == "assignment")
+        && node
+            .parent()
+            .filter(|parent| parent.kind() == "block")
+            .and_then(|block| block.parent())
+            .is_some_and(|owner| owner.kind() == "class_definition")
+}
+
 /// The definitions of a file; `None` when its language is not supported.
 pub(crate) fn file_definitions(path: &Path) -> Result<Option<Vec<Definition>>, String> {
     if !supported(path) {
         return Ok(None);
     }
-    let size = std::fs::metadata(path)
-        .map_err(|error| format!("cannot read {}: {error}", path.display()))?
-        .len();
-    if size > MAX_FILE_BYTES {
+    let Some(source) = source(path)? else {
         return Ok(Some(Vec::new()));
-    }
-    let source =
-        std::fs::read(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    };
     if let Some(configuration) = language(path) {
         return Ok(Some(definitions(configuration, &source)));
     }
@@ -466,6 +591,42 @@ mod tests {
                 .iter()
                 .any(|line| line.starts_with("  4: interface Shape")),
             "{lines:?}"
+        );
+    }
+
+    fn skeleton_of(extension: &str, source: &str) -> Vec<String> {
+        let path = PathBuf::from(format!("x.{extension}"));
+        skeleton(language(&path).expect("supported"), source.as_bytes())
+            .iter()
+            .map(render_line)
+            .collect()
+    }
+
+    #[test]
+    fn the_skeleton_keeps_fields_and_outer_comments_but_not_bodies() {
+        let rust = "//! Shapes.\n\n/// A point.\nstruct Point {\n    /// Across.\n    x: i32,\n}\n\nimpl Point {\n    /// Its length.\n    fn norm(&self) -> i32 {\n        // inside\n        let y = 1;\n        self.x + y\n    }\n}\n";
+        assert_eq!(
+            skeleton_of("rs", rust),
+            [
+                "  1: //! Shapes.",
+                "  3: /// A point.",
+                "  4: struct Point {",
+                "  5:     /// Across.",
+                "  6:     x: i32,",
+                "  10:     /// Its length.",
+                "  11:     fn norm(&self) -> i32 {",
+            ]
+        );
+        let python = "# Module notes.\nclass Shape:\n    sides = 0\n    # Area of the shape.\n    def area(self):\n        # inside\n        total = 0\n        return total\n";
+        assert_eq!(
+            skeleton_of("py", python),
+            [
+                "  1: # Module notes.",
+                "  2: class Shape:",
+                "  3:     sides = 0",
+                "  4:     # Area of the shape.",
+                "  5:     def area(self):",
+            ]
         );
     }
 
