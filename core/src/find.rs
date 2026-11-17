@@ -123,24 +123,27 @@ fn walk<'s>(
     files: Option<&'s globset::GlobMatcher>,
     mut visit: impl FnMut() -> Box<dyn FnMut(&Path) + Send + 's>,
 ) {
-    WalkBuilder::new(root).build_parallel().run(|| {
-        let mut each = visit();
-        Box::new(move |entry| {
-            let Ok(entry) = entry else {
-                return WalkState::Continue;
-            };
-            if !entry.file_type().is_some_and(|kind| kind.is_file()) {
-                return WalkState::Continue;
-            }
-            let path = entry.path();
-            let relative = path.strip_prefix(root).unwrap_or(path);
-            if files.is_some_and(|glob| !glob.is_match(relative)) {
-                return WalkState::Continue;
-            }
-            each(path);
-            WalkState::Continue
-        })
-    });
+    WalkBuilder::new(root)
+        .require_git(false)
+        .build_parallel()
+        .run(|| {
+            let mut each = visit();
+            Box::new(move |entry| {
+                let Ok(entry) = entry else {
+                    return WalkState::Continue;
+                };
+                if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+                    return WalkState::Continue;
+                }
+                let path = entry.path();
+                let relative = path.strip_prefix(root).unwrap_or(path);
+                if files.is_some_and(|glob| !glob.is_match(relative)) {
+                    return WalkState::Continue;
+                }
+                each(path);
+                WalkState::Continue
+            })
+        });
 }
 
 struct Collected {

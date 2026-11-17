@@ -124,6 +124,7 @@ fn outline(path: &Path) -> Result<String, String> {
         return Err(format!("{} does not exist", path.display()));
     }
     let mut files: Vec<PathBuf> = ignore::WalkBuilder::new(path)
+        .require_git(false)
         .build()
         .filter_map(Result::ok)
         .filter(|entry| entry.file_type().is_some_and(|kind| kind.is_file()))
