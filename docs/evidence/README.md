@@ -49,7 +49,8 @@
 | [find-enclosing.md](find-enclosing.md) | 検索結果に、その行を含む定義の名前を付ける | UNSUPPORTED_APPROVED（独自の方法、対照実験が条件） | `core/src/find.rs`。カーネルの実測で正答は同じ、2 段の呼び出し元の入力が約 5 分の 1（以前の実行との比較） |
 | [observation-masking.md](observation-masking.md) | 古いツール出力を隠す | RESEARCH_SUPPORTED（The Complexity Trap、ワークショップ） | 実測を受けて外した（コードなし）。短い課題では差なし。8 問まとめた長いターンでは、キャッシュ外入力が約 6 倍（p=0.031）、得点 0.71 対 0.86（有意でない） |
 | [output-limit.md](output-limit.md) | 出力上限にモデルの上限を使う（公式の一覧、なければ models.dev）、切れたら続きを促す | UNSUPPORTED_APPROVED（公式仕様と公開実装） | `core/src/llm.rs`、`core/src/reasoning.rs`、`core/src/turn.rs` |
-| [harness-tools.md](harness-tools.md) | ファイル・シェルなどの道具：他のハーネスとの比較と研究 | シェルは UNSUPPORTED_APPROVED、read・find は RESEARCH_SUPPORTED、edit・write は UNSUPPORTED_PENDING | シェル・read・find は実装済み |
+| [harness-tools.md](harness-tools.md) | ファイル・シェルなどの道具：他のハーネスとの比較と研究 | シェルは UNSUPPORTED_APPROVED、read・find は RESEARCH_SUPPORTED、edit・write は `edit-write.md` | シェル・read・find・edit・write は実装済み |
+| [edit-write.md](edit-write.md) | edit・write の道具と、効率化の候補（空白の正規化、構文検査など。未実装） | 置換形式と完全一致は RESEARCH_SUPPORTED、細部は UNSUPPORTED_APPROVED | `core/src/edit.rs` |
 
 ## 状態の判定
 

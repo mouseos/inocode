@@ -9,6 +9,7 @@ mod agent_tools;
 mod compaction;
 pub mod conversation;
 pub mod deepai;
+mod edit;
 mod fetch;
 mod find;
 mod llm;

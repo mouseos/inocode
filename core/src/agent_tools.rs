@@ -11,7 +11,7 @@ use crate::conversation::{AssistantPart, Body, Message, ToolSpec};
 use crate::store::{
     HistoryQuery, NewNote, NoteKind, NoteQuery, ProjectId, SessionId, Source, Store,
 };
-use crate::{fetch, find, outline, read, shell, web_search, ErrorInfo};
+use crate::{edit, fetch, find, outline, read, shell, web_search, ErrorInfo};
 
 /// Messages one `recall` by position returns at most.
 const RECALL_RANGE: i64 = 20;
@@ -95,6 +95,7 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
         find::spec(),
     ]
     .into_iter()
+    .chain(edit::specs())
     .chain(shell::specs())
     .collect()
 }
@@ -136,6 +137,8 @@ pub(crate) async fn run(context: &Context<'_>, name: &str, arguments: &str) -> O
         LESSON => lesson(context, arguments).await,
         web_search::SEARCH => web_search::run(arguments).await,
         read::READ => read::run(context.folder, arguments).await,
+        edit::EDIT => edit::edit(context.folder, arguments).await,
+        edit::WRITE => edit::write(context.folder, arguments).await,
         find::FIND => {
             outline::use_grammars(context.store.files_folder().join("grammars"));
             find::run(context.folder, arguments).await

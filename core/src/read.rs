@@ -66,7 +66,7 @@ pub(crate) async fn run(folder: Option<&Path>, arguments: &str) -> Result<String
     .map_err(|error| format!("read failed: {error}"))?
 }
 
-fn resolve(folder: Option<&Path>, path: &str) -> Result<PathBuf, String> {
+pub(crate) fn resolve(folder: Option<&Path>, path: &str) -> Result<PathBuf, String> {
     let given = Path::new(path);
     if given.is_absolute() {
         return Ok(given.to_path_buf());

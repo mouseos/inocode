@@ -1,7 +1,7 @@
 # ファイル・シェルなどの道具：他のハーネスとの比較と研究
 
 - **対象と範囲：** Web 検索以外に、inocode がモデルに渡すツールを決めるための調査。決定ではない（2026-11-17 のユーザー指示「ウェブ検索以外のツールを考えよう。各ハーネスを見てツール比較しなさい」）。
-- **関連コード：** シェルは `core/src/shell.rs`（`shell`・`job`）。読むツールは `core/src/read.rs`（`read`）。検索は `core/src/find.rs`（`find`）。`core/src/agent_tools.rs` で登録し、`core/src/turn.rs` が作業フォルダと中止を渡す。その他は未実装。既存のツールは `plan`・`recall`・`lesson`（`agent-tools.md`）と `search`（`web-search.md`）。
+- **関連コード：** シェルは `core/src/shell.rs`（`shell`・`job`）。読むツールは `core/src/read.rs`（`read`）。検索は `core/src/find.rs`（`find`）。編集と書き込みは `core/src/edit.rs`（`edit`・`write`、`edit-write.md`）。`core/src/agent_tools.rs` で登録し、`core/src/turn.rs` が作業フォルダと中止を渡す。その他は未実装。既存のツールは `plan`・`recall`・`lesson`（`agent-tools.md`）と `search`（`web-search.md`）。
 - **根拠の状態：** 下の提案はすべて UNSUPPORTED_PENDING（ユーザーの承認待ち）。研究で支持されるものは表に示す。
 - **調べたソース（2026-11-17）：**
   - Codex：`../codex/codex-rs`
@@ -238,4 +238,4 @@
   - 1 行は 2,000 字で切る（他のハーネスと同じ値で、研究はない）。NUL を含むファイルは文書ではないとして断る。
   - テスト：`read.rs` の単体テスト、`turn_tcp.rs` の相対パスのエラー。
 - 2026-11-17：`find` を承認（索引なしの走査。文字列・正規表現の検索、ファイル名の glob、名前の検索。一致した行を path:行: 本文 で返し、上限 50 件と総数を示す）。
-- `edit`・`write` の採否：未承認。
+- `edit`・`write` の採否：2026-11-19 に承認（`edit-write.md`）。
