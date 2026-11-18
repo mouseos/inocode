@@ -42,12 +42,14 @@ const NOT_DEFINING: [&str; 6] = [
     "markup.raw",
 ];
 
-/// One definition: where it starts and the text of that line.
+/// One definition: where it starts, the text of that line, and its last
+/// line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Definition {
     pub name: String,
     pub line: usize,
     pub text: String,
+    pub end: usize,
 }
 
 /// Uses `folder` for extra `.sublime-syntax` grammars; only the first call
@@ -85,7 +87,10 @@ pub(crate) fn file_definitions(path: &Path) -> Result<Option<Vec<Definition>>, S
         return Ok(Some(definitions(configuration, &source)));
     }
     Ok(grammar(path).map(|(set, syntax)| {
-        highlighted_definitions(set, syntax, &String::from_utf8_lossy(&source))
+        let source = String::from_utf8_lossy(&source);
+        let mut found = highlighted_definitions(set, syntax, &source);
+        indentation_ends(&source, &mut found);
+        found
     }))
 }
 
@@ -93,6 +98,38 @@ fn definitions(configuration: &TagsConfiguration, source: &[u8]) -> Vec<Definiti
     let mut context = TagsContext::new();
     let Ok((tags, _)) = context.generate_tags(configuration, source, None) else {
         return Vec::new();
+    };
+    // The C and C++ tag queries mark a function's declarator, not its body;
+    // the tree finds the enclosing definition.
+    let declarators = [7, 8].iter().any(|&index| {
+        configurations()[index]
+            .as_ref()
+            .is_some_and(|c| std::ptr::eq(c, configuration))
+    });
+    let tree = declarators
+        .then(|| {
+            let mut parser = tree_sitter::Parser::new();
+            parser.set_language(&configuration.language).ok()?;
+            parser.parse(source, None)
+        })
+        .flatten();
+    let whole = |range: &std::ops::Range<usize>| -> usize {
+        let Some(tree) = &tree else {
+            return range.end;
+        };
+        let mut node = tree
+            .root_node()
+            .descendant_for_byte_range(range.start, range.end);
+        while let Some(current) = node {
+            if current.kind() == "function_definition" {
+                return current.end_byte();
+            }
+            if !current.kind().ends_with("declarator") {
+                break;
+            }
+            node = current.parent();
+        }
+        range.end
     };
     let mut found: Vec<Definition> = tags
         .filter_map(Result::ok)
@@ -108,16 +145,92 @@ fn definitions(configuration: &TagsConfiguration, source: &[u8]) -> Vec<Definiti
                 .position(|&byte| byte == b'\n')
                 .map_or(source.len(), |newline| start + newline);
             let text = String::from_utf8_lossy(&source[start..end]);
+            let last_byte = whole(&tag.range).saturating_sub(1).max(tag.range.start);
+            let line = tag.span.start.row + 1;
             Definition {
                 name: String::from_utf8_lossy(&source[tag.name_range.clone()]).into_owned(),
-                line: tag.span.start.row + 1,
+                line,
                 text: cut(text.trim_end()),
+                end: (source[..last_byte]
+                    .iter()
+                    .filter(|&&byte| byte == b'\n')
+                    .count()
+                    + 1)
+                .max(line),
             }
         })
         .collect();
     found.sort_by_key(|definition| definition.line);
     found.dedup_by(|a, b| a.line == b.line && a.name == b.name);
     found
+}
+
+/// Closing lines that belong to the block they close.
+const CLOSERS: [&str; 8] = ["}", "end", ")", "]", "fi", "done", "esac", "endif"];
+
+/// Sets each definition's last line from indentation alone, for languages
+/// without a syntax tree here: the body is the lines indented deeper than
+/// the definition's line, plus a closing line at its own depth (`}`, `end`);
+/// a lone `{` or a line that closes the signature and opens the body at that
+/// depth does not end it.
+/// A definition with no deeper lines, such as a document heading, runs up to
+/// the next definition at the same or a shallower depth.
+pub(crate) fn indentation_ends(source: &str, definitions: &mut [Definition]) {
+    let lines: Vec<&str> = source.lines().collect();
+    let depth = |line: &str| line.len() - line.trim_start().len();
+    let starts: Vec<(usize, usize)> = definitions
+        .iter()
+        .map(|definition| {
+            let text = lines.get(definition.line - 1).copied().unwrap_or("");
+            (definition.line, depth(text))
+        })
+        .collect();
+    for definition in definitions.iter_mut() {
+        let Some(&own) = lines.get(definition.line - 1) else {
+            definition.end = definition.line;
+            continue;
+        };
+        let own = depth(own);
+        let mut end = definition.line;
+        let mut deeper = false;
+        for (index, line) in lines.iter().enumerate().skip(definition.line) {
+            if line.trim().is_empty() {
+                continue;
+            }
+            if depth(line) > own {
+                deeper = true;
+                end = index + 1;
+                continue;
+            }
+            let word = line.trim();
+            let closes = CLOSERS.iter().any(|closer| {
+                word.strip_prefix(closer).is_some_and(|rest| {
+                    !rest.starts_with(|next: char| next.is_alphanumeric() || next == '_')
+                })
+            });
+            // A lone `{`, or a line that closes a multi-line signature and
+            // opens the body (`) -> T {`, `):`), continues the definition.
+            let opens = word.ends_with(['{', ':', '(', '[']);
+            if word == "{" || (closes && opens) {
+                end = index + 1;
+                continue;
+            }
+            if deeper && closes {
+                end = index + 1;
+            }
+            break;
+        }
+        if !deeper {
+            end = starts
+                .iter()
+                .find(|&&(line, at)| line > definition.line && at <= own)
+                .map_or(lines.len(), |&(line, _)| line - 1);
+            while end > definition.line && lines[end - 1].trim().is_empty() {
+                end -= 1;
+            }
+        }
+        definition.end = end.max(definition.line);
+    }
 }
 
 fn cut(text: &str) -> String {
@@ -248,6 +361,7 @@ fn highlighted_definitions(
                 name: name.to_string(),
                 line: index + 1,
                 text: cut(line.trim_end()),
+                end: index + 1,
             });
         }
     }
@@ -400,5 +514,64 @@ mod tests {
         let data = dir.path().join("data.json");
         std::fs::write(&data, "{\"a\": 1}").expect("json");
         assert_eq!(file_definitions(&data).expect("read"), None);
+    }
+}
+
+#[cfg(test)]
+mod measure_ends {
+    use super::*;
+
+    /// Compares the indentation rule with the syntax tree on the files listed
+    /// in `MEASURE_LISTS` (paths relative to `MEASURE_ROOT`); results are in
+    /// docs/evidence/read-function.md.
+    #[test]
+    #[ignore]
+    fn indentation_ends_against_tree_sitter() {
+        let root = PathBuf::from(std::env::var("MEASURE_ROOT").expect("root"));
+        let lists = PathBuf::from(std::env::var("MEASURE_LISTS").expect("lists"));
+        for list in ["rs", "py", "go", "c", "ts"] {
+            let files = std::fs::read_to_string(lists.join(format!("{list}.txt"))).expect("list");
+            let (mut total, mut exact, mut near, mut short, mut long) = (0, 0, 0, 0, 0);
+            let mut over_lines = 0usize;
+            for file in files.lines() {
+                let path = root.join(file);
+                let Some(configuration) = language(&path) else {
+                    continue;
+                };
+                let Ok(source) = std::fs::read(&path) else {
+                    continue;
+                };
+                let truth = definitions(configuration, &source);
+                let mut guess = truth.clone();
+                indentation_ends(&String::from_utf8_lossy(&source), &mut guess);
+                for (t, g) in truth.iter().zip(&guess) {
+                    if t.end == t.line {
+                        continue;
+                    }
+                    total += 1;
+                    if g.end == t.end {
+                        exact += 1;
+                    }
+                    if g.end.abs_diff(t.end) <= 1 {
+                        near += 1;
+                    }
+                    if g.end < t.end {
+                        short += 1;
+                    }
+                    if g.end > t.end {
+                        long += 1;
+                        over_lines += g.end - t.end;
+                    }
+                }
+            }
+            println!(
+                "{list}: {total} multi-line definitions, exact {:.3}, within 1 {:.3}, cut short {:.3}, runs over {:.3} (mean {:.1} lines over)",
+                exact as f64 / total as f64,
+                near as f64 / total as f64,
+                short as f64 / total as f64,
+                long as f64 / total as f64,
+                over_lines as f64 / long.max(1) as f64
+            );
+        }
     }
 }
