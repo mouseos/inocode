@@ -288,6 +288,20 @@ fn anthropic(body: &mut Map<String, Value>, to: &Destination, effort: Effort, su
     body.insert("max_tokens".into(), json!(max_tokens));
 }
 
+/// Sets an Anthropic body's `max_tokens` to `limit`, the model's own output
+/// limit, so long answers are not cut at a fixed value. A thinking budget
+/// stays below it, as the API requires.
+pub(crate) fn raise_anthropic_max(body: &mut Value, limit: u64) {
+    body["max_tokens"] = json!(limit);
+    if let Some(budget) = body
+        .pointer_mut("/thinking/budget_tokens")
+        .filter(|budget| budget.as_u64().is_some_and(|budget| budget >= limit))
+    {
+        *budget =
+            json!(u64::from(MIN_BUDGET).max(limit.saturating_sub(u64::from(BUDGET_FLOOR_GAP))));
+    }
+}
+
 /// `output_config.effort` has no `minimal`.
 fn output_effort(effort: Effort) -> &'static str {
     match effort {
@@ -418,6 +432,27 @@ mod tests {
         );
         assert_eq!(minimal["thinking"], json!({"type": "adaptive"}));
         assert_eq!(minimal["output_config"], json!({"effort": "low"}));
+    }
+
+    #[test]
+    fn the_model_limit_replaces_max_tokens_and_keeps_the_budget_below_it() {
+        let mut raised =
+            json!({"max_tokens": 16_384, "thinking": {"type": "enabled", "budget_tokens": 8192}});
+        raise_anthropic_max(&mut raised, 128_000);
+        assert_eq!(raised["max_tokens"], 128_000);
+        assert_eq!(raised["thinking"]["budget_tokens"], 8192);
+
+        let mut lowered = raised.clone();
+        raise_anthropic_max(&mut lowered, 8192);
+        assert_eq!(lowered["max_tokens"], 8192);
+        assert_eq!(lowered["thinking"]["budget_tokens"], 4096);
+
+        let mut adaptive = json!({"max_tokens": 16_384, "thinking": {"type": "adaptive"}});
+        raise_anthropic_max(&mut adaptive, 64_000);
+        assert_eq!(
+            adaptive,
+            json!({"max_tokens": 64_000, "thinking": {"type": "adaptive"}})
+        );
     }
 
     #[test]

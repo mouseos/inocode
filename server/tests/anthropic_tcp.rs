@@ -26,6 +26,14 @@ fn core_for(
     Arc::new(Core::with_llm(llm))
 }
 
+/// The requests other than the model-list lookup.
+fn posts(mock: &MockApi) -> Vec<MockRequest> {
+    mock.requests()
+        .into_iter()
+        .filter(|request| request.method == "POST")
+        .collect()
+}
+
 fn echo_handler() -> impl Fn(&MockRequest) -> MockReply + Send + Sync + 'static {
     |request: &MockRequest| {
         let text = reply_for(request);
@@ -128,7 +136,7 @@ async fn chat_request_reaches_the_messages_endpoint_with_anthropic_headers() {
         assert_eq!(text, format!("reply[{prompt}]"));
         assert_eq!(terminal, json!({"id": 7, "event": "completed"}));
 
-        let requests = mock.requests();
+        let requests = posts(&mock);
         assert_eq!(requests.len(), 1);
         let request = &requests[0];
         assert_eq!(request.method, "POST");
@@ -165,6 +173,47 @@ async fn chat_request_reaches_the_messages_endpoint_with_anthropic_headers() {
 }
 
 #[tokio::test]
+async fn max_tokens_is_the_output_limit_the_model_list_states() {
+    with_timeout(async {
+        let mock = start_mock(|request: &MockRequest| {
+            if request.method == "GET" {
+                return MockReply::status(
+                    200,
+                    &json!({"data": [
+                        {"type": "model", "id": "other", "max_tokens": 1000},
+                        {"type": "model", "id": "test-model", "max_tokens": 128_000}
+                    ]})
+                    .to_string(),
+                );
+            }
+            MockReply::stream(anthropic_stream("ok"))
+        })
+        .await;
+        let (addr, _stop, _handle) =
+            start_server(core_for(&mock, "test-model", ProviderKind::Anthropic, None)).await;
+        let mut client = connect(addr).await;
+        for id in [1, 2] {
+            collect_chat(
+                &mut client,
+                id,
+                json!({"id": id, "method": "chat", "params": {"prompt": "hi"}}),
+            )
+            .await;
+        }
+        let requests = mock.requests();
+        // The list is read once, before the first request.
+        assert_eq!(requests.iter().filter(|r| r.method == "GET").count(), 1);
+        let sent = posts(&mock);
+        assert_eq!(sent.len(), 2);
+        for request in sent {
+            assert_eq!(request.body["max_tokens"], 128_000);
+            assert_eq!(request.body["thinking"]["budget_tokens"], 8192);
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn a_base_url_with_a_trailing_slash_does_not_duplicate_v1() {
     with_timeout(async {
         let mock = start_mock(echo_handler()).await;
@@ -187,7 +236,7 @@ async fn a_base_url_with_a_trailing_slash_does_not_duplicate_v1() {
         .await;
         assert_eq!(text, "reply[slash]");
         assert_eq!(terminal["event"], "completed");
-        assert_eq!(mock.requests()[0].path, "/v1/messages");
+        assert_eq!(posts(&mock)[0].path, "/v1/messages");
     })
     .await;
 }
@@ -220,7 +269,7 @@ async fn a_base_url_without_v1_reaches_v1_messages() {
         .await;
         assert_eq!(text, "reply[root base]");
         assert_eq!(terminal["event"], "completed");
-        assert_eq!(mock.requests()[0].path, "/v1/messages");
+        assert_eq!(posts(&mock)[0].path, "/v1/messages");
     })
     .await;
 }

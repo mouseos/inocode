@@ -215,6 +215,8 @@ pub struct Llm {
     catalog_effort: tokio::sync::OnceCell<Option<crate::reasoning::Effort>>,
     /// The configured model's context window, looked up once.
     catalog_window: tokio::sync::OnceCell<Option<u64>>,
+    /// The configured model's output limit, looked up once.
+    catalog_output: tokio::sync::OnceCell<Option<u64>>,
 }
 
 impl Llm {
@@ -236,6 +238,7 @@ impl Llm {
             deepai,
             catalog_effort: tokio::sync::OnceCell::new(),
             catalog_window: tokio::sync::OnceCell::new(),
+            catalog_output: tokio::sync::OnceCell::new(),
         })
     }
 
@@ -292,7 +295,12 @@ impl Llm {
         }
         let format = self.config.provider;
         let effort = self.effort().await;
-        let body = request_body(format, &self.config, effort, conversation, tools, output)?;
+        let mut body = request_body(format, &self.config, effort, conversation, tools, output)?;
+        if format == ProviderKind::Anthropic {
+            if let Some(limit) = self.output_limit().await {
+                crate::reasoning::raise_anthropic_max(&mut body, limit);
+            }
+        }
         let response = match format {
             ProviderKind::OpenAi => self.openai_chat(&body).await,
             ProviderKind::Anthropic => self.anthropic_chat(body).await,
@@ -337,6 +345,37 @@ impl Llm {
                     .into_iter()
                     .find(|model| model.id == self.config.model)?
                     .context_window
+            })
+            .await
+    }
+
+    /// Output tokens the configured model may produce in one answer: the
+    /// provider's model list (Anthropic `max_tokens`), else, for
+    /// api.anthropic.com only, models.dev's `anthropic` entry; `None` when
+    /// neither says (docs/evidence/output-limit.md).
+    async fn output_limit(&self) -> Option<u64> {
+        *self
+            .catalog_output
+            .get_or_init(|| async {
+                let listed = match self.models().await {
+                    Ok(models) => models
+                        .into_iter()
+                        .find(|model| model.id == self.config.model)
+                        .and_then(|model| model.max_output),
+                    Err(_) => None,
+                };
+                if listed.is_some()
+                    || !destination(self.config.provider, &self.config).first_party_anthropic
+                {
+                    return listed;
+                }
+                let response = self.client.get(MODELS_DEV_URL).send().await.ok()?;
+                if !response.status().is_success() {
+                    return None;
+                }
+                let catalog: Value =
+                    serde_json::from_str(&read_bounded_body(response).await.ok()?).ok()?;
+                models_dev_output(&catalog, "anthropic", &self.config.model)
             })
             .await
     }
@@ -694,6 +733,7 @@ impl Llm {
                     reasoning_levels: None,
                     default_reasoning: None,
                     context_window: model.context_window,
+                    max_output: None,
                 })
                 .collect());
         }
@@ -894,6 +934,25 @@ pub struct ModelInfo {
     pub default_reasoning: Option<String>,
     /// Input tokens the model accepts, when the provider says.
     pub context_window: Option<u64>,
+    /// Output tokens the model may produce in one answer, when the provider
+    /// says.
+    pub max_output: Option<u64>,
+}
+
+/// The community model catalog used when a provider's own list gives no
+/// output limit.
+const MODELS_DEV_URL: &str = "https://models.dev/api.json";
+
+/// `limit.output` of `model` under `provider` in a models.dev catalog.
+fn models_dev_output(catalog: &Value, provider: &str, model: &str) -> Option<u64> {
+    catalog
+        .get(provider)?
+        .get("models")?
+        .get(model)?
+        .get("limit")?
+        .get("output")?
+        .as_u64()
+        .filter(|&output| output > 0)
 }
 
 /// Extracts the model list from a discovery payload. OpenAI-style responses
@@ -959,6 +1018,15 @@ fn models_from_json(value: &Value) -> Result<Vec<ModelInfo>, ErrorInfo> {
                 context_window: ["max_input_tokens", "context_window", "context_length"]
                     .iter()
                     .find_map(|field| item.get(*field).and_then(Value::as_u64)),
+                // Anthropic `max_tokens`; OpenRouter-style
+                // `top_provider.max_completion_tokens` or a top-level
+                // `max_completion_tokens`.
+                max_output: item
+                    .get("max_tokens")
+                    .or_else(|| item.get("max_completion_tokens"))
+                    .or_else(|| item.get("top_provider")?.get("max_completion_tokens"))
+                    .and_then(Value::as_u64)
+                    .filter(|&output| output > 0),
             })
         })
         .collect())
@@ -1801,6 +1869,36 @@ mod tests {
         // A payload without a model list is invalid.
         let error = models_from_json(&serde_json::json!({"other": []})).expect_err("no list");
         assert_eq!(error.code, "provider_protocol");
+    }
+
+    #[test]
+    fn the_output_limit_comes_from_the_list_or_from_models_dev() {
+        let listed = serde_json::json!({"data": [
+            {"id": "claude-haiku-5-5", "max_input_tokens": 1_000_000, "max_tokens": 128_000},
+            {"id": "router", "top_provider": {"max_completion_tokens": 16_384}},
+            {"id": "plain", "max_completion_tokens": 8192},
+            {"id": "unknown", "max_tokens": null},
+        ]});
+        let outputs: Vec<_> = models_from_json(&listed)
+            .expect("list")
+            .into_iter()
+            .map(|model| model.max_output)
+            .collect();
+        assert_eq!(outputs, [Some(128_000), Some(16_384), Some(8192), None]);
+
+        let catalog = serde_json::json!({"anthropic": {"models": {
+            "claude-haiku-5-5": {"limit": {"context": 1_000_000, "output": 128_000}},
+            "no-limit": {},
+        }}});
+        assert_eq!(
+            models_dev_output(&catalog, "anthropic", "claude-haiku-5-5"),
+            Some(128_000)
+        );
+        assert_eq!(models_dev_output(&catalog, "anthropic", "no-limit"), None);
+        assert_eq!(
+            models_dev_output(&catalog, "openai", "claude-haiku-5-5"),
+            None
+        );
     }
 
     #[test]

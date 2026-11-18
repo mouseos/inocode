@@ -537,6 +537,50 @@ async fn the_third_identical_failure_carries_a_warning() {
 }
 
 #[tokio::test]
+async fn an_answer_cut_at_the_output_limit_is_resumed_three_times() {
+    with_timeout(async {
+        let cut_call = {
+            let payload = json!({ "choices": [{ "delta": { "tool_calls": [{
+                "index": 0, "id": "c1", "type": "function",
+                "function": { "name": "read", "arguments": "{\"path\":\"a" }
+            }] } }] });
+            format!("data: {payload}\n\n").into_bytes()
+        };
+        let cut = |text: &str| vec![sse_delta(text), finish("length"), sse_done()];
+        let mock = scripted(vec![
+            vec![sse_delta("part 1"), cut_call, finish("length"), sse_done()],
+            cut("part 2"),
+        ])
+        .await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let first = thread(&mut client).await;
+        let events = turn(&mut client, 2, first, "go").await;
+        assert_eq!(events.last().unwrap()["reason"], "completed");
+        let sent = chats(&mock);
+        assert_eq!(sent.len(), 3);
+        let resumed = last_message(&sent[1]);
+        assert_eq!(resumed["role"], "user");
+        assert!(resumed["content"]
+            .to_string()
+            .contains("cut off at the output limit"));
+        // The call cut mid-arguments is not sent back.
+        assert!(!sent[1].body["messages"].to_string().contains("tool_calls"));
+
+        let mock = scripted((0..4).map(|i| cut(&format!("part {i}"))).collect()).await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let second = thread(&mut client).await;
+        let events = turn(&mut client, 2, second, "go").await;
+        assert_eq!(events.last().unwrap()["reason"], "length");
+        assert_eq!(chats(&mock).len(), 4);
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn one_turn_runs_per_thread_and_it_can_be_steered_and_interrupted() {
     with_timeout(async {
         let mock = start_mock(|_: &MockRequest| {

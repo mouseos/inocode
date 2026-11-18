@@ -25,6 +25,15 @@ const RULES_FILE: &str = "AGENTS.md";
 const RULES_MAX_BYTES: usize = 32 * 1024;
 /// Identical failures of one call after which its result carries a warning.
 const REPEAT_WARNING: u32 = 3;
+/// Answers cut at the output limit in a row that are each followed by a
+/// request to go on; the next cut ends the turn (Claude Code's count,
+/// docs/evidence/output-limit.md).
+const RESUMES: u32 = 3;
+/// Speaker kind of that request.
+const RESUME_KIND: &str = "resume";
+const RESUME: &str = "Your previous reply was cut off at the output limit. Continue exactly \
+where it stopped, without apologizing, repeating or summarizing what you already wrote. If \
+what remains is long, split it into smaller pieces.";
 
 /// What a running turn reports, in order.
 #[derive(Debug, Clone, PartialEq)]
@@ -98,18 +107,23 @@ pub struct Outcome {
 #[derive(Debug, PartialEq)]
 enum Step {
     Continue,
+    /// Go on after asking the model to continue its cut answer.
+    Resume,
     Finish(Ending),
 }
 
 /// The one place that decides whether a turn goes on after an assistant
 /// message. Which continuation rule is best is to be settled by experiment
 /// (docs/evidence/turn-protocol.md); this is the rule Codex, DSH, and Pi share:
-/// go on while the model called tools or the person sent more input.
-fn next_step(stop: StopReason, steered: bool) -> Step {
+/// go on while the model called tools or the person sent more input. An
+/// answer cut at the output limit is resumed while `cuts`, the cut answers
+/// just before it, is under `RESUMES`.
+fn next_step(stop: StopReason, steered: bool, cuts: u32) -> Step {
     match stop {
         StopReason::ToolUse => Step::Continue,
         StopReason::Completed if steered => Step::Continue,
         StopReason::Completed => Step::Finish(Ending::Completed),
+        StopReason::Length if cuts < RESUMES => Step::Resume,
         StopReason::Length => Step::Finish(Ending::Length),
         StopReason::Error | StopReason::Aborted => Step::Finish(Ending::Interrupted),
     }
@@ -385,6 +399,27 @@ impl Thread<'_> {
     }
 }
 
+/// Drops from an answer cut at the output limit the tool call whose
+/// arguments were cut mid-way: they are not JSON, so no provider would take
+/// the conversation back with them in it.
+fn drop_cut_calls(body: &mut Body) {
+    if let Body::Assistant {
+        stop: StopReason::Length,
+        parts,
+        ..
+    } = body
+    {
+        parts.retain(|part| match part {
+            AssistantPart::ToolCall { arguments, .. } => {
+                arguments.trim().is_empty()
+                    || serde_json::from_str::<serde_json::Value>(arguments)
+                        .is_ok_and(|value| value.is_object())
+            }
+            _ => true,
+        });
+    }
+}
+
 fn person(text: String) -> Body {
     Body::User {
         from: Speaker::Person,
@@ -490,6 +525,7 @@ async fn steps(
     if let Err(error) = thread.record(vec![person(prompt)]).await {
         return Ending::Failed(error);
     }
+    let mut cuts = 0;
     loop {
         let compacted = tokio::select! {
             compacted = thread.compact_if_due(llm, usage) => Some(compacted),
@@ -544,7 +580,8 @@ async fn steps(
         }
         usage.add(stream.usage());
         thread.last_input = stream.usage().map(|usage| usage.input);
-        let body = stream.assistant();
+        let mut body = stream.assistant();
+        drop_cut_calls(&mut body);
         let Body::Assistant { stop, parts, .. } = &body else {
             unreachable!("a stream assembles an assistant turn");
         };
@@ -557,15 +594,24 @@ async fn steps(
             bodies.push(person(text));
             steered = true;
         }
+        let step = match failure {
+            Some(_) => None,
+            None => Some(next_step(stop, steered, cuts)),
+        };
+        if step == Some(Step::Resume) {
+            bodies.push(Body::User {
+                from: Speaker::Harness(RESUME_KIND.to_string()),
+                parts: vec![RESUME.to_string()],
+            });
+        }
         if let Err(error) = thread.record(bodies).await {
             return Ending::Failed(error);
         }
-        if let Some(error) = failure {
-            return Ending::Failed(error);
-        }
-        match next_step(stop, steered) {
-            Step::Continue => {}
-            Step::Finish(ending) => return ending,
+        match step {
+            None => return Ending::Failed(failure.expect("no step only after a failure")),
+            Some(Step::Continue) => cuts = 0,
+            Some(Step::Resume) => cuts += 1,
+            Some(Step::Finish(ending)) => return ending,
         }
     }
 }
@@ -576,19 +622,26 @@ mod tests {
 
     #[test]
     fn a_turn_goes_on_only_after_tool_calls_or_new_input() {
-        assert_eq!(next_step(StopReason::ToolUse, false), Step::Continue);
-        assert_eq!(next_step(StopReason::Completed, true), Step::Continue);
+        assert_eq!(next_step(StopReason::ToolUse, false, 0), Step::Continue);
+        assert_eq!(next_step(StopReason::Completed, true, 0), Step::Continue);
         assert_eq!(
-            next_step(StopReason::Completed, false),
+            next_step(StopReason::Completed, false, 0),
             Step::Finish(Ending::Completed)
         );
         assert_eq!(
-            next_step(StopReason::Length, true),
-            Step::Finish(Ending::Length)
-        );
-        assert_eq!(
-            next_step(StopReason::Aborted, false),
+            next_step(StopReason::Aborted, false, 0),
             Step::Finish(Ending::Interrupted)
+        );
+    }
+
+    #[test]
+    fn a_cut_answer_is_resumed_three_times_in_a_row_then_ends_the_turn() {
+        for cuts in 0..RESUMES {
+            assert_eq!(next_step(StopReason::Length, false, cuts), Step::Resume);
+        }
+        assert_eq!(
+            next_step(StopReason::Length, true, RESUMES),
+            Step::Finish(Ending::Length)
         );
     }
 
