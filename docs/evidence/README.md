@@ -44,7 +44,7 @@
 | [web-search.md](web-search.md) | Web などの検索ツール（ZeroSearch_MCP の組み込み）の設計 | UNSUPPORTED_APPROVED（既定は全エンジン） | 実装済み（単体テスト） |
 | [web-fetch.md](web-fetch.md) | Web ページ取得ツールの設計 | 本文抽出は RESEARCH_SUPPORTED、Markdown は UNSUPPORTED_APPROVED | 実装済み（単体・TCP テスト） |
 | [repo-understanding.md](repo-understanding.md) | リポジトリを広く把握する技術の研究 | RESEARCH_SUPPORTED（outline・名前検索） | outline・名前検索は実装済み |
-| [read-function.md](read-function.md) | read で定義を名前で読む | RESEARCH_SUPPORTED（CODESTRUCT、Python のみ） | 実装済み。カーネルの実測では差なし |
+| [read-function.md](read-function.md) | read で定義を名前で読む | RESEARCH_SUPPORTED（CODESTRUCT、Python のみ） | 実装済み。カーネルの実測（易しい課題、難しい課題と使い方の指示）では差なし |
 | [harness-tools.md](harness-tools.md) | ファイル・シェルなどの道具：他のハーネスとの比較と研究 | シェルは UNSUPPORTED_APPROVED、read・find は RESEARCH_SUPPORTED、edit・write は UNSUPPORTED_PENDING | シェル・read・find は実装済み |
 
 ## 状態の判定
