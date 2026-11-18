@@ -506,7 +506,7 @@ async fn steps(
         };
         let mut sent = Conversation {
             system: thread.conversation.system.clone(),
-            messages: crate::masking::mask_old_results(&thread.conversation.messages),
+            messages: thread.conversation.messages.clone(),
         };
         if let Some(state) = state {
             sent.messages.push(Message {
