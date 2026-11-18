@@ -72,16 +72,22 @@ pub(crate) async fn edit(folder: Option<&Path>, arguments: &str) -> Result<Strin
     let path = resolve(folder, &arguments.path)?;
     tokio::task::spawn_blocking(move || {
         let text = read_text(&path)?;
-        let (changed, count, line) = replace(&text, &arguments.old, &arguments.new, arguments.all)
+        let done = replace(&text, &arguments.old, &arguments.new, arguments.all)
             .map_err(|problem| format!("{} {problem}", path.display()))?;
-        std::fs::write(&path, changed)
+        std::fs::write(&path, &done.text)
             .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
-        Ok(match count {
+        let line = done.line;
+        Ok(match done.count {
+            _ if done.loose => format!(
+                "Replaced 1 occurrence in {} at line {line}, matched with whitespace \
+                 ignored; read the lines to check their indentation.",
+                path.display()
+            ),
             1 => format!(
                 "Replaced 1 occurrence in {} at line {line}.",
                 path.display()
             ),
-            _ => format!(
+            count => format!(
                 "Replaced {count} occurrences in {}, the first at line {line}.",
                 path.display()
             ),
@@ -126,11 +132,23 @@ fn read_text(path: &Path) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|_| format!("{} is not UTF-8 text", path.display()))
 }
 
-/// `text` with `old` replaced by `new`, the number of replacements, and the
-/// line of the first. `read` shows lines without their `\r`, so in a file
-/// with CRLF line ends `old` and `new` written with `\n` are matched and
-/// written with `\r\n`.
-fn replace(text: &str, old: &str, new: &str, all: bool) -> Result<(String, usize, usize), String> {
+/// A file's text after an edit.
+#[derive(Debug, PartialEq)]
+struct Replaced {
+    text: String,
+    count: usize,
+    /// Line of the first replacement.
+    line: usize,
+    /// Matched only with whitespace ignored.
+    loose: bool,
+}
+
+/// `text` with `old` replaced by `new`. `read` shows lines without their
+/// `\r`, so in a file with CRLF line ends `old` and `new` written with `\n`
+/// are matched and written with `\r\n`. When `old` does not occur exactly,
+/// whole lines equal to its lines with whitespace ignored are replaced, but
+/// only when they occur once (docs/evidence/edit-write.md).
+fn replace(text: &str, old: &str, new: &str, all: bool) -> Result<Replaced, String> {
     if old.is_empty() {
         return Err("was not changed: `old` is empty; use `write` for a new file".into());
     }
@@ -138,14 +156,22 @@ fn replace(text: &str, old: &str, new: &str, all: bool) -> Result<(String, usize
         return Err("was not changed: `old` and `new` are the same".into());
     }
     let crlf = |value: &str| value.replace("\r\n", "\n").replace('\n', "\r\n");
-    let (old, new) = if !text.contains(old) && text.contains("\r\n") && text.contains(&crlf(old)) {
-        (crlf(old), crlf(new))
-    } else {
-        (old.to_string(), new.to_string())
-    };
-    let count = text.matches(old.as_str()).count();
+    let (exact_old, exact_new) =
+        if !text.contains(old) && text.contains("\r\n") && text.contains(&crlf(old)) {
+            (crlf(old), crlf(new))
+        } else {
+            (old.to_string(), new.to_string())
+        };
+    let (old, new) = (exact_old.as_str(), exact_new.as_str());
+    let count = text.matches(old).count();
     match count {
-        0 => return Err("was not changed: `old` does not occur in it; read the lines again and copy them exactly".into()),
+        0 => {
+            return loose_replace(text, old, new)?.ok_or_else(|| {
+                "was not changed: `old` does not occur in it, even with whitespace ignored; \
+                 read the lines again and copy them exactly"
+                    .to_string()
+            })
+        }
         1 => {}
         _ if all => {}
         _ => {
@@ -154,9 +180,88 @@ fn replace(text: &str, old: &str, new: &str, all: bool) -> Result<(String, usize
             ))
         }
     }
-    let first = text.find(old.as_str()).expect("counted at least once");
-    let line = text[..first].matches('\n').count() + 1;
-    Ok((text.replace(old.as_str(), new.as_str()), count, line))
+    let first = text.find(old).expect("counted at least once");
+    Ok(Replaced {
+        text: text.replace(old, new),
+        count,
+        line: text[..first].matches('\n').count() + 1,
+        loose: false,
+    })
+}
+
+/// A line without its surrounding whitespace, inner runs of whitespace made
+/// one space.
+fn normalized(line: &str) -> String {
+    line.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn indentation(line: &str) -> &str {
+    &line[..line.len() - line.trim_start().len()]
+}
+
+/// Replaces the one run of whole lines of `text` equal to the lines of `old`
+/// with whitespace ignored: `None` when there is none, an error when there
+/// are several. When every non-blank line of the run is indented by the same
+/// extra prefix compared with `old`, `new` gets that prefix too.
+fn loose_replace(text: &str, old: &str, new: &str) -> Result<Option<Replaced>, String> {
+    let given: Vec<&str> = old.lines().collect();
+    let wanted: Vec<String> = given.iter().map(|line| normalized(line)).collect();
+    if wanted.iter().all(String::is_empty) {
+        return Ok(None);
+    }
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let bare = |line: &str| line.trim_end_matches(['\n', '\r']).to_string();
+    let starts: Vec<usize> = (0..(lines.len() + 1).saturating_sub(wanted.len()))
+        .filter(|&start| {
+            wanted
+                .iter()
+                .enumerate()
+                .all(|(offset, want)| normalized(&bare(lines[start + offset])) == *want)
+        })
+        .collect();
+    let start = match starts.as_slice() {
+        [] => return Ok(None),
+        [start] => *start,
+        _ => {
+            return Err(format!(
+                "was not changed: `old` does not occur exactly, and with whitespace ignored \
+                 it occurs {} times; copy the lines exactly",
+                starts.len()
+            ))
+        }
+    };
+    let end = start + wanted.len();
+    let mut prefixes = lines[start..end]
+        .iter()
+        .zip(&given)
+        .filter(|(line, _)| !line.trim().is_empty())
+        .map(|(line, old_line)| {
+            indentation(&bare(line))
+                .strip_suffix(indentation(old_line))
+                .map(str::to_string)
+        });
+    let prefix = match prefixes.next().flatten() {
+        Some(prefix) if prefixes.all(|other| other.as_deref() == Some(prefix.as_str())) => prefix,
+        _ => String::new(),
+    };
+    let ending = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut replacement = new
+        .lines()
+        .map(|line| match line.trim().is_empty() {
+            true => line.to_string(),
+            false => format!("{prefix}{line}"),
+        })
+        .collect::<Vec<_>>()
+        .join(ending);
+    if !new.is_empty() && lines[end - 1].ends_with('\n') {
+        replacement.push_str(ending);
+    }
+    Ok(Some(Replaced {
+        text: [lines[..start].concat(), replacement, lines[end..].concat()].concat(),
+        count: 1,
+        line: start + 1,
+        loose: true,
+    }))
 }
 
 #[cfg(test)]
@@ -168,15 +273,17 @@ mod tests {
         let text = "fn a() {\n    one();\n}\nfn b() {\n    one();\n}\n";
         let error = replace(text, "one();", "two();", false).unwrap_err();
         assert!(error.contains("occurs 2 times"), "{error}");
-        let (changed, count, line) = replace(text, "one();", "two();", true).expect("all");
-        assert_eq!((count, line), (2, 2));
-        assert!(!changed.contains("one();"));
-        let (changed, count, line) =
-            replace(text, "fn b() {\n    one();", "fn b() {\n    two();", false).expect("one");
-        assert_eq!((count, line), (1, 4));
+        let all = replace(text, "one();", "two();", true).expect("all");
+        assert_eq!((all.count, all.line, all.loose), (2, 2, false));
+        assert!(!all.text.contains("one();"));
         assert_eq!(
-            changed,
-            "fn a() {\n    one();\n}\nfn b() {\n    two();\n}\n"
+            replace(text, "fn b() {\n    one();", "fn b() {\n    two();", false),
+            Ok(done(
+                "fn a() {\n    one();\n}\nfn b() {\n    two();\n}\n",
+                1,
+                4,
+                false
+            ))
         );
         assert!(replace(text, "three();", "x", false)
             .unwrap_err()
@@ -187,12 +294,60 @@ mod tests {
             .contains("the same"));
     }
 
+    fn done(text: &str, count: usize, line: usize, loose: bool) -> Replaced {
+        Replaced {
+            text: text.to_string(),
+            count,
+            line,
+            loose,
+        }
+    }
+
     #[test]
     fn crlf_files_take_edits_written_with_newlines() {
-        let text = "a\r\nb\r\nc\r\n";
-        let (changed, count, line) = replace(text, "b\nc", "B\nC\nD", false).expect("crlf");
-        assert_eq!((count, line), (1, 2));
-        assert_eq!(changed, "a\r\nB\r\nC\r\nD\r\n");
+        assert_eq!(
+            replace("a\r\nb\r\nc\r\n", "b\nc", "B\nC\nD", false),
+            Ok(done("a\r\nB\r\nC\r\nD\r\n", 1, 2, false))
+        );
+    }
+
+    #[test]
+    fn whole_lines_match_with_whitespace_ignored_only_when_unique() {
+        let text = "class A:\n    def run(self):\n        return  1\n\nx = 2\n";
+        // Indented less than in the file: the new lines get the file's
+        // extra indentation too.
+        assert_eq!(
+            replace(
+                text,
+                "def run(self):\n    return 1",
+                "def run(self):\n    return 3",
+                false
+            ),
+            Ok(done(
+                "class A:\n    def run(self):\n        return 3\n\nx = 2\n",
+                1,
+                2,
+                true
+            ))
+        );
+        // Inner and trailing spaces, CRLF ends, no newline at the end.
+        assert_eq!(
+            replace("a  =  1 \r\nb = 2", "a = 1\nb = 2", "a = 1\nb = 3", false),
+            Ok(done("a = 1\r\nb = 3", 1, 1, true))
+        );
+        // Deleting the lines.
+        assert_eq!(
+            replace("x\n  y()\nz\n", "\ty()", "", false),
+            Ok(done("x\nz\n", 1, 2, true))
+        );
+        // Twice with whitespace ignored: refused, even with `all`.
+        let twice = "if a:\n    go()\nif b:\n  go()\n";
+        let error = replace(twice, "\tgo()", "stop()", true).unwrap_err();
+        assert!(error.contains("occurs 2 times"), "{error}");
+        // A piece of a line is not matched loosely.
+        assert!(replace(text, "def  run", "def go", false)
+            .unwrap_err()
+            .contains("even with whitespace ignored"));
     }
 
     #[tokio::test]
