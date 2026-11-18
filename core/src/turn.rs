@@ -504,22 +504,23 @@ async fn steps(
             Ok(state) => state,
             Err(error) => return Ending::Failed(error),
         };
-        if let Some(state) = &state {
-            thread.conversation.messages.push(Message {
+        let mut sent = Conversation {
+            system: thread.conversation.system.clone(),
+            messages: crate::masking::mask_old_results(&thread.conversation.messages),
+        };
+        if let Some(state) = state {
+            sent.messages.push(Message {
                 id: "state".to_string(),
                 body: Body::User {
-                    from: Speaker::Harness("state".to_string()),
-                    parts: vec![state.clone()],
+                    from: Speaker::Harness(crate::conversation::STATE.to_string()),
+                    parts: vec![state],
                 },
             });
         }
         let started = tokio::select! {
-            started = llm.converse(&thread.conversation, &tools) => Some(started),
+            started = llm.converse(&sent, &tools) => Some(started),
             () = cancelled(cancel) => None,
         };
-        if state.is_some() {
-            thread.conversation.messages.pop();
-        }
         let mut stream = match started {
             Some(Ok(stream)) => stream,
             Some(Err(error)) => return Ending::Failed(error),

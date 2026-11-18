@@ -1,9 +1,10 @@
 //! The `find` tool: search file contents (text or a regular expression),
 //! file names (globs), or definitions by name, over the project with no
 //! index, so every answer reflects the files as they are now. Answers are
-//! matching lines as `path:line: text`, capped, with the total. Design,
-//! sources and the benchmark: docs/evidence/harness-tools.md and
-//! docs/evidence/repo-understanding.md.
+//! matching lines as `path:line: text`, capped, with the total; a content
+//! match also names the definition it lies in. Design, sources and the
+//! benchmarks: docs/evidence/harness-tools.md,
+//! docs/evidence/repo-understanding.md and docs/evidence/find-enclosing.md.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -33,7 +34,8 @@ pub(crate) fn spec() -> ToolSpec {
             class or method of exactly that name is defined. With only files: file paths \
             matching the glob. files also limits the other searches (e.g. \"*.rs\", \
             \"src/**\"). Shows up to 50 results as path:line: text, with the total; narrow \
-            the search when there are more. Respects .gitignore."
+            the search when there are more. A matching line inside a function, method or \
+            type shows its name as path:line (in name): text. Respects .gitignore."
             .into(),
         parameters: json!({
             "type": "object",
@@ -71,6 +73,8 @@ struct Found {
     path: PathBuf,
     line: Option<u64>,
     text: String,
+    /// The innermost definition containing a content match.
+    within: Option<String>,
 }
 
 pub(crate) async fn run(folder: Option<&Path>, arguments: &str) -> Result<String, String> {
@@ -102,13 +106,19 @@ fn search(root: &Path, arguments: &Arguments) -> Result<String, String> {
     };
     let (found, total) = match (&arguments.name, &arguments.pattern) {
         (Some(name), _) if !name.trim().is_empty() => by_name(root, files.as_ref(), name.trim())?,
-        (_, Some(pattern)) if !pattern.is_empty() => by_content(
-            root,
-            files.as_ref(),
-            pattern,
-            arguments.regex,
-            arguments.ignore_case,
-        )?,
+        (_, Some(pattern)) if !pattern.is_empty() => {
+            let (mut found, total) = by_content(
+                root,
+                files.as_ref(),
+                pattern,
+                arguments.regex,
+                arguments.ignore_case,
+            )?;
+            found.sort();
+            found.truncate(SHOWN);
+            name_enclosing(&mut found);
+            (found, total)
+        }
         _ => match &files {
             Some(files) => by_path(root, files),
             None => return Err("give pattern, name, or files".into()),
@@ -173,6 +183,7 @@ fn by_path(root: &Path, files: &globset::GlobMatcher) -> (Vec<Found>, usize) {
                     path: path.to_path_buf(),
                     line: None,
                     text: String::new(),
+                    within: None,
                 });
             }
         })
@@ -214,6 +225,7 @@ fn by_content(
                         path: path.to_path_buf(),
                         line: Some(line),
                         text: cut(text.trim_end()),
+                        within: None,
                     });
                     Ok(true)
                 }),
@@ -255,10 +267,34 @@ fn by_name(
                 path: path.clone(),
                 line: Some(definition.line as u64),
                 text: definition.text,
+                within: None,
             });
         }
     }
     Ok((collected.found, collected.total))
+}
+
+/// Sets `within` on each shown match from its file's definitions; files in
+/// a language with no known definitions are left as they are.
+fn name_enclosing(found: &mut [Found]) {
+    let mut start = 0;
+    while start < found.len() {
+        let path = found[start].path.clone();
+        let end = start + found[start..].iter().take_while(|f| f.path == path).count();
+        if let Ok(Some(definitions)) = outline::file_definitions(&path) {
+            for found in &mut found[start..end] {
+                let Some(line) = found.line.map(|line| line as usize) else {
+                    continue;
+                };
+                found.within = definitions
+                    .iter()
+                    .filter(|d| d.line <= line && line <= d.end)
+                    .max_by_key(|d| d.line)
+                    .map(|d| d.name.clone());
+            }
+        }
+        start = end;
+    }
 }
 
 fn render(root: &Path, mut found: Vec<Found>, total: usize) -> String {
@@ -271,9 +307,12 @@ fn render(root: &Path, mut found: Vec<Found>, total: usize) -> String {
         .take(SHOWN)
         .map(|found| {
             let path = found.path.strip_prefix(root).unwrap_or(&found.path);
-            match found.line {
-                Some(line) => format!("{}:{line}: {}", path.display(), found.text),
-                None => path.display().to_string(),
+            match (found.line, &found.within) {
+                (Some(line), Some(within)) => {
+                    format!("{}:{line} (in {within}): {}", path.display(), found.text)
+                }
+                (Some(line), None) => format!("{}:{line}: {}", path.display(), found.text),
+                (None, _) => path.display().to_string(),
             }
         })
         .collect();
@@ -336,7 +375,7 @@ mod tests {
         assert_eq!(
             text,
             format!(
-                "README.md:3: Call parse to read.\nsrc{separator}lib.rs:1: pub fn parse(text: &str) -> u32 {{\nsrc{separator}main.rs:2:     parse(\"x\");\n(3 results)"
+                "README.md:3 (in Parser): Call parse to read.\nsrc{separator}lib.rs:1 (in parse): pub fn parse(text: &str) -> u32 {{\nsrc{separator}main.rs:2 (in main):     parse(\"x\");\n(3 results)"
             )
         );
         let text = find(
@@ -350,8 +389,8 @@ mod tests {
         );
         assert!(
             text.starts_with(
-                "README.md:1: # Parser
-README.md:3:"
+                "README.md:1 (in Parser): # Parser
+README.md:3 (in Parser):"
             ),
             "{text}"
         );

@@ -427,8 +427,8 @@ impl Llm {
                 "type": "text",
                 "text": crate::oauth::CLAUDE_CODE_SYSTEM_INSTRUCTION,
             })];
-            if let Some(text) = body.get("system").and_then(Value::as_str) {
-                system.push(json!({ "type": "text", "text": text }));
+            if let Some(Value::Array(blocks)) = body.get("system") {
+                system.extend(blocks.iter().cloned());
             }
             body["system"] = Value::Array(system);
             let beta = match crate::reasoning::anthropic_beta(&destination, summary) {

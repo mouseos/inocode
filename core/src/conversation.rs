@@ -176,8 +176,15 @@ pub fn to_chat_completions(
     Ok(fields)
 }
 
+/// Speaker kind of the per-request state message that is appended after the
+/// history and removed after the request.
+pub(crate) const STATE: &str = "state";
+
 /// `system` and `messages` for an Anthropic Messages body. Tool results and
-/// the user text after them share one user message, results first.
+/// the user text after them share one user message, results first. The
+/// system block and the last block before the per-request state carry
+/// prompt-caching breakpoints, so each request reads the prefix the previous
+/// one wrote (docs/evidence/prompt-caching.md).
 pub fn to_anthropic(
     conversation: &Conversation,
     model: &str,
@@ -185,7 +192,10 @@ pub fn to_anthropic(
     let target = Target::new(ProviderKind::Anthropic, model);
     let turns = prepare(conversation)?;
     let mut messages: Vec<(&'static str, Vec<Value>)> = Vec::new();
+    let mut cached: Option<(usize, usize)> = None;
     for body in turns {
+        let transient =
+            matches!(body, Body::User { from: Speaker::Harness(kind), .. } if kind == STATE);
         let (role, blocks) = match body {
             Body::User { parts, .. } => (
                 "user",
@@ -247,10 +257,20 @@ pub fn to_anthropic(
             Some((last, content)) if *last == role => content.extend(blocks),
             _ => messages.push((role, blocks)),
         }
+        if !transient {
+            let last = messages.len() - 1;
+            cached = Some((last, messages[last].1.len() - 1));
+        }
+    }
+    if let Some((message, block)) = cached {
+        messages[message].1[block]["cache_control"] = json!({ "type": "ephemeral" });
     }
     let mut fields = Map::new();
     if let Some(system) = &conversation.system {
-        fields.insert("system".into(), json!(system));
+        fields.insert(
+            "system".into(),
+            json!([{ "type": "text", "text": system, "cache_control": { "type": "ephemeral" } }]),
+        );
     }
     fields.insert(
         "messages".into(),
@@ -769,7 +789,10 @@ mod tests {
         let thinking = json!({"type": "thinking", "thinking": "think", "signature": "sig"});
         let conversation = tool_round(ProviderKind::Anthropic, thinking.clone());
         let fields = to_anthropic(&conversation, "m1").expect("converts");
-        assert_eq!(fields["system"], json!("be brief"));
+        assert_eq!(
+            fields["system"],
+            json!([{"type": "text", "text": "be brief", "cache_control": {"type": "ephemeral"}}])
+        );
         assert_eq!(
             fields["messages"],
             json!([
@@ -783,10 +806,22 @@ mod tests {
                 {"role": "user", "content": [
                     {"type": "tool_result", "tool_use_id": "c2", "content": "missing", "is_error": true},
                     {"type": "tool_result", "tool_use_id": "c1", "content": "A"},
-                    {"type": "text", "text": "next"}
+                    {"type": "text", "text": "next", "cache_control": {"type": "ephemeral"}}
                 ]}
             ])
         );
+        let mut with_state = conversation.clone();
+        with_state.messages.push(Message {
+            id: "s".into(),
+            body: Body::User {
+                from: Speaker::Harness(STATE.into()),
+                parts: vec!["plan".into()],
+            },
+        });
+        let fields = to_anthropic(&with_state, "m1").expect("converts");
+        let last = &fields["messages"][2]["content"];
+        assert_eq!(last[2]["cache_control"], json!({"type": "ephemeral"}));
+        assert_eq!(last[3], json!({"type": "text", "text": "plan"}));
         let other = to_anthropic(&conversation, "m2").expect("converts");
         assert_eq!(other["messages"][1]["content"][0]["type"], json!("text"));
     }
@@ -847,7 +882,7 @@ mod tests {
                 fields["messages"],
                 json!([{"role": "user", "content": [
                     {"type": "text", "text": "hi"},
-                    {"type": "text", "text": "again"}
+                    {"type": "text", "text": "again", "cache_control": {"type": "ephemeral"}}
                 ]}])
             );
         }

@@ -158,7 +158,7 @@ async fn chat_request_reaches_the_messages_endpoint_with_anthropic_headers() {
         assert_eq!(request.body["messages"][0]["role"], "user");
         assert_eq!(
             request.body["messages"][0]["content"],
-            json!([{"type": "text", "text": prompt}])
+            json!([{"type": "text", "text": prompt, "cache_control": {"type": "ephemeral"}}])
         );
     })
     .await;
