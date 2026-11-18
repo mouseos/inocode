@@ -279,7 +279,7 @@ async fn the_plan_is_shown_after_the_history_with_every_request() {
         let requests = chats(&mock);
         assert!(requests[0].body["tools"]
             .as_array()
-            .is_some_and(|tools| tools.len() == 10));
+            .is_some_and(|tools| tools.len() == 9));
         let state = last_message(&requests[1]);
         assert_eq!(state["role"], "user");
         assert_eq!(

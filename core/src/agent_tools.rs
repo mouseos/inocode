@@ -92,7 +92,6 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
         web_search::spec(),
         read::spec(),
         fetch::spec(),
-        outline::spec(),
         find::spec(),
     ]
     .into_iter()
@@ -137,10 +136,9 @@ pub(crate) async fn run(context: &Context<'_>, name: &str, arguments: &str) -> O
         LESSON => lesson(context, arguments).await,
         web_search::SEARCH => web_search::run(arguments).await,
         read::READ => read::run(context.folder, arguments).await,
-        find::FIND => find::run(context.folder, arguments).await,
-        outline::OUTLINE => {
-            let grammars = context.store.files_folder().join("grammars");
-            outline::run(context.folder, grammars, arguments).await
+        find::FIND => {
+            outline::use_grammars(context.store.files_folder().join("grammars"));
+            find::run(context.folder, arguments).await
         }
         fetch::FETCH => {
             let folder = context
