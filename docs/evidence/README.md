@@ -46,8 +46,8 @@
 | [repo-understanding.md](repo-understanding.md) | リポジトリを広く把握する技術の研究 | RESEARCH_SUPPORTED（outline・名前検索） | outline・名前検索は実装済み |
 | [read-function.md](read-function.md) | read で定義を名前で読む | RESEARCH_SUPPORTED（CODESTRUCT、Python のみ） | 実装済み。カーネルの実測（易しい課題、難しい課題と使い方の指示）では差なし |
 | [prompt-caching.md](prompt-caching.md) | Anthropic のプロンプトキャッシュの区切り | UNSUPPORTED_APPROVED（公式仕様が根拠） | `core/src/conversation.rs` |
-| [find-enclosing.md](find-enclosing.md) | 検索結果に、その行を含む定義の名前を付ける | UNSUPPORTED_APPROVED（独自の方法、対照実験が条件） | `core/src/find.rs` |
-| [observation-masking.md](observation-masking.md) | 古いツール出力を隠す | RESEARCH_SUPPORTED（The Complexity Trap、ワークショップ） | `core/src/masking.rs` |
+| [find-enclosing.md](find-enclosing.md) | 検索結果に、その行を含む定義の名前を付ける | UNSUPPORTED_APPROVED（独自の方法、対照実験が条件） | `core/src/find.rs`。カーネルの実測で正答は同じ、2 段の呼び出し元の入力が約 5 分の 1（以前の実行との比較） |
+| [observation-masking.md](observation-masking.md) | 古いツール出力を隠す | RESEARCH_SUPPORTED（The Complexity Trap、ワークショップ） | `core/src/masking.rs`。カーネルの実測では働いたターンが少なく差なし |
 | [harness-tools.md](harness-tools.md) | ファイル・シェルなどの道具：他のハーネスとの比較と研究 | シェルは UNSUPPORTED_APPROVED、read・find は RESEARCH_SUPPORTED、edit・write は UNSUPPORTED_PENDING | シェル・read・find は実装済み |
 
 ## 状態の判定

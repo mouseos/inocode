@@ -35,4 +35,7 @@
 - テスト：
   - `core/src/conversation.rs` の `anthropic_merges_results_with_the_next_user_turn`：system と最後のブロックに区切りがあり、状態のメッセージが付いたときはその手前に付く。
   - `server/tests/anthropic_tcp.rs`：送られる本文に区切りが含まれる。
-- 実 API でキャッシュが読まれたかは、カーネルの実測（`find-enclosing.md`）の `cached` で確かめる。
+- 実 API（Claude OAuth、Claude Haiku 5.5）で読まれたことを確かめた。カーネルの実測（`find-enclosing.md`、キャッシュありの 160 ターン）：
+  - 入力の中央値は 18,124（C）、そのうちキャッシュ外は 4,008。
+  - キャッシュのない以前の実行（A）では、キャッシュ外は入力と同じ 38,109。
+  - キャッシュは応答を待つ時間も短くしうる。そのため、ほかの改良との時間の比較には、キャッシュの影響が混ざる。
