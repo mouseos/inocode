@@ -17,7 +17,6 @@ pub mod oauth;
 mod outline;
 mod read;
 pub mod reasoning;
-mod remember;
 pub mod rules;
 mod rules_import;
 pub mod sandbox;

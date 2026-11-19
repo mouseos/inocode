@@ -426,9 +426,7 @@ fn cut_title(text: &str) -> String {
         .collect()
 }
 
-/// Lessons that may apply to `context`, and the one usable fact that best
-/// matches it (more than one retrieved item made coding agents worse,
-/// docs/evidence/memory-integration.md), as shown with each request.
+/// Lessons that may apply to `context`, as shown with each request.
 pub(crate) async fn render_lessons(
     store: &Store,
     project: Option<ProjectId>,
@@ -437,37 +435,16 @@ pub(crate) async fn render_lessons(
     let found = store
         .lessons_for(project, context, 3, SEARCH_BUDGET)
         .await?;
-    let mut text = String::new();
-    if !found.items.is_empty() {
-        text.push_str("Lessons from earlier work that may apply:\n");
-        for hit in found.items {
-            if let Some(note) = store.note(hit.id).await? {
-                text.push_str(&format!("- {}\n", note.body.replace('\n', " / ")));
-            }
-        }
+    if found.items.is_empty() {
+        return Ok(None);
     }
-    let facts = store
-        .search_notes(NoteQuery {
-            text: context.to_string(),
-            project,
-            include_shared: true,
-            kinds: vec![NoteKind::Claim, NoteKind::Knowledge],
-            usable_only: true,
-            since: None,
-            until: None,
-            limit: 1,
-            budget: SEARCH_BUDGET,
-        })
-        .await?;
-    if let Some(hit) = facts.items.first() {
+    let mut text = String::from("Lessons from earlier work that may apply:\n");
+    for hit in found.items {
         if let Some(note) = store.note(hit.id).await? {
-            text.push_str(&format!(
-                "A fact found in earlier work that may apply:\n- {}\n",
-                note.body.replace('\n', " / ")
-            ));
+            text.push_str(&format!("- {}\n", note.body.replace('\n', " / ")));
         }
     }
-    Ok((!text.is_empty()).then_some(text))
+    Ok(Some(text))
 }
 
 #[cfg(test)]

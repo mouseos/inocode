@@ -188,10 +188,8 @@ struct Thread<'a> {
     held: Vec<Held>,
     /// Identical failed calls and how often they failed.
     failures: HashMap<(String, String, String), u32>,
-    /// Lessons, and a fact, that may apply to this turn's request.
+    /// Lessons that may apply to this turn's request.
     lessons: Option<String>,
-    /// The tool results of this turn that were not errors.
-    observed: Vec<String>,
 }
 
 impl Thread<'_> {
@@ -390,9 +388,6 @@ impl Thread<'_> {
                 ),
                 StopReason::Error | StopReason::Aborted => continue,
             };
-            if !answer.1 {
-                self.observed.push(answer.0.clone());
-            }
             results.push(Body::ToolResult {
                 call_id: call_id.clone(),
                 name: name.clone(),
@@ -470,27 +465,6 @@ pub async fn run(
     if ending == Ending::Interrupted {
         shell::stop_all(&store.files_folder().join("logs"), session);
     }
-    if let Some(project) = thread
-        .project
-        .filter(|_| ending == Ending::Completed && !thread.observed.is_empty())
-    {
-        // Keeping facts is best effort: its failure does not fail the turn.
-        let tools = agent_tools::specs();
-        let remembered = tokio::select! {
-            remembered = crate::remember::remember(
-                llm,
-                store,
-                project,
-                &thread.conversation,
-                &tools,
-                &thread.observed,
-            ) => Some(remembered),
-            () = cancelled(&mut cancel) => None,
-        };
-        if let Some(Ok((request_usage, _))) = remembered {
-            usage.add(request_usage);
-        }
-    }
     Outcome {
         ending,
         usage,
@@ -536,7 +510,6 @@ async fn open<'a>(
         held: Vec::new(),
         failures: HashMap::new(),
         lessons,
-        observed: Vec::new(),
     })
 }
 
