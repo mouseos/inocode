@@ -50,6 +50,7 @@
 | [observation-masking.md](observation-masking.md) | 古いツール出力を隠す | RESEARCH_SUPPORTED（The Complexity Trap、ワークショップ） | 実測を受けて外した（コードなし）。短い課題では差なし。8 問まとめた長いターンでは、キャッシュ外入力が約 6 倍（p=0.031）、得点 0.71 対 0.86（有意でない） |
 | [output-limit.md](output-limit.md) | 出力上限にモデルの上限を使う（公式の一覧、なければ models.dev）、切れたら続きを促す | UNSUPPORTED_APPROVED（公式仕様と公開実装） | `core/src/llm.rs`、`core/src/reasoning.rs`、`core/src/turn.rs` |
 | [harness-tools.md](harness-tools.md) | ファイル・シェルなどの道具：他のハーネスとの比較と研究 | シェルは UNSUPPORTED_APPROVED、read・find は RESEARCH_SUPPORTED、edit・write は `edit-write.md` | シェル・read・find・edit・write は実装済み |
+| [memory-integration.md](memory-integration.md) | 記憶（教訓・手順・根拠・知識）と規則を作業中に使わせる案：根拠、トークン費用、指示しないと使われない問題 | UNSUPPORTED_PENDING（部分は研究で支持、多くは査読前） | 未実装 |
 | [edit-write.md](edit-write.md) | edit・write の道具、空白を無視した照合、効率化の候補（構文検査など。未実装） | 置換形式・完全一致・空白を無視した照合は RESEARCH_SUPPORTED（査読前を含む）、細部は UNSUPPORTED_APPROVED | `core/src/edit.rs` |
 
 ## 状態の判定
