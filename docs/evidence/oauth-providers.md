@@ -87,3 +87,8 @@
   - GPT（`gpt-6-luna`）: リフレッシュで access・refresh とも新しい値になり、`account_id` は保持された。要求は上流に届き、HTTP 429 `usage_limit_reached`（Plus、`resets_in_seconds` 95807）が返った。リフレッシュ直後の要求が `chatgpt-account-id` を付けて送れたことは、`refresh_stored` が保存済みの資格情報を返すようにした修正の実地確認になる。GPT の chat 本文のストリーミングは上限の回復後まで未確認。
   - Muse（`muse-spark-1.3-contributor`）: chat は `started → delta → completed`（`inocode ok`）。Muse のエントリは変化しなかった（静的キーでリフレッシュしない）。
   - 実行後の `auth.json` には 3 プロバイダのエントリがすべて残り、`~/.inocode` には D2・D3 のロックファイル（`auth.json.lock`、`auth.json.refresh.<provider>.lock`、いずれも空）ができる。
+- **Muse の組み込みツール名の言い換え（2026-11-20）**:
+  - 現象：ツールを宣言した要求が HTTP 403 `client_attestation_denied`（「Muse Code のサブスクリプションは Muse Code のクライアントからの要求だけが対象」）で拒否された。ツールのない chat は通る。
+  - 原因（opencodex フォーク ifokeev/opencodex `1cdae2f` の記録。2026-10-31 に api.meta.ai で実測）：Muse Code 自身の組み込みツール名（40 個。inocode では `shell` と `search` が該当）を関数として宣言すると拒否される。ヘッダーや本文のほかの部分は結果を変えない。
+  - 対処（フォークと同じ）：Muse のサブスクリプションで送るときだけ、該当する名前を `client_<名前>` に言い換え、すでに使われている名前とは重ならないようにする。過去の呼び出しと結果の名前も同じく言い換え、答えの呼び出しは元の名前に戻す（`core/src/llm.rs` の `muse_aliases`）。ほかの認証方式では言い換えない。
+  - 検証：模擬の API のテスト（`server/tests/oauth_flows.rs` の `muse_renames_builtin_tool_names_and_restores_them_in_the_answer`）で、送る名前・過去の呼び出しの名前・答えの名前の戻しを確かめた。実際の `muse-spark-1.3-contributor` でも、ツールを使う 1 ターン（`read` でファイルを読む）が 403 にならず完了した（2026-11-20、要求 2 回）。

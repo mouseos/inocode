@@ -1149,3 +1149,127 @@ async fn usage_errors_do_not_echo_the_response_body() {
     assert_eq!(error.message, "the usage request returned HTTP 401");
     let _ = std::fs::remove_file(&path);
 }
+
+#[tokio::test]
+async fn muse_renames_builtin_tool_names_and_restores_them_in_the_answer() {
+    use inocode_core::conversation::{
+        AssistantPart, Body, Conversation, Message, Speaker, ToolSpec,
+    };
+    let mock = start_mock(|request: &MockRequest| {
+        let names: Vec<&str> = request.body["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .map(|tool| tool["name"].as_str().expect("name"))
+            .collect();
+        assert_eq!(names, vec!["client_shell", "read", "client_search"]);
+        let replayed: Vec<&str> = request.body["input"]
+            .as_array()
+            .expect("input")
+            .iter()
+            .filter(|item| item["type"] == "function_call")
+            .map(|item| item["name"].as_str().expect("name"))
+            .collect();
+        assert_eq!(replayed, vec!["client_shell"]);
+        let call = json!({"type": "function_call", "id": "fc_2", "call_id": "c2",
+                          "name": "client_shell", "arguments": "{\"command\":\"ls\"}"});
+        MockReply::stream(vec![
+            format!("data: {}\n\n", json!({"type": "response.created"})).into_bytes(),
+            format!(
+                "data: {}\n\n",
+                json!({"type": "response.output_item.done", "item": call})
+            )
+            .into_bytes(),
+            format!("data: {}\n\n", json!({"type": "response.completed"})).into_bytes(),
+            b"data: [DONE]\n\n".to_vec(),
+        ])
+    })
+    .await;
+    let credential = Credential {
+        access: String::new(),
+        refresh: String::new(),
+        expires_at_ms: None,
+        account_id: None,
+        email: None,
+        api_key: Some("LLM|stored-key".to_string()),
+        oauth_access_token: None,
+    };
+    let path = temp_store_path("muse-tool-names");
+    write_store(&path, "muse-code", credential);
+    let llm = Llm::new(LlmConfig {
+        provider: ProviderKind::Responses,
+        auth: AuthKind::MuseSubscription,
+        base_url: mock.base_url.clone(),
+        model: "m".to_string(),
+        api_key: String::new(),
+        auth_store_path: Some(path.clone()),
+        reasoning: Default::default(),
+    })
+    .expect("build the client");
+    let tool = |name: &str| ToolSpec {
+        name: name.to_string(),
+        description: String::new(),
+        parameters: json!({"type": "object"}),
+    };
+    let message = |id: &str, body: Body| Message {
+        id: id.to_string(),
+        body,
+    };
+    let conversation = Conversation {
+        system: None,
+        messages: vec![
+            message(
+                "1",
+                Body::User {
+                    from: Speaker::Person,
+                    parts: vec!["list".into()],
+                },
+            ),
+            message(
+                "2",
+                Body::Assistant {
+                    origin: inocode_core::conversation::Origin {
+                        format: ProviderKind::Responses,
+                        model: "m".into(),
+                    },
+                    stop: inocode_core::conversation::StopReason::ToolUse,
+                    parts: vec![AssistantPart::ToolCall {
+                        call_id: "c1".into(),
+                        name: "shell".into(),
+                        arguments: "{}".into(),
+                        replay: None,
+                    }],
+                },
+            ),
+            message(
+                "3",
+                Body::ToolResult {
+                    call_id: "c1".into(),
+                    name: "shell".into(),
+                    content: "a.txt".into(),
+                    is_error: false,
+                },
+            ),
+        ],
+    };
+    let mut stream = llm
+        .converse(
+            &conversation,
+            &[tool("shell"), tool("read"), tool("search")],
+        )
+        .await
+        .expect("request");
+    while stream.next().await.expect("stream").is_some() {}
+    let Body::Assistant { parts, .. } = stream.assistant() else {
+        panic!("an assistant answer");
+    };
+    let names: Vec<&str> = parts
+        .iter()
+        .filter_map(|part| match part {
+            AssistantPart::ToolCall { name, .. } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(names, vec!["shell"]);
+    let _ = std::fs::remove_file(&path);
+}

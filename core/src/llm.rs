@@ -338,6 +338,19 @@ impl Llm {
         }
         let format = self.config.provider;
         let effort = self.effort().await;
+        let aliases = if self.config.auth == AuthKind::MuseSubscription {
+            muse_aliases(tools)
+        } else {
+            Vec::new()
+        };
+        let (aliased_conversation, aliased_tools);
+        let (conversation, tools) = if aliases.is_empty() {
+            (conversation, tools)
+        } else {
+            aliased_conversation = alias_conversation(conversation, &aliases);
+            aliased_tools = alias_tools(tools, &aliases);
+            (&aliased_conversation, aliased_tools.as_slice())
+        };
         let mut body = request_body(format, &self.config, effort, conversation, tools, output)?;
         if format == ProviderKind::Anthropic {
             if let Some(limit) = self.output_limit().await {
@@ -349,7 +362,9 @@ impl Llm {
             ProviderKind::Anthropic => self.anthropic_chat(body).await,
             ProviderKind::Responses => self.responses_chat(&body).await,
         }?;
-        Ok(ChatStream::new(format, &self.config.model, response))
+        let mut stream = ChatStream::new(format, &self.config.model, response);
+        stream.aliases = aliases;
+        Ok(stream)
     }
 
     /// The effort to send: the configured one, else the model's catalog
@@ -831,6 +846,114 @@ impl Llm {
     }
 }
 
+/// Tool names Meta refuses from a Muse Code subscription key when a request
+/// declares them as functions: Muse Code's own builtins (HTTP 403
+/// `client_attestation_denied`). List and renaming as in the opencodex fork
+/// (ifokeev/opencodex `src/responses/muse-subscription-tool-alias.ts`,
+/// measured against api.meta.ai on 2026-10-31).
+const MUSE_BUILTIN_TOOLS: &[&str] = &[
+    "add_memory",
+    "apply_patch",
+    "bash",
+    "bash_input",
+    "create_goal",
+    "cron_create",
+    "cron_delete",
+    "cron_list",
+    "edit_file",
+    "edit_memory",
+    "get_goal",
+    "list_peer_sessions",
+    "monitor",
+    "powershell",
+    "powershell_input",
+    "read_file",
+    "read_memory",
+    "read_skill",
+    "report_progress",
+    "request_user_input",
+    "search",
+    "send_session_message",
+    "shell",
+    "snooze_reminder",
+    "subagent_cancel",
+    "subagent_read_result",
+    "subagent_send_message",
+    "subagent_spawn",
+    "subagent_status",
+    "subagent_wait",
+    "update_goal",
+    "update_plan",
+    "web_fetch",
+    "web_search",
+    "work_list",
+    "work_status",
+    "work_stop",
+    "workflow",
+    "write_file",
+    "write_todos",
+];
+
+/// (declared name, name to send) for each tool whose name is a Muse Code
+/// builtin: `client_<name>`, made unique among the declared names.
+fn muse_aliases(tools: &[ToolSpec]) -> Vec<(String, String)> {
+    let mut taken: std::collections::HashSet<String> =
+        tools.iter().map(|tool| tool.name.clone()).collect();
+    let mut aliases = Vec::new();
+    for tool in tools {
+        if !MUSE_BUILTIN_TOOLS.contains(&tool.name.as_str()) {
+            continue;
+        }
+        let base = format!("client_{}", tool.name);
+        let mut sent = base.clone();
+        let mut salt = 2;
+        while taken.contains(&sent) {
+            sent = format!("{base}_{salt}");
+            salt += 1;
+        }
+        taken.insert(sent.clone());
+        aliases.push((tool.name.clone(), sent));
+    }
+    aliases
+}
+
+fn sent_name<'a>(aliases: &'a [(String, String)], name: &'a str) -> &'a str {
+    aliases
+        .iter()
+        .find(|(declared, _)| declared == name)
+        .map_or(name, |(_, sent)| sent.as_str())
+}
+
+fn alias_tools(tools: &[ToolSpec], aliases: &[(String, String)]) -> Vec<ToolSpec> {
+    tools
+        .iter()
+        .map(|tool| ToolSpec {
+            name: sent_name(aliases, &tool.name).to_string(),
+            ..tool.clone()
+        })
+        .collect()
+}
+
+/// The conversation with earlier calls and results under the names sent, so
+/// replayed history matches the declared tools.
+fn alias_conversation(conversation: &Conversation, aliases: &[(String, String)]) -> Conversation {
+    let mut conversation = conversation.clone();
+    for message in &mut conversation.messages {
+        match &mut message.body {
+            Body::Assistant { parts, .. } => {
+                for part in parts {
+                    if let AssistantPart::ToolCall { name, .. } = part {
+                        *name = sent_name(aliases, name).to_string();
+                    }
+                }
+            }
+            Body::ToolResult { name, .. } => *name = sent_name(aliases, name).to_string(),
+            _ => {}
+        }
+    }
+    conversation
+}
+
 /// Reads one provider's usage payload.
 type UsageParser = fn(&Value) -> Result<crate::Usage, ErrorInfo>;
 
@@ -1197,6 +1320,8 @@ pub struct ChatStream {
     turn: TurnBuilder,
     model: String,
     failed: bool,
+    /// (declared name, name sent) of tools renamed for the request.
+    aliases: Vec<(String, String)>,
 }
 
 impl ChatStream {
@@ -1212,6 +1337,7 @@ impl ChatStream {
             turn: TurnBuilder::default(),
             model: model.to_string(),
             failed: false,
+            aliases: Vec::new(),
         }
     }
 
@@ -1238,7 +1364,18 @@ impl ChatStream {
             model: self.model.clone(),
         };
         let completed = self.done && !self.failed;
-        self.turn.finish(origin, self.failed, completed)
+        let mut body = self.turn.finish(origin, self.failed, completed);
+        if let Body::Assistant { parts, .. } = &mut body {
+            for part in parts {
+                if let AssistantPart::ToolCall { name, .. } = part {
+                    if let Some((declared, _)) = self.aliases.iter().find(|(_, sent)| sent == name)
+                    {
+                        *name = declared.clone();
+                    }
+                }
+            }
+        }
+        body
     }
 
     async fn advance(&mut self) -> Result<Option<String>, ErrorInfo> {
