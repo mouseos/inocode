@@ -86,15 +86,61 @@ impl TurnUsage {
     }
 }
 
-/// A call that waits for the person's approval under `ask` rules. It was
-/// not run; approving the rules on the next turn lets it run.
+/// A call that waits for the person's approval. It was not run; approving
+/// its `ask` rules, or the call itself, on the next turn lets it run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Held {
     pub rules: Vec<i64>,
     pub titles: Vec<String>,
     pub tool: String,
     pub arguments: String,
+    /// Why it needs the person.
+    pub reason: String,
 }
+
+/// How much a turn may do without the person. Design:
+/// docs/evidence/approval-modes.md.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mode {
+    /// Every change waits for the person.
+    Ask,
+    /// Commands run in the sandbox; the model asks when it needs more.
+    #[default]
+    OnRequest,
+    /// Commands run in the sandbox; a reviewer decides in the person's place.
+    Auto,
+    /// No sandbox and no approvals.
+    Full,
+}
+
+impl Mode {
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "ask" => Some(Self::Ask),
+            "on-request" => Some(Self::OnRequest),
+            "auto" => Some(Self::Auto),
+            "full" => Some(Self::Full),
+            _ => None,
+        }
+    }
+}
+
+/// What the person allowed for one turn: its mode, the `ask` rules
+/// approved, and held calls approved by their exact tool and arguments,
+/// each for one run.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Approvals {
+    pub mode: Mode,
+    pub rules: Vec<NoteId>,
+    pub calls: Vec<(String, String)>,
+}
+
+/// Refusals of the reviewer in a row, and in a turn, after which calls go
+/// to the person instead (the counts of Claude Code and DeepAI Code).
+const DENIALS_IN_A_ROW: u32 = 3;
+const DENIALS_PER_TURN: u32 = 20;
+/// Names a model to review calls in the `auto` mode instead of the turn's.
+const REVIEW_MODEL_ENV: &str = "INOCODE_REVIEW_MODEL";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Outcome {
@@ -190,6 +236,13 @@ struct Thread<'a> {
     failures: HashMap<(String, String, String), u32>,
     /// Lessons that may apply to this turn's request.
     lessons: Option<String>,
+    mode: Mode,
+    /// Held calls the person approved, each run once.
+    approved: Vec<(String, String)>,
+    /// The model that reviews calls when it is not the turn's own.
+    reviewer: Option<Llm>,
+    /// The reviewer's refusals in a row and in this turn.
+    denials: (u32, u32),
 }
 
 impl Thread<'_> {
@@ -263,9 +316,23 @@ impl Thread<'_> {
         Ok((!parts.is_empty()).then(|| parts.join("\n")))
     }
 
-    /// Answers one call: checks it against the project's must rules, then
-    /// runs it. A rule check that fails keeps the call from running.
-    async fn answer(&mut self, name: &str, arguments: &str) -> Answer {
+    /// Whether this turn's commands run confined.
+    fn sandboxed(&self) -> bool {
+        self.mode != Mode::Full && crate::sandbox::enabled()
+    }
+
+    /// Answers one call of `pending`, the assistant message being answered:
+    /// checks it against the project's must rules and the turn's mode, has
+    /// it reviewed in the `auto` mode, then runs it. A rule check that fails
+    /// keeps the call from running.
+    async fn answer(
+        &mut self,
+        llm: &Llm,
+        pending: &Body,
+        name: &str,
+        arguments: &str,
+        usage: &mut TurnUsage,
+    ) -> Answer {
         let decision = match self.store.check(self.project, name, arguments, None).await {
             Ok(decision) => decision,
             Err(error) => {
@@ -275,6 +342,7 @@ impl Thread<'_> {
                 )
             }
         };
+        let mut asked_rules = Vec::new();
         match decision {
             Decision::Allow => {}
             Decision::Block(rules) => {
@@ -289,29 +357,36 @@ impl Thread<'_> {
                 );
             }
             Decision::Ask(rules) => {
-                if rules.iter().all(|rule| self.allowed.contains(rule)) {
+                if !rules.iter().all(|rule| self.allowed.contains(rule)) {
+                    asked_rules = rules;
+                } else {
                     for rule in &rules {
                         let _ = self
                             .store
                             .record(*rule, "allowed", Actor::Person, None, name)
                             .await;
                     }
-                } else {
-                    let titles = self.titles(&rules).await;
-                    let text = format!(
-                        "Held for the person's approval under the project rule: {}. It was \
-                         not run. Go on with work that does not depend on it; the person \
-                         sees the held calls when this turn ends.",
-                        titles.join("; ")
-                    );
-                    self.held.push(Held {
-                        rules: rules.iter().map(|rule| rule.0).collect(),
-                        titles,
-                        tool: name.to_string(),
-                        arguments: arguments.to_string(),
-                    });
-                    return (text, true);
                 }
+            }
+        }
+        let approved = self
+            .approved
+            .iter()
+            .position(|(tool, args)| tool == name && args == arguments);
+        if let Some(index) = approved {
+            self.approved.remove(index);
+            for rule in &asked_rules {
+                let _ = self
+                    .store
+                    .record(*rule, "allowed", Actor::Person, None, name)
+                    .await;
+            }
+        } else if self.mode != Mode::Full {
+            if let Some(answer) = self
+                .approval(llm, pending, name, arguments, asked_rules, usage)
+                .await
+            {
+                return answer;
             }
         }
         let context = agent_tools::Context {
@@ -321,10 +396,136 @@ impl Thread<'_> {
             rules: self.rules.as_deref(),
             folder: self.folder.as_deref(),
             cancel: self.cancel.clone(),
+            sandboxed: self.sandboxed(),
         };
         agent_tools::run(&context, name, arguments)
             .await
             .unwrap_or_else(|| (format!("no tool named {name} is available"), true))
+    }
+
+    /// Why a call needs approval in this mode, if it does; `asked_rules`
+    /// are the `ask` rules it met that the person has not approved.
+    fn needs(&self, name: &str, arguments: &str, asked_rules: bool) -> Option<String> {
+        let command = (name == shell::SHELL)
+            .then(|| shell::shell_arguments(arguments))
+            .flatten();
+        if asked_rules {
+            return Some("it falls under a project rule that asks first".into());
+        }
+        if self.sandboxed() && command.as_ref().is_some_and(|c| c.outside_sandbox) {
+            return Some("it asks to run outside the sandbox".into());
+        }
+        let reads = command
+            .as_ref()
+            .is_some_and(|c| shell::reads_only(&c.command));
+        let changes = matches!(name, crate::edit::EDIT | crate::edit::WRITE)
+            || (name == shell::SHELL && !reads);
+        match self.mode {
+            Mode::Ask if changes => Some("every change waits for the person in this mode".into()),
+            Mode::Auto if name == shell::SHELL && !reads => {
+                Some("commands that change something are reviewed in this mode".into())
+            }
+            _ => None,
+        }
+    }
+
+    /// Holds the call for the person, or in the `auto` mode has it reviewed.
+    /// `None` lets the call run.
+    async fn approval(
+        &mut self,
+        llm: &Llm,
+        pending: &Body,
+        name: &str,
+        arguments: &str,
+        asked_rules: Vec<NoteId>,
+        usage: &mut TurnUsage,
+    ) -> Option<Answer> {
+        let reason = self.needs(name, arguments, !asked_rules.is_empty())?;
+        if self.mode == Mode::Auto {
+            if self.denials.0 >= DENIALS_IN_A_ROW || self.denials.1 >= DENIALS_PER_TURN {
+                let reason = "the reviewer refused too many calls in this turn".to_string();
+                return Some(self.hold(name, arguments, asked_rules, reason).await);
+            }
+            let mut seen = self.conversation.messages.clone();
+            seen.push(Message {
+                id: "pending".to_string(),
+                body: pending.clone(),
+            });
+            let seen = Conversation {
+                system: None,
+                messages: seen,
+            };
+            let (verdict, spent) = crate::review::review(
+                llm,
+                self.reviewer.as_ref().unwrap_or(llm),
+                &seen,
+                self.folder.as_deref(),
+                self.rules.as_deref(),
+                name,
+                arguments,
+            )
+            .await;
+            if let Some(spent) = spent {
+                usage.add(spent);
+            }
+            return match verdict {
+                crate::review::Verdict::Allow => {
+                    self.denials.0 = 0;
+                    for rule in &asked_rules {
+                        let _ = self
+                            .store
+                            .record(*rule, "allowed", Actor::Harness, None, name)
+                            .await;
+                    }
+                    None
+                }
+                crate::review::Verdict::Deny(why) => {
+                    self.denials.0 += 1;
+                    self.denials.1 += 1;
+                    Some((
+                        format!(
+                            "Denied by the reviewer: {why}. It was not run. Do not retry it or \
+                             work around the refusal; go on with other work, or if this exact \
+                             action is essential, say so to the person."
+                        ),
+                        true,
+                    ))
+                }
+                crate::review::Verdict::Unavailable(why) => {
+                    let reason = format!("the reviewer could not decide ({why})");
+                    Some(self.hold(name, arguments, asked_rules, reason).await)
+                }
+            };
+        }
+        Some(self.hold(name, arguments, asked_rules, reason).await)
+    }
+
+    async fn hold(
+        &mut self,
+        name: &str,
+        arguments: &str,
+        rules: Vec<NoteId>,
+        reason: String,
+    ) -> Answer {
+        let titles = self.titles(&rules).await;
+        let under = if titles.is_empty() {
+            String::new()
+        } else {
+            format!(" (project rule: {})", titles.join("; "))
+        };
+        let text = format!(
+            "Held for the person's approval: {reason}{under}. It was not run. Go on with \
+             work that does not depend on it; the person sees the held calls when this \
+             turn ends."
+        );
+        self.held.push(Held {
+            rules: rules.iter().map(|rule| rule.0).collect(),
+            titles,
+            tool: name.to_string(),
+            arguments: arguments.to_string(),
+            reason,
+        });
+        (text, true)
     }
 
     async fn titles(&self, rules: &[NoteId]) -> Vec<String> {
@@ -363,7 +564,11 @@ impl Thread<'_> {
     /// Results for the calls of an assistant message. Calls run only when
     /// the model stopped to have them run; the calls of an answer cut at
     /// its length limit may be incomplete and are refused.
-    async fn results(&mut self, stop: StopReason, parts: &[AssistantPart]) -> Vec<Body> {
+    async fn results(&mut self, llm: &Llm, body: &Body, usage: &mut TurnUsage) -> Vec<Body> {
+        let Body::Assistant { stop, parts, .. } = body else {
+            return Vec::new();
+        };
+        let stop = *stop;
         let mut results = Vec::new();
         for part in parts {
             let AssistantPart::ToolCall {
@@ -377,7 +582,7 @@ impl Thread<'_> {
             };
             let answer = match stop {
                 StopReason::ToolUse | StopReason::Completed => {
-                    let answer = self.answer(name, arguments).await;
+                    let answer = self.answer(llm, body, name, arguments, usage).await;
                     self.note_repeats(name, arguments, answer)
                 }
                 StopReason::Length => (
@@ -429,22 +634,36 @@ fn person(text: String) -> Body {
 
 /// Runs one turn of `session`, starting with `prompt`. Input from `steer`
 /// joins the thread before the next request. Every message is stored as it
-/// is made, so an interrupted or failed turn leaves what happened. Calls
-/// under the `ask` rules in `allowed` run as approved by the person.
+/// is made, so an interrupted or failed turn leaves what happened. The turn
+/// works in the mode of `approvals`, and what it lists runs as approved by
+/// the person.
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     llm: &Llm,
     store: &Store,
     session: SessionId,
     prompt: String,
-    allowed: Vec<NoteId>,
+    approvals: Approvals,
     mut steer: mpsc::UnboundedReceiver<String>,
     mut cancel: watch::Receiver<bool>,
     events: mpsc::Sender<TurnEvent>,
 ) -> Outcome {
     let mut usage = TurnUsage::default();
-    let mut thread = match open(store, session, &prompt, allowed, cancel.clone(), events).await {
-        Ok(thread) => thread,
+    let reviewer = match reviewer(llm, approvals.mode) {
+        Ok(reviewer) => reviewer,
+        Err(error) => {
+            return Outcome {
+                ending: Ending::Failed(error),
+                usage,
+                held: Vec::new(),
+            }
+        }
+    };
+    let mut thread = match open(store, session, &prompt, approvals, cancel.clone(), events).await {
+        Ok(mut thread) => {
+            thread.reviewer = reviewer;
+            thread
+        }
         Err(error) => {
             return Outcome {
                 ending: Ending::Failed(error),
@@ -472,11 +691,23 @@ pub async fn run(
     }
 }
 
+/// The model that reviews calls in the `auto` mode when it is not the
+/// turn's own: the one `INOCODE_REVIEW_MODEL` names, on the same provider.
+fn reviewer(llm: &Llm, mode: Mode) -> Result<Option<Llm>, ErrorInfo> {
+    if mode != Mode::Auto {
+        return Ok(None);
+    }
+    match std::env::var(REVIEW_MODEL_ENV) {
+        Ok(model) if !model.trim().is_empty() => llm.with_model(model.trim()).map(Some),
+        _ => Ok(None),
+    }
+}
+
 async fn open<'a>(
     store: &'a Store,
     session: SessionId,
     prompt: &str,
-    allowed: Vec<NoteId>,
+    approvals: Approvals,
     cancel: watch::Receiver<bool>,
     events: mpsc::Sender<TurnEvent>,
 ) -> Result<Thread<'a>, ErrorInfo> {
@@ -506,10 +737,14 @@ async fn open<'a>(
         last_input: None,
         rules,
         events,
-        allowed: allowed.into_iter().collect(),
+        allowed: approvals.rules.into_iter().collect(),
         held: Vec::new(),
         failures: HashMap::new(),
         lessons,
+        mode: approvals.mode,
+        approved: approvals.calls,
+        reviewer: None,
+        denials: (0, 0),
     })
 }
 
@@ -521,7 +756,7 @@ async fn steps(
     cancel: &mut watch::Receiver<bool>,
     usage: &mut TurnUsage,
 ) -> Ending {
-    let tools: Vec<ToolSpec> = agent_tools::specs();
+    let tools: Vec<ToolSpec> = agent_tools::specs(thread.sandboxed());
     if let Err(error) = thread.record(vec![person(prompt)]).await {
         return Ending::Failed(error);
     }
@@ -582,11 +817,11 @@ async fn steps(
         thread.last_input = stream.usage().map(|usage| usage.input);
         let mut body = stream.assistant();
         drop_cut_calls(&mut body);
-        let Body::Assistant { stop, parts, .. } = &body else {
+        let Body::Assistant { stop, .. } = &body else {
             unreachable!("a stream assembles an assistant turn");
         };
         let stop = *stop;
-        let results = thread.results(stop, parts).await;
+        let results = thread.results(llm, &body, usage).await;
         let mut bodies = vec![body.clone()];
         bodies.extend(results);
         let mut steered = false;

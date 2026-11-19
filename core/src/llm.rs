@@ -246,6 +246,49 @@ impl Llm {
         Self::new(LlmConfig::from_env()?)
     }
 
+    /// A client for `model` on the same provider and credential.
+    pub(crate) fn with_model(&self, model: &str) -> Result<Self, ErrorInfo> {
+        Self::new(LlmConfig {
+            model: model.to_string(),
+            ..self.config.clone()
+        })
+    }
+
+    /// Whether the provider is a DeepAI account, which has its own tool
+    /// review service.
+    pub(crate) fn is_deepai(&self) -> bool {
+        self.deepai.is_some()
+    }
+
+    /// Sends `body` to the DeepAI account's tool review endpoint and returns
+    /// its JSON answer.
+    pub(crate) async fn deepai_review(&self, body: &Value) -> Result<Value, ErrorInfo> {
+        let session = self
+            .deepai
+            .as_ref()
+            .ok_or_else(|| ErrorInfo::new("provider_config", "the provider is not DeepAI"))?;
+        let api_key = deepai_api_key(&self.credential().await?)?;
+        let request = self
+            .client
+            .post(self.url("review_tool"))
+            .timeout(Duration::from_secs(15))
+            .header("content-type", "application/json")
+            .json(body);
+        let response = session
+            .headers(request, &api_key)
+            .await
+            .send()
+            .await
+            .map_err(|error| ErrorInfo::new("provider_http", format!("request failed: {error}")))?;
+        require_success(response)
+            .await?
+            .json::<Value>()
+            .await
+            .map_err(|error| {
+                ErrorInfo::new("provider_response", format!("unreadable review: {error}"))
+            })
+    }
+
     /// Starts a streaming completion of one user prompt.
     pub async fn chat(&self, prompt: &str) -> Result<ChatStream, ErrorInfo> {
         let conversation = Conversation {

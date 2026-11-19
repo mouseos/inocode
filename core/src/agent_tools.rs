@@ -23,7 +23,8 @@ pub(crate) const PLAN: &str = "plan";
 pub(crate) const RECALL: &str = "recall";
 pub(crate) const LESSON: &str = "lesson";
 
-pub(crate) fn specs() -> Vec<ToolSpec> {
+/// The tools; `sandboxed` is whether shell commands run confined.
+pub(crate) fn specs(sandboxed: bool) -> Vec<ToolSpec> {
     vec![
         ToolSpec {
             name: PLAN.into(),
@@ -96,7 +97,7 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
     ]
     .into_iter()
     .chain(edit::specs())
-    .chain(shell::specs())
+    .chain(shell::specs(sandboxed))
     .collect()
 }
 
@@ -124,6 +125,8 @@ pub(crate) struct Context<'a> {
     /// The project folder, where commands run.
     pub folder: Option<&'a std::path::Path>,
     pub cancel: tokio::sync::watch::Receiver<bool>,
+    /// Whether shell commands run confined.
+    pub sandboxed: bool,
 }
 
 /// The answer to one call: its text and whether it is an error.
@@ -164,6 +167,7 @@ fn place<'a>(context: &Context<'a>) -> shell::Place<'a> {
         folder: context.folder,
         logs: context.store.files_folder().join("logs"),
         cancel: context.cancel.clone(),
+        sandboxed: context.sandboxed,
     }
 }
 

@@ -29,7 +29,8 @@ const MAX_WAIT: f64 = 600.0;
 const EDGE_LINES: usize = 20;
 const LINE_CHARS: usize = 500;
 
-pub(crate) fn specs() -> Vec<ToolSpec> {
+/// The tools; `sandboxed` is whether commands run confined in this turn.
+pub(crate) fn specs(sandboxed: bool) -> Vec<ToolSpec> {
     let mut shell = "Run a command in a terminal in the project folder. It is never \
         killed for taking long: if it has not finished after wait_seconds, it keeps \
         running as a job and you get its screen. A finished command returns its exit \
@@ -37,12 +38,25 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
         of it; read the log for the rest. Use job to answer prompts, press keys, wait \
         longer, or stop it."
         .to_string();
-    if crate::sandbox::enabled() {
+    let mut properties = json!({
+        "command": {"type": "string"},
+        "wait_seconds": {"type": "number", "minimum": 0, "maximum": MAX_WAIT}
+    });
+    if sandboxed {
         shell.push_str(
             " The command can write only in the project folder and the temporary folder \
-            in TMP; when a write elsewhere is denied, do not try another way around it: \
-            say what you need written and why.",
+            in TMP. When the task needs a write elsewhere, do not try another way around \
+            the denial: run the command again with outside_sandbox and a justification, \
+            which asks for approval to run it outside the sandbox.",
         );
+        properties["outside_sandbox"] = json!({
+            "type": "boolean",
+            "description": "Ask to run this command outside the sandbox. It runs only once approved."
+        });
+        properties["justification"] = json!({
+            "type": "string",
+            "description": "Why the command must run outside the sandbox."
+        });
     }
     vec![
         ToolSpec {
@@ -51,10 +65,7 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
             parameters: json!({
                 "type": "object",
                 "required": ["command"],
-                "properties": {
-                    "command": {"type": "string"},
-                    "wait_seconds": {"type": "number", "minimum": 0, "maximum": MAX_WAIT}
-                }
+                "properties": properties
             }),
         },
         ToolSpec {
@@ -127,13 +138,95 @@ pub(crate) struct Place<'a> {
     /// Where logs are written; it also tells the database apart.
     pub logs: PathBuf,
     pub cancel: watch::Receiver<bool>,
+    /// Whether commands run confined; a call that asked to run outside the
+    /// sandbox reaches [`shell`] only once approved.
+    pub sandboxed: bool,
 }
 
 #[derive(Deserialize)]
-struct ShellArguments {
-    command: String,
+pub(crate) struct ShellArguments {
+    pub command: String,
     #[serde(default)]
     wait_seconds: Option<f64>,
+    #[serde(default)]
+    pub outside_sandbox: bool,
+}
+
+/// The `shell` arguments, when they parse.
+pub(crate) fn shell_arguments(arguments: &str) -> Option<ShellArguments> {
+    serde_json::from_str(arguments).ok()
+}
+
+/// Whether `command` only reads: one plain command (no chaining, pipes,
+/// redirections, substitutions or variables) whose program and first
+/// argument are on a list of reading commands, without a flag that deletes
+/// or runs something.
+pub(crate) fn reads_only(command: &str) -> bool {
+    const READERS: &[&str] = &[
+        "ls",
+        "dir",
+        "pwd",
+        "cat",
+        "type",
+        "head",
+        "tail",
+        "wc",
+        "grep",
+        "rg",
+        "find",
+        "fd",
+        "tree",
+        "stat",
+        "file",
+        "which",
+        "where",
+        "du",
+        "df",
+        "date",
+        "whoami",
+        "get-childitem",
+        "get-content",
+        "get-location",
+        "get-item",
+        "select-string",
+        "test-path",
+        "resolve-path",
+        "get-command",
+    ];
+    const GIT_READERS: &[&str] = &[
+        "status",
+        "diff",
+        "log",
+        "show",
+        "blame",
+        "rev-parse",
+        "ls-files",
+        "grep",
+    ];
+    const UNSAFE: &[&str] = &[
+        "-delete", "-exec", "-execdir", "-ok", "-fprint", "-fls", "-fprintf",
+    ];
+    let command = command.trim();
+    if command.is_empty()
+        || command
+            .chars()
+            .any(|c| matches!(c, ';' | '&' | '|' | '>' | '<' | '`' | '$' | '\n' | '\r'))
+    {
+        return false;
+    }
+    let words: Vec<String> = command
+        .split_whitespace()
+        .map(str::to_ascii_lowercase)
+        .collect();
+    if words.iter().any(|word| UNSAFE.contains(&word.as_str())) {
+        return false;
+    }
+    match words[0].as_str() {
+        "git" => words
+            .get(1)
+            .is_some_and(|sub| GIT_READERS.contains(&sub.as_str())),
+        program => READERS.contains(&program),
+    }
 }
 
 #[derive(Deserialize)]
@@ -166,7 +259,13 @@ pub(crate) async fn shell(place: Place<'_>, arguments: &str) -> Result<String, S
         .folder
         .filter(|folder| folder.is_dir())
         .ok_or("commands need a project folder, and this thread has none")?;
-    let job = start((place.logs, place.session), folder, arguments.command)?;
+    let confined = place.sandboxed && !arguments.outside_sandbox;
+    let job = start(
+        (place.logs, place.session),
+        folder,
+        arguments.command,
+        confined,
+    )?;
     let wait = wait_time(arguments.wait_seconds, DEFAULT_WAIT);
     Ok(settle(&job, wait, place.cancel).await)
 }
@@ -246,7 +345,7 @@ pub(crate) fn stop_all(logs: &Path, session: SessionId) {
     }
 }
 
-fn start(key: Key, folder: &Path, command: String) -> Result<Arc<Job>, String> {
+fn start(key: Key, folder: &Path, command: String, confined: bool) -> Result<Arc<Job>, String> {
     let id = {
         let mut registry = registry().lock().map_err(|_| "the job list is unusable")?;
         let jobs = registry.entry(key.clone()).or_default();
@@ -276,7 +375,11 @@ fn start(key: Key, folder: &Path, command: String) -> Result<Arc<Job>, String> {
         folder: folder.to_path_buf(),
         temp: temp.clone(),
     };
-    let argv = crate::sandbox::confine(&shell_command(&command), &roots)?;
+    let argv = if confined {
+        crate::sandbox::confine(&shell_command(&command), &roots)?
+    } else {
+        shell_command(&command)
+    };
     let mut builder = CommandBuilder::from_argv(argv.into_iter().map(Into::into).collect());
     builder.cwd(folder);
     builder.env("TERM", "xterm-256color");
@@ -529,6 +632,35 @@ fn cut(text: &str, chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_plain_reading_commands_count_as_reading() {
+        for command in [
+            "ls -la",
+            "git status",
+            "git log --oneline -5",
+            "Get-Content README.md",
+            "rg TODO src",
+            "find . -name '*.rs'",
+        ] {
+            assert!(reads_only(command), "{command}");
+        }
+        for command in [
+            "mkdir x",
+            "git push",
+            "git branch -D old",
+            "find . -name x -delete",
+            "find . -exec rm {} ;",
+            "cat a > b",
+            "ls | xargs rm",
+            "ls; rm -rf .",
+            "cat $(echo x)",
+            "Get-Content $env:USERPROFILE\\.ssh\\id_rsa",
+            "",
+        ] {
+            assert!(!reads_only(command), "{command}");
+        }
+    }
 
     #[test]
     fn keys_become_terminal_bytes() {

@@ -17,6 +17,7 @@ pub mod oauth;
 mod outline;
 mod read;
 pub mod reasoning;
+mod review;
 pub mod rules;
 mod rules_import;
 pub mod sandbox;
@@ -94,6 +95,51 @@ impl Request {
                 .collect(),
             Some(_) => Err(invalid()),
         }
+    }
+
+    /// What a `turn/start` request allows: `mode` (`ask`, `on-request`,
+    /// `auto` or `full`; `on-request` when absent), the `ask` rules in
+    /// `allow`, and the held calls in `approve`, each `{"tool", "arguments"}`
+    /// as the turn reported them.
+    pub fn approvals(&self) -> Result<turn::Approvals, ErrorInfo> {
+        let params = self.params.as_ref();
+        let mode = match params.and_then(|params| params.get("mode")) {
+            None | Some(Value::Null) => turn::Mode::default(),
+            Some(value) => value.as_str().and_then(turn::Mode::parse).ok_or_else(|| {
+                ErrorInfo::new(
+                    "invalid_params",
+                    "\"mode\" must be \"ask\", \"on-request\", \"auto\" or \"full\"",
+                )
+            })?,
+        };
+        let invalid = || {
+            ErrorInfo::new(
+                "invalid_params",
+                "\"approve\" must be a list of {\"tool\", \"arguments\"} strings",
+            )
+        };
+        let calls = match params.and_then(|params| params.get("approve")) {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Array(calls)) => calls
+                .iter()
+                .map(|call| {
+                    let tool = call.get("tool").and_then(Value::as_str);
+                    let arguments = call.get("arguments").and_then(Value::as_str);
+                    match (tool, arguments) {
+                        (Some(tool), Some(arguments)) => {
+                            Ok((tool.to_string(), arguments.to_string()))
+                        }
+                        _ => Err(invalid()),
+                    }
+                })
+                .collect::<Result<_, _>>()?,
+            Some(_) => return Err(invalid()),
+        };
+        Ok(turn::Approvals {
+            mode,
+            rules: self.allowed_rules()?,
+            calls,
+        })
     }
 
     /// Request id that a `cancel` request refers to.
@@ -399,14 +445,14 @@ impl Core {
         &self,
         thread: SessionId,
         prompt: String,
-        allowed: Vec<store::NoteId>,
+        approvals: turn::Approvals,
         steer: mpsc::UnboundedReceiver<String>,
         cancel: watch::Receiver<bool>,
         events: mpsc::Sender<TurnEvent>,
     ) -> Outcome {
         match (self.llm(), self.store()) {
             (Ok(llm), Ok(store)) => {
-                turn::run(llm, store, thread, prompt, allowed, steer, cancel, events).await
+                turn::run(llm, store, thread, prompt, approvals, steer, cancel, events).await
             }
             (Err(error), _) | (_, Err(error)) => Outcome {
                 ending: turn::Ending::Failed(error),

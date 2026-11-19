@@ -59,12 +59,21 @@ async fn thread(client: &mut Client) -> i64 {
 
 /// Sends `turn/start` and collects its events through the terminal one.
 async fn turn(client: &mut Client, stream_id: u64, thread: i64, prompt: &str) -> Vec<Value> {
+    turn_with(
+        client,
+        stream_id,
+        json!({"thread_id": thread, "prompt": prompt}),
+    )
+    .await
+}
+
+/// Sends `turn/start` with `params` and collects its events.
+async fn turn_with(client: &mut Client, stream_id: u64, params: Value) -> Vec<Value> {
     client
         .1
         .write_json(
             stream_id,
-            &json!({"id": stream_id, "method": "turn/start",
-                    "params": {"thread_id": thread, "prompt": prompt}}),
+            &json!({"id": stream_id, "method": "turn/start", "params": params}),
         )
         .await
         .expect("send");
@@ -909,6 +918,396 @@ async fn a_fetched_page_comes_as_its_main_content_and_is_saved_whole() {
             .find_map(|line| line.strip_prefix("Raw HTML: "))
             .expect("raw path");
         assert_eq!(std::fs::read_to_string(raw).expect("raw"), page);
+    })
+    .await;
+}
+
+/// A fresh project folder for the approval mode tests, and a folder beside
+/// it that the sandbox does not let commands write in.
+fn project_and_outside(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let database = database();
+    let stem = database.file_stem().unwrap().to_string_lossy().to_string();
+    let base = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
+    let project = base.join(format!("{stem}-{name}"));
+    let outside = base.join(format!("{stem}-{name}-outside"));
+    std::fs::create_dir_all(&project).expect("project");
+    (project, outside)
+}
+
+async fn project_thread(client: &mut Client, project: &std::path::Path) -> i64 {
+    let response = call(
+        client,
+        1,
+        json!({"id": 1, "method": "thread/start",
+               "params": {"project": project.to_string_lossy()}}),
+    )
+    .await;
+    response["result"]["thread_id"].as_i64().expect("thread")
+}
+
+fn shell_call(command: &str) -> Value {
+    json!({"command": command, "wait_seconds": 60})
+}
+
+fn mkdir(path: &std::path::Path) -> String {
+    format!("mkdir '{}'", path.display())
+}
+
+fn reviewer_says(answer: &str) -> Vec<Vec<u8>> {
+    vec![sse_delta(answer), finish("stop"), sse_done()]
+}
+
+fn review_requests(mock: &MockApi) -> Vec<MockRequest> {
+    chats(mock)
+        .into_iter()
+        .filter(|request| {
+            request.body["messages"][0]["content"]
+                .as_str()
+                .is_some_and(|system| system.starts_with("You review one action"))
+        })
+        .collect()
+}
+
+fn shell_tool(request: &MockRequest) -> Value {
+    request.body["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .find(|tool| tool["function"]["name"] == "shell")
+        .expect("shell tool")
+        .clone()
+}
+
+#[tokio::test]
+async fn in_the_ask_mode_changes_wait_and_an_approved_call_runs_once() {
+    with_timeout(async {
+        let (project, _) = project_and_outside("ask");
+        let make = shell_call("mkdir made");
+        let mock = scripted(vec![
+            tool_turn("k1", "shell", make.clone()),
+            tool_turn("k2", "shell", shell_call("ls")),
+            vec![sse_delta("waiting"), finish("stop"), sse_done()],
+            tool_turn("k3", "shell", make.clone()),
+        ])
+        .await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = project_thread(&mut client, &project).await;
+
+        let events = turn_with(
+            &mut client,
+            2,
+            json!({"thread_id": thread, "prompt": "make a folder", "mode": "ask"}),
+        )
+        .await;
+        let results = tool_results(&events);
+        assert!(results[0]
+            .starts_with("Held for the person's approval: every change waits for the person"));
+        assert!(
+            !results[1].starts_with("Held"),
+            "reading runs: {}",
+            results[1]
+        );
+        assert!(!project.join("made").exists());
+        let held = events.last().unwrap()["held"].clone();
+        assert_eq!(held[0]["tool"], "shell");
+        assert_eq!(held[0]["arguments"], make.to_string());
+        assert_eq!(held[0]["rules"], json!([]));
+
+        let events = turn_with(
+            &mut client,
+            3,
+            json!({"thread_id": thread, "prompt": "approved", "mode": "ask",
+                   "approve": [{"tool": "shell", "arguments": held[0]["arguments"]}]}),
+        )
+        .await;
+        assert!(tool_results(&events)[0].contains("exit code 0"));
+        assert!(project.join("made").is_dir());
+        assert_eq!(events.last().unwrap()["held"], json!([]));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn the_model_asks_to_run_outside_the_sandbox_and_the_person_decides() {
+    with_timeout(async {
+        let (project, outside) = project_and_outside("on-request");
+        let escape = json!({"command": mkdir(&outside), "wait_seconds": 60,
+                            "outside_sandbox": true, "justification": "the test needs it"});
+        let mock = scripted(vec![
+            tool_turn("o1", "shell", shell_call("mkdir inside")),
+            tool_turn("o2", "shell", escape.clone()),
+            vec![sse_delta("asked"), finish("stop"), sse_done()],
+            tool_turn("o3", "shell", escape.clone()),
+        ])
+        .await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = project_thread(&mut client, &project).await;
+
+        let events = turn(&mut client, 2, thread, "make folders").await;
+        let results = tool_results(&events);
+        assert!(results[0].contains("exit code 0"), "{}", results[0]);
+        assert!(project.join("inside").is_dir());
+        assert!(results[1]
+            .starts_with("Held for the person's approval: it asks to run outside the sandbox"));
+        assert!(!outside.exists());
+        let shell = shell_tool(&chats(&mock)[0]);
+        assert!(shell["function"]["parameters"]["properties"]["outside_sandbox"].is_object());
+
+        let held = events.last().unwrap()["held"][0]["arguments"].clone();
+        let events = turn_with(
+            &mut client,
+            3,
+            json!({"thread_id": thread, "prompt": "go ahead",
+                   "approve": [{"tool": "shell", "arguments": held}]}),
+        )
+        .await;
+        assert!(tool_results(&events)[0].contains("exit code 0"));
+        assert!(outside.is_dir(), "approved, it ran outside the sandbox");
+        let _ = std::fs::remove_dir_all(&outside);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn in_the_auto_mode_the_reviewer_decides_and_sees_only_the_person_and_the_calls() {
+    with_timeout(async {
+        let (project, _) = project_and_outside("auto");
+        let mock = scripted(vec![
+            tool_turn("r1", "shell", shell_call("mkdir refused")),
+            reviewer_says("<block>yes</block><reason>not needed for the task</reason>"),
+            tool_turn("r2", "shell", shell_call("mkdir allowed")),
+            reviewer_says("<block>no</block>"),
+            tool_turn("r3", "shell", shell_call("ls")),
+        ])
+        .await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = project_thread(&mut client, &project).await;
+
+        let events = turn_with(
+            &mut client,
+            2,
+            json!({"thread_id": thread, "prompt": "set up the folders", "mode": "auto"}),
+        )
+        .await;
+        let results = tool_results(&events);
+        assert!(results[0].starts_with("Denied by the reviewer: not needed for the task."));
+        assert!(results[1].contains("exit code 0"), "{}", results[1]);
+        assert!(results[2].contains("exit code 0"), "{}", results[2]);
+        assert!(!project.join("refused").exists());
+        assert!(project.join("allowed").is_dir());
+        let last = events.last().unwrap();
+        assert_eq!(last["held"], json!([]));
+        assert_eq!(last["usage"]["requests"], 6, "four steps and two reviews");
+
+        // Reading commands are not reviewed; the reviewer gets the person's
+        // words and the calls, and the action to decide on last.
+        let reviews = review_requests(&mock);
+        assert_eq!(reviews.len(), 2);
+        let asked = reviews[1].body["messages"][1]["content"].as_str().unwrap();
+        assert!(asked.contains("Person: set up the folders"));
+        assert!(asked.contains("Action: shell {\"command\":\"mkdir refused\""));
+        assert!(asked.ends_with(
+            "<action>shell {\"command\":\"mkdir allowed\",\"wait_seconds\":60}</action>"
+        ));
+        assert!(!asked.contains("Denied by the reviewer"), "no tool output");
+        assert!(reviews[0]
+            .body
+            .get("tools")
+            .and_then(Value::as_array)
+            .is_none_or(Vec::is_empty));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn repeated_refusals_and_unreadable_reviews_go_to_the_person() {
+    with_timeout(async {
+        let (project, _) = project_and_outside("refusals");
+        let deny = || reviewer_says("<block>yes</block><reason>no</reason>");
+        let mock = scripted(vec![
+            tool_turn("d1", "shell", shell_call("mkdir one")),
+            deny(),
+            tool_turn("d2", "shell", shell_call("mkdir two")),
+            deny(),
+            tool_turn("d3", "shell", shell_call("mkdir three")),
+            deny(),
+            tool_turn("d4", "shell", shell_call("mkdir four")),
+            vec![sse_delta("stopped"), finish("stop"), sse_done()],
+            tool_turn("u1", "shell", shell_call("mkdir five")),
+            reviewer_says("I think this is fine."),
+        ])
+        .await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = project_thread(&mut client, &project).await;
+
+        let events = turn_with(
+            &mut client,
+            2,
+            json!({"thread_id": thread, "prompt": "go", "mode": "auto"}),
+        )
+        .await;
+        let results = tool_results(&events);
+        assert!(results[..3]
+            .iter()
+            .all(|result| result.starts_with("Denied by the reviewer")));
+        assert!(results[3]
+            .starts_with("Held for the person's approval: the reviewer refused too many calls"));
+        assert_eq!(
+            review_requests(&mock).len(),
+            3,
+            "the fourth is not reviewed"
+        );
+        assert_eq!(
+            events.last().unwrap()["held"][0]["arguments"],
+            shell_call("mkdir four").to_string()
+        );
+
+        let events = turn_with(
+            &mut client,
+            3,
+            json!({"thread_id": thread, "prompt": "again", "mode": "auto"}),
+        )
+        .await;
+        assert!(tool_results(&events)[0]
+            .starts_with("Held for the person's approval: the reviewer could not decide"));
+        assert!(!project.join("five").exists());
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn full_access_runs_commands_without_the_sandbox_or_approval() {
+    with_timeout(async {
+        let (project, outside) = project_and_outside("full");
+        let mock = scripted(vec![tool_turn("f1", "shell", shell_call(&mkdir(&outside)))]).await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = project_thread(&mut client, &project).await;
+
+        let events = turn_with(
+            &mut client,
+            2,
+            json!({"thread_id": thread, "prompt": "make it", "mode": "full"}),
+        )
+        .await;
+        assert!(tool_results(&events)[0].contains("exit code 0"));
+        assert!(outside.is_dir());
+        let shell = shell_tool(&chats(&mock)[0]);
+        assert!(shell["function"]["parameters"]["properties"]
+            .get("outside_sandbox")
+            .is_none());
+        let _ = std::fs::remove_dir_all(&outside);
+
+        let bad = turn_with(
+            &mut client,
+            3,
+            json!({"thread_id": thread, "prompt": "x", "mode": "yolo"}),
+        )
+        .await;
+        assert_eq!(bad.last().unwrap()["event"], "failed");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_deepai_account_uses_its_own_review_service() {
+    with_timeout(async {
+        let (project, _) = project_and_outside("deepai");
+        let chat = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&chat);
+        let mock = start_mock(move |request: &MockRequest| match request.path.as_str() {
+            "/v1/theos" => MockReply::status(
+                200,
+                &json!({"enabled": true, "balance": "200", "granted": "200", "lane_version": 6,
+                        "check_in": {"nonce": "0123456789abcdef0123456789abcdef", "seconds": 600}})
+                .to_string(),
+            ),
+            "/v1/models" => MockReply::status(
+                200,
+                &json!({"default": "glm-5.3-flash", "models": [
+                    {"id": "glm-5.3-flash", "name": "GLM 5.3 Flash", "reasoning": true,
+                     "input": ["text"], "contextWindow": 100000, "maxTokens": 100,
+                     "premier": false, "theosPerRequest": "0"}]})
+                .to_string(),
+            ),
+            "/v1/review_tool" => {
+                MockReply::status(200, r#"{"verdict": "unsafe", "reason": "deletes data"}"#)
+            }
+            _ => match counted.fetch_add(1, Ordering::SeqCst) {
+                0 => MockReply::stream(tool_turn("p1", "shell", shell_call("mkdir gone"))),
+                _ => MockReply::stream(vec![sse_delta("done"), finish("stop"), sse_done()]),
+            },
+        })
+        .await;
+        let credentials = database().with_extension("auth.json");
+        let mut auth = inocode_core::oauth::Store::load(credentials.clone()).expect("auth store");
+        auth.save(
+            "deepai",
+            inocode_core::oauth::Credential {
+                access: String::new(),
+                refresh: String::new(),
+                expires_at_ms: None,
+                account_id: None,
+                email: None,
+                api_key: Some("deepai-test-key".to_string()),
+                oauth_access_token: None,
+            },
+        )
+        .expect("save");
+        let llm = Llm::new(LlmConfig {
+            provider: ProviderKind::OpenAi,
+            auth: inocode_core::oauth::AuthKind::DeepAi,
+            base_url: mock.base_url.clone(),
+            model: "glm-5.3-flash".to_string(),
+            api_key: String::new(),
+            auth_store_path: Some(credentials),
+            reasoning: Default::default(),
+        })
+        .expect("client");
+        inocode_core::sandbox::configure(true, Some(env!("CARGO_BIN_EXE_inocode-server").into()));
+        let store = Store::open(database()).await.expect("store");
+        let core = Arc::new(Core::with_llm(llm).with_store(store));
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = project_thread(&mut client, &project).await;
+
+        let events = turn_with(
+            &mut client,
+            2,
+            json!({"thread_id": thread, "prompt": "clean up", "mode": "auto"}),
+        )
+        .await;
+        assert!(tool_results(&events)[0].starts_with("Denied by the reviewer: deletes data."));
+        assert!(!project.join("gone").exists());
+        let reviews: Vec<MockRequest> = mock
+            .requests()
+            .into_iter()
+            .filter(|request| request.path == "/v1/review_tool")
+            .collect();
+        assert_eq!(reviews.len(), 1);
+        let body = &reviews[0].body;
+        assert_eq!(body["tool_name"], "shell");
+        assert_eq!(body["tool_input"]["command"], "mkdir gone");
+        assert_eq!(body["project_dir"], project.to_string_lossy().as_ref());
+        assert_eq!(body["user_messages"], json!(["clean up"]));
+        assert_eq!(
+            reviews[0].headers.get("api-key").map(String::as_str),
+            Some("deepai-test-key")
+        );
+        assert_eq!(
+            chat.load(Ordering::SeqCst),
+            2,
+            "no model was asked to review"
+        );
     })
     .await;
 }
