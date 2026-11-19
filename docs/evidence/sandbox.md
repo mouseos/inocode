@@ -45,4 +45,6 @@
 
 - Windows（このマシン）：`cargo fmt`・`clippy -D warnings`・`cargo test --workspace` が通過（Windows の担当による。統合後に再実行）。`server/tests/sandbox_windows.rs` で、プロジェクトと `$env:TEMP` には書ける、外のフォルダーには書けない、終了コード 7 がそのまま返ることを確認。既存の端末のテスト（`turn_tcp`）も実行役を通って通過。
 - Linux（WSL2、カーネル 6.6、bwrap なし）：Landlock の経路で、2 つのフォルダーには書ける、`$HOME` と `/tmp` には書けない、終了コードがそのまま返る、実行役の失敗は 127。`turn_tcp` 14 件が通過。bwrap の経路と、Landlock のないカーネルでの拒否は未検証。
-- macOS：未検証。テストは `macos.rs` にあり、macOS の CI で動く。
+- macOS：GitHub Actions の macos-latest（[実行 44499742250](https://github.com/mouseos/inocode/actions/runs/44499742250)）で `macos.rs` の 3 件が通過。2 つのフォルダーには書ける、別のフォルダーには書けない、`/dev/null` には書ける、終了コード 7 がそのまま返る。
+- 同じ実行で、ubuntu-latest の Linux の 3 件（Landlock の経路を含む）と、windows-latest の `sandbox_windows` と端末のテストも通過。3 つの OS の protocol test がすべて成功。
+- 同じ実行の windows-latest のライブ試験で、Logfare の生成のテスト 1 件が時間切れで失敗した。シェルを使わないテストで、サンドボックスとは関係しない。同じジョブの公式 Anthropic のライブ試験は通過。
