@@ -1362,6 +1362,7 @@ dependencies = [
  "grep-searcher",
  "html2text",
  "ignore",
+ "libc",
  "portable-pty",
  "reqwest",
  "rusqlite",
