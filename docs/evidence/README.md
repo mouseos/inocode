@@ -51,7 +51,7 @@
 | [output-limit.md](output-limit.md) | 出力上限にモデルの上限を使う（公式の一覧、なければ models.dev）、切れたら続きを促す | UNSUPPORTED_APPROVED（公式仕様と公開実装） | `core/src/llm.rs`、`core/src/reasoning.rs`、`core/src/turn.rs` |
 | [harness-tools.md](harness-tools.md) | ファイル・シェルなどの道具：他のハーネスとの比較と研究 | シェルは UNSUPPORTED_APPROVED、read・find は RESEARCH_SUPPORTED、edit・write は `edit-write.md` | シェル・read・find・edit・write は実装済み |
 | [memory-integration.md](memory-integration.md) | 記憶を作業中に使わせる：ツール出力で確かめた発見の自動記録と差し込み、根拠・トークン費用・指示しないと使われない問題 | 自動記録は実測を受けて外した（コードなし）。ほかの案は UNSUPPORTED_PENDING | 外した。実測では効果なし、出力 +2〜3 千トークン・+12 秒／ターン。正しい答えを渡しても 2 問目は減らなかった |
-| [approval-modes.md](approval-modes.md) | 承認の 4 つのモード（いちいち承認・モデルに決めさせる・半自走・完全フルアクセス）、サンドボックスの外での実行の依頼、半自走での判定役（DeepAI は公式の審査 API） | UNSUPPORTED_APPROVED | `core/src/review.rs`、`core/src/turn.rs` |
+| [approval-modes.md](approval-modes.md) | 承認の 4 つのモード（いちいち承認・モデルに決めさせる・半自走・完全フルアクセス）、サンドボックスの外での実行の依頼、`auto`（モデルに決めさせる）での判定役（DeepAI は公式の審査 API） | UNSUPPORTED_APPROVED | `core/src/review.rs`、`core/src/turn.rs` |
 | [sandbox.md](sandbox.md) | シェルの命令の書き込みを、プロジェクトと一時フォルダーに限る（DSH からの移植。Linux・macOS・Windows） | UNSUPPORTED_APPROVED | `core/src/sandbox/` |
 | [edit-write.md](edit-write.md) | edit・write の道具、空白を無視した照合、効率化の候補（構文検査など。未実装） | 置換形式・完全一致・空白を無視した照合は RESEARCH_SUPPORTED（査読前を含む）、細部は UNSUPPORTED_APPROVED | `core/src/edit.rs` |
 
