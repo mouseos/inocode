@@ -30,16 +30,24 @@ const EDGE_LINES: usize = 20;
 const LINE_CHARS: usize = 500;
 
 pub(crate) fn specs() -> Vec<ToolSpec> {
+    let mut shell = "Run a command in a terminal in the project folder. It is never \
+        killed for taking long: if it has not finished after wait_seconds, it keeps \
+        running as a job and you get its screen. A finished command returns its exit \
+        code, the first and last lines of its output, and the path of a log with all \
+        of it; read the log for the rest. Use job to answer prompts, press keys, wait \
+        longer, or stop it."
+        .to_string();
+    if crate::sandbox::enabled() {
+        shell.push_str(
+            " The command can write only in the project folder and the temporary folder \
+            in TMP; when a write elsewhere is denied, do not try another way around it: \
+            say what you need written and why.",
+        );
+    }
     vec![
         ToolSpec {
             name: SHELL.into(),
-            description: "Run a command in a terminal in the project folder. It is never \
-                killed for taking long: if it has not finished after wait_seconds, it keeps \
-                running as a job and you get its screen. A finished command returns its exit \
-                code, the first and last lines of its output, and the path of a log with all \
-                of it; read the log for the rest. Use job to answer prompts, press keys, wait \
-                longer, or stop it."
-                .into(),
+            description: shell,
             parameters: json!({
                 "type": "object",
                 "required": ["command"],

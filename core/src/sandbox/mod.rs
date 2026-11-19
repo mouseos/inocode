@@ -51,6 +51,11 @@ fn settings() -> &'static Settings {
     })
 }
 
+/// Whether shell commands are confined.
+pub(crate) fn enabled() -> bool {
+    settings().enabled
+}
+
 fn runner() -> Result<PathBuf, String> {
     match &settings().runner {
         Some(runner) => Ok(runner.clone()),
@@ -62,7 +67,7 @@ fn runner() -> Result<PathBuf, String> {
 /// The program and arguments that run `argv` confined to `roots`, or `argv`
 /// itself when confinement is turned off.
 pub(crate) fn confine(argv: &[String], roots: &Roots) -> Result<Vec<String>, String> {
-    if !settings().enabled {
+    if !enabled() {
         return Ok(argv.to_vec());
     }
     for root in [&roots.folder, &roots.temp] {
