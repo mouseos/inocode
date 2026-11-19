@@ -12,6 +12,10 @@
 //! `models` lists the models the configured provider advertises; `usage`
 //! prints the account's usage (rate-limit windows or the DeepAI Theos
 //! allowance).
+//!
+//! Shell commands are confined to writing in the project folder and a
+//! temporary folder; `INOCODE_SANDBOX=off` turns that off. `sandbox-run` is
+//! the confinement runner the server starts itself as, not a user command.
 
 use std::env;
 use std::io;
@@ -19,14 +23,25 @@ use std::sync::Arc;
 
 use inocode_core::deepai;
 use inocode_core::oauth::{self, FlowEndpoints, MuseEndpoints, Store};
+use inocode_core::sandbox;
 use inocode_core::{Core, Llm, LlmConfig};
 use tokio::net::TcpListener;
 
 const DEFAULT_PORT: u16 = 8787;
 
-#[tokio::main]
-async fn main() -> io::Result<()> {
-    let mut args = env::args().skip(1);
+fn main() -> io::Result<()> {
+    let args: Vec<String> = env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some(sandbox::RUNNER_ARGUMENT) {
+        std::process::exit(sandbox::run(&args[1..]));
+    }
+    sandbox::configure(env::var("INOCODE_SANDBOX").as_deref() != Ok("off"), None);
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(command(args.into_iter()))
+}
+
+async fn command(mut args: impl Iterator<Item = String>) -> io::Result<()> {
     match args.next().as_deref() {
         Some("login") => login_command(args.next().as_deref(), args.next().as_deref()).await,
         Some("models") => models_command().await,

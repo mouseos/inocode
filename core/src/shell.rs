@@ -261,9 +261,20 @@ fn start(key: Key, folder: &Path, command: String) -> Result<Arc<Job>, String> {
             pixel_height: 0,
         })
         .map_err(|error| format!("could not open a terminal: {error:#}"))?;
-    let mut builder = shell_command(&command);
+    let temp = logs.join("tmp");
+    std::fs::create_dir_all(&temp)
+        .map_err(|error| format!("could not create {}: {error}", temp.display()))?;
+    let roots = crate::sandbox::Roots {
+        folder: folder.to_path_buf(),
+        temp: temp.clone(),
+    };
+    let argv = crate::sandbox::confine(&shell_command(&command), &roots)?;
+    let mut builder = CommandBuilder::from_argv(argv.into_iter().map(Into::into).collect());
     builder.cwd(folder);
     builder.env("TERM", "xterm-256color");
+    for name in ["TMP", "TEMP", "TMPDIR"] {
+        builder.env(name, &temp);
+    }
     let mut child = pair
         .slave
         .spawn_command(builder)
@@ -321,17 +332,21 @@ fn start(key: Key, folder: &Path, command: String) -> Result<Arc<Job>, String> {
 }
 
 #[cfg(windows)]
-fn shell_command(command: &str) -> CommandBuilder {
-    let mut builder = CommandBuilder::new("powershell.exe");
-    builder.args(["-NoLogo", "-NoProfile", "-Command", command]);
-    builder
+fn shell_command(command: &str) -> Vec<String> {
+    [
+        "powershell.exe",
+        "-NoLogo",
+        "-NoProfile",
+        "-Command",
+        command,
+    ]
+    .map(String::from)
+    .to_vec()
 }
 
 #[cfg(not(windows))]
-fn shell_command(command: &str) -> CommandBuilder {
-    let mut builder = CommandBuilder::new("sh");
-    builder.args(["-c", command]);
-    builder
+fn shell_command(command: &str) -> Vec<String> {
+    ["sh", "-c", command].map(String::from).to_vec()
 }
 
 /// Copies the terminal's output to the screen and, without terminal

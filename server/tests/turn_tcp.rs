@@ -233,6 +233,7 @@ async fn core_and_store(mock: &MockApi) -> (Arc<Core>, Store) {
         reasoning: Default::default(),
     })
     .expect("client");
+    inocode_core::sandbox::configure(true, Some(env!("CARGO_BIN_EXE_inocode-server").into()));
     let store = Store::open(database()).await.expect("store");
     (
         Arc::new(Core::with_llm(llm).with_store(store.clone())),
