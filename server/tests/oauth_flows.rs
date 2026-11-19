@@ -143,12 +143,16 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
+/// A file name no other test in this run uses, even one started in the same
+/// millisecond with the same name.
 fn temp_store_path(name: &str) -> std::path::PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let mut path = std::env::temp_dir();
     path.push(format!(
-        "inocode-oauth-test-{name}-{}-{}.json",
+        "inocode-oauth-test-{name}-{}-{}-{}.json",
         std::process::id(),
-        now_ms()
+        now_ms(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     path
 }
