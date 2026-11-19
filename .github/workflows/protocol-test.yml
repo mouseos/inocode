@@ -52,6 +52,8 @@ jobs:
     needs: protocol-test
     strategy:
       fail-fast: false
+      # One system at a time: the three share one provider key, and concurrent runs hit its rate limit.
+      max-parallel: 1
       matrix:
         os:
           - ubuntu-latest
