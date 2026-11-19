@@ -27,6 +27,22 @@
 - 公開されている実装の先例：DSH（Linux・macOS・Windows）。DSH の `SAFETY.md` は「隔離は保証しない」と書いている。
 - DSH が認める限界（移植後も同じ）：読み取り・ネットワーク・プロセスの見え方は制限しない。Windows の制限付きトークンは書き込みしか絞れない。
 
+## OS ごとの実装上の決定（このプロジェクトの判断）
+
+- Linux（`linux.rs`）：
+  - bwrap が PATH にあり、試しの起動（5 秒まで、プロセスごとに 1 回）が通れば bwrap。`/` を読み取り専用、`/tmp` は使い捨て、2 つのフォルダーだけ書き込み可。
+  - なければ実行役が no-new-privs と Landlock を自分にかけてから命令を exec する。DSH の `landlock-run`（C）を `libc` で移植した。
+  - DSH との違い：Landlock では実の `/tmp` への書き込みを許さない（約束の 2 つのフォルダーに合わせた）。古い Landlock の ABI では一部だけの強制になり、そのことを `inocode-sandbox:` の 1 行で出す（DSH と同じく実行はする）。
+- macOS（`macos.rs`）：`/usr/bin/sandbox-exec -p <プロファイル>`。`(allow default)(deny file-write*)` に、`/dev/null` と 2 つのフォルダー（実体のパス）の書き込みを足す。DSH が許す `/tmp` は許さない。
+- Windows（`windows.rs`）：
+  - 実行役が、ログオン SID・Everyone・プロジェクトのフォルダーの SID・一時フォルダーの SID を制限 SID とする WRITE_RESTRICTED・Low 整合性のトークンを作り、`CreateProcessAsUserW` で命令を起動する。kill-on-close の Job に入れる。
+  - 各フォルダーに、その SID への書き込みの許可、サブフォルダーでの Everyone の `FILE_DELETE_CHILD` の拒否、Low の no-write-up のラベルを付ける。すでにあれば付け直さない。
+  - **DSH にない追加：** ラベルを付けるには `WRITE_OWNER` が要る。D: ドライブなどユーザーが「変更」権限しか持たないフォルダーでは DSH の方式だと失敗し、すべての命令が拒否された。そこで、フォルダーの所有者であるユーザー自身に、そのフォルダーだけの `WRITE_OWNER` を付けてからラベルを付ける。閉じ込めた命令にはこの権限はない（手で確認）。
+  - **ユーザーのデータへの影響：** 付けた許可とラベルは、フォルダーに残り続ける（DSH と同じ。次から付け直しを省くため）。最初の 1 回は、継承のためにフォルダーの木全体の ACL が書き換わる（大きなプロジェクトでは数十秒、DSH の説明）。ラベルが残るので、同じユーザーのほかの Low 整合性のプロセスも、そのフォルダーに書ける。
+  - DSH から移さなかったもの：一時フォルダーの許可の取り消し（inocode の一時フォルダーはスレッドの複数の命令で共有するため）、許可の付与のロックファイル、読み取り専用モードなど。
+
 ## 実装・検証の状況
 
-- 未検証（実装中）。
+- Windows（このマシン）：`cargo fmt`・`clippy -D warnings`・`cargo test --workspace` が通過（Windows の担当による。統合後に再実行）。`server/tests/sandbox_windows.rs` で、プロジェクトと `$env:TEMP` には書ける、外のフォルダーには書けない、終了コード 7 がそのまま返ることを確認。既存の端末のテスト（`turn_tcp`）も実行役を通って通過。
+- Linux（WSL2、カーネル 6.6、bwrap なし）：Landlock の経路で、2 つのフォルダーには書ける、`$HOME` と `/tmp` には書けない、終了コードがそのまま返る、実行役の失敗は 127。`turn_tcp` 14 件が通過。bwrap の経路と、Landlock のないカーネルでの拒否は未検証。
+- macOS：未検証。テストは `macos.rs` にあり、macOS の CI で動く。
