@@ -20,6 +20,7 @@ pub mod reasoning;
 mod remember;
 pub mod rules;
 mod rules_import;
+pub mod sandbox;
 mod shell;
 mod sse;
 pub mod store;
