@@ -204,7 +204,9 @@ async fn read_rules(project_key: &str) -> Option<String> {
 
 /// The system prompt: the project's rules as written, never summarized.
 fn system_prompt(rules: Option<&str>) -> String {
-    let mut system = String::from("You are a coding agent working on a user's project.");
+    let mut system = String::from(
+        "You are a coding agent working on a user's project. When a method is shown to          work, save it with the method tool. Before investigating a device, format or          program from scratch, use recall to look for methods saved in earlier work.",
+    );
     if let Some(rules) = rules {
         system.push_str(" Follow the project's rules below.\n----- RULES -----\n");
         system.push_str(rules);
@@ -886,9 +888,8 @@ mod tests {
         assert!(
             system.ends_with("----- RULES -----\n- テストは全部実行する\n----- END RULES -----")
         );
-        assert_eq!(
-            system_prompt(None),
-            "You are a coding agent working on a user's project."
-        );
+        let bare = system_prompt(None);
+        assert!(bare.starts_with("You are a coding agent working on a user's project."));
+        assert!(!bare.contains("RULES"));
     }
 }

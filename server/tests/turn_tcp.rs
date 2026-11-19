@@ -289,7 +289,7 @@ async fn the_plan_is_shown_after_the_history_with_every_request() {
         let requests = chats(&mock);
         assert!(requests[0].body["tools"]
             .as_array()
-            .is_some_and(|tools| tools.len() == 11));
+            .is_some_and(|tools| tools.len() == 12));
         let state = last_message(&requests[1]);
         assert_eq!(state["role"], "user");
         assert_eq!(
@@ -344,6 +344,80 @@ async fn recall_reads_earlier_messages_word_for_word() {
             "#1 user: the first question\n#2 assistant: first answer\n"
         );
         assert!(results[1].contains("#1 user"), "{}", results[1]);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn methods_are_shared_across_projects_and_recalled_whole() {
+    with_timeout(async {
+        let base = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
+            "inocode-methods-{}-{}",
+            std::process::id(),
+            database().file_name().unwrap().to_string_lossy()
+        ));
+        let (first, second) = (base.join("first"), base.join("second"));
+        std::fs::create_dir_all(&first).expect("first");
+        std::fs::create_dir_all(&second).expect("second");
+
+        let mock = scripted(vec![
+            tool_turn(
+                "m1",
+                "method",
+                json!({
+                    "identifier": "INOF container, magic 494E4F46",
+                    "title": "Unpack INOF firmware",
+                    "steps": "python unpack.py --xor 0x5A image.bin",
+                    "failed": "binwalk finds nothing: the payload is XORed"
+                }),
+            ),
+            tool_turn(
+                "m2",
+                "method",
+                json!({"identifier": " ", "title": "t", "steps": "s"}),
+            ),
+            vec![sse_delta("saved"), finish("stop"), sse_done()],
+            tool_turn("r1", "recall", json!({"query": "INOF firmware"})),
+        ])
+        .await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let mut threads = Vec::new();
+        for (id, folder) in [(1, &first), (2, &second)] {
+            let response = call(
+                &mut client,
+                id,
+                json!({"id": id, "method": "thread/start",
+                       "params": {"project": folder.to_string_lossy()}}),
+            )
+            .await;
+            threads.push(response["result"]["thread_id"].as_i64().expect("thread"));
+        }
+
+        let events = turn(&mut client, 3, threads[0], "unpack the INOF firmware").await;
+        let results = tool_results(&events);
+        assert!(results[0].starts_with("Saved method"), "{}", results[0]);
+        assert_eq!(results[1], "identifier, title, and steps must not be empty");
+
+        let events = turn(&mut client, 4, threads[1], "unpack this INOF firmware").await;
+        let recalled = &tool_results(&events)[0];
+        assert!(
+            recalled.contains("Steps that worked: python unpack.py --xor 0x5A image.bin"),
+            "{recalled}"
+        );
+        assert!(
+            recalled.contains(&format!("Found in project: {}", first.display())),
+            "{recalled}"
+        );
+
+        let chats = chats(&mock);
+        let system = chats[0].body["messages"][0]["content"].as_str().unwrap_or_default();
+        assert!(system.contains("save it with the method tool"), "{system}");
+        let shown = chats[3].body.to_string();
+        assert!(shown.contains("Lessons from earlier work"), "{shown}");
+        assert!(shown.contains("unpack.py --xor 0x5A"), "{shown}");
+        let _ = std::fs::remove_dir_all(&base);
     })
     .await;
 }

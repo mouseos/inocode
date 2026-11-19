@@ -1,6 +1,7 @@
 //! The tools the harness gives the model: `plan`, `recall`, and `lesson` for
-//! keeping its place and its lessons (docs/evidence/agent-tools.md), and
-//! `search` (docs/evidence/web-search.md).
+//! keeping its place and its lessons (docs/evidence/agent-tools.md), `method`
+//! for verified methods reused across projects (docs/evidence/method-memory.md),
+//! and `search` (docs/evidence/web-search.md).
 
 use std::time::Duration;
 
@@ -22,6 +23,7 @@ const SEARCH_BUDGET: Duration = Duration::from_secs(2);
 pub(crate) const PLAN: &str = "plan";
 pub(crate) const RECALL: &str = "recall";
 pub(crate) const LESSON: &str = "lesson";
+pub(crate) const METHOD: &str = "method";
 
 /// The tools; `sandboxed` is whether shell commands run confined.
 pub(crate) fn specs(sandboxed: bool) -> Vec<ToolSpec> {
@@ -90,6 +92,22 @@ pub(crate) fn specs(sandboxed: bool) -> Vec<ToolSpec> {
                 }
             }),
         },
+        ToolSpec {
+            name: METHOD.into(),
+            description: "Save a method you have verified to work, so that later work, in                 this or any other project, can reuse it instead of investigating again.                 Call it as soon as a method is shown to work. identifier names exactly                 what the method applies to (device or chip model, file format and magic,                 firmware or app version, hash); steps are the exact commands, scripts,                 offsets and values that worked; failed lists general approaches that did                 not work here and why. Saved methods are found by recall."
+                .into(),
+            parameters: json!({
+                "type": "object",
+                "required": ["identifier", "title", "steps"],
+                "properties": {
+                    "identifier": {"type": "string"},
+                    "title": {"type": "string"},
+                    "steps": {"type": "string"},
+                    "failed": {"type": "string"},
+                    "tags": {"type": "array", "items": {"type": "string"}}
+                }
+            }),
+        },
         web_search::spec(),
         read::spec(),
         fetch::spec(),
@@ -138,6 +156,7 @@ pub(crate) async fn run(context: &Context<'_>, name: &str, arguments: &str) -> O
         PLAN => plan(context, arguments).await,
         RECALL => recall(context, arguments).await,
         LESSON => lesson(context, arguments).await,
+        METHOD => method(context, arguments).await,
         web_search::SEARCH => web_search::run(arguments).await,
         read::READ => read::run(context.folder, arguments).await,
         edit::EDIT => edit::edit(context.folder, arguments).await,
@@ -295,6 +314,17 @@ async fn recall(context: &Context<'_>, arguments: &str) -> Result<String, String
             hit.title,
             cut(&hit.snippet)
         ));
+        if hit.kind == NoteKind::Procedure {
+            if let Some(note) = context
+                .store
+                .note(hit.id)
+                .await
+                .map_err(|error| error.message)?
+            {
+                text.push_str(&format!("{}
+", note.body));
+            }
+        }
     }
     for hit in history.items {
         let place = if hit.session == context.session {
@@ -419,6 +449,62 @@ async fn lesson(context: &Context<'_>, arguments: &str) -> Result<String, String
         }
         other => Err(format!("unknown relation {other}")),
     }
+}
+
+/// Saves a verified method as a shared procedure note, usable at once.
+async fn method(context: &Context<'_>, arguments: &str) -> Result<String, String> {
+    #[derive(Deserialize)]
+    struct Arguments {
+        identifier: String,
+        title: String,
+        steps: String,
+        #[serde(default)]
+        failed: String,
+        #[serde(default)]
+        tags: Vec<String>,
+    }
+    let arguments: Arguments = parse(arguments)?;
+    let (identifier, title, steps) = (
+        arguments.identifier.trim(),
+        arguments.title.trim(),
+        arguments.steps.trim(),
+    );
+    if identifier.is_empty() || title.is_empty() || steps.is_empty() {
+        return Err("identifier, title, and steps must not be empty".into());
+    }
+    let origin = context
+        .folder
+        .map(|folder| folder.display().to_string())
+        .unwrap_or_else(|| "unknown".into());
+    let body = format!(
+        "Method: {title}
+Applies to: {identifier}
+Found in project: {origin}
+Steps that worked: {steps}
+Did not work: {}",
+        arguments.failed.trim()
+    );
+    let id = context
+        .store
+        .add_note(NewNote {
+            project: None,
+            kind: NoteKind::Procedure,
+            title: cut_title(title),
+            summary: title.to_string(),
+            keywords: format!("{identifier} {title} {}", arguments.tags.join(" ")),
+            condition: identifier.to_string(),
+            body,
+            source: Source::Model,
+            tags: arguments.tags,
+        })
+        .await
+        .map_err(|error| error.message)?;
+    context
+        .store
+        .set_status(id, "active")
+        .await
+        .map_err(|error| error.message)?;
+    Ok(format!("Saved method {}.", id.0))
 }
 
 fn cut_title(text: &str) -> String {
