@@ -231,8 +231,6 @@ struct Thread<'a> {
     seqs: Vec<i64>,
     /// The position the next stored message takes.
     next_seq: i64,
-    /// Input tokens of the latest request.
-    last_input: Option<u64>,
     events: mpsc::Sender<TurnEvent>,
     /// `ask` rules the person approved for this turn.
     allowed: HashSet<NoteId>,
@@ -247,7 +245,7 @@ struct Thread<'a> {
     /// The model that reviews calls when it is not the turn's own.
     reviewer: Option<Llm>,
     /// The model that writes compaction summaries when it is not the turn's own.
-    compactor: Option<Llm>,
+    compactor: Option<std::sync::Arc<Llm>>,
     /// The reviewer's refusals in a row and in this turn.
     denials: (u32, u32),
 }
@@ -274,14 +272,15 @@ impl Thread<'_> {
         Ok(())
     }
 
-    /// Compacts what is sent when the latest request used most of the
-    /// context window, or, before this turn's first request has reported
-    /// its size, when the estimated size would: estimated at the model's own
-    /// measured bytes per token, or, before the model measured any request
-    /// (another model), at a rate that runs high, so then only a size over
-    /// the whole window compacts first. The stored history is kept; a
-    /// compaction message is added and the history is assembled again from
-    /// the store.
+    /// Compacts what is about to be sent when it would fill most of the
+    /// context window. Its size, with the plan and lessons sent after it, is
+    /// estimated from its bytes at the bytes per token this model measured
+    /// on the thread's latest request, so the messages added since that
+    /// request count too. Before the thread has a measured request with
+    /// this model (another model, a provider that reports no usage) the
+    /// rate runs high, so then only a size over the whole window compacts.
+    /// The stored history is kept; a compaction message is added and the
+    /// history is assembled again from the store.
     async fn compact_if_due(
         &mut self,
         llm: &Llm,
@@ -291,30 +290,25 @@ impl Thread<'_> {
         let Some(window) = llm.context_window().await else {
             return Ok(());
         };
-        let input = match self.last_input {
-            Some(input) if compaction::due(input, window) => input,
-            Some(_) => return Ok(()),
+        let state = self.state().await?;
+        let bytes = compaction::request_bytes(
+            self.conversation.system.as_deref(),
+            &self.conversation.messages,
+            tools,
+        ) + state.map_or(0, |state| state.len() as u64);
+        let (input, due) = match llm.bytes_per_token(self.session.0) {
+            Some(ratio) => {
+                let input = compaction::tokens(bytes, ratio);
+                (input, compaction::due(input, window))
+            }
             None => {
-                let bytes = compaction::request_bytes(
-                    self.conversation.system.as_deref(),
-                    &self.conversation.messages,
-                    tools,
-                );
-                let estimate = match llm.bytes_per_token() {
-                    Some(ratio) => Some(compaction::tokens(bytes, ratio))
-                        .filter(|&estimate| compaction::due(estimate, window)),
-                    None => Some(compaction::tokens(
-                        bytes,
-                        compaction::FALLBACK_BYTES_PER_TOKEN,
-                    ))
-                    .filter(|&estimate| estimate >= window),
-                };
-                match estimate {
-                    Some(estimate) => estimate,
-                    None => return Ok(()),
-                }
+                let input = compaction::tokens(bytes, compaction::FALLBACK_BYTES_PER_TOKEN);
+                (input, input >= window)
             }
         };
+        if !due {
+            return Ok(());
+        }
         let sent: Vec<(i64, Message)> = self
             .seqs
             .iter()
@@ -323,7 +317,7 @@ impl Thread<'_> {
             .collect();
         let compacted = compaction::compact(
             llm,
-            self.compactor.as_ref(),
+            self.compactor.as_deref(),
             self.conversation.system.clone(),
             &sent,
             tools,
@@ -331,7 +325,6 @@ impl Thread<'_> {
             window,
         )
         .await;
-        self.last_input = None;
         let Some((body, summary_usages)) = compacted else {
             return Ok(());
         };
@@ -750,10 +743,10 @@ fn reviewer(llm: &Llm, mode: Mode) -> Result<Option<Llm>, ErrorInfo> {
 
 /// The model that writes compaction summaries when it is not the turn's
 /// own: the one `INOCODE_COMPACT_MODEL` names, on the same provider.
-fn compactor(llm: &Llm) -> Result<Option<Llm>, ErrorInfo> {
+fn compactor(llm: &Llm) -> Result<Option<std::sync::Arc<Llm>>, ErrorInfo> {
     match std::env::var(COMPACT_MODEL_ENV) {
         Ok(model) if !model.trim().is_empty() && model.trim() != llm.model() => {
-            llm.with_model(model.trim()).map(Some)
+            llm.sibling(model.trim()).map(Some)
         }
         _ => Ok(None),
     }
@@ -790,7 +783,6 @@ async fn open<'a>(
         },
         seqs,
         next_seq,
-        last_input: None,
         rules,
         events,
         allowed: approvals.rules.into_iter().collect(),
@@ -871,11 +863,11 @@ async fn steps(
             }
         }
         usage.add(stream.usage());
-        thread.last_input = stream.usage().map(|usage| usage.input);
-        if let Some(input) = thread.last_input {
+        if let Some(measured) = stream.usage() {
             llm.measured(
+                thread.session.0,
                 compaction::request_bytes(sent.system.as_deref(), &sent.messages, &tools),
-                input,
+                measured.input,
             );
         }
         let mut body = stream.assistant();

@@ -217,8 +217,13 @@ pub struct Llm {
     catalog_window: tokio::sync::OnceCell<Option<u64>>,
     /// The configured model's output limit, looked up once.
     catalog_output: tokio::sync::OnceCell<Option<u64>>,
-    /// Bytes of the latest request this model measured per input token.
-    bytes_per_token: std::sync::Mutex<Option<f64>>,
+    /// Per thread, bytes per input token of the latest request this model
+    /// measured: threads differ in language and content, so one thread's
+    /// rate does not stand for another's.
+    bytes_per_token: std::sync::Mutex<std::collections::HashMap<i64, f64>>,
+    /// Clients for other models on this provider, made once and kept, so a
+    /// DeepAI account is not checked in again for each turn.
+    siblings: std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<Llm>>>,
 }
 
 impl Llm {
@@ -241,7 +246,8 @@ impl Llm {
             catalog_effort: tokio::sync::OnceCell::new(),
             catalog_window: tokio::sync::OnceCell::new(),
             catalog_output: tokio::sync::OnceCell::new(),
-            bytes_per_token: std::sync::Mutex::new(None),
+            bytes_per_token: std::sync::Mutex::new(std::collections::HashMap::new()),
+            siblings: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -254,23 +260,38 @@ impl Llm {
         &self.config.model
     }
 
-    /// Bytes per input token this model measured on its latest request;
-    /// `None` before any request reported its size.
-    pub(crate) fn bytes_per_token(&self) -> Option<f64> {
-        *self
-            .bytes_per_token
+    /// Bytes per input token this model measured on `thread`'s latest
+    /// request; `None` before any request of the thread reported its size.
+    pub(crate) fn bytes_per_token(&self, thread: i64) -> Option<f64> {
+        self.bytes_per_token
             .lock()
             .unwrap_or_else(|error| error.into_inner())
+            .get(&thread)
+            .copied()
     }
 
-    /// Records that a request of `bytes` measured `input` tokens.
-    pub(crate) fn measured(&self, bytes: u64, input: u64) {
+    /// Records that a request of `thread` of `bytes` measured `input` tokens.
+    pub(crate) fn measured(&self, thread: i64, bytes: u64, input: u64) {
         if bytes > 0 && input > 0 {
-            *self
-                .bytes_per_token
+            self.bytes_per_token
                 .lock()
-                .unwrap_or_else(|error| error.into_inner()) = Some(bytes as f64 / input as f64);
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(thread, bytes as f64 / input as f64);
         }
+    }
+
+    /// The kept client for `model` on the same provider and credential.
+    pub(crate) fn sibling(&self, model: &str) -> Result<std::sync::Arc<Llm>, ErrorInfo> {
+        let mut siblings = self
+            .siblings
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(sibling) = siblings.get(model) {
+            return Ok(sibling.clone());
+        }
+        let sibling = std::sync::Arc::new(self.with_model(model)?);
+        siblings.insert(model.to_string(), sibling.clone());
+        Ok(sibling)
     }
 
     /// A client for `model` on the same provider and credential.
@@ -1959,6 +1980,31 @@ mod tests {
         .expect_err("error event");
         assert_eq!(error.code, "provider_stream");
         assert_eq!(error.message, "quota exceeded");
+    }
+
+    #[test]
+    fn rates_are_kept_per_thread_and_other_models_are_made_once() {
+        let llm = Llm::new(LlmConfig {
+            provider: ProviderKind::OpenAi,
+            auth: AuthKind::ApiKey,
+            base_url: "http://127.0.0.1:1".to_string(),
+            model: "test-model".to_string(),
+            api_key: "key".to_string(),
+            auth_store_path: None,
+            reasoning: Default::default(),
+        })
+        .expect("build the client");
+        llm.measured(1, 4_000, 1_000);
+        llm.measured(2, 3_000, 1_000);
+        llm.measured(3, 0, 1_000);
+        assert_eq!(llm.bytes_per_token(1), Some(4.0));
+        assert_eq!(llm.bytes_per_token(2), Some(3.0));
+        assert_eq!(llm.bytes_per_token(3), None);
+
+        let first = llm.sibling("small").expect("sibling");
+        let again = llm.sibling("small").expect("sibling");
+        assert!(std::sync::Arc::ptr_eq(&first, &again));
+        assert_eq!(first.model(), "small");
     }
 
     #[test]

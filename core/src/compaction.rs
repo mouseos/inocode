@@ -236,12 +236,18 @@ pub(crate) fn tokens(bytes: u64, bytes_per_token: f64) -> u64 {
 
 /// The older messages as plain text, in parts of at most `budget` bytes,
 /// each ending before a message that is not a tool result so a call and
-/// its result stay together.
+/// its result stay together. A message is cut as `recall` cuts it, except
+/// an earlier compaction, whose record and summary stand for everything
+/// before it and are kept whole.
 fn parts(messages: &[(i64, Message)], budget: u64) -> Vec<String> {
     let mut parts = Vec::new();
     let mut current = String::new();
     for (seq, message) in messages {
-        let line = format!("#{seq} {}\n", crate::agent_tools::render(message));
+        let text = match &message.body {
+            Body::User { parts, .. } if replaced_up_to(message).is_some() => parts.join("\n"),
+            _ => crate::agent_tools::render(message),
+        };
+        let line = format!("#{seq} {text}\n");
         let splits = !current.is_empty()
             && !matches!(message.body, Body::ToolResult { .. })
             && (current.len() + line.len()) as u64 > budget;
@@ -601,5 +607,22 @@ mod tests {
             "{}",
             parts[2]
         );
+    }
+
+    #[test]
+    fn parts_keep_an_earlier_summary_whole() {
+        let long = "s".repeat(5_000);
+        let earlier = Message {
+            id: String::new(),
+            body: Body::User {
+                from: Speaker::Harness(format!("{KIND}1")),
+                parts: vec!["record".into(), long.clone()],
+            },
+        };
+        let messages = vec![(2, earlier), (3, person(&"p".repeat(5_000)))];
+        let parts = parts(&messages, u64::MAX);
+        assert!(parts[0].contains(&long));
+        // Other messages are cut as recall cuts them.
+        assert!(!parts[0].contains(&"p".repeat(5_000)));
     }
 }

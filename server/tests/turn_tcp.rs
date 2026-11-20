@@ -788,6 +788,70 @@ fn usage_chunk(input: u64) -> Vec<u8> {
 }
 
 #[tokio::test]
+async fn what_arrived_since_the_last_measured_request_counts_toward_compaction() {
+    with_timeout(async {
+        let step = AtomicUsize::new(0);
+        let mock = start_mock(move |request: &MockRequest| {
+            if request.method == "GET" {
+                return MockReply::status(
+                    200,
+                    &json!({"data": [{"id": "test-model", "context_length": 1000}]}).to_string(),
+                );
+            }
+            if request
+                .body
+                .to_string()
+                .contains("will be replaced by your summary")
+            {
+                return MockReply::stream(vec![sse_delta("SUMMARY"), finish("stop"), sse_done()]);
+            }
+            match step.fetch_add(1, Ordering::SeqCst) {
+                0 => MockReply::stream(vec![
+                    call_chunk(
+                        "c1",
+                        "plan",
+                        &json!({"items": [{"step": "one", "status": "in_progress"}]}),
+                    ),
+                    finish("tool_calls"),
+                    usage_chunk(400),
+                    sse_done(),
+                ]),
+                // The request measures half the window; the call it answers
+                // with is far larger than everything sent before.
+                1 => MockReply::stream(vec![
+                    call_chunk(
+                        "c2",
+                        "plan",
+                        &json!({"items": [{"step": "x".repeat(30_000), "status": "in_progress"}]}),
+                    ),
+                    finish("tool_calls"),
+                    usage_chunk(500),
+                    sse_done(),
+                ]),
+                _ => MockReply::stream(vec![sse_delta("done"), finish("stop"), sse_done()]),
+            }
+        })
+        .await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client).await;
+
+        let events = turn(&mut client, 2, thread, "do the work").await;
+        assert_eq!(events.last().unwrap()["event"], "completed");
+        assert!(
+            events.iter().any(|event| {
+                event["message"]["message"]["body"]["from"]["harness"]
+                    .as_str()
+                    .is_some_and(|kind| kind.starts_with("compaction:"))
+            }),
+            "compacted before the second request"
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn near_the_window_older_work_is_compacted_and_the_person_kept() {
     with_timeout(async {
         let step = AtomicUsize::new(0);
@@ -820,7 +884,7 @@ async fn near_the_window_older_work_is_compacted_and_the_person_kept() {
                 1 => MockReply::stream(vec![
                     call_chunk("c2", "plan", &plan("two")),
                     finish("tool_calls"),
-                    usage_chunk(900),
+                    usage_chunk(850),
                     sse_done(),
                 ]),
                 _ => MockReply::stream(vec![sse_delta("done"), finish("stop"), sse_done()]),
