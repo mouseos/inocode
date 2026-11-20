@@ -246,6 +246,11 @@ impl Llm {
         Self::new(LlmConfig::from_env()?)
     }
 
+    /// The configured model.
+    pub(crate) fn model(&self) -> &str {
+        &self.config.model
+    }
+
     /// A client for `model` on the same provider and credential.
     pub(crate) fn with_model(&self, model: &str) -> Result<Self, ErrorInfo> {
         Self::new(LlmConfig {

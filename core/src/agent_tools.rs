@@ -94,7 +94,13 @@ pub(crate) fn specs(sandboxed: bool) -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: METHOD.into(),
-            description: "Save a method you have verified to work, so that later work, in                 this or any other project, can reuse it instead of investigating again.                 Call it as soon as a method is shown to work. identifier names exactly                 what the method applies to (device or chip model, file format and magic,                 firmware or app version, hash); steps are the exact commands, scripts,                 offsets and values that worked; failed lists general approaches that did                 not work here and why. Saved methods are found by recall."
+            description: "Save a method you have verified to work, so that later work, in this or any \
+                other project, can reuse it instead of investigating again. Call it as soon as \
+                a method is shown to work. identifier names exactly what the method applies to \
+                (device or chip model, file format and magic, firmware or app version, hash); \
+                steps are the exact commands, scripts, offsets and values that worked; failed \
+                lists general approaches that did not work here and why. Saved methods are \
+                found by recall."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -321,8 +327,7 @@ async fn recall(context: &Context<'_>, arguments: &str) -> Result<String, String
                 .await
                 .map_err(|error| error.message)?
             {
-                text.push_str(&format!("{}
-", note.body));
+                text.push_str(&format!("{}\n", note.body));
             }
         }
     }
@@ -345,7 +350,7 @@ fn cut(text: &str) -> String {
 }
 
 /// One message as plain text for `recall`.
-fn render(message: &Message) -> String {
+pub(crate) fn render(message: &Message) -> String {
     match &message.body {
         Body::User { parts, .. } => format!("user: {}", cut(&parts.join("\n"))),
         Body::Assistant { parts, .. } => {
@@ -477,11 +482,8 @@ async fn method(context: &Context<'_>, arguments: &str) -> Result<String, String
         .map(|folder| folder.display().to_string())
         .unwrap_or_else(|| "unknown".into());
     let body = format!(
-        "Method: {title}
-Applies to: {identifier}
-Found in project: {origin}
-Steps that worked: {steps}
-Did not work: {}",
+        "Method: {title}\nApplies to: {identifier}\nFound in project: {origin}\n\
+         Steps that worked: {steps}\nDid not work: {}",
         arguments.failed.trim()
     );
     let id = context

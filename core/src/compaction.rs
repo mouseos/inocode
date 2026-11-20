@@ -4,9 +4,11 @@
 //! made is written by the harness, the most recent messages stay as they
 //! are, and only the rest is summarized by the model. The system prompt
 //! (the project's rules) and the plan are not part of the history, so they
-//! are untouched. Design and sources: docs/evidence/agent-tools.md.
+//! are untouched. Design and sources: docs/evidence/agent-tools.md; cost,
+//! oversized histories and the compaction model:
+//! docs/evidence/compaction-cost-and-overflow.md.
 
-use crate::conversation::{AssistantPart, Body, Conversation, Message, Speaker};
+use crate::conversation::{AssistantPart, Body, Conversation, Message, Speaker, ToolSpec};
 use crate::store::StoredMessage;
 use crate::{ErrorInfo, Llm, TokenUsage};
 
@@ -21,13 +23,26 @@ const RECORD_FIELD_CHARS: usize = 160;
 /// Speaker kind of a compaction message: `compaction:<last replaced seq>`.
 const KIND: &str = "compaction:";
 
+/// Bytes of a request counted as one token when no provider has measured
+/// it: low enough that Japanese text, about three bytes a token, is not
+/// underestimated.
+const BYTES_PER_TOKEN: u64 = 3;
+/// Share of the window the turn's own request may fill when it is sent
+/// again to be summarized: compaction starts at [`COMPACT_AT`], and the
+/// rest leaves room for the instruction and the summary.
+const RESEND_UP_TO: f64 = 0.9;
+
 const INSTRUCTIONS: &str = "The conversation above will be replaced by your summary so that \
-the work can go on in a shorter context. Write the summary for yourself, to continue exactly \
-where the work stands: what the person asked for and the constraints they set; what has been \
-done and how it was verified; what remains, in order; decisions and their reasons; and the \
-exact file paths, identifiers, commands, values, and error messages that the remaining work \
-needs. Say plainly which steps are finished and which are not. Do not restate the project \
-rules or the plan; they are kept separately. Answer with the summary only.";
+the work can go on in a shorter context. ";
+const FULL_INSTRUCTIONS: &str = "The earlier part of the conversation above will be replaced \
+by your summary so that the work can go on in a shorter context; the most recent messages \
+stay as they are. Do not call tools. ";
+const SUMMARY_CONTENT: &str = "Write the summary for yourself, to continue exactly where the \
+work stands: what the person asked for and the constraints they set; what has been done and \
+how it was verified; what remains, in order; decisions and their reasons; and the exact file \
+paths, identifiers, commands, values, and error messages that the remaining work needs. Say \
+plainly which steps are finished and which are not. Do not restate the project rules or the \
+plan; they are kept separately. Answer with the summary only.";
 
 /// The seq up to which a compaction message replaced the history.
 fn replaced_up_to(message: &Message) -> Option<i64> {
@@ -200,19 +215,166 @@ fn record(previous: Option<&str>, new: Vec<String>) -> String {
     )
 }
 
-/// A compaction of `messages` (what is sent now, in order) after a request
-/// that used `input` of `window` tokens: the message to store, and the
-/// tokens the summary request used. `None` when nothing can be replaced.
-pub(crate) async fn compact(
+/// Input tokens of a request with `system`, `messages` and `tools`,
+/// estimated from its size for when no provider has measured it.
+pub(crate) fn estimate(system: Option<&str>, messages: &[Message], tools: &[ToolSpec]) -> u64 {
+    let bodies: usize = messages
+        .iter()
+        .map(|message| serde_json::to_string(&message.body).map_or(0, |text| text.len()))
+        .sum();
+    let tools: usize = tools
+        .iter()
+        .map(|tool| tool.name.len() + tool.description.len() + tool.parameters.to_string().len())
+        .sum();
+    (system.map_or(0, str::len) + bodies + tools) as u64 / BYTES_PER_TOKEN
+}
+
+/// The older messages as plain text, in parts of at most `budget`
+/// estimated tokens, each ending before a message that is not a tool
+/// result so a call and its result stay together.
+fn parts(messages: &[(i64, Message)], budget: u64) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    for (seq, message) in messages {
+        let line = format!("#{seq} {}\n", crate::agent_tools::render(message));
+        let splits = !current.is_empty()
+            && !matches!(message.body, Body::ToolResult { .. })
+            && (current.len() + line.len()) as u64 / BYTES_PER_TOKEN > budget;
+        if splits {
+            parts.push(std::mem::take(&mut current));
+        }
+        current.push_str(&line);
+    }
+    if !current.is_empty() {
+        parts.push(current);
+    }
+    parts
+}
+
+/// The summary text of one request, and its usage.
+async fn summarize(
     llm: &Llm,
+    conversation: &Conversation,
+    tools: &[ToolSpec],
+) -> Result<(String, Option<TokenUsage>), ErrorInfo> {
+    let mut stream = llm.converse(conversation, tools).await?;
+    let mut summary = String::new();
+    while let Some(text) = stream.next().await? {
+        summary.push_str(&text);
+    }
+    Ok((summary.trim().to_string(), stream.usage()))
+}
+
+fn instruction(text: String) -> Message {
+    Message {
+        id: "compaction-request".to_string(),
+        body: Body::User {
+            from: Speaker::Harness("compaction-request".to_string()),
+            parts: vec![text],
+        },
+    }
+}
+
+/// The summary of `replaced`, by `summarizer` (the turn's own model `llm`
+/// when it is `None`), with every request's usage. With the turn's model
+/// and a history that fits, the request repeats the turn's own (system,
+/// tools, every message) so its cached prefix is read; else only the
+/// replaced part goes, in parts when it exceeds the model's window.
+#[allow(clippy::too_many_arguments)]
+async fn summary(
+    llm: &Llm,
+    summarizer: Option<&Llm>,
     system: Option<String>,
     messages: &[(i64, Message)],
+    replaced: &[(i64, Message)],
+    tools: &[ToolSpec],
     input: u64,
     window: u64,
-) -> Result<Option<(Body, Option<TokenUsage>)>, ErrorInfo> {
-    let Some(start) = cut(messages, input, window) else {
-        return Ok(None);
+) -> (Result<String, ErrorInfo>, Vec<TokenUsage>) {
+    let mut usages = Vec::new();
+    let model = summarizer.unwrap_or(llm);
+    let model_window = match summarizer {
+        Some(summarizer) => summarizer.context_window().await.unwrap_or(window),
+        None => window,
     };
+    let budget = (COMPACT_AT * model_window as f64) as u64;
+    let replaced_messages: Vec<Message> = replaced
+        .iter()
+        .map(|(_, message)| message.clone())
+        .collect();
+    let resend = summarizer.is_none() && input as f64 <= RESEND_UP_TO * window as f64;
+    let single = if resend {
+        let mut request: Vec<Message> = messages
+            .iter()
+            .map(|(_, message)| message.clone())
+            .collect();
+        request.push(instruction(format!("{FULL_INSTRUCTIONS}{SUMMARY_CONTENT}")));
+        Some((request, tools))
+    } else if estimate(system.as_deref(), &replaced_messages, &[]) <= budget {
+        let mut request = replaced_messages;
+        request.push(instruction(format!("{INSTRUCTIONS}{SUMMARY_CONTENT}")));
+        Some((request, &[][..]))
+    } else {
+        None
+    };
+    if let Some((request, tools)) = single {
+        let conversation = Conversation {
+            system,
+            messages: request,
+        };
+        let answer = summarize(model, &conversation, tools).await;
+        return match answer {
+            Ok((text, usage)) => {
+                usages.extend(usage);
+                (Ok(text), usages)
+            }
+            Err(error) => (Err(error), usages),
+        };
+    }
+    let fixed = estimate(system.as_deref(), &[], &[]);
+    let part_budget = (budget.saturating_sub(fixed) / 2).max(1_000);
+    let parts = parts(replaced, part_budget);
+    let count = parts.len();
+    let mut summary = String::from("(none yet)");
+    for (index, part) in parts.into_iter().enumerate() {
+        let text = format!(
+            "The conversation so far is too long to read at once, so it comes in {count} \
+             parts and you keep one summary up to date. Summary of the parts before this \
+             one:\n{summary}\n\nPart {} of {count}:\n{part}\nRewrite the summary so that it \
+             also covers this part, keeping every detail from the earlier summary that the \
+             remaining work needs. {SUMMARY_CONTENT}",
+            index + 1
+        );
+        let conversation = Conversation {
+            system: system.clone(),
+            messages: vec![instruction(text)],
+        };
+        match summarize(model, &conversation, &[]).await {
+            Ok((text, usage)) => {
+                usages.extend(usage);
+                summary = text;
+            }
+            Err(error) => return (Err(error), usages),
+        }
+    }
+    (Ok(summary), usages)
+}
+
+/// A compaction of `messages` (what is sent now, in order) after a request
+/// with `tools` that used `input` of `window` tokens: the message to store,
+/// and the usage of each summary request. `None` when nothing can be
+/// replaced. When no summary can be written, the call record stands in for
+/// it and the work goes on.
+pub(crate) async fn compact(
+    llm: &Llm,
+    summarizer: Option<&Llm>,
+    system: Option<String>,
+    messages: &[(i64, Message)],
+    tools: &[ToolSpec],
+    input: u64,
+    window: u64,
+) -> Option<(Body, Vec<TokenUsage>)> {
+    let start = cut(messages, input, window)?;
     let replaced = &messages[..start];
     let up_to = replaced
         .iter()
@@ -234,43 +396,33 @@ pub(crate) async fn compact(
         .rposition(|(_, message)| replaced_up_to(message).is_some());
     let fresh = &replaced[previous.map_or(0, |index| index + 1)..];
     let record = record(previous_record, record_lines(fresh));
-
-    let mut request: Vec<Message> = replaced
-        .iter()
-        .map(|(_, message)| message.clone())
-        .collect();
-    request.push(Message {
-        id: "compaction-request".to_string(),
-        body: Body::User {
-            from: Speaker::Harness("compaction-request".to_string()),
-            parts: vec![INSTRUCTIONS.to_string()],
-        },
-    });
-    let mut stream = llm
-        .converse(
-            &Conversation {
-                system,
-                messages: request,
-            },
-            &[],
-        )
-        .await?;
-    let mut summary = String::new();
-    while let Some(text) = stream.next().await? {
-        summary.push_str(&text);
-    }
-    let summary = format!(
-        "Summary of earlier work (messages up to #{up_to} are summarized here; recall with \
-         from_seq reads them word for word):\n{}",
-        summary.trim()
-    );
-    Ok(Some((
+    let (written, usages) = summary(
+        llm, summarizer, system, messages, replaced, tools, input, window,
+    )
+    .await;
+    let summary = match written {
+        Ok(text) if !text.is_empty() => format!(
+            "Summary of earlier work (messages up to #{up_to} are summarized here; recall \
+             with from_seq reads them word for word):\n{text}"
+        ),
+        Ok(_) => format!(
+            "No summary of earlier work could be written (the answer was empty); the calls \
+             above are recorded, and recall with from_seq reads messages up to #{up_to} word \
+             for word."
+        ),
+        Err(error) => format!(
+            "No summary of earlier work could be written ({}); the calls above are \
+             recorded, and recall with from_seq reads messages up to #{up_to} word for word.",
+            error.message
+        ),
+    };
+    Some((
         Body::User {
             from: Speaker::Harness(format!("{KIND}{up_to}")),
             parts: vec![record, summary],
         },
-        stream.usage(),
-    )))
+        usages,
+    ))
 }
 
 #[cfg(test)]
@@ -392,5 +544,41 @@ mod tests {
         assert!(text.len() <= RECORD_MAX_CHARS + 100);
         assert!(text.contains("(older calls omitted"));
         assert!(text.ends_with("#1999 call"));
+    }
+
+    #[test]
+    fn an_unmeasured_request_is_estimated_from_its_size() {
+        let messages = vec![person(&"あ".repeat(300))];
+        let bytes = serde_json::to_string(&messages[0].body).unwrap().len() as u64;
+        assert_eq!(estimate(Some("abc"), &messages, &[]), (bytes + 3) / 3);
+        // Japanese is about three bytes a token: not underestimated.
+        assert!(estimate(None, &messages, &[]) >= 300);
+    }
+
+    #[test]
+    fn parts_keep_a_call_with_its_result() {
+        let messages: Vec<(i64, Message)> = stored(vec![
+            person("go"),
+            call("a"),
+            result("a"),
+            call("b"),
+            result("b"),
+        ])
+        .into_iter()
+        .map(|stored| (stored.seq, stored.message))
+        .collect();
+        // A budget smaller than any message: every part still holds whole calls.
+        let parts = parts(&messages, 1);
+        assert_eq!(parts.len(), 3);
+        assert!(
+            parts[1].starts_with("#2 ") && parts[1].contains("#3 "),
+            "{}",
+            parts[1]
+        );
+        assert!(
+            parts[2].starts_with("#4 ") && parts[2].contains("#5 "),
+            "{}",
+            parts[2]
+        );
     }
 }

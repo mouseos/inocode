@@ -412,7 +412,9 @@ async fn methods_are_shared_across_projects_and_recalled_whole() {
         );
 
         let chats = chats(&mock);
-        let system = chats[0].body["messages"][0]["content"].as_str().unwrap_or_default();
+        let system = chats[0].body["messages"][0]["content"]
+            .as_str()
+            .unwrap_or_default();
         assert!(system.contains("save it with the method tool"), "{system}");
         let shown = chats[3].body.to_string();
         assert!(shown.contains("Lessons from earlier work"), "{shown}");
@@ -845,6 +847,19 @@ async fn near_the_window_older_work_is_compacted_and_the_person_kept() {
         assert!(parts[1].as_str().unwrap().contains("SUMMARY TEXT"));
 
         let chats = chats(&mock);
+        // The turn's own model re-sends the turn's request, tools and all,
+        // so the provider's cached prefix is read.
+        let summary_request = chats
+            .iter()
+            .find(|request| request.body.to_string().contains("Do not call tools"))
+            .expect("a summary request");
+        assert_eq!(
+            summary_request.body["tools"].as_array().map(Vec::len),
+            Some(12)
+        );
+        assert!(summary_request.body["messages"]
+            .to_string()
+            .contains("\"c2\""));
         let last = &chats.last().unwrap().body["messages"];
         let text = last.to_string();
         assert!(text.contains("do the work"), "{text}");
@@ -865,6 +880,92 @@ async fn near_the_window_older_work_is_compacted_and_the_person_kept() {
         .await;
         let stored = read["result"]["messages"].to_string();
         assert!(stored.contains("\"c1\""));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_history_too_long_for_a_new_model_is_compacted_before_it_is_sent() {
+    with_timeout(async {
+        let step = AtomicUsize::new(0);
+        let mock = start_mock(move |request: &MockRequest| {
+            if request.method == "GET" {
+                return MockReply::status(
+                    200,
+                    &json!({"data": [
+                        {"id": "test-model", "context_length": 100000},
+                        {"id": "small-model", "context_length": 6000}
+                    ]})
+                    .to_string(),
+                );
+            }
+            if request
+                .body
+                .to_string()
+                .contains("will be replaced by your summary")
+                || request
+                    .body
+                    .to_string()
+                    .contains("too long to read at once")
+            {
+                return MockReply::stream(vec![
+                    sse_delta("SWITCH SUMMARY"),
+                    finish("stop"),
+                    sse_done(),
+                ]);
+            }
+            let index = step.fetch_add(1, Ordering::SeqCst);
+            if index < 6 {
+                let arguments = json!({"items": [{
+                    "step": format!("STEP{index} {}", "x".repeat(1_900)),
+                    "status": "in_progress"
+                }]});
+                return MockReply::stream(vec![
+                    call_chunk(&format!("c{index}"), "plan", &arguments),
+                    finish("tool_calls"),
+                    sse_done(),
+                ]);
+            }
+            MockReply::stream(vec![sse_delta("done"), finish("stop"), sse_done()])
+        })
+        .await;
+        let (core, store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client).await;
+        let events = turn(&mut client, 2, thread, "do the work").await;
+        assert_eq!(events.last().unwrap()["event"], "completed");
+        let first_turn = chats(&mock).len();
+
+        let small = Llm::new(LlmConfig {
+            provider: ProviderKind::OpenAi,
+            auth: inocode_core::oauth::AuthKind::ApiKey,
+            base_url: mock.base_url.clone(),
+            model: "small-model".to_string(),
+            api_key: "test-key".to_string(),
+            auth_store_path: None,
+            reasoning: Default::default(),
+        })
+        .expect("client");
+        let core = Arc::new(Core::with_llm(small).with_store(store));
+        let (addr, _stop2, _handle2) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let events = turn(&mut client, 3, thread, "and now?").await;
+        assert_eq!(events.last().unwrap()["event"], "completed");
+
+        let second_turn: Vec<MockRequest> = chats(&mock).into_iter().skip(first_turn).collect();
+        let first = second_turn[0].body.to_string();
+        assert!(
+            first.contains("will be replaced by your summary")
+                || first.contains("too long to read at once"),
+            "the first request of the turn is the summary: {first}"
+        );
+        let sent = second_turn.last().unwrap().body["messages"].to_string();
+        assert!(sent.contains("SWITCH SUMMARY"), "{sent}");
+        assert!(
+            !sent.contains("\"c0\""),
+            "the first call is replaced: {sent}"
+        );
     })
     .await;
 }

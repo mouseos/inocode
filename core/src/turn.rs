@@ -141,6 +141,7 @@ const DENIALS_IN_A_ROW: u32 = 3;
 const DENIALS_PER_TURN: u32 = 20;
 /// Names a model to review calls in the `auto` mode instead of the turn's.
 const REVIEW_MODEL_ENV: &str = "INOCODE_REVIEW_MODEL";
+const COMPACT_MODEL_ENV: &str = "INOCODE_COMPACT_MODEL";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Outcome {
@@ -205,7 +206,9 @@ async fn read_rules(project_key: &str) -> Option<String> {
 /// The system prompt: the project's rules as written, never summarized.
 fn system_prompt(rules: Option<&str>) -> String {
     let mut system = String::from(
-        "You are a coding agent working on a user's project. When a method is shown to          work, save it with the method tool. Before investigating a device, format or          program from scratch, use recall to look for methods saved in earlier work.",
+        "You are a coding agent working on a user's project. When a method is shown to \
+         work, save it with the method tool. Before investigating a device, format or \
+         program from scratch, use recall to look for methods saved in earlier work.",
     );
     if let Some(rules) = rules {
         system.push_str(" Follow the project's rules below.\n----- RULES -----\n");
@@ -243,6 +246,8 @@ struct Thread<'a> {
     approved: Vec<(String, String)>,
     /// The model that reviews calls when it is not the turn's own.
     reviewer: Option<Llm>,
+    /// The model that writes compaction summaries when it is not the turn's own.
+    compactor: Option<Llm>,
     /// The reviewer's refusals in a row and in this turn.
     denials: (u32, u32),
 }
@@ -270,16 +275,26 @@ impl Thread<'_> {
     }
 
     /// Compacts what is sent when the latest request used most of the
-    /// context window. The stored history is kept; a compaction message is
-    /// added and the history is assembled again from the store.
-    async fn compact_if_due(&mut self, llm: &Llm, usage: &mut TurnUsage) -> Result<(), ErrorInfo> {
-        // The window is looked up only once a request has reported its size.
-        let Some(input) = self.last_input else {
-            return Ok(());
-        };
+    /// context window, or, before any request has reported its size (a new
+    /// turn, another model), when the estimated size would. The stored
+    /// history is kept; a compaction message is added and the history is
+    /// assembled again from the store.
+    async fn compact_if_due(
+        &mut self,
+        llm: &Llm,
+        tools: &[ToolSpec],
+        usage: &mut TurnUsage,
+    ) -> Result<(), ErrorInfo> {
         let Some(window) = llm.context_window().await else {
             return Ok(());
         };
+        let input = self.last_input.unwrap_or_else(|| {
+            compaction::estimate(
+                self.conversation.system.as_deref(),
+                &self.conversation.messages,
+                tools,
+            )
+        });
         if !compaction::due(input, window) {
             return Ok(());
         }
@@ -289,14 +304,23 @@ impl Thread<'_> {
             .copied()
             .zip(self.conversation.messages.iter().cloned())
             .collect();
-        let compacted =
-            compaction::compact(llm, self.conversation.system.clone(), &sent, input, window)
-                .await?;
+        let compacted = compaction::compact(
+            llm,
+            self.compactor.as_ref(),
+            self.conversation.system.clone(),
+            &sent,
+            tools,
+            input,
+            window,
+        )
+        .await;
         self.last_input = None;
-        let Some((body, summary_usage)) = compacted else {
+        let Some((body, summary_usages)) = compacted else {
             return Ok(());
         };
-        usage.add(summary_usage);
+        for summary_usage in summary_usages {
+            usage.add(Some(summary_usage));
+        }
         self.record(vec![body]).await?;
         let stored = self.store.since(self.session, 0, i64::MAX as usize).await?;
         let (seqs, messages) = compaction::assemble(stored).into_iter().unzip();
@@ -651,8 +675,10 @@ pub async fn run(
     events: mpsc::Sender<TurnEvent>,
 ) -> Outcome {
     let mut usage = TurnUsage::default();
-    let reviewer = match reviewer(llm, approvals.mode) {
-        Ok(reviewer) => reviewer,
+    let reviewer = match reviewer(llm, approvals.mode)
+        .and_then(|reviewer| compactor(llm).map(|compactor| (reviewer, compactor)))
+    {
+        Ok(models) => models,
         Err(error) => {
             return Outcome {
                 ending: Ending::Failed(error),
@@ -663,7 +689,7 @@ pub async fn run(
     };
     let mut thread = match open(store, session, &prompt, approvals, cancel.clone(), events).await {
         Ok(mut thread) => {
-            thread.reviewer = reviewer;
+            (thread.reviewer, thread.compactor) = reviewer;
             thread
         }
         Err(error) => {
@@ -701,6 +727,17 @@ fn reviewer(llm: &Llm, mode: Mode) -> Result<Option<Llm>, ErrorInfo> {
     }
     match std::env::var(REVIEW_MODEL_ENV) {
         Ok(model) if !model.trim().is_empty() => llm.with_model(model.trim()).map(Some),
+        _ => Ok(None),
+    }
+}
+
+/// The model that writes compaction summaries when it is not the turn's
+/// own: the one `INOCODE_COMPACT_MODEL` names, on the same provider.
+fn compactor(llm: &Llm) -> Result<Option<Llm>, ErrorInfo> {
+    match std::env::var(COMPACT_MODEL_ENV) {
+        Ok(model) if !model.trim().is_empty() && model.trim() != llm.model() => {
+            llm.with_model(model.trim()).map(Some)
+        }
         _ => Ok(None),
     }
 }
@@ -746,6 +783,7 @@ async fn open<'a>(
         mode: approvals.mode,
         approved: approvals.calls,
         reviewer: None,
+        compactor: None,
         denials: (0, 0),
     })
 }
@@ -765,7 +803,7 @@ async fn steps(
     let mut cuts = 0;
     loop {
         let compacted = tokio::select! {
-            compacted = thread.compact_if_due(llm, usage) => Some(compacted),
+            compacted = thread.compact_if_due(llm, &tools, usage) => Some(compacted),
             () = cancelled(cancel) => None,
         };
         match compacted {
