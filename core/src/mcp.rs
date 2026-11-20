@@ -13,7 +13,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::conversation::ToolSpec;
 use crate::store::Store;
@@ -73,12 +73,26 @@ pub(crate) async fn specs(store: &Store) -> Vec<ToolSpec> {
     loaded(store).await.specs.clone()
 }
 
-/// Runs an MCP tool; `None` when `name` is not one.
+/// Where a call's server questions for the person go: the turn's events,
+/// for its thread.
+pub(crate) struct Asking<'a> {
+    pub session: crate::store::SessionId,
+    pub events: &'a mpsc::Sender<crate::turn::TurnEvent>,
+}
+
+/// How long a server's question waits for the person before it is answered
+/// with `cancel`.
+const ANSWER_WAIT: Duration = Duration::from_secs(600);
+
+/// Runs an MCP tool; `None` when `name` is not one. With `asking`, the
+/// server's questions during the call (`elicitation/create`) are put to the
+/// person and the call waits for the answer.
 pub(crate) async fn call(
     store: &Store,
     name: &str,
     arguments: &str,
     mut cancel: tokio::sync::watch::Receiver<bool>,
+    asking: Option<Asking<'_>>,
 ) -> Option<Result<String, String>> {
     if !name.starts_with(PREFIX) {
         return None;
@@ -93,11 +107,162 @@ pub(crate) async fn call(
             Err(error) => return Some(Err(format!("invalid arguments: {error}"))),
         }
     };
+    let (sender, mut questions) = mpsc::unbounded_channel();
+    if asking.is_some() {
+        *connection.elicit.lock().expect("elicit lock") = Some(sender);
+    }
     let request = connection.request("tools/call", json!({"name": tool, "arguments": arguments}));
-    Some(tokio::select! {
-        answer = request => answer.and_then(|result| render(&result)),
-        _ = cancel.wait_for(|cancelled| *cancelled) => Err("cancelled".into()),
-    })
+    tokio::pin!(request);
+    let interrupted = cancel.clone();
+    let answer = loop {
+        tokio::select! {
+            answer = &mut request => break answer.and_then(|result| render(&result)),
+            Some(question) = questions.recv() => {
+                let answer = match &asking {
+                    Some(asking) => {
+                        ask_person(store, &connection.server, asking, question.params, interrupted.clone())
+                            .await
+                    }
+                    None => json!({"action": "cancel"}),
+                };
+                let _ = question.reply.send(answer);
+            }
+            () = crate::turn::cancelled(&mut cancel) => break Err("cancelled".into()),
+        }
+    };
+    *connection.elicit.lock().expect("elicit lock") = None;
+    Some(answer)
+}
+
+/// Puts a server's question to the person and waits for the answer, for
+/// `ANSWER_WAIT` at most and until the turn is interrupted; the result for
+/// the server. Only form questions are asked; others are declined, since
+/// this client declares only forms.
+async fn ask_person(
+    store: &Store,
+    server: &str,
+    asking: &Asking<'_>,
+    params: Value,
+    mut cancel: tokio::sync::watch::Receiver<bool>,
+) -> Value {
+    let cancelled = json!({"action": "cancel"});
+    if params
+        .get("mode")
+        .and_then(Value::as_str)
+        .is_some_and(|mode| mode != "form")
+    {
+        return json!({"action": "decline"});
+    }
+    let (id, answer) = store.wait_elicitation(asking.session);
+    let schema = params
+        .get("requestedSchema")
+        .cloned()
+        .unwrap_or_else(|| json!({"type": "object", "properties": {}}));
+    let question = json!({
+        "id": id,
+        "server": server,
+        "message": params.get("message").and_then(Value::as_str).unwrap_or(""),
+        "requestedSchema": schema,
+        "questions": questions_of(&schema),
+    });
+    if asking
+        .events
+        .send(crate::turn::TurnEvent::Elicitation(question))
+        .await
+        .is_err()
+    {
+        store.forget_elicitation(id);
+        return cancelled;
+    }
+    let result = tokio::select! {
+        answer = answer => answer.unwrap_or_else(|_| cancelled.clone()),
+        () = tokio::time::sleep(ANSWER_WAIT) => cancelled.clone(),
+        () = crate::turn::cancelled(&mut cancel) => cancelled.clone(),
+    };
+    store.forget_elicitation(id);
+    result
+}
+
+/// A server's requested schema as the questions of `ask`, so the person's
+/// screen shows both the same way. Each question keeps the property's name;
+/// the answer's `content` is keyed by those names.
+fn questions_of(schema: &Value) -> Value {
+    let required: Vec<&str> = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|names| names.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let options = |values: Option<&Value>, titled: Option<&Value>| -> Vec<Value> {
+        if let Some(titled) = titled.and_then(Value::as_array) {
+            return titled
+                .iter()
+                .map(|option| {
+                    let value = option.get("const").cloned().unwrap_or(Value::Null);
+                    let label = option
+                        .get("title")
+                        .cloned()
+                        .unwrap_or_else(|| value.clone());
+                    json!({"label": label, "value": value})
+                })
+                .collect();
+        }
+        values
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .map(|value| json!({"label": value, "value": value}))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mut questions = Vec::new();
+    for (name, property) in schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
+    {
+        let text = property
+            .get("title")
+            .or_else(|| property.get("description"))
+            .and_then(Value::as_str)
+            .unwrap_or(name);
+        let mut question = json!({
+            "name": name,
+            "question": text,
+            "required": required.contains(&name.as_str()),
+        });
+        for key in ["description", "default", "minimum", "maximum", "format"] {
+            if let Some(value) = property.get(key) {
+                question[key] = value.clone();
+            }
+        }
+        let kind = match property.get("type").and_then(Value::as_str) {
+            Some("boolean") => "yes_no",
+            Some("number" | "integer") => "number",
+            Some("array") => {
+                let items = property.get("items");
+                question["options"] = Value::Array(options(
+                    items.and_then(|items| items.get("enum")),
+                    items.and_then(|items| items.get("anyOf")),
+                ));
+                "choose_many"
+            }
+            _ if property.get("enum").is_some() || property.get("oneOf").is_some() => {
+                question["options"] =
+                    Value::Array(options(property.get("enum"), property.get("oneOf")));
+                "choose_one"
+            }
+            _ => match property.get("format").and_then(Value::as_str) {
+                Some("date" | "date-time") => "date",
+                _ => "text",
+            },
+        };
+        question["kind"] = json!(kind);
+        questions.push(question);
+    }
+    Value::Array(questions)
 }
 
 async fn load(config: &Path) -> Tools {
@@ -119,7 +284,9 @@ async fn load(config: &Path) -> Tools {
     };
     for (server, settings) in config.servers {
         let started = tokio::time::timeout(START_TIMEOUT, async {
-            let connection = Arc::new(connect(&settings)?);
+            let mut connection = connect(&settings)?;
+            connection.server = server.clone();
+            let connection = Arc::new(connection);
             let listed = connection.list_tools().await?;
             Ok::<_, String>((connection, listed))
         })
@@ -235,10 +402,11 @@ fn render(result: &Value) -> Result<String, String> {
 fn connect(settings: &ServerConfig) -> Result<Connection, String> {
     match (&settings.command, &settings.url) {
         (Some(command), None) => spawn(command, settings),
-        (None, Some(url)) => Ok(Connection::with(Transport::Http(Http::new(
-            url,
-            &settings.headers,
-        )?))),
+        (None, Some(url)) => {
+            let elicit = Elicit::default();
+            let http = Http::new(url, &settings.headers, elicit.clone())?;
+            Ok(Connection::with(Transport::Http(http), elicit))
+        }
         _ => Err("give either command or url".into()),
     }
 }
@@ -270,6 +438,39 @@ type Pending = Arc<Mutex<Option<HashMap<u64, oneshot::Sender<Result<Value, Strin
 pub(crate) struct Connection {
     next_id: AtomicU64,
     transport: Transport,
+    /// Where the server's questions go while a call waits for its answer.
+    elicit: Elicit,
+    /// The server's name in `mcp.json`, shown with its questions.
+    server: String,
+}
+
+/// A question of the server for the person, and where its answer goes.
+pub(crate) struct Elicitation {
+    params: Value,
+    reply: oneshot::Sender<Value>,
+}
+
+type Elicit = Arc<Mutex<Option<mpsc::UnboundedSender<Elicitation>>>>;
+
+/// Hands a server's `elicitation/create` to the call that waits on the
+/// connection; it is answered with `cancel` when no call waits.
+fn forward(elicit: &Elicit, params: Value) -> oneshot::Receiver<Value> {
+    let (reply, answer) = oneshot::channel();
+    let waiting = elicit.lock().expect("elicit lock").clone();
+    match waiting {
+        Some(waiting) => {
+            let _ = waiting.send(Elicitation { params, reply });
+        }
+        None => {
+            let _ = reply.send(json!({"action": "cancel"}));
+        }
+    }
+    answer
+}
+
+/// The result for a server's question once its answer arrives.
+async fn answered(answer: oneshot::Receiver<Value>) -> Value {
+    answer.await.unwrap_or_else(|_| json!({"action": "cancel"}))
 }
 
 enum Transport {
@@ -292,18 +493,29 @@ impl Connection {
     ) -> Self {
         let writer: Writer = Arc::new(tokio::sync::Mutex::new(Box::new(writer)));
         let pending: Pending = Arc::new(Mutex::new(Some(HashMap::new())));
-        tokio::spawn(read(reader, writer.clone(), pending.clone()));
-        Self::with(Transport::Pipe(Pipe {
-            writer,
-            pending,
-            child: None,
-        }))
+        let elicit = Elicit::default();
+        tokio::spawn(read(
+            reader,
+            writer.clone(),
+            pending.clone(),
+            elicit.clone(),
+        ));
+        Self::with(
+            Transport::Pipe(Pipe {
+                writer,
+                pending,
+                child: None,
+            }),
+            elicit,
+        )
     }
 
-    fn with(transport: Transport) -> Self {
+    fn with(transport: Transport, elicit: Elicit) -> Self {
         Self {
             next_id: AtomicU64::new(1),
             transport,
+            elicit,
+            server: String::new(),
         }
     }
 
@@ -331,7 +543,7 @@ impl Connection {
                 "initialize",
                 json!({
                     "protocolVersion": PROTOCOL_VERSION,
-                    "capabilities": {},
+                    "capabilities": {"elicitation": {"form": {}}},
                     "clientInfo": {"name": "inocode", "version": env!("CARGO_PKG_VERSION")}
                 }),
             )
@@ -420,10 +632,11 @@ struct Http {
     /// The protocol version agreed at initialization, sent with every later
     /// request.
     version: Mutex<Option<String>>,
+    elicit: Elicit,
 }
 
 impl Http {
-    fn new(url: &str, headers: &HashMap<String, String>) -> Result<Self, String> {
+    fn new(url: &str, headers: &HashMap<String, String>, elicit: Elicit) -> Result<Self, String> {
         let url =
             reqwest::Url::parse(url).map_err(|error| format!("invalid url {url}: {error}"))?;
         if !matches!(url.scheme(), "http" | "https") {
@@ -443,6 +656,7 @@ impl Http {
             headers: map,
             session: Mutex::new(None),
             version: Mutex::new(None),
+            elicit,
         })
     }
 
@@ -533,6 +747,12 @@ impl Http {
                     message.get("method").and_then(Value::as_str),
                     message.get("id"),
                 ) {
+                    (Some("elicitation/create"), Some(request)) => {
+                        let params = message.get("params").cloned().unwrap_or(Value::Null);
+                        let result = answered(forward(&self.elicit, params)).await;
+                        let answer = json!({"jsonrpc": "2.0", "id": request, "result": result});
+                        let _ = self.post(&answer).await;
+                    }
                     (Some(method), Some(request)) => {
                         let _ = self.post(&reply(method, request.clone())).await;
                     }
@@ -613,7 +833,7 @@ async fn send(writer: &Writer, message: &Value) -> Result<(), String> {
 /// Hands answers to their requests, answers `ping`, refuses the other
 /// requests a server may make (this client offers none of the client
 /// features), and fails what is still waiting when the server closes.
-async fn read(reader: impl AsyncRead + Unpin, writer: Writer, pending: Pending) {
+async fn read(reader: impl AsyncRead + Unpin, writer: Writer, pending: Pending, elicit: Elicit) {
     let mut lines = BufReader::new(reader).lines();
     while let Ok(Some(line)) = lines.next_line().await {
         let Ok(message) = serde_json::from_str::<Value>(&line) else {
@@ -621,6 +841,19 @@ async fn read(reader: impl AsyncRead + Unpin, writer: Writer, pending: Pending) 
         };
         let id = message.get("id").cloned();
         match (message.get("method").and_then(Value::as_str), id) {
+            (Some("elicitation/create"), Some(id)) => {
+                let params = message.get("params").cloned().unwrap_or(Value::Null);
+                let answer = forward(&elicit, params);
+                let writer = writer.clone();
+                tokio::spawn(async move {
+                    let result = answered(answer).await;
+                    let _ = send(
+                        &writer,
+                        &json!({"jsonrpc": "2.0", "id": id, "result": result}),
+                    )
+                    .await;
+                });
+            }
             (Some(method), Some(id)) => {
                 let _ = send(&writer, &reply(method, id)).await;
             }
@@ -977,6 +1210,52 @@ mod tests {
         let settings: ServerConfig =
             serde_json::from_value(json!({"url": "file:///etc/passwd"})).expect("settings");
         assert!(connect(&settings).is_err());
+    }
+
+    #[test]
+    fn a_requested_schema_becomes_the_questions_of_ask() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "color": {"type": "string", "title": "Color", "enum": ["Red", "Blue"]},
+                "hex": {"type": "string", "oneOf": [{"const": "#f00", "title": "Red"}]},
+                "tags": {"type": "array", "items": {"enum": ["a", "b"]}, "default": ["a"]},
+                "ok": {"type": "boolean", "description": "Go on?"},
+                "count": {"type": "integer", "minimum": 1, "maximum": 8},
+                "when": {"type": "string", "format": "date"},
+                "mail": {"type": "string", "format": "email"}
+            },
+            "required": ["color"]
+        });
+        let questions = questions_of(&schema);
+        let by_name = |name: &str| {
+            questions
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|question| question["name"] == name)
+                .cloned()
+                .unwrap()
+        };
+        assert_eq!(
+            by_name("color"),
+            json!({"name": "color", "question": "Color", "required": true, "kind": "choose_one",
+                   "options": [{"label": "Red", "value": "Red"}, {"label": "Blue", "value": "Blue"}]})
+        );
+        assert_eq!(
+            by_name("hex")["options"],
+            json!([{"label": "Red", "value": "#f00"}])
+        );
+        assert_eq!(by_name("tags")["kind"], "choose_many");
+        assert_eq!(by_name("tags")["default"], json!(["a"]));
+        assert_eq!(by_name("ok")["kind"], "yes_no");
+        assert_eq!(by_name("ok")["question"], "Go on?");
+        assert_eq!(by_name("count")["kind"], "number");
+        assert_eq!(by_name("count")["maximum"], 8);
+        assert_eq!(by_name("when")["kind"], "date");
+        assert_eq!(by_name("mail")["kind"], "text");
+        assert_eq!(by_name("mail")["format"], "email");
+        assert_eq!(by_name("mail")["required"], false);
     }
 
     #[test]

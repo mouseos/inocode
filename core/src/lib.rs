@@ -162,6 +162,42 @@ impl Request {
         }
     }
 
+    /// The answer of a `turn/answer` request: the question's id
+    /// (`elicitation`), and `action` (`accept`, `decline` or `cancel`) with
+    /// `content`, an object of the answers, when it accepts.
+    pub fn elicitation_answer(&self) -> Result<(u64, Value), ErrorInfo> {
+        let params = self.params.as_ref();
+        let id = params
+            .and_then(|params| params.get("elicitation"))
+            .and_then(Value::as_u64)
+            .ok_or_else(|| {
+                ErrorInfo::new("invalid_params", "requires an \"elicitation\" number")
+            })?;
+        let action = params
+            .and_then(|params| params.get("action"))
+            .and_then(Value::as_str)
+            .filter(|action| ["accept", "decline", "cancel"].contains(action))
+            .ok_or_else(|| {
+                ErrorInfo::new(
+                    "invalid_params",
+                    "\"action\" must be \"accept\", \"decline\" or \"cancel\"",
+                )
+            })?;
+        let answer = match action {
+            "accept" => {
+                let content = params
+                    .and_then(|params| params.get("content"))
+                    .filter(|content| content.is_object())
+                    .ok_or_else(|| {
+                        ErrorInfo::new("invalid_params", "accept requires a \"content\" object")
+                    })?;
+                json!({ "action": "accept", "content": content })
+            }
+            action => json!({ "action": action }),
+        };
+        Ok((id, answer))
+    }
+
     /// Request id that a `cancel` request refers to.
     pub fn cancel_target(&self) -> Result<u64, ErrorInfo> {
         self.params
@@ -228,6 +264,9 @@ pub struct EventPayload {
     pub reason: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<turn::TurnUsage>,
+    /// A question of an MCP server for the person, during a turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elicitation: Option<Value>,
     /// Calls of a turn that wait for the person's approval.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub held: Option<Vec<turn::Held>>,
@@ -245,6 +284,13 @@ impl EventPayload {
         Self {
             text: Some(text.into()),
             ..Self::new(id, "delta")
+        }
+    }
+
+    pub fn elicitation(id: u64, elicitation: Value) -> Self {
+        Self {
+            elicitation: Some(elicitation),
+            ..Self::new(id, "elicitation")
         }
     }
 
@@ -296,6 +342,7 @@ impl EventPayload {
             message: None,
             reason: None,
             usage: None,
+            elicitation: None,
             held: None,
             questions: None,
         }
@@ -463,6 +510,14 @@ impl Core {
             .lock()
             .ok()
             .and_then(|turns| turns.get(&thread).map(|sender| sender.send(text).is_ok()))
+            .unwrap_or(false)
+    }
+
+    /// Hands the person's answer to a question of an MCP server that the
+    /// running turn of `thread` waits for; `false` when none waits.
+    pub fn answer(&self, thread: SessionId, elicitation: u64, answer: Value) -> bool {
+        self.store()
+            .map(|store| store.answer_elicitation(thread, elicitation, answer))
             .unwrap_or(false)
     }
 

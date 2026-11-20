@@ -189,6 +189,8 @@ pub(crate) struct Context<'a> {
     pub sandboxed: bool,
     /// The stored position the message making the call takes.
     pub seq: i64,
+    /// Where the turn reports, for questions of MCP servers to the person.
+    pub events: Option<&'a tokio::sync::mpsc::Sender<crate::turn::TurnEvent>>,
 }
 
 /// The answer to one call: its text and whether it is an error.
@@ -222,7 +224,20 @@ pub(crate) async fn run(context: &Context<'_>, name: &str, arguments: &str) -> O
         }
         shell::SHELL => shell::shell(place(context), arguments).await,
         shell::JOB => shell::job(place(context), arguments).await,
-        _ => mcp::call(context.store, name, arguments, context.cancel.clone()).await?,
+        _ => {
+            let asking = context.events.map(|events| mcp::Asking {
+                session: context.session,
+                events,
+            });
+            mcp::call(
+                context.store,
+                name,
+                arguments,
+                context.cancel.clone(),
+                asking,
+            )
+            .await?
+        }
     };
     Some(answer.map_or_else(|message| (message, true), |text| (text, false)))
 }

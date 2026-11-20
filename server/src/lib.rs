@@ -43,7 +43,7 @@ struct Outgoing {
 /// `serde_json::Value` tree.
 enum Payload {
     Value(Value),
-    Event(EventPayload),
+    Event(Box<EventPayload>),
 }
 
 /// Registry entry of one generation on a connection.
@@ -118,7 +118,7 @@ async fn serve_connection(stream: TcpStream, core: Arc<Core>) {
         while let Some(message) = queued.recv().await {
             let written = match &message.payload {
                 Payload::Value(value) => writer.write_json(message.stream_id, value).await,
-                Payload::Event(event) => writer.write_json(message.stream_id, event).await,
+                Payload::Event(event) => writer.write_json(message.stream_id, &**event).await,
             };
             if written.is_err() {
                 break;
@@ -201,6 +201,24 @@ async fn dispatch(
     match request.method.as_str() {
         "chat" => start_chat(request, stream_id, core, queue, in_flight).await,
         "turn/start" => start_turn(request, stream_id, core, queue, in_flight).await,
+        "turn/answer" => {
+            let body = match (request.thread(), request.elicitation_answer()) {
+                (Ok(thread), Ok((elicitation, answer))) => ResponseBody::Result {
+                    result: json!({ "accepted": core.answer(thread, elicitation, answer) }),
+                },
+                (Err(error), _) | (_, Err(error)) => ResponseBody::Error { error },
+            };
+            let response = Response {
+                id: Some(request.id),
+                body,
+            };
+            send(
+                queue,
+                stream_id,
+                serde_json::to_value(response).unwrap_or(Value::Null),
+            )
+            .await
+        }
         "turn/steer" => {
             let body = match (request.thread(), request.prompt()) {
                 (Ok(thread), Ok(prompt)) => ResponseBody::Result {
@@ -486,6 +504,7 @@ async fn run_turn(
     let relay = |event: TurnEvent| match event {
         TurnEvent::Delta(text) => EventPayload::delta(id, text),
         TurnEvent::Message { seq, message } => EventPayload::message(id, seq, &message),
+        TurnEvent::Elicitation(elicitation) => EventPayload::elicitation(id, elicitation),
     };
     let outcome = {
         let run = core.run_turn(
@@ -750,7 +769,7 @@ async fn send_event(
     queue
         .send(Outgoing {
             stream_id,
-            payload: Payload::Event(event),
+            payload: Payload::Event(Box::new(event)),
         })
         .await
         .map_err(|_| ())

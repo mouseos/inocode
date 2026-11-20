@@ -42,6 +42,9 @@ pub enum TurnEvent {
     Delta(String),
     /// A message now stored in the thread.
     Message { seq: i64, message: Message },
+    /// A question of an MCP server for the person, answered with
+    /// `turn/answer` while the call waits.
+    Elicitation(serde_json::Value),
 }
 
 /// Why a turn ended.
@@ -192,24 +195,21 @@ async fn quote(store: &Store, session: SessionId, seq: i64) -> Result<Body, Erro
                 format!("the thread has no message {seq} to reply to"),
             )
         })?;
+    // Answers to questions put to the person may hold for later work too.
+    let question = match &stored.message.body {
+        Body::ToolResult { name, .. } => name == crate::ask::ASK,
+        Body::User {
+            from: Speaker::Harness(kind),
+            ..
+        } => kind == ESCALATION_KIND,
+        _ => false,
+    };
     let (author, text) = match stored.message.body {
         Body::User {
             from: Speaker::Person,
             parts,
-        } => (
-            "the person".to_string(),
-            parts.join(
-                "
-",
-            ),
-        ),
-        Body::User { parts, .. } => (
-            "the harness".to_string(),
-            parts.join(
-                "
-",
-            ),
-        ),
+        } => ("the person".to_string(), parts.join("\n")),
+        Body::User { parts, .. } => ("the harness".to_string(), parts.join("\n")),
         Body::Assistant { parts, .. } => (
             "you".to_string(),
             parts
@@ -226,18 +226,18 @@ async fn quote(store: &Store, session: SessionId, seq: i64) -> Result<Body, Erro
     let shown: String = text.chars().take(QUOTE_CHARS).collect();
     let quoted: Vec<String> = shown.lines().map(|line| format!("> {line}")).collect();
     let mut note = format!(
-        "The person's next message replies to message {seq}, written by {author}:
-{}",
-        quoted.join(
-            "
-"
-        )
+        "The person's next message replies to message {seq}, written by {author}:\n{}",
+        quoted.join("\n")
     );
     if cut {
         note.push_str(&format!(
-            "
-(quoted up to here; recall with from_seq {seq} reads it whole)"
+            "\n(quoted up to here; recall with from_seq {seq} reads it whole)"
         ));
+    }
+    if question {
+        note.push_str(
+            "\nIf an answer holds for later work in this project too, propose it with lesson.",
+        );
     }
     Ok(Body::User {
         from: Speaker::Harness(REPLY_KIND.to_string()),
@@ -332,11 +332,7 @@ fn system_prompt(rules: Option<&str>, language: Option<&str>) -> String {
     );
     system.push_str(TOOL_GUIDE);
     if let Some(language) = language {
-        system.push_str(
-            "
-
-",
-        );
+        system.push_str("\n\n");
         system.push_str(&crate::language::instruction(language));
     }
     if let Some(rules) = rules {
@@ -613,6 +609,7 @@ impl Thread<'_> {
             cancel: self.cancel.clone(),
             sandboxed: self.sandboxed(),
             seq: self.next_seq,
+            events: Some(&self.events),
         };
         if name == crate::explore::EXPLORE {
             let explorer = self.explorer.clone();

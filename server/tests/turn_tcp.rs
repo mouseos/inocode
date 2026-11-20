@@ -298,13 +298,7 @@ async fn explore_answers_with_places_found_by_a_helper_that_only_reads() {
     with_timeout(async {
         let project = database().with_extension("project");
         std::fs::create_dir_all(&project).expect("project");
-        std::fs::write(
-            project.join("a.txt"),
-            "first
-the needle is here
-",
-        )
-        .expect("file");
+        std::fs::write(project.join("a.txt"), "first\nthe needle is here\n").expect("file");
         let mock = scripted(vec![
             tool_turn("e1", "explore", json!({"question": "where is the needle?"})),
             tool_turn("f1", "find", json!({"pattern": "needle"})),
@@ -393,8 +387,7 @@ async fn a_reply_quotes_the_message_it_replies_to() {
         assert_eq!(
             sent[count - 3]["content"],
             format!(
-                "The person's next message replies to message {first}, written by you:
-> first answer"
+                "The person's next message replies to message {first}, written by you:\n> first answer"
             )
         );
         assert_eq!(sent[count - 2]["content"], "why?");
@@ -472,6 +465,10 @@ async fn questions_are_reported_when_the_turn_ends_and_answered_by_a_reply() {
         let quoted = sent[count - 3]["content"].as_str().expect("quote");
         assert!(
             quoted.starts_with(&format!("The person's next message replies to message {seq}, written by the tool ask:\n> Asked the person:")),
+            "{quoted}"
+        );
+        assert!(
+            quoted.ends_with("\nIf an answer holds for later work in this project too, propose it with lesson."),
             "{quoted}"
         );
         assert_eq!(sent[count - 2]["content"], "SQLite");
@@ -759,18 +756,39 @@ fn python() -> Option<&'static str> {
 
 const FAKE_MCP_SERVER: &str = r#"
 import json, sys
+pending = None
 for line in sys.stdin:
     message = json.loads(line)
     if "id" not in message:
         continue
+    if "method" not in message:
+        answer = message.get("result", {})
+        if answer.get("action") == "accept":
+            text = "hello " + answer["content"]["name"]
+        else:
+            text = "no name: " + answer.get("action", "?")
+        result = {"content": [{"type": "text", "text": text}]}
+        print(json.dumps({"jsonrpc": "2.0", "id": pending, "result": result}), flush=True)
+        continue
     method = message["method"]
     if method == "initialize":
         result = {"protocolVersion": "2025-11-25", "capabilities": {"tools": {}},
-                  "serverInfo": {"name": "calc", "version": "1"}}
+                  "serverInfo": {"name": "calc", "version": "1"},
+                  "asked": message["params"]["capabilities"]}
     elif method == "tools/list":
         result = {"tools": [{"name": "add", "description": "Add two numbers",
                   "inputSchema": {"type": "object", "properties": {
-                      "a": {"type": "number"}, "b": {"type": "number"}}}}]}
+                      "a": {"type": "number"}, "b": {"type": "number"}}}},
+                  {"name": "greet", "description": "Greet someone it asks for",
+                  "inputSchema": {"type": "object"}}]}
+    elif method == "tools/call" and message["params"]["name"] == "greet":
+        pending = message["id"]
+        question = {"message": "Who should be greeted?", "requestedSchema": {
+            "type": "object", "properties": {"name": {"type": "string", "title": "Name"}},
+            "required": ["name"]}}
+        print(json.dumps({"jsonrpc": "2.0", "id": "e1", "method": "elicitation/create",
+                          "params": question}), flush=True)
+        continue
     elif method == "tools/call":
         arguments = message["params"]["arguments"]
         result = {"content": [{"type": "text", "text": str(arguments["a"] + arguments["b"])}]}
@@ -779,12 +797,113 @@ for line in sys.stdin:
     print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": result}), flush=True)
 "#;
 
+/// A core with the fake MCP server of `FAKE_MCP_SERVER` set up beside its
+/// store; `None` when no Python runs it.
+async fn core_with_mcp(mock: &MockApi) -> Option<Arc<Core>> {
+    let python = python()?;
+    // A folder of its own: `mcp.json` is read beside the store.
+    let folder = database().with_extension("mcp");
+    std::fs::create_dir_all(&folder).expect("folder");
+    let script = folder.join("calc.py");
+    std::fs::write(&script, FAKE_MCP_SERVER).expect("script");
+    let config = json!({"mcpServers": {"calc": {"command": python, "args": [script]}}});
+    std::fs::write(folder.join("mcp.json"), config.to_string()).expect("config");
+    let llm = Llm::new(LlmConfig {
+        provider: ProviderKind::OpenAi,
+        auth: inocode_core::oauth::AuthKind::ApiKey,
+        base_url: mock.base_url.clone(),
+        model: "test-model".to_string(),
+        api_key: "test-key".to_string(),
+        auth_store_path: None,
+        reasoning: Default::default(),
+    })
+    .expect("client");
+    let store = Store::open(folder.join("inocode.db")).await.expect("store");
+    Some(Arc::new(Core::with_llm(llm).with_store(store)))
+}
+
+#[tokio::test]
+async fn a_question_of_an_mcp_server_waits_for_the_persons_answer() {
+    with_timeout(async {
+        let mock = scripted(vec![
+            tool_turn("g1", "mcp__calc__greet", json!({})),
+            tool_turn("g2", "mcp__calc__greet", json!({})),
+        ])
+        .await;
+        let Some(core) = core_with_mcp(&mock).await else {
+            eprintln!("skipped: no Python to run the MCP server");
+            return;
+        };
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client).await;
+
+        client
+            .1
+            .write_json(
+                2,
+                &json!({"id": 2, "method": "turn/start",
+                        "params": {"thread_id": thread, "prompt": "greet", "mode": "full"}}),
+            )
+            .await
+            .expect("send");
+        let mut events = Vec::new();
+        let mut answers = vec![
+            json!({"action": "accept", "content": {"name": "Ann"}}),
+            json!({"action": "decline"}),
+        ]
+        .into_iter();
+        let mut next_id = 10;
+        loop {
+            let (stream, frame): (u64, Value) = client.0.read_json().await.expect("frame");
+            if stream != 2 {
+                assert_eq!(frame["result"]["accepted"], true, "{frame}");
+                continue;
+            }
+            if frame["event"] == "elicitation" {
+                let asked = &frame["elicitation"];
+                assert_eq!(asked["server"], "calc");
+                assert_eq!(asked["message"], "Who should be greeted?");
+                assert_eq!(
+                    asked["questions"],
+                    json!([{"name": "name", "question": "Name", "required": true, "kind": "text"}])
+                );
+                let mut params = answers.next().expect("an answer");
+                params["thread_id"] = json!(thread);
+                params["elicitation"] = asked["id"].clone();
+                client
+                    .1
+                    .write_json(
+                        next_id,
+                        &json!({"id": next_id, "method": "turn/answer", "params": params}),
+                    )
+                    .await
+                    .expect("answer");
+                next_id += 1;
+            }
+            let end = matches!(frame["event"].as_str(), Some("completed" | "failed"));
+            events.push(frame);
+            if end {
+                break;
+            }
+        }
+        assert_eq!(events.last().unwrap()["event"], "completed");
+        assert_eq!(tool_results(&events), ["hello Ann", "no name: decline"]);
+        // An answer for no waiting question is not accepted.
+        let late = call(
+            &mut client,
+            20,
+            json!({"id": 20, "method": "turn/answer",
+                   "params": {"thread_id": thread, "elicitation": 1, "action": "cancel"}}),
+        )
+        .await;
+        assert_eq!(late["result"]["accepted"], false);
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn tools_of_the_configured_mcp_servers_are_offered_and_called() {
-    let Some(python) = python() else {
-        eprintln!("skipped: no Python to run the MCP server");
-        return;
-    };
     with_timeout(async {
         let mock = scripted(vec![tool_turn(
             "c1",
@@ -792,25 +911,10 @@ async fn tools_of_the_configured_mcp_servers_are_offered_and_called() {
             json!({"a": 2, "b": 3}),
         )])
         .await;
-        // A folder of its own: `mcp.json` is read beside the store.
-        let folder = database().with_extension("mcp");
-        std::fs::create_dir_all(&folder).expect("folder");
-        let script = folder.join("calc.py");
-        std::fs::write(&script, FAKE_MCP_SERVER).expect("script");
-        let config = json!({"mcpServers": {"calc": {"command": python, "args": [script]}}});
-        std::fs::write(folder.join("mcp.json"), config.to_string()).expect("config");
-        let llm = Llm::new(LlmConfig {
-            provider: ProviderKind::OpenAi,
-            auth: inocode_core::oauth::AuthKind::ApiKey,
-            base_url: mock.base_url.clone(),
-            model: "test-model".to_string(),
-            api_key: "test-key".to_string(),
-            auth_store_path: None,
-            reasoning: Default::default(),
-        })
-        .expect("client");
-        let store = Store::open(folder.join("inocode.db")).await.expect("store");
-        let core = Arc::new(Core::with_llm(llm).with_store(store));
+        let Some(core) = core_with_mcp(&mock).await else {
+            eprintln!("skipped: no Python to run the MCP server");
+            return;
+        };
         let (addr, _stop, _handle) = start_server(core).await;
         let mut client = connect(addr).await;
         let thread = thread(&mut client).await;
@@ -819,7 +923,7 @@ async fn tools_of_the_configured_mcp_servers_are_offered_and_called() {
         assert_eq!(tool_results(&events), ["5"]);
         let requests = chats(&mock);
         let tools = requests[0].body["tools"].as_array().expect("tools");
-        assert_eq!(tools.len(), 17);
+        assert_eq!(tools.len(), 18);
         let added = tools
             .iter()
             .find(|tool| tool["function"]["name"] == "mcp__calc__add")

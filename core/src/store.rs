@@ -385,6 +385,10 @@ struct Inner {
     /// The MCP servers named beside the database, started at first use and
     /// stopped when the last copy of the store is dropped.
     mcp: tokio::sync::OnceCell<Arc<crate::mcp::Tools>>,
+    /// Questions of MCP servers waiting for the person's answer, by id, with
+    /// the thread whose turn asked.
+    elicitations: Mutex<HashMap<u64, (SessionId, tokio::sync::oneshot::Sender<serde_json::Value>)>>,
+    next_elicitation: std::sync::atomic::AtomicU64,
 }
 
 impl Store {
@@ -396,6 +400,56 @@ impl Store {
 
     pub(crate) fn mcp(&self) -> &tokio::sync::OnceCell<Arc<crate::mcp::Tools>> {
         &self.inner.mcp
+    }
+
+    /// Registers a question of an MCP server for the person: its id, and
+    /// where the answer arrives.
+    pub(crate) fn wait_elicitation(
+        &self,
+        session: SessionId,
+    ) -> (u64, tokio::sync::oneshot::Receiver<serde_json::Value>) {
+        let id = self
+            .inner
+            .next_elicitation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        self.inner
+            .elicitations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(id, (session, sender));
+        (id, receiver)
+    }
+
+    /// Drops a question that is no longer waited for.
+    pub(crate) fn forget_elicitation(&self, id: u64) {
+        self.inner
+            .elicitations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&id);
+    }
+
+    /// Hands the person's answer to the question `id` of `session`; whether
+    /// such a question was waiting.
+    pub fn answer_elicitation(
+        &self,
+        session: SessionId,
+        id: u64,
+        answer: serde_json::Value,
+    ) -> bool {
+        let mut waiting = self
+            .inner
+            .elicitations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        match waiting.get(&id) {
+            Some((asked, _)) if *asked == session => {}
+            _ => return false,
+        }
+        let (_, sender) = waiting.remove(&id).expect("checked above");
+        sender.send(answer).is_ok()
     }
 
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, ErrorInfo> {
@@ -413,6 +467,8 @@ impl Store {
                 writer: Mutex::new(writer),
                 readers: Mutex::new(Vec::new()),
                 mcp: tokio::sync::OnceCell::new(),
+                elicitations: Mutex::new(HashMap::new()),
+                next_elicitation: std::sync::atomic::AtomicU64::new(0),
             }),
         })
     }
