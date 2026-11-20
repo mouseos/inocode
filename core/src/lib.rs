@@ -10,6 +10,7 @@ mod compaction;
 pub mod conversation;
 pub mod deepai;
 mod edit;
+mod explore;
 mod fetch;
 mod find;
 mod language;

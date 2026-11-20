@@ -61,6 +61,7 @@ TCP 上で動く JSON / 生バイナリ混在のフレームプロトコルラ�
 | `INOCODE_LLM_BASE_URL` | `https://logfare.ai/v1`（方式ごとの既定は下表） | API Base URL |
 | `INOCODE_LLM_MODEL` | `logfare/auto`（方式ごとの既定は下表） | モデル名 |
 | `INOCODE_COMPACT_MODEL` | 作業中のモデル | 圧縮の要約を書くモデル（同じ接続方式・同じ認証）。作業中のモデルと同じなら、要約の要求でキャッシュが効く |
+| `INOCODE_EXPLORE_MODEL` | 作業中のモデル | 道具 `explore` の探索役のモデル（同じ接続方式・同じ認証）。探索役は `find`・`read` だけを使い、場所と行の範囲を返す（[docs/evidence/explore-subagent.md](docs/evidence/explore-subagent.md)） |
 | `INOCODE_PORT` | `8787` | 待ち受けポート（待ち受けは常に `127.0.0.1`） |
 | `INOCODE_LLM_REASONING` | モデルの既定値（一覧にあれば）、なければ `medium` | 思考の深さ: `none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`（`ultra` は `max`）。受け付けない値は接続先のエラーをそのまま返す |
 | `INOCODE_LLM_REASONING_SUMMARY` | `auto` | 思考の要約: `auto` / `concise` / `detailed` / `none` |

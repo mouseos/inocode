@@ -76,7 +76,7 @@ pub struct TurnUsage {
 }
 
 impl TurnUsage {
-    fn add(&mut self, usage: Option<TokenUsage>) {
+    pub(crate) fn add(&mut self, usage: Option<TokenUsage>) {
         self.requests += 1;
         if let Some(usage) = usage {
             self.input += usage.input;
@@ -142,6 +142,7 @@ const DENIALS_PER_TURN: u32 = 20;
 /// Names a model to review calls in the `auto` mode instead of the turn's.
 const REVIEW_MODEL_ENV: &str = "INOCODE_REVIEW_MODEL";
 const COMPACT_MODEL_ENV: &str = "INOCODE_COMPACT_MODEL";
+const EXPLORE_MODEL_ENV: &str = "INOCODE_EXPLORE_MODEL";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Outcome {
@@ -178,7 +179,7 @@ fn next_step(stop: StopReason, steered: bool, cuts: u32) -> Step {
 
 /// Resolves once `cancel` reads `true`. A dropped sender never cancels: the
 /// turn outlives the connection that started it.
-async fn cancelled(cancel: &mut watch::Receiver<bool>) {
+pub(crate) async fn cancelled(cancel: &mut watch::Receiver<bool>) {
     loop {
         if *cancel.borrow_and_update() {
             return;
@@ -257,6 +258,8 @@ struct Thread<'a> {
     reviewer: Option<std::sync::Arc<Llm>>,
     /// The model that writes compaction summaries when it is not the turn's own.
     compactor: Option<std::sync::Arc<Llm>>,
+    /// The model that answers `explore` when it is not the turn's own.
+    explorer: Option<std::sync::Arc<Llm>>,
     /// The reviewer's refusals in a row and in this turn.
     denials: (u32, u32),
 }
@@ -474,6 +477,13 @@ impl Thread<'_> {
             cancel: self.cancel.clone(),
             sandboxed: self.sandboxed(),
         };
+        if name == crate::explore::EXPLORE {
+            let explorer = self.explorer.clone();
+            let model = explorer.as_deref().unwrap_or(llm);
+            return crate::explore::run(model, &context, arguments, usage)
+                .await
+                .map_or_else(|message| (message, true), |text| (text, false));
+        }
         agent_tools::run(&context, name, arguments)
             .await
             .unwrap_or_else(|| (format!("no tool named {name} is available"), true))
@@ -730,9 +740,11 @@ pub async fn run(
     events: mpsc::Sender<TurnEvent>,
 ) -> Outcome {
     let mut usage = TurnUsage::default();
-    let reviewer = match reviewer(llm, approvals.mode)
-        .and_then(|reviewer| compactor(llm).map(|compactor| (reviewer, compactor)))
-    {
+    let models = reviewer(llm, approvals.mode).and_then(|reviewer| {
+        let compactor = compactor(llm)?;
+        Ok((reviewer, compactor, explorer(llm)?))
+    });
+    let (reviewer, compactor, explorer) = match models {
         Ok(models) => models,
         Err(error) => {
             return Outcome {
@@ -744,7 +756,9 @@ pub async fn run(
     };
     let mut thread = match open(store, session, &prompt, approvals, cancel.clone(), events).await {
         Ok(mut thread) => {
-            (thread.reviewer, thread.compactor) = reviewer;
+            thread.reviewer = reviewer;
+            thread.compactor = compactor;
+            thread.explorer = explorer;
             if let Some(window) = llm.context_window().await {
                 thread.shorten_people(window);
             }
@@ -792,7 +806,17 @@ fn reviewer(llm: &Llm, mode: Mode) -> Result<Option<std::sync::Arc<Llm>>, ErrorI
 /// The model that writes compaction summaries when it is not the turn's
 /// own: the one `INOCODE_COMPACT_MODEL` names, on the same provider.
 fn compactor(llm: &Llm) -> Result<Option<std::sync::Arc<Llm>>, ErrorInfo> {
-    match std::env::var(COMPACT_MODEL_ENV) {
+    other_model(llm, COMPACT_MODEL_ENV)
+}
+
+/// The model that answers `explore` when it is not the turn's own: the one
+/// `INOCODE_EXPLORE_MODEL` names, on the same provider.
+fn explorer(llm: &Llm) -> Result<Option<std::sync::Arc<Llm>>, ErrorInfo> {
+    other_model(llm, EXPLORE_MODEL_ENV)
+}
+
+fn other_model(llm: &Llm, variable: &str) -> Result<Option<std::sync::Arc<Llm>>, ErrorInfo> {
+    match std::env::var(variable) {
         Ok(model) if !model.trim().is_empty() && model.trim() != llm.model() => {
             llm.sibling(model.trim()).map(Some)
         }
@@ -845,6 +869,7 @@ async fn open<'a>(
         approved: approvals.calls,
         reviewer: None,
         compactor: None,
+        explorer: None,
         denials: (0, 0),
     })
 }

@@ -124,6 +124,7 @@ pub(crate) fn specs(sandboxed: bool) -> Vec<ToolSpec> {
         read::spec(),
         fetch::spec(),
         find::spec(),
+        crate::explore::spec(),
     ]
     .into_iter()
     .chain(edit::specs())

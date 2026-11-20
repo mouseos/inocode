@@ -294,6 +294,69 @@ fn tool_results(events: &[Value]) -> Vec<String> {
 }
 
 #[tokio::test]
+async fn explore_answers_with_places_found_by_a_helper_that_only_reads() {
+    with_timeout(async {
+        let project = database().with_extension("project");
+        std::fs::create_dir_all(&project).expect("project");
+        std::fs::write(
+            project.join("a.txt"),
+            "first
+the needle is here
+",
+        )
+        .expect("file");
+        let mock = scripted(vec![
+            tool_turn("e1", "explore", json!({"question": "where is the needle?"})),
+            tool_turn("f1", "find", json!({"pattern": "needle"})),
+            tool_turn("w1", "write", json!({"path": "b.txt", "content": "x"})),
+            vec![
+                sse_delta("a.txt:2-2 the needle"),
+                finish("stop"),
+                sse_done(),
+            ],
+        ])
+        .await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = project_thread(&mut client, &project).await;
+
+        let events = turn(&mut client, 2, thread, "fix the needle").await;
+        assert_eq!(tool_results(&events), ["a.txt:2-2 the needle"]);
+        assert_eq!(events.last().unwrap()["event"], "completed");
+        let chats = chats(&mock);
+        assert_eq!(chats.len(), 5);
+        // The helper has its own instructions and only the reading tools.
+        let helper = &chats[1].body;
+        assert!(helper["messages"][0]["content"]
+            .as_str()
+            .is_some_and(|text| text.starts_with("You find where things are")));
+        assert_eq!(helper["messages"][1]["content"], "where is the needle?");
+        let names: Vec<&str> = helper["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .map(|tool| tool["function"]["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["find", "read"]);
+        let found = chats[2].body["messages"].to_string();
+        assert!(found.contains("a.txt:2"), "{found}");
+        // A call to any other tool is refused, and nothing is written.
+        let refused = chats[3].body["messages"].to_string();
+        assert!(
+            refused.contains("only find and read are available"),
+            "{refused}"
+        );
+        assert!(!project.join("b.txt").exists());
+        // What the helper read stays out of the asking model's context.
+        let after = chats[4].body["messages"].to_string();
+        assert!(!after.contains("the needle is here"), "{after}");
+        let _ = std::fs::remove_dir_all(&project);
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn the_plan_is_shown_after_the_history_with_every_request() {
     with_timeout(async {
         let items = json!({"items": [
@@ -314,7 +377,7 @@ async fn the_plan_is_shown_after_the_history_with_every_request() {
         let requests = chats(&mock);
         assert!(requests[0].body["tools"]
             .as_array()
-            .is_some_and(|tools| tools.len() == 12));
+            .is_some_and(|tools| tools.len() == 13));
         let state = last_message(&requests[1]);
         assert_eq!(state["role"], "user");
         assert_eq!(
@@ -484,7 +547,7 @@ async fn tools_of_the_configured_mcp_servers_are_offered_and_called() {
         assert_eq!(tool_results(&events), ["5"]);
         let requests = chats(&mock);
         let tools = requests[0].body["tools"].as_array().expect("tools");
-        assert_eq!(tools.len(), 13);
+        assert_eq!(tools.len(), 14);
         let added = tools
             .iter()
             .find(|tool| tool["function"]["name"] == "mcp__calc__add")
@@ -551,7 +614,12 @@ async fn methods_are_shared_across_projects_and_recalled_whole() {
         let base = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
             "inocode-methods-{}-{}",
             std::process::id(),
-            database().file_name().unwrap().to_string_lossy()
+            database()
+                .parent()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
         ));
         let (first, second) = (base.join("first"), base.join("second"));
         std::fs::create_dir_all(&first).expect("first");
@@ -627,7 +695,12 @@ async fn lessons_need_a_condition_and_rules_are_not_duplicated() {
         let project = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
             "inocode-project-{}-{}",
             std::process::id(),
-            database().file_name().unwrap().to_string_lossy()
+            database()
+                .parent()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
         ));
         std::fs::create_dir_all(&project).expect("project");
         std::fs::write(
@@ -1183,7 +1256,7 @@ async fn near_the_window_older_work_is_compacted_and_the_person_kept() {
             .expect("a summary request");
         assert_eq!(
             summary_request.body["tools"].as_array().map(Vec::len),
-            Some(12)
+            Some(13)
         );
         assert!(summary_request.body["messages"]
             .to_string()
@@ -1304,7 +1377,12 @@ async fn commands_run_in_a_terminal_that_can_be_answered() {
         let project = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
             "inocode-shell-{}-{}",
             std::process::id(),
-            database().file_name().unwrap().to_string_lossy()
+            database()
+                .parent()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
         ));
         std::fs::create_dir_all(&project).expect("project");
         let prompt = if cfg!(windows) {
@@ -1429,7 +1507,13 @@ async fn a_fetched_page_comes_as_its_main_content_and_is_saved_whole() {
 /// it that the sandbox does not let commands write in.
 fn project_and_outside(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
     let database = database();
-    let stem = database.file_stem().unwrap().to_string_lossy().to_string();
+    let stem = database
+        .parent()
+        .unwrap()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
     let base = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
     let project = base.join(format!("{stem}-{name}"));
     let outside = base.join(format!("{stem}-{name}-outside"));
