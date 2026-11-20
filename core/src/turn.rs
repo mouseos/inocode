@@ -246,7 +246,7 @@ struct Thread<'a> {
     /// Held calls the person approved, each run once.
     approved: Vec<(String, String)>,
     /// The model that reviews calls when it is not the turn's own.
-    reviewer: Option<Llm>,
+    reviewer: Option<std::sync::Arc<Llm>>,
     /// The model that writes compaction summaries when it is not the turn's own.
     compactor: Option<std::sync::Arc<Llm>>,
     /// The reviewer's refusals in a row and in this turn.
@@ -519,7 +519,7 @@ impl Thread<'_> {
             };
             let (verdict, spent) = crate::review::review(
                 llm,
-                self.reviewer.as_ref().unwrap_or(llm),
+                self.reviewer.as_deref().unwrap_or(llm),
                 &seen,
                 self.folder.as_deref(),
                 self.rules.as_deref(),
@@ -760,12 +760,12 @@ pub async fn run(
 
 /// The model that reviews calls in the `auto` mode when it is not the
 /// turn's own: the one `INOCODE_REVIEW_MODEL` names, on the same provider.
-fn reviewer(llm: &Llm, mode: Mode) -> Result<Option<Llm>, ErrorInfo> {
+fn reviewer(llm: &Llm, mode: Mode) -> Result<Option<std::sync::Arc<Llm>>, ErrorInfo> {
     if mode != Mode::Auto {
         return Ok(None);
     }
     match std::env::var(REVIEW_MODEL_ENV) {
-        Ok(model) if !model.trim().is_empty() => llm.with_model(model.trim()).map(Some),
+        Ok(model) if !model.trim().is_empty() => llm.sibling(model.trim()).map(Some),
         _ => Ok(None),
     }
 }
