@@ -58,15 +58,18 @@ pub(crate) fn specs(sandboxed: bool) -> Vec<ToolSpec> {
             name: RECALL.into(),
             description: "Read earlier work word for word. With from_seq (and to_seq), \
                 returns this thread's messages at those positions, including ones \
-                replaced by a summary. With query, searches the project's past messages \
-                and its knowledge notes (terms of three or more characters)."
+                replaced by a summary; a long message is cut, and with offset the one \
+                message at from_seq is returned from that character on. With query, \
+                searches the project's past messages and its knowledge notes (terms of \
+                three or more characters)."
                 .into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "query": {"type": "string"},
                     "from_seq": {"type": "integer"},
-                    "to_seq": {"type": "integer"}
+                    "to_seq": {"type": "integer"},
+                    "offset": {"type": "integer", "minimum": 0}
                 }
             }),
         },
@@ -262,8 +265,24 @@ async fn recall(context: &Context<'_>, arguments: &str) -> Result<String, String
         query: Option<String>,
         from_seq: Option<i64>,
         to_seq: Option<i64>,
+        offset: Option<usize>,
     }
     let arguments: Arguments = parse(arguments)?;
+    if let (Some(from), Some(offset)) = (arguments.from_seq, arguments.offset) {
+        let messages = context
+            .store
+            .since(context.session, from - 1, 1)
+            .await
+            .map_err(|error| error.message)?;
+        let Some(stored) = messages.first().filter(|stored| stored.seq == from) else {
+            return Ok(format!("No message at position {from}."));
+        };
+        return Ok(recall_from(
+            stored.seq,
+            &render_whole(&stored.message),
+            offset,
+        ));
+    }
     if let Some(from) = arguments.from_seq {
         let to = arguments.to_seq.unwrap_or(from).max(from);
         let to = to.min(from + RECALL_RANGE - 1);
@@ -277,7 +296,16 @@ async fn recall(context: &Context<'_>, arguments: &str) -> Result<String, String
         }
         let mut text = String::new();
         for stored in messages {
-            text.push_str(&format!("#{} {}\n", stored.seq, render(&stored.message)));
+            let shown = render(&stored.message);
+            let whole = render_whole(&stored.message).chars().count();
+            text.push_str(&format!("#{} {shown}\n", stored.seq));
+            if shown.chars().count() < whole {
+                text.push_str(&format!(
+                    "(cut: the message has {whole} characters; recall with from_seq {} and \
+                     offset 0 reads it whole, {RECALL_CHARS} characters at a time)\n",
+                    stored.seq
+                ));
+            }
         }
         return Ok(text);
     }
@@ -352,8 +380,35 @@ fn cut(text: &str) -> String {
     }
 }
 
-/// One message as plain text for `recall`.
+/// `RECALL_CHARS` characters of message `seq`'s text `whole` from
+/// character `offset` on, saying where the next ones start.
+fn recall_from(seq: i64, whole: &str, offset: usize) -> String {
+    let total = whole.chars().count();
+    if offset >= total {
+        return format!("#{seq} has {total} characters; offset {offset} is past the end.");
+    }
+    let end = (offset + RECALL_CHARS).min(total);
+    let part: String = whole.chars().skip(offset).take(end - offset).collect();
+    let mut text = format!("#{seq} characters {offset}-{end} of {total}:\n{part}");
+    if end < total {
+        text.push_str(&format!(
+            "\n(recall with from_seq {seq} and offset {end} reads on)"
+        ));
+    }
+    text
+}
+
+/// One message as plain text for `recall`, each part cut at `RECALL_CHARS`.
 pub(crate) fn render(message: &Message) -> String {
+    render_with(message, cut)
+}
+
+/// One message as plain text, whole.
+fn render_whole(message: &Message) -> String {
+    render_with(message, str::to_string)
+}
+
+fn render_with(message: &Message, cut: impl Fn(&str) -> String) -> String {
     match &message.body {
         Body::User { parts, .. } => format!("user: {}", cut(&parts.join("\n"))),
         Body::Assistant { parts, .. } => {
@@ -660,6 +715,27 @@ mod tests {
             method_tags(&[], &words(&["boot"]), &[]),
             Err("No tags are in use yet; put `boot` in new_tags.".to_string())
         );
+    }
+
+    #[test]
+    fn a_long_message_is_recalled_in_windows() {
+        let whole = format!(
+            "{}{}{}",
+            "a".repeat(RECALL_CHARS),
+            "b".repeat(RECALL_CHARS),
+            "c"
+        );
+        let first = recall_from(7, &whole, 0);
+        assert!(first.starts_with(&format!(
+            "#7 characters 0-{RECALL_CHARS} of {}:\n",
+            2 * RECALL_CHARS + 1
+        )));
+        assert!(first.ends_with(&format!(
+            "(recall with from_seq 7 and offset {RECALL_CHARS} reads on)"
+        )));
+        let last = recall_from(7, &whole, 2 * RECALL_CHARS);
+        assert!(last.ends_with(":\nc"), "{last}");
+        assert!(recall_from(7, &whole, 5 * RECALL_CHARS).contains("past the end"));
     }
 
     #[test]

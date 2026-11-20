@@ -349,6 +349,42 @@ async fn recall_reads_earlier_messages_word_for_word() {
 }
 
 #[tokio::test]
+async fn a_long_message_is_recalled_on_from_an_offset() {
+    with_timeout(async {
+        let mock = scripted(vec![
+            vec![sse_delta("noted"), finish("stop"), sse_done()],
+            tool_turn("r1", "recall", json!({"from_seq": 1})),
+            tool_turn("r2", "recall", json!({"from_seq": 1, "offset": 2000})),
+        ])
+        .await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client).await;
+        let long = format!("{}MIDDLE{}", "x".repeat(2_500), "y".repeat(2_500));
+        turn(&mut client, 2, thread, &long).await;
+
+        let events = turn(&mut client, 3, thread, "what was in the middle?").await;
+        let results = tool_results(&events);
+        assert!(!results[0].contains("MIDDLE"));
+        assert!(
+            results[0].contains("recall with from_seq 1 and offset 0 reads it whole"),
+            "{}",
+            results[0]
+        );
+        // "user: " precedes the text, so the middle falls in the second window.
+        assert!(
+            results[1].starts_with("#1 characters 2000-4000 of 5012:"),
+            "{}",
+            results[1]
+        );
+        assert!(results[1].contains("MIDDLE"));
+        assert!(results[1].ends_with("(recall with from_seq 1 and offset 4000 reads on)"));
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn method_tags_must_be_in_use_unless_given_as_new() {
     with_timeout(async {
         let method = |tags: Value, new_tags: Value| {

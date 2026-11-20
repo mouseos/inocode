@@ -41,6 +41,7 @@
 - `server/tests/turn_tcp.rs`（模擬プロバイダ）：
   - `plan`：結果の要約、2 回目の要求の末尾に一覧が付き、履歴には残らない。`in_progress` が 2 つならエラー。
   - `recall`：番号指定で原文が返り、検索で過去の発言が当たる。
+  - `recall` の `offset`（2026-11-20「３までやって」で承認。UNSUPPORTED_APPROVED、研究なし）：番号指定では 1 メッセージを部分ごとに 2,000 字で切るので、長い発言や出力の続きを読めなかった。`large-person-messages.md` の A 案が 4.5/7 だった原因。`offset` を付けると、`from_seq` の 1 メッセージを、その文字から 2,000 字ずつ返し、続きの `offset` を示す。切った場合は、`offset` で全文を読めることを結果に書く。テスト：`core/src/agent_tools.rs` の `a_long_message_is_recalled_in_windows`、`server/tests/turn_tcp.rs` の `a_long_message_is_recalled_on_from_an_offset`。
   - `lesson`：3 つがそろえば候補として保存。欠ければエラー。AGENTS.md と同じなら保存せず、矛盾なら issue を開く（マークダウンの強調の違いは無視して一致を確認）。AGENTS.md にない引用はエラー。AGENTS.md の全文がシステムプロンプトに入る。
   - `ask` の規則：呼び出しは保留され、ターンは続き、`completed` に `held` が載る。次のターンで `allow` に規則を入れると実行される。
   - 同じ呼び出しが同じエラーを 3 回返すと注意が付く。
