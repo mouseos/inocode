@@ -285,16 +285,41 @@ async fn read_rules(project_key: &str) -> Option<String> {
     (!text.is_empty()).then(|| text.to_string())
 }
 
-/// The system prompt: the reply language, then the project's rules as
-/// written, never summarized.
+/// When to use which of the harness's own tools, said once across tools;
+/// what each tool does stays in its own description, so the two do not
+/// disagree (docs/evidence/tool-guidance.md).
+const TOOL_GUIDE: &str = "\n\nThe tools of this harness:\n\
+- find and read look things up. explore has a helper search the project and answer \
+with file paths and line ranges; it suits finding something that would take many \
+searches and reads across files. For one search or one known file, find and read \
+are enough.\n\
+- edit changes one place in a file; edits changes several places, in one file or \
+more, all of them or none; write writes a whole file.\n\
+- shell runs a command; job types into, waits for or stops a command that is still \
+running.\n\
+- plan keeps the work list that is shown to you with every request.\n\
+- recall reads earlier messages of this thread word for word, also after they were \
+summarized, and searches past work and saved knowledge.\n\
+- lesson proposes a lesson for later work in this project; method saves a method \
+verified to work, for any project.\n\
+- search and fetch read the web.\n\
+- Tools named mcp__<server>__<tool> come from the MCP servers the person set up.";
+
+/// The system prompt: how to use the tools, the reply language, then the
+/// project's rules as written, never summarized.
 fn system_prompt(rules: Option<&str>, language: Option<&str>) -> String {
     let mut system = String::from(
         "You are a coding agent working on a user's project. When a method is shown to \
          work, save it with the method tool. Before investigating a device, format or \
          program from scratch, use recall to look for methods saved in earlier work.",
     );
+    system.push_str(TOOL_GUIDE);
     if let Some(language) = language {
-        system.push(' ');
+        system.push_str(
+            "
+
+",
+        );
         system.push_str(&crate::language::instruction(language));
     }
     if let Some(rules) = rules {
@@ -1122,6 +1147,20 @@ mod tests {
         let bare = system_prompt(None, None);
         assert!(bare.starts_with("You are a coding agent working on a user's project."));
         assert!(!bare.contains("RULES"));
+    }
+
+    #[test]
+    fn the_tool_guide_names_every_tool_of_the_harness() {
+        for sandboxed in [false, true] {
+            for spec in agent_tools::specs(sandboxed) {
+                let named = format!(" {} ", spec.name);
+                let listed = TOOL_GUIDE.contains(&format!("- {} ", spec.name))
+                    || TOOL_GUIDE.contains(&named)
+                    || TOOL_GUIDE.contains(&format!(" {};", spec.name));
+                assert!(listed, "{} is not in the tool guide", spec.name);
+            }
+        }
+        assert!(system_prompt(None, None).contains(TOOL_GUIDE));
     }
 
     #[test]
