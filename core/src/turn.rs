@@ -151,6 +151,87 @@ pub struct Outcome {
     pub held: Vec<Held>,
 }
 
+/// What the person sent to start a turn: the text, and the earlier message
+/// of the thread it replies to, if any (its seq).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Prompt {
+    pub text: String,
+    pub reply_to: Option<i64>,
+}
+
+/// Characters of a replied-to message that are quoted; the rest is read
+/// with `recall`.
+const QUOTE_CHARS: usize = 2_000;
+const REPLY_KIND: &str = "reply";
+
+/// The replied-to message `seq` of `session`, quoted for the model, so the
+/// next message can be read as a reply to it (docs/evidence/reply-to-message.md).
+async fn quote(store: &Store, session: SessionId, seq: i64) -> Result<Body, ErrorInfo> {
+    let stored = store
+        .since(session, seq - 1, 1)
+        .await?
+        .into_iter()
+        .next()
+        .filter(|stored| stored.seq == seq)
+        .ok_or_else(|| {
+            ErrorInfo::new(
+                "invalid_params",
+                format!("the thread has no message {seq} to reply to"),
+            )
+        })?;
+    let (author, text) = match stored.message.body {
+        Body::User {
+            from: Speaker::Person,
+            parts,
+        } => (
+            "the person".to_string(),
+            parts.join(
+                "
+",
+            ),
+        ),
+        Body::User { parts, .. } => (
+            "the harness".to_string(),
+            parts.join(
+                "
+",
+            ),
+        ),
+        Body::Assistant { parts, .. } => (
+            "you".to_string(),
+            parts
+                .into_iter()
+                .filter_map(|part| match part {
+                    AssistantPart::Text { text } => Some(text),
+                    _ => None,
+                })
+                .collect::<String>(),
+        ),
+        Body::ToolResult { name, content, .. } => (format!("the tool {name}"), content),
+    };
+    let cut = text.chars().count() > QUOTE_CHARS;
+    let shown: String = text.chars().take(QUOTE_CHARS).collect();
+    let quoted: Vec<String> = shown.lines().map(|line| format!("> {line}")).collect();
+    let mut note = format!(
+        "The person's next message replies to message {seq}, written by {author}:
+{}",
+        quoted.join(
+            "
+"
+        )
+    );
+    if cut {
+        note.push_str(&format!(
+            "
+(quoted up to here; recall with from_seq {seq} reads it whole)"
+        ));
+    }
+    Ok(Body::User {
+        from: Speaker::Harness(REPLY_KIND.to_string()),
+        parts: vec![note],
+    })
+}
+
 /// After a step, the turn goes on or ends with this.
 #[derive(Debug, PartialEq)]
 enum Step {
@@ -735,7 +816,7 @@ pub async fn run(
     llm: &Llm,
     store: &Store,
     session: SessionId,
-    prompt: String,
+    prompt: Prompt,
     approvals: Approvals,
     mut steer: mpsc::UnboundedReceiver<String>,
     mut cancel: watch::Receiver<bool>,
@@ -756,7 +837,16 @@ pub async fn run(
             }
         }
     };
-    let mut thread = match open(store, session, &prompt, approvals, cancel.clone(), events).await {
+    let mut thread = match open(
+        store,
+        session,
+        &prompt.text,
+        approvals,
+        cancel.clone(),
+        events,
+    )
+    .await
+    {
         Ok(mut thread) => {
             thread.reviewer = reviewer;
             thread.compactor = compactor;
@@ -879,14 +969,22 @@ async fn open<'a>(
 async fn steps(
     llm: &Llm,
     thread: &mut Thread<'_>,
-    prompt: String,
+    prompt: Prompt,
     steer: &mut mpsc::UnboundedReceiver<String>,
     cancel: &mut watch::Receiver<bool>,
     usage: &mut TurnUsage,
 ) -> Ending {
     let mut tools: Vec<ToolSpec> = agent_tools::specs(thread.sandboxed());
     tools.extend(crate::mcp::specs(thread.store).await);
-    if let Err(error) = thread.record(vec![person(prompt)]).await {
+    let mut opening = Vec::new();
+    if let Some(seq) = prompt.reply_to {
+        match quote(thread.store, thread.session, seq).await {
+            Ok(quoted) => opening.push(quoted),
+            Err(error) => return Ending::Failed(error),
+        }
+    }
+    opening.push(person(prompt.text));
+    if let Err(error) = thread.record(opening).await {
         return Ending::Failed(error);
     }
     let mut cuts = 0;

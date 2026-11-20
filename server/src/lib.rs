@@ -417,9 +417,10 @@ async fn start_turn(
     queue: &mpsc::Sender<Outgoing>,
     in_flight: &InFlight,
 ) -> bool {
-    let parsed = request
-        .thread()
-        .and_then(|thread| Ok((thread, request.prompt()?.to_string(), request.approvals()?)));
+    let parsed = request.thread().and_then(|thread| {
+        let prompt = (request.prompt()?.to_string(), request.reply_to()?);
+        Ok((thread, prompt, request.approvals()?))
+    });
     let (thread, prompt, allowed) = match parsed {
         Ok(parsed) => parsed,
         Err(error) => {
@@ -458,7 +459,7 @@ async fn start_turn(
 async fn run_turn(
     id: u64,
     thread: inocode_core::store::SessionId,
-    (prompt, approvals): (String, inocode_core::turn::Approvals),
+    ((prompt, reply_to), approvals): ((String, Option<i64>), inocode_core::turn::Approvals),
     stream_id: u64,
     core: Arc<Core>,
     queue: mpsc::Sender<Outgoing>,
@@ -487,7 +488,15 @@ async fn run_turn(
         TurnEvent::Message { seq, message } => EventPayload::message(id, seq, &message),
     };
     let outcome = {
-        let run = core.run_turn(thread, prompt, approvals, steer, cancelled.clone(), events);
+        let run = core.run_turn(
+            thread,
+            prompt,
+            reply_to,
+            approvals,
+            steer,
+            cancelled.clone(),
+            events,
+        );
         tokio::pin!(run);
         loop {
             tokio::select! {

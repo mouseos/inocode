@@ -145,6 +145,21 @@ impl Request {
         })
     }
 
+    /// The earlier message of the thread a `turn/start` prompt replies to
+    /// (`reply_to`, its seq); none when absent.
+    pub fn reply_to(&self) -> Result<Option<i64>, ErrorInfo> {
+        match self
+            .params
+            .as_ref()
+            .and_then(|params| params.get("reply_to"))
+        {
+            None | Some(Value::Null) => Ok(None),
+            Some(value) => value.as_i64().map(Some).ok_or_else(|| {
+                ErrorInfo::new("invalid_params", "\"reply_to\" must be a message seq")
+            }),
+        }
+    }
+
     /// Request id that a `cancel` request refers to.
     pub fn cancel_target(&self) -> Result<u64, ErrorInfo> {
         self.params
@@ -444,10 +459,12 @@ impl Core {
     }
 
     /// Runs the turn [`Self::begin_turn`] claimed.
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_turn(
         &self,
         thread: SessionId,
         prompt: String,
+        reply_to: Option<i64>,
         approvals: turn::Approvals,
         steer: mpsc::UnboundedReceiver<String>,
         cancel: watch::Receiver<bool>,
@@ -455,6 +472,10 @@ impl Core {
     ) -> Outcome {
         match (self.llm(), self.store()) {
             (Ok(llm), Ok(store)) => {
+                let prompt = turn::Prompt {
+                    text: prompt,
+                    reply_to,
+                };
                 turn::run(llm, store, thread, prompt, approvals, steer, cancel, events).await
             }
             (Err(error), _) | (_, Err(error)) => Outcome {

@@ -357,6 +357,82 @@ the needle is here
 }
 
 #[tokio::test]
+async fn a_reply_quotes_the_message_it_replies_to() {
+    with_timeout(async {
+        let long = "x".repeat(2_100);
+        let mock = scripted(vec![
+            vec![sse_delta("first answer"), finish("stop"), sse_done()],
+            vec![sse_delta(&long), finish("stop"), sse_done()],
+        ])
+        .await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client).await;
+        turn(&mut client, 2, thread, "hello").await;
+        turn(&mut client, 3, thread, "more").await;
+        let read = call(
+            &mut client,
+            4,
+            json!({"id": 4, "method": "thread/read", "params": {"thread_id": thread}}),
+        )
+        .await;
+        let messages = read["result"]["messages"].as_array().expect("messages");
+        let first = messages[1]["seq"].as_i64().expect("seq");
+        let second = messages[3]["seq"].as_i64().expect("seq");
+
+        let events = turn_with(
+            &mut client,
+            5,
+            json!({"thread_id": thread, "prompt": "why?", "reply_to": first}),
+        )
+        .await;
+        assert_eq!(events.last().unwrap()["event"], "completed");
+        let sent = &chats(&mock)[2].body["messages"];
+        let count = sent.as_array().map(Vec::len).expect("messages");
+        assert_eq!(
+            sent[count - 3]["content"],
+            format!(
+                "The person's next message replies to message {first}, written by you:
+> first answer"
+            )
+        );
+        assert_eq!(sent[count - 2]["content"], "why?");
+
+        // A long message is quoted only in part.
+        turn_with(
+            &mut client,
+            6,
+            json!({"thread_id": thread, "prompt": "and?", "reply_to": second}),
+        )
+        .await;
+        let sent = &chats(&mock)[3].body["messages"];
+        let count = sent.as_array().map(Vec::len).expect("messages");
+        let quoted = sent[count - 3]["content"].as_str().expect("quote");
+        assert!(quoted.ends_with(&format!("recall with from_seq {second} reads it whole)")));
+        assert!(quoted.contains(&"x".repeat(2_000)) && !quoted.contains(&"x".repeat(2_001)));
+
+        let failed = turn_with(
+            &mut client,
+            7,
+            json!({"thread_id": thread, "prompt": "?", "reply_to": 999}),
+        )
+        .await;
+        let last = failed.last().unwrap();
+        assert_eq!(last["event"], "failed", "{last}");
+        assert!(last.to_string().contains("no message 999"), "{last}");
+        let bad = turn_with(
+            &mut client,
+            8,
+            json!({"thread_id": thread, "prompt": "?", "reply_to": "one"}),
+        )
+        .await;
+        assert_eq!(bad.last().unwrap()["event"], "failed");
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn the_plan_is_shown_after_the_history_with_every_request() {
     with_timeout(async {
         let items = json!({"items": [
