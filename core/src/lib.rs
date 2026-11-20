@@ -7,6 +7,7 @@
 
 mod agent_tools;
 mod ask;
+mod camera;
 mod colleague;
 mod compaction;
 pub mod conversation;

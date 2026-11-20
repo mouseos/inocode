@@ -368,6 +368,8 @@ verified to work, for any project.\n\
 later message.\n\
 - issue keeps the project's local issues across conversations; start the one you work \
 on, and close it with the reason when it is done or will not be done.\n\
+- camera lists cameras and capture devices, shows their controls, and takes a photo or \
+a video after setting them; taking pictures waits for the person.\n\
 - Tools named mcp__<server>__<tool> come from the MCP servers the person set up.";
 
 /// The system prompt: how to use the tools, the reply language, then the
@@ -683,6 +685,9 @@ impl Thread<'_> {
         if asked_rules {
             return Some("it falls under a project rule that asks first".into());
         }
+        if name == crate::camera::CAMERA && crate::camera::takes_pictures(arguments) {
+            return Some("photos and videos are taken only with the person's approval".into());
+        }
         if self.sandboxed() && command.as_ref().is_some_and(|c| c.outside_sandbox) {
             return Some("it asks to run outside the sandbox".into());
         }
@@ -719,7 +724,8 @@ impl Thread<'_> {
         usage: &mut TurnUsage,
     ) -> Option<Answer> {
         let reason = self.needs(name, arguments, !asked_rules.is_empty())?;
-        if self.mode == Mode::Auto {
+        // The camera goes to the person, never to the reviewer.
+        if self.mode == Mode::Auto && name != crate::camera::CAMERA {
             if self.denials.0 >= DENIALS_IN_A_ROW || self.denials.1 >= DENIALS_PER_TURN {
                 let reason = "the reviewer refused too many calls in this turn".to_string();
                 return Some(self.hold(name, arguments, asked_rules, reason).await);

@@ -142,6 +142,12 @@ cargo run --release -p inocode-server
 - `provider` を省くと、作業中のモデルと同じ提供元・同じ認証。`openai`・`anthropic`・`responses` では鍵を環境変数 `INOCODE_COLLEAGUE_API_KEY` に置き、必要なら `base_url` を書く。
 - 設計と根拠：[docs/evidence/colleague-review.md](docs/evidence/colleague-review.md)。
 
+### 画像とカメラ
+
+- `read` で png・jpg・gif・webp を読むと、画像としてモデルに見せる（長辺 1,568 画素に縮める。`region` で一部を元の解像度で見る）。
+- 道具 `camera` で、カメラや UVC の HDMI キャプチャの一覧、調整できる項目、写真、動画（ffmpeg が要る）を扱う。撮影は full モード以外では必ず人の承認を待つ。Windows では自動・手動の切り替えは未対応。
+- 設計と根拠：[docs/evidence/image-input.md](docs/evidence/image-input.md)。
+
 ### 使用量のログ
 
 モデルへの要求を 1 件ずつ記録する（ターン、探索役、同僚）。`stats/models` で、モデルごとの件数・トークン・キャッシュの割合・最初の文字までの時間・tok/s（中央値）を、時間帯ごとにも返す:

@@ -1,7 +1,7 @@
 # 画像をモデルに見せる（画像を見るツール、カメラ）
 
 - **対象と範囲：** プロジェクトの画像ファイル（スクリーンショット、図、写真）とカメラで撮った写真を、ツールの結果としてモデルに見せる。軽くする方法（縮小、必要な部分の切り抜き）を含む。
-- **関連コード：** `core/src/picture.rs`（開く、切り抜く、縮める、保存する、費用の見積もり）、`core/src/read.rs`（`read` で画像を読む、`region`）、`core/src/conversation.rs`（`Image`、`ToolResult` の `images`、3 つの形式への変換）、`core/src/agent_tools.rs`（`Context::shown`）、`core/src/turn.rs`（画像を答えに付ける）、`core/src/compaction.rs`（見積もり）、`core/src/explore.rs`（探索役には見せない）。カメラは実装中。
+- **関連コード：** `core/src/picture.rs`（開く、切り抜く、縮める、保存する、費用の見積もり）、`core/src/read.rs`（`read` で画像を読む、`region`）、`core/src/conversation.rs`（`Image`、`ToolResult` の `images`、3 つの形式への変換）、`core/src/agent_tools.rs`（`Context::shown`）、`core/src/turn.rs`（画像を答えに付ける）、`core/src/compaction.rs`（見積もり）、`core/src/explore.rs`（探索役には見せない）。カメラは `core/src/camera.rs`（nokhwa 0.10、`input-native`）。
 - **根拠の状態：** 画像を見せる機能そのものは UNSUPPORTED_APPROVED（カメラのツールの承認、2026-11-21「カメラツール作っていい」。撮った写真をモデルに見せるのに要る）。既定の大きさと切り抜きの方式は下の資料に基づく。
 - **ユーザーの判断：** 2026-11-21「画像見るツールだが軽量化など手法はあるか？」「カメラツールもほしい。デバイス指定で写真や動画取るだけ。フォーカスや露出など…全部いじる」「カメラツール作っていい」。
 
@@ -35,4 +35,19 @@
 - 圧縮の見積もり：画像 1 枚を 28×28 画素の区画の数のトークンとし、1 トークンを 4 バイトの文字として数える（推測）。
 - 探索役が `read` で画像を読んだときは、画像を探索役にも頼んだモデルにも見せず、「(the image is not shown to the explorer)」と書く。
 - 検証：単体テスト `large_images_are_shrunk_and_regions_cut`・`images_are_known_by_their_extension`（`picture.rs`）、`images_of_tool_results_reach_each_format`（`conversation.rs`）。結合テスト `an_image_read_is_shown_to_the_model`（PNG を読むと、次の要求で `tool` メッセージの後に画像が付く。画像の外の `region` は断る）。
+
+## カメラ（2026-11-21）
+
+- 道具 `camera`。`action` は次の 4 つ。
+  - `list`：装置の一覧（番号、名前、説明）。UVC の HDMI キャプチャもカメラの 1 つとして見える。
+  - `controls`：1 台の形式（解像度・fps・画素の形式。大きい順に 12 件）と、調整できる項目（名前、値、範囲、刻み、既定、自動・手動などの状態）。
+  - `photo`：撮る。安定させるために最初の 5 コマを捨て、6 コマ目を使う。元の大きさの PNG を保存し、`picture::prepare` で縮めた（`region` があれば切り抜いた）画像をモデルに見せる。
+  - `video`：1〜60 秒（既定 5 秒）を ffmpeg に生の RGB で渡して mp4 にする。時間の 4 分の 1 ごとに 1 コマ、4 コマまでをモデルに見せる。ffmpeg がなければ失敗にする。
+- 撮る前に、`controls` に名前と値（数か true・false）を書けば設定する。名前は、決まった項目は固定の名前（`focus`、`exposure`、`gain`、`white_balance`、`brightness`、`contrast`、`hue`、`saturation`、`sharpness`、`gamma`、`backlight_compensation`、`pan`、`tilt`、`zoom`、`iris`）、それ以外は装置が付けた名前（小文字、空白は `_`）。`resolution`（[幅, 高さ]、近い形式を選ぶ）と `fps` も選べる。
+- 装置は番号か、名前の一部で選ぶ（省くと 0 番）。
+- 承認：`photo` と `video` は、full モード以外では必ず人の承認を待つ（auto モードでも審査役に回さない）。`list` と `controls` は撮らないので待たない。カメラは写る人への影響が大きいため（工学上の選択）。
+- MJPEG のコマは `image` クレートで読む（nokhwa の `mjpeg` 機能は mozjpeg を使い、C と nasm のビルドが要るので入れていない）。YUYV・NV12 などは nokhwa が変換する。
+- 制限（未対応）：Windows（Media Foundation）では、nokhwa は値を設定するときにいまの自動・手動の状態をそのまま使うので、自動から手動へ切り替えられない（nokhwa-bindings-windows 0.4.6 の `set_control` を読んで確認）。切り替えるには DirectShow の `IAMCameraControl::Set` を直接呼ぶ必要がある。Linux（V4L2）では自動の設定が別の項目として見えるので、名前で切り替えられる（推測、未確認）。
+- 依存：nokhwa 0.10（Windows は Media Foundation、Linux は V4L2、macOS は AVFoundation）。Linux ではビルドのときに bindgen で `videodev2.h` を読む（clang と Linux のヘッダーが要る。CI の ubuntu で通るかは未確認）。
+- 検証：単体テスト `only_photos_and_videos_wait_for_the_person`・`known_controls_have_fixed_names`、手動のテスト `lists_the_cameras_here`（2026-11-21、このマシンで 2 台を一覧できた）。結合テスト `the_camera_takes_pictures_only_with_the_persons_approval`（on-request と auto のモードで `photo` が人の承認待ちになり、審査役に聞かないこと）。実際の撮影・録画・設定は、人の承認なしに撮らないため、まだ試していない。
 - 未検証：実際のモデルが画像を読めるか、各提供元が `tool_result`・`function_call_output` の画像を受け付けるか（実際の API では試していない）。

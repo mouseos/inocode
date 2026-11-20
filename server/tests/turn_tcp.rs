@@ -607,6 +607,46 @@ async fn an_issue_left_unfinished_brings_the_colleague_then_the_person() {
 }
 
 #[tokio::test]
+async fn the_camera_takes_pictures_only_with_the_persons_approval() {
+    with_timeout(async {
+        let photo = json!({"action": "photo", "device": 0});
+        let mock = scripted(vec![
+            tool_turn("c1", "camera", photo.clone()),
+            vec![sse_delta("waiting"), finish("stop"), sse_done()],
+            tool_turn("c2", "camera", photo.clone()),
+        ])
+        .await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client).await;
+
+        // Neither the default mode nor auto lets a photo be taken without
+        // the person, and auto does not ask the reviewer about it.
+        for (stream, mode) in [(2, "on-request"), (3, "auto")] {
+            let events = turn_with(
+                &mut client,
+                stream,
+                json!({"thread_id": thread, "prompt": "take a photo", "mode": mode}),
+            )
+            .await;
+            let last = events.last().unwrap();
+            assert_eq!(last["event"], "completed", "{last}");
+            assert_eq!(last["held"][0]["tool"], "camera", "{last}");
+            assert_eq!(
+                last["held"][0]["reason"],
+                "photos and videos are taken only with the person's approval"
+            );
+        }
+        // No request went to a reviewer: only the turns' own requests.
+        assert!(chats(&mock)
+            .iter()
+            .all(|request| !request.body.to_string().contains("You review one action")));
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn an_image_read_is_shown_to_the_model() {
     use base64::Engine;
     with_timeout(async {
@@ -764,7 +804,7 @@ async fn the_plan_is_shown_after_the_history_with_every_request() {
         let requests = chats(&mock);
         assert!(requests[0].body["tools"]
             .as_array()
-            .is_some_and(|tools| tools.len() == 16));
+            .is_some_and(|tools| tools.len() == 17));
         let state = last_message(&requests[1]);
         assert_eq!(state["role"], "user");
         assert_eq!(
@@ -1041,7 +1081,7 @@ async fn tools_of_the_configured_mcp_servers_are_offered_and_called() {
         assert_eq!(tool_results(&events), ["5"]);
         let requests = chats(&mock);
         let tools = requests[0].body["tools"].as_array().expect("tools");
-        assert_eq!(tools.len(), 18);
+        assert_eq!(tools.len(), 19);
         let added = tools
             .iter()
             .find(|tool| tool["function"]["name"] == "mcp__calc__add")
@@ -1750,7 +1790,7 @@ async fn near_the_window_older_work_is_compacted_and_the_person_kept() {
             .expect("a summary request");
         assert_eq!(
             summary_request.body["tools"].as_array().map(Vec::len),
-            Some(16)
+            Some(17)
         );
         assert!(summary_request.body["messages"]
             .to_string()

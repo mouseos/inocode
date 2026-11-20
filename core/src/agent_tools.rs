@@ -131,6 +131,7 @@ pub(crate) fn specs(sandboxed: bool) -> Vec<ToolSpec> {
         find::spec(),
         crate::explore::spec(),
         crate::ask::spec(),
+        crate::camera::spec(),
         ToolSpec {
             name: ISSUE.into(),
             description: "Work with the project's local issues, which last across \
@@ -223,6 +224,19 @@ pub(crate) async fn run(context: &Context<'_>, name: &str, arguments: &str) -> O
                 })
         }
         crate::ask::ASK => crate::ask::check(arguments).map(|(_, told)| told),
+        crate::camera::CAMERA => {
+            let folder = context
+                .store
+                .files_folder()
+                .join("images")
+                .join(format!("thread-{}", context.session.0));
+            crate::camera::run(arguments, &folder)
+                .await
+                .map(|(text, images)| {
+                    context.shown.lock().expect("shown lock").extend(images);
+                    text
+                })
+        }
         edit::EDIT => edit::edit(context.folder, arguments).await,
         edit::EDITS => edit::edits(context.folder, arguments).await,
         edit::WRITE => edit::write(context.folder, arguments).await,
