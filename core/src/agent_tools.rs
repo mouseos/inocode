@@ -100,7 +100,9 @@ pub(crate) fn specs(sandboxed: bool) -> Vec<ToolSpec> {
                 (device or chip model, file format and magic, firmware or app version, hash); \
                 steps are the exact commands, scripts, offsets and values that worked; failed \
                 lists general approaches that did not work here and why. Saved methods are \
-                found by recall."
+                found by recall. tags are chosen from the tags already in use: an unknown \
+                one is refused with the similar tags in use listed. Put a tag in new_tags \
+                only when none of those fits."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -110,7 +112,8 @@ pub(crate) fn specs(sandboxed: bool) -> Vec<ToolSpec> {
                     "title": {"type": "string"},
                     "steps": {"type": "string"},
                     "failed": {"type": "string"},
-                    "tags": {"type": "array", "items": {"type": "string"}}
+                    "tags": {"type": "array", "items": {"type": "string"}},
+                    "new_tags": {"type": "array", "items": {"type": "string"}}
                 }
             }),
         },
@@ -467,6 +470,8 @@ async fn method(context: &Context<'_>, arguments: &str) -> Result<String, String
         failed: String,
         #[serde(default)]
         tags: Vec<String>,
+        #[serde(default)]
+        new_tags: Vec<String>,
     }
     let arguments: Arguments = parse(arguments)?;
     let (identifier, title, steps) = (
@@ -477,6 +482,12 @@ async fn method(context: &Context<'_>, arguments: &str) -> Result<String, String
     if identifier.is_empty() || title.is_empty() || steps.is_empty() {
         return Err("identifier, title, and steps must not be empty".into());
     }
+    let in_use = context
+        .store
+        .tag_counts()
+        .await
+        .map_err(|error| error.message)?;
+    let tags = method_tags(&in_use, &arguments.tags, &arguments.new_tags)?;
     let origin = context
         .folder
         .map(|folder| folder.display().to_string())
@@ -493,11 +504,11 @@ async fn method(context: &Context<'_>, arguments: &str) -> Result<String, String
             kind: NoteKind::Procedure,
             title: cut_title(title),
             summary: title.to_string(),
-            keywords: format!("{identifier} {title} {}", arguments.tags.join(" ")),
+            keywords: format!("{identifier} {title} {}", tags.join(" ")),
             condition: identifier.to_string(),
             body,
             source: Source::Model,
-            tags: arguments.tags,
+            tags,
         })
         .await
         .map_err(|error| error.message)?;
@@ -507,6 +518,76 @@ async fn method(context: &Context<'_>, arguments: &str) -> Result<String, String
         .await
         .map_err(|error| error.message)?;
     Ok(format!("Saved method {}.", id.0))
+}
+
+/// The tags of a method: `chosen` must be tags in use (`in_use`, with their
+/// counts), and `new` ones must not be a tag in use written differently, so
+/// that one subject keeps one tag (docs/evidence/method-memory.md).
+fn method_tags(
+    in_use: &[(String, u64)],
+    chosen: &[String],
+    new: &[String],
+) -> Result<Vec<String>, String> {
+    let squash = |tag: &str| {
+        let letters: String = tag.chars().filter(|c| c.is_alphanumeric()).collect();
+        letters.strip_suffix('s').unwrap_or(&letters).to_string()
+    };
+    let mut tags: Vec<String> = Vec::new();
+    for tag in chosen {
+        let tag = crate::store::normalize_tag(tag);
+        if tag.is_empty() || tags.contains(&tag) {
+            continue;
+        }
+        if !in_use.iter().any(|(used, _)| *used == tag) {
+            return Err(unknown_tag(in_use, &tag));
+        }
+        tags.push(tag);
+    }
+    for tag in new {
+        let tag = crate::store::normalize_tag(tag);
+        if tag.is_empty() || tags.contains(&tag) {
+            continue;
+        }
+        if let Some((used, _)) = in_use
+            .iter()
+            .find(|(used, _)| *used != tag && squash(used) == squash(&tag))
+        {
+            return Err(format!(
+                "`{tag}` is the tag `{used}` already in use, written differently; put `{used}` \
+                 in tags instead."
+            ));
+        }
+        tags.push(tag);
+    }
+    Ok(tags)
+}
+
+/// The refusal of a tag not in use, listing the tags in use most like it.
+fn unknown_tag(in_use: &[(String, u64)], tag: &str) -> String {
+    if in_use.is_empty() {
+        return format!("No tags are in use yet; put `{tag}` in new_tags.");
+    }
+    let grams = |text: &str| -> std::collections::HashSet<String> {
+        let chars: Vec<char> = text.chars().collect();
+        chars.windows(3).map(|gram| gram.iter().collect()).collect()
+    };
+    let wanted = grams(tag);
+    let mut scored: Vec<(f64, u64, &str)> = in_use
+        .iter()
+        .map(|(used, count)| {
+            let theirs = grams(used);
+            let shared = wanted.intersection(&theirs).count() as f64;
+            let all = wanted.union(&theirs).count().max(1) as f64;
+            (shared / all, *count, used.as_str())
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0).then(b.1.cmp(&a.1)));
+    let listed: Vec<&str> = scored.iter().take(10).map(|(_, _, used)| *used).collect();
+    format!(
+        "`{tag}` is not a tag in use. Tags in use most like it: {}. Put one of them in tags; \
+         if none fits, put `{tag}` in new_tags.",
+        listed.join(", ")
+    )
 }
 
 fn cut_title(text: &str) -> String {
@@ -543,6 +624,43 @@ pub(crate) async fn render_lessons(
 mod tests {
     use super::*;
     use crate::conversation::Speaker;
+
+    #[test]
+    fn method_tags_are_chosen_from_those_in_use() {
+        let words = |list: &[&str]| list.iter().map(|tag| tag.to_string()).collect::<Vec<_>>();
+        let in_use = vec![
+            ("firmware".to_string(), 4),
+            ("xor".to_string(), 2),
+            ("uart".to_string(), 1),
+        ];
+        assert_eq!(
+            method_tags(
+                &in_use,
+                &words(&["#Firmware", "xor"]),
+                &words(&["Mediatek MT6765"])
+            ),
+            Ok(words(&["firmware", "xor", "mediatek-mt6765"]))
+        );
+        let refused = method_tags(&in_use, &words(&["firmwares"]), &[]).unwrap_err();
+        assert!(
+            refused.starts_with("`firmwares` is not a tag in use"),
+            "{refused}"
+        );
+        assert!(refused.contains("most like it: firmware"), "{refused}");
+        let refused = method_tags(&in_use, &[], &words(&["X-O-R"])).unwrap_err();
+        assert!(refused.contains("put `xor` in tags"), "{refused}");
+        let refused = method_tags(&in_use, &[], &words(&["Firmwares"])).unwrap_err();
+        assert!(refused.contains("put `firmware` in tags"), "{refused}");
+        // A new tag that only shares letters with one in use is accepted.
+        assert_eq!(
+            method_tags(&in_use, &[], &words(&["uart-baud"])),
+            Ok(words(&["uart-baud"]))
+        );
+        assert_eq!(
+            method_tags(&[], &words(&["boot"]), &[]),
+            Err("No tags are in use yet; put `boot` in new_tags.".to_string())
+        );
+    }
 
     #[test]
     fn recalled_messages_are_plain_and_cut() {

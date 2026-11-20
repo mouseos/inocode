@@ -715,6 +715,25 @@ impl Store {
         .await
     }
 
+    /// Every tag in use, with the number of notes carrying it, most used
+    /// first.
+    pub async fn tag_counts(&self) -> Result<Vec<(String, u64)>, ErrorInfo> {
+        self.read(Duration::from_secs(30), move |db| {
+            let mut statement = db
+                .prepare_cached(
+                    "SELECT tag, COUNT(*) FROM tags GROUP BY tag ORDER BY COUNT(*) DESC, tag",
+                )
+                .map_err(store_error)?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
+                })
+                .map_err(store_error)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(store_error)
+        })
+        .await
+    }
+
     /// Makes `alias` resolve to `tag` for future tagging and searches.
     pub async fn alias_tag(&self, alias: &str, tag: &str) -> Result<(), ErrorInfo> {
         let (alias, tag) = (normalize_tag(alias), normalize_tag(tag));
@@ -1301,7 +1320,7 @@ pub(crate) fn load_note(db: &Connection, id: NoteId) -> Result<Option<Note>, Err
 }
 
 /// `#Rust`, ` rust ` and `RUST` are one tag.
-fn normalize_tag(tag: &str) -> String {
+pub(crate) fn normalize_tag(tag: &str) -> String {
     tag.trim()
         .trim_start_matches('#')
         .to_lowercase()

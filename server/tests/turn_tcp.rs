@@ -349,6 +349,54 @@ async fn recall_reads_earlier_messages_word_for_word() {
 }
 
 #[tokio::test]
+async fn method_tags_must_be_in_use_unless_given_as_new() {
+    with_timeout(async {
+        let method = |tags: Value, new_tags: Value| {
+            json!({
+                "identifier": "INOF container", "title": "Unpack INOF", "steps": "unpack.py",
+                "tags": tags, "new_tags": new_tags
+            })
+        };
+        let mock = scripted(vec![
+            tool_turn("m1", "method", method(json!(["firmware"]), json!([]))),
+            tool_turn(
+                "m2",
+                "method",
+                method(json!([]), json!(["Firmware", "XOR"])),
+            ),
+            tool_turn("m3", "method", method(json!(["firmwares"]), json!([]))),
+            tool_turn("m4", "method", method(json!(["firmware"]), json!(["xors"]))),
+            tool_turn(
+                "m5",
+                "method",
+                method(json!(["firmware", "xor"]), json!([])),
+            ),
+        ])
+        .await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client).await;
+
+        let events = turn(&mut client, 2, thread, "save it").await;
+        let results = tool_results(&events);
+        assert_eq!(
+            results[0],
+            "No tags are in use yet; put `firmware` in new_tags."
+        );
+        assert!(results[1].starts_with("Saved method"), "{}", results[1]);
+        assert!(
+            results[2].contains("Tags in use most like it: firmware"),
+            "{}",
+            results[2]
+        );
+        assert!(results[3].contains("put `xor` in tags"), "{}", results[3]);
+        assert!(results[4].starts_with("Saved method"), "{}", results[4]);
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn methods_are_shared_across_projects_and_recalled_whole() {
     with_timeout(async {
         let base = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
