@@ -1607,6 +1607,7 @@ mod tests {
                         name: "read_log".to_string(),
                         content: log,
                         is_error: false,
+                        images: Vec::new(),
                     },
                 },
                 user("続きをお願いします"),

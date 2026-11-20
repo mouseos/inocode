@@ -521,6 +521,7 @@ mod tests {
                     name: "read".into(),
                     content: long,
                     is_error: true,
+                    images: Vec::new(),
                 },
             },
         ];

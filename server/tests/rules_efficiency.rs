@@ -350,6 +350,7 @@ async fn decide_with_index(
                 name: "read_rules".to_string(),
                 content: render(lines, &picked),
                 is_error: false,
+                images: Vec::new(),
             },
         });
     }

@@ -273,16 +273,31 @@ fn record(previous: Option<&str>, new: Vec<String>) -> String {
 
 /// The size of a request with `system`, `messages` and `tools`, in bytes
 /// of what is sent; tokens are estimated from it.
+/// Bytes of text an image token is counted as, about what a token of
+/// English text takes.
+const IMAGE_BYTES_PER_TOKEN: u64 = 4;
+
 pub(crate) fn request_bytes(system: Option<&str>, messages: &[Message], tools: &[ToolSpec]) -> u64 {
     let bodies: usize = messages
         .iter()
         .map(|message| serde_json::to_string(&message.body).map_or(0, |text| text.len()))
         .sum();
+    // An image is sent as base64 but costs tokens by its size; it is
+    // counted as that many tokens of text.
+    let images: u64 = messages
+        .iter()
+        .filter_map(|message| match &message.body {
+            Body::ToolResult { images, .. } => Some(images),
+            _ => None,
+        })
+        .flatten()
+        .map(|image| crate::picture::estimated_tokens(image) * IMAGE_BYTES_PER_TOKEN)
+        .sum();
     let tools: usize = tools
         .iter()
         .map(|tool| tool.name.len() + tool.description.len() + tool.parameters.to_string().len())
         .sum();
-    (system.map_or(0, str::len) + bodies + tools) as u64
+    (system.map_or(0, str::len) + bodies + tools) as u64 + images
 }
 
 /// Tokens of `bytes` at `bytes_per_token`.
@@ -546,6 +561,7 @@ mod tests {
                 name: "plan".into(),
                 content: "Plan updated.".into(),
                 is_error: false,
+                images: Vec::new(),
             },
         }
     }

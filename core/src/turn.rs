@@ -353,7 +353,7 @@ const TOOL_GUIDE: &str = "\n\nThe tools of this harness:\n\
 - find and read look things up. explore has a helper search the project and answer \
 with file paths and line ranges; it suits finding something that would take many \
 searches and reads across files. For one search or one known file, find and read \
-are enough.\n\
+are enough. read also shows image files; its region shows a part of one at full detail.\n\
 - edit changes one place in a file; edits changes several places, in one file or \
 more, all of them or none; write writes a whole file.\n\
 - shell runs a command; job types into, waits for or stops a command that is still \
@@ -440,6 +440,8 @@ struct Thread<'a> {
     last_advice: Option<String>,
     /// Questions the harness put to the person in this turn.
     escalations: Vec<Asked>,
+    /// Images the tool being answered shows the model.
+    shown: std::sync::Mutex<Vec<crate::conversation::Image>>,
     /// The reviewer's refusals in a row and in this turn.
     denials: (u32, u32),
 }
@@ -658,6 +660,7 @@ impl Thread<'_> {
             sandboxed: self.sandboxed(),
             seq: self.next_seq,
             events: Some(&self.events),
+            shown: &self.shown,
         };
         if name == crate::explore::EXPLORE {
             let explorer = self.explorer.clone();
@@ -1108,11 +1111,13 @@ impl Thread<'_> {
                 ),
                 StopReason::Error | StopReason::Aborted => continue,
             };
+            let images = std::mem::take(&mut *self.shown.lock().expect("shown lock"));
             results.push(Body::ToolResult {
                 call_id: call_id.clone(),
                 name: name.clone(),
                 content: answer.0,
                 is_error: answer.1,
+                images,
             });
         }
         results
@@ -1359,6 +1364,7 @@ async fn open<'a>(
         advised_from: 0,
         last_advice: None,
         escalations: Vec::new(),
+        shown: std::sync::Mutex::new(Vec::new()),
         denials: (0, 0),
     })
 }

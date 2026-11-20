@@ -61,7 +61,7 @@
 | [explore-subagent.md](explore-subagent.md) | 読むだけの探索役 `explore`（場所と行だけを返す） | RESEARCH_SUPPORTED（査読前のみ） | 実装済み（`core/src/explore.rs`） |
 | [usage-log.md](usage-log.md) | 使用量のログとモデルごとの速さ（tok/s、最初の文字までの時間、キャッシュ、時間帯） | UNSUPPORTED_APPROVED | 実装済み（`core/src/usage_log.rs`、`stats/models`） |
 | [goal-command.md](goal-command.md) | goal コマンド（目標の達成まで自動で続ける） | UNSUPPORTED_PENDING | 未実装（調査のみ） |
-| [image-input.md](image-input.md) | 画像をモデルに見せる（縮小、切り抜き） | 調査済み。実装は進行中 | 進行中 |
+| [image-input.md](image-input.md) | 画像をモデルに見せる（read で画像、縮小、切り抜き） | 機能は UNSUPPORTED_APPROVED、既定値は公式文書と研究による | 画像は実装済み（`core/src/picture.rs`）、カメラは進行中 |
 | [lsp-diagnostics.md](lsp-diagnostics.md) | 編集の後の型検査・LSP の診断 | UNSUPPORTED_PENDING | 未実装（適用できる研究なし） |
 | [ask-person.md](ask-person.md) | 人に質問するツール `ask`（フォームの形、ターンの終わりに返す） | UNSUPPORTED_APPROVED | 実装済み（`core/src/ask.rs`） |
 | [tool-guidance.md](tool-guidance.md) | システムプロンプトのツールの使い分け | 説明を詳しくする：RESEARCH_SUPPORTED。システムプロンプトに置く：UNSUPPORTED_APPROVED | 実装済み（`core/src/turn.rs` の `TOOL_GUIDE`） |

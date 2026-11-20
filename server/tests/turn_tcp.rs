@@ -607,6 +607,45 @@ async fn an_issue_left_unfinished_brings_the_colleague_then_the_person() {
 }
 
 #[tokio::test]
+async fn an_image_read_is_shown_to_the_model() {
+    use base64::Engine;
+    with_timeout(async {
+        let project = database().with_extension("project");
+        std::fs::create_dir_all(&project).expect("project");
+        // A 1×1 PNG.
+        let png = base64::engine::general_purpose::STANDARD
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+            .expect("png");
+        std::fs::write(project.join("shot.png"), &png).expect("image");
+        let mock = scripted(vec![
+            tool_turn("r1", "read", json!({"path": "shot.png"})),
+            tool_turn("r2", "read", json!({"path": "shot.png", "region": [0, 0, 5, 5]})),
+        ])
+        .await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = project_thread(&mut client, &project).await;
+
+        let events = turn(&mut client, 2, thread, "look at the screenshot").await;
+        let results = tool_results(&events);
+        assert_eq!(results[0], "Image shot.png: 1×1 pixels; shown at 1×1.");
+        assert!(results[1].contains("is not inside the image of 1×1 pixels"), "{}", results[1]);
+        let sent = &chats(&mock)[1].body["messages"];
+        let messages = sent.as_array().expect("messages");
+        let tool = messages.iter().position(|message| message["role"] == "tool").expect("tool");
+        // The image follows the tool message, as Chat Completions takes it.
+        let shown = &messages[tool + 1];
+        assert_eq!(shown["role"], "user");
+        assert!(shown["content"][1]["image_url"]["url"]
+            .as_str()
+            .is_some_and(|url| url.starts_with("data:image/png;base64,")));
+        let _ = std::fs::remove_dir_all(&project);
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn requests_are_logged_and_summed_up_per_model() {
     with_timeout(async {
         let answer = vec![

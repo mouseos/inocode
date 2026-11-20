@@ -20,6 +20,7 @@ mod llm;
 mod mcp;
 pub mod oauth;
 mod outline;
+mod picture;
 mod read;
 pub mod reasoning;
 mod review;

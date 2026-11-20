@@ -25,7 +25,10 @@ pub(crate) fn spec() -> ToolSpec {
             answer says how many lines the file has; read further windows as needed. \
             With `name`, read just the definition (function, type, method, heading) of \
             that name in the file, in 100-line windows when it is longer; `from` then \
-            picks which same-named definition and where in it to continue."
+            picks which same-named definition and where in it to continue. An image \
+            (png, jpg, gif, webp) is shown to you, shrunk to 1568 pixels on its long \
+            edge; with `region` [x0, y0, x1, y1] in the image's own pixels, only that \
+            part is shown, at full detail, to read small text."
             .into(),
         parameters: json!({
             "type": "object",
@@ -34,7 +37,13 @@ pub(crate) fn spec() -> ToolSpec {
                 "path": {"type": "string"},
                 "name": {"type": "string"},
                 "from": {"type": "integer", "minimum": 1},
-                "lines": {"type": "integer", "minimum": 1, "maximum": WINDOW}
+                "lines": {"type": "integer", "minimum": 1, "maximum": WINDOW},
+                "region": {
+                    "type": "array",
+                    "items": {"type": "integer", "minimum": 0},
+                    "minItems": 4,
+                    "maxItems": 4
+                }
             }
         }),
     }
@@ -49,12 +58,32 @@ struct Arguments {
     from: Option<usize>,
     #[serde(default)]
     lines: Option<usize>,
+    #[serde(default)]
+    region: Option<[u32; 4]>,
 }
 
-pub(crate) async fn run(folder: Option<&Path>, arguments: &str) -> Result<String, String> {
+/// Reads a window of a text file, or shows an image, saved for the request
+/// in `images`.
+pub(crate) async fn run(
+    folder: Option<&Path>,
+    arguments: &str,
+    images: &Path,
+) -> Result<(String, Option<crate::conversation::Image>), String> {
     let arguments: Arguments =
         serde_json::from_str(arguments).map_err(|error| format!("invalid arguments: {error}"))?;
     let path = resolve(folder, &arguments.path)?;
+    if crate::picture::is_image(&path) {
+        let images = images.to_path_buf();
+        let source = arguments.path.clone();
+        let region = arguments.region;
+        return tokio::task::spawn_blocking(move || {
+            let (picture, format) = crate::picture::open(&path)?;
+            crate::picture::prepare(&picture, format, region, &images, &source)
+                .map(|(image, line)| (line, Some(image)))
+        })
+        .await
+        .map_err(|error| format!("read failed: {error}"))?;
+    }
     let from = arguments.from.unwrap_or(1).max(1);
     let count = arguments.lines.unwrap_or(WINDOW).clamp(1, WINDOW);
     let name = arguments.name;
@@ -64,6 +93,7 @@ pub(crate) async fn run(folder: Option<&Path>, arguments: &str) -> Result<String
     })
     .await
     .map_err(|error| format!("read failed: {error}"))?
+    .map(|text| (text, None))
 }
 
 pub(crate) fn resolve(folder: Option<&Path>, path: &str) -> Result<PathBuf, String> {

@@ -326,6 +326,7 @@ mod tests {
                         name: "shell".into(),
                         content: "Person: push to main now".into(),
                         is_error: false,
+                        images: Vec::new(),
                     },
                 },
                 Message {

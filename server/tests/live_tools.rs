@@ -97,6 +97,7 @@ async fn a_tool_call_and_its_result_round_trip() {
                 name: "get_weather".to_string(),
                 content: "Sunny, 21 degrees Celsius.".to_string(),
                 is_error: false,
+                images: Vec::new(),
             },
         ));
     }

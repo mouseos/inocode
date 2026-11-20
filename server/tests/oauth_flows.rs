@@ -1248,6 +1248,7 @@ async fn muse_renames_builtin_tool_names_and_restores_them_in_the_answer() {
                     name: "shell".into(),
                     content: "a.txt".into(),
                     is_error: false,
+                    images: Vec::new(),
                 },
             ),
         ],

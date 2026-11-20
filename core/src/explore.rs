@@ -124,9 +124,22 @@ pub(crate) async fn run(
                     true,
                 )
             } else if name == find::FIND || name == read::READ {
-                agent_tools::run(context, &name, &arguments)
+                let answer = agent_tools::run(context, &name, &arguments)
                     .await
-                    .unwrap_or_else(|| (format!("no tool named {name}"), true))
+                    .unwrap_or_else(|| (format!("no tool named {name}"), true));
+                // Images read here are not shown to the explorer, nor kept
+                // for the asking model.
+                let mut shown = context.shown.lock().expect("shown lock");
+                match shown.is_empty() {
+                    true => answer,
+                    false => {
+                        shown.clear();
+                        (
+                            format!("{} (the image is not shown to the explorer)", answer.0),
+                            answer.1,
+                        )
+                    }
+                }
             } else {
                 (
                     format!("Not run: only find and read are available, not {name}."),
@@ -138,6 +151,7 @@ pub(crate) async fn run(
                 name,
                 content,
                 is_error,
+                images: Vec::new(),
             }));
         }
     }

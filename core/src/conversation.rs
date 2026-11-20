@@ -41,7 +41,35 @@ pub enum Body {
         name: String,
         content: String,
         is_error: bool,
+        /// Images the tool shows the model with its answer.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<Image>,
     },
+}
+
+/// An image shown to the model, kept as a file beside the store and read
+/// when a request is made (docs/evidence/image-input.md).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Image {
+    pub path: String,
+    pub media_type: String,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Image {
+    /// The image as base64, or why it cannot be sent.
+    fn data(&self) -> Result<String, String> {
+        use base64::Engine;
+        std::fs::read(&self.path)
+            .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes))
+            .map_err(|_| format!("(the image {} is no longer available)", self.path))
+    }
+
+    fn data_url(&self) -> Result<String, String> {
+        self.data()
+            .map(|data| format!("data:{};base64,{data}", self.media_type))
+    }
 }
 
 /// Who wrote a user turn: the person, or the harness (continuation nudges,
@@ -114,7 +142,13 @@ pub fn to_chat_completions(
     if let Some(system) = &conversation.system {
         messages.push(json!({ "role": "system", "content": system }));
     }
+    // Tool messages take text only, so the images of a run of tool results
+    // follow it as one user message.
+    let mut pending_images = Vec::new();
     for body in turns {
+        if !matches!(body, Body::ToolResult { .. }) {
+            flush_images(&mut messages, &mut pending_images);
+        }
         match body {
             Body::User { parts, .. } => {
                 messages.push(json!({ "role": "user", "content": parts.join("\n\n") }));
@@ -163,17 +197,45 @@ pub fn to_chat_completions(
                 messages.push(Value::Object(message));
             }
             Body::ToolResult {
-                call_id, content, ..
-            } => messages.push(json!({
-                "role": "tool",
-                "tool_call_id": call_id,
-                "content": content,
-            })),
+                call_id,
+                content,
+                images,
+                ..
+            } => {
+                let mut content = content.clone();
+                for image in images {
+                    match image.data_url() {
+                        Ok(url) => pending_images.push(json!({
+                            "type": "image_url",
+                            "image_url": { "url": url },
+                        })),
+                        Err(missing) => content.push_str(&format!("\n{missing}")),
+                    }
+                }
+                messages.push(json!({
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": content,
+                }));
+                continue;
+            }
         }
     }
+    flush_images(&mut messages, &mut pending_images);
     let mut fields = Map::new();
     fields.insert("messages".into(), Value::Array(messages));
     Ok(fields)
+}
+
+/// Adds the images of the tool results just before as one user message.
+fn flush_images(messages: &mut Vec<Value>, images: &mut Vec<Value>) {
+    if images.is_empty() {
+        return;
+    }
+    let mut content =
+        vec![json!({ "type": "text", "text": "The images of the tool results above:" })];
+    content.append(images);
+    messages.push(json!({ "role": "user", "content": content }));
 }
 
 /// Speaker kind of the per-request state message that is appended after the
@@ -237,8 +299,28 @@ pub fn to_anthropic(
                 call_id,
                 content,
                 is_error,
+                images,
                 ..
             } => {
+                let content = if images.is_empty() {
+                    json!(content)
+                } else {
+                    let mut blocks = vec![json!({ "type": "text", "text": content })];
+                    for image in images {
+                        blocks.push(match image.data() {
+                            Ok(data) => json!({
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": image.media_type,
+                                    "data": data,
+                                },
+                            }),
+                            Err(missing) => json!({ "type": "text", "text": missing }),
+                        });
+                    }
+                    Value::Array(blocks)
+                };
                 let mut block = json!({
                     "type": "tool_result",
                     "tool_use_id": call_id,
@@ -335,12 +417,33 @@ pub fn to_responses(
                 }
             }
             Body::ToolResult {
-                call_id, content, ..
-            } => input.push(json!({
-                "type": "function_call_output",
-                "call_id": call_id,
-                "output": content,
-            })),
+                call_id,
+                content,
+                images,
+                ..
+            } => {
+                let output = if images.is_empty() {
+                    json!(content)
+                } else {
+                    let mut items = vec![json!({ "type": "input_text", "text": content })];
+                    for image in images {
+                        items.push(match image.data_url() {
+                            Ok(url) => json!({
+                                "type": "input_image",
+                                "image_url": url,
+                                "detail": "auto",
+                            }),
+                            Err(missing) => json!({ "type": "input_text", "text": missing }),
+                        });
+                    }
+                    Value::Array(items)
+                };
+                input.push(json!({
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": output,
+                }));
+            }
         }
     }
     let mut fields = Map::new();
@@ -725,6 +828,7 @@ mod tests {
                 name: "read_file".to_string(),
                 content: content.to_string(),
                 is_error,
+                images: Vec::new(),
             },
         )
     }
@@ -760,6 +864,100 @@ mod tests {
                 user("5", "next"),
             ],
         }
+    }
+
+    /// A tool round whose results show an image that exists and one that
+    /// is gone.
+    fn image_round(format: ProviderKind, dir: &std::path::Path) -> Conversation {
+        let path = dir.join("a.png");
+        std::fs::write(&path, b"PNG").expect("image");
+        let image = |path: &std::path::Path| Image {
+            path: path.to_string_lossy().into_owned(),
+            media_type: "image/png".into(),
+            width: 10,
+            height: 10,
+        };
+        let mut conversation = tool_round(format, json!(null));
+        for message in &mut conversation.messages {
+            if let Body::ToolResult {
+                call_id, images, ..
+            } = &mut message.body
+            {
+                images.push(match call_id.as_str() {
+                    "c1" => image(&path),
+                    _ => image(&dir.join("gone.png")),
+                });
+            }
+        }
+        conversation
+    }
+
+    #[test]
+    fn images_of_tool_results_reach_each_format() {
+        let dir = tempfile::tempdir().expect("dir");
+        let data = "UE5H"; // base64 of "PNG"
+        let gone = format!(
+            "(the image {} is no longer available)",
+            dir.path().join("gone.png").display()
+        );
+
+        let anthropic = to_anthropic(&image_round(ProviderKind::Anthropic, dir.path()), "m1")
+            .expect("converts");
+        let results = &anthropic["messages"][2]["content"];
+        assert_eq!(
+            results[0]["content"],
+            json!([
+                {"type": "text", "text": "missing"},
+                {"type": "text", "text": gone}
+            ])
+        );
+        assert_eq!(
+            results[1]["content"][1],
+            json!({"type": "image",
+            "source": {"type": "base64", "media_type": "image/png", "data": data}})
+        );
+
+        let responses = to_responses(&image_round(ProviderKind::Responses, dir.path()), "m1")
+            .expect("converts");
+        let outputs: Vec<&Value> = responses["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["type"] == "function_call_output")
+            .collect();
+        assert_eq!(
+            outputs[1]["output"][1],
+            json!({"type": "input_image",
+            "image_url": format!("data:image/png;base64,{data}"), "detail": "auto"})
+        );
+
+        // Tool messages take text only: the images follow the run of them.
+        let chat = to_chat_completions(&image_round(ProviderKind::OpenAi, dir.path()), "m1")
+            .expect("converts");
+        let messages = chat["messages"].as_array().unwrap();
+        let roles: Vec<&str> = messages
+            .iter()
+            .map(|m| m["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            roles,
+            [
+                "system",
+                "user",
+                "assistant",
+                "tool",
+                "tool",
+                "user",
+                "user"
+            ]
+        );
+        assert_eq!(messages[3]["content"], format!("missing\n{gone}"));
+        assert_eq!(
+            messages[5]["content"][1],
+            json!({"type": "image_url",
+            "image_url": {"url": format!("data:image/png;base64,{data}")}})
+        );
+        assert_eq!(messages[6]["content"], "next");
     }
 
     #[test]

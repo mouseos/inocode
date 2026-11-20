@@ -189,6 +189,8 @@ pub(crate) struct Context<'a> {
     pub sandboxed: bool,
     /// The stored position the message making the call takes.
     pub seq: i64,
+    /// Images the call shows the model, added to its answer.
+    pub shown: &'a std::sync::Mutex<Vec<crate::conversation::Image>>,
     /// Where the turn reports, for questions of MCP servers to the person.
     pub events: Option<&'a tokio::sync::mpsc::Sender<crate::turn::TurnEvent>>,
 }
@@ -205,7 +207,21 @@ pub(crate) async fn run(context: &Context<'_>, name: &str, arguments: &str) -> O
         METHOD => method(context, arguments).await,
         ISSUE => issue(context, arguments).await,
         web_search::SEARCH => web_search::run(arguments).await,
-        read::READ => read::run(context.folder, arguments).await,
+        read::READ => {
+            let images = context
+                .store
+                .files_folder()
+                .join("images")
+                .join(format!("thread-{}", context.session.0));
+            read::run(context.folder, arguments, &images)
+                .await
+                .map(|(text, image)| {
+                    if let Some(image) = image {
+                        context.shown.lock().expect("shown lock").push(image);
+                    }
+                    text
+                })
+        }
         crate::ask::ASK => crate::ask::check(arguments).map(|(_, told)| told),
         edit::EDIT => edit::edit(context.folder, arguments).await,
         edit::EDITS => edit::edits(context.folder, arguments).await,

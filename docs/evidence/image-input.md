@@ -1,7 +1,7 @@
 # 画像をモデルに見せる（画像を見るツール、カメラ）
 
 - **対象と範囲：** プロジェクトの画像ファイル（スクリーンショット、図、写真）とカメラで撮った写真を、ツールの結果としてモデルに見せる。軽くする方法（縮小、必要な部分の切り抜き）を含む。
-- **関連コード：** 実装中（このファイルは調査の記録）。
+- **関連コード：** `core/src/picture.rs`（開く、切り抜く、縮める、保存する、費用の見積もり）、`core/src/read.rs`（`read` で画像を読む、`region`）、`core/src/conversation.rs`（`Image`、`ToolResult` の `images`、3 つの形式への変換）、`core/src/agent_tools.rs`（`Context::shown`）、`core/src/turn.rs`（画像を答えに付ける）、`core/src/compaction.rs`（見積もり）、`core/src/explore.rs`（探索役には見せない）。カメラは実装中。
 - **根拠の状態：** 画像を見せる機能そのものは UNSUPPORTED_APPROVED（カメラのツールの承認、2026-11-21「カメラツール作っていい」。撮った写真をモデルに見せるのに要る）。既定の大きさと切り抜きの方式は下の資料に基づく。
 - **ユーザーの判断：** 2026-11-21「画像見るツールだが軽量化など手法はあるか？」「カメラツールもほしい。デバイス指定で写真や動画取るだけ。フォーカスや露出など…全部いじる」「カメラツール作っていい」。
 
@@ -24,3 +24,15 @@
 2. `region`（元の画像の画素で `[x0, y0, x1, y1]`）で、その部分だけを元の解像度で見られるようにする（ViCrop、Zoom-Refine、Anthropic の `zoom`）。
 3. 形式は変えない（PNG はそのまま、圧縮で文字を壊さない）。白黒にはしない。
 4. 文字の抽出（OCR）は入れない（依存が増え、根拠も画面の操作に限られる）。
+
+## 実装（2026-11-21）
+
+- `read` の `path` が画像（png・jpg・jpeg・gif・webp）なら、画像として開く（`image` クレート 0.25、png・jpeg・gif・webp だけ）。`region` があれば切り抜き、長辺が 1,568 画素を超えれば縦横比を保って縮める（Lanczos3）。元が JPEG なら JPEG（品質は既定）、それ以外は PNG で、データベースの横の `<名前>.files/images/thread-<スレッド>/` に保存する。答えの文は「Image a.png: 3000×1000 pixels; shown at 1568×523.」の形。
+- 画像はツールの結果の `images`（パス、形式、縦横）として履歴に残し、要求を作るときにファイルを読んで base64 にする。ファイルがなくなっていたら、画像の代わりに「(the image … is no longer available)」と書く。
+  - Anthropic：`tool_result` の `content` を、文と画像のブロック（base64）の配列にする。
+  - Responses：`function_call_output` の `output` を、`input_text` と `input_image`（data URL、`detail` は `auto`）の配列にする。
+  - Chat Completions：`tool` メッセージは文字だけなので、続いたツールの結果の画像を、その直後の 1 つの人のメッセージ（`image_url`）にまとめて入れる（公式文書にない、よくあるやり方）。
+- 圧縮の見積もり：画像 1 枚を 28×28 画素の区画の数のトークンとし、1 トークンを 4 バイトの文字として数える（推測）。
+- 探索役が `read` で画像を読んだときは、画像を探索役にも頼んだモデルにも見せず、「(the image is not shown to the explorer)」と書く。
+- 検証：単体テスト `large_images_are_shrunk_and_regions_cut`・`images_are_known_by_their_extension`（`picture.rs`）、`images_of_tool_results_reach_each_format`（`conversation.rs`）。結合テスト `an_image_read_is_shown_to_the_model`（PNG を読むと、次の要求で `tool` メッセージの後に画像が付く。画像の外の `region` は断る）。
+- 未検証：実際のモデルが画像を読めるか、各提供元が `tool_result`・`function_call_output` の画像を受け付けるか（実際の API では試していない）。
