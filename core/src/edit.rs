@@ -74,6 +74,7 @@ pub(crate) async fn edit(folder: Option<&Path>, arguments: &str) -> Result<Strin
         let text = read_text(&path)?;
         let done = replace(&text, &arguments.old, &arguments.new, arguments.all)
             .map_err(|problem| format!("{} {problem}", path.display()))?;
+        new_syntax_errors(&path, Some(&text), &done.text)?;
         std::fs::write(&path, &done.text)
             .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
         let line = done.line;
@@ -106,6 +107,8 @@ pub(crate) async fn write(folder: Option<&Path>, arguments: &str) -> Result<Stri
         if path.is_dir() {
             return Err(format!("{} is a folder", path.display()));
         }
+        let before = if existed { std::fs::read_to_string(&path).ok() } else { None };
+        new_syntax_errors(&path, before.as_deref(), &arguments.content)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
@@ -121,6 +124,36 @@ pub(crate) async fn write(folder: Option<&Path>, arguments: &str) -> Result<Stri
     })
     .await
     .map_err(|error| format!("write failed: {error}"))?
+}
+
+/// Refuses a change that leaves more syntax errors than the file had before,
+/// as SWE-agent's edit guard does (docs/evidence/edit-syntax-check.md). Files
+/// in languages without a tree-sitter grammar here are not checked.
+fn new_syntax_errors(path: &Path, before: Option<&str>, after: &str) -> Result<(), String> {
+    let Some(errors) = crate::outline::syntax_errors(path, after) else {
+        return Ok(());
+    };
+    let had = before
+        .and_then(|text| crate::outline::syntax_errors(path, text))
+        .map_or(0, |lines| lines.len());
+    if errors.len() <= had {
+        return Ok(());
+    }
+    let lines: Vec<&str> = after.lines().collect();
+    let first = errors[0];
+    let from = first.saturating_sub(4).max(1);
+    let shown: String = (from..=first + 3)
+        .filter_map(|number| Some(format!("{number:>4}: {}\n", lines.get(number - 1)?)))
+        .collect();
+    let at: Vec<String> = errors.iter().map(usize::to_string).collect();
+    Err(format!(
+        "{} was not changed: the change leaves syntax errors it did not have before \
+         ({} now, {had} before; at line {}). The file would have read:\n{shown}\
+         Correct the change and try again; sending the same one again fails the same way.",
+        path.display(),
+        errors.len(),
+        at.join(", ")
+    ))
 }
 
 fn read_text(path: &Path) -> Result<String, String> {
@@ -348,6 +381,40 @@ mod tests {
         assert!(replace(text, "def  run", "def go", false)
             .unwrap_err()
             .contains("even with whitespace ignored"));
+    }
+
+    #[tokio::test]
+    async fn changes_that_add_syntax_errors_are_refused() {
+        let dir = tempfile::tempdir().expect("dir");
+        let folder = Some(dir.path());
+        let path = dir.path().join("a.py");
+        std::fs::write(&path, "def f():\n    return 1\n").expect("write");
+        let error = edit(folder, r#"{"path": "a.py", "old": "return 1", "new": "return (1"}"#)
+            .await
+            .unwrap_err();
+        assert!(error.contains("was not changed"), "{error}");
+        assert!(error.contains("   2:     return (1"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            "def f():\n    return 1\n"
+        );
+        edit(folder, r#"{"path": "a.py", "old": "return 1", "new": "return 2"}"#)
+            .await
+            .expect("a valid edit");
+        let error = write(folder, r#"{"path": "b.rs", "content": "fn main() {\n"}"#)
+            .await
+            .unwrap_err();
+        assert!(error.contains("1 now, 0 before"), "{error}");
+        assert!(!dir.path().join("b.rs").exists());
+
+        // A file that already had an error may keep it; other files are not checked.
+        std::fs::write(dir.path().join("c.rs"), "fn a( {}\nfn b() {}\n").expect("write");
+        edit(folder, r#"{"path": "c.rs", "old": "fn b() {}", "new": "fn b() { 1 }"}"#)
+            .await
+            .expect("an edit that adds no error");
+        write(folder, r#"{"path": "notes.txt", "content": "(("}"#)
+            .await
+            .expect("not checked");
     }
 
     #[tokio::test]

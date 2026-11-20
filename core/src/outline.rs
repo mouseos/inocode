@@ -368,6 +368,33 @@ fn highlighted_definitions(
     found
 }
 
+/// The lines (from 1) where tree-sitter finds a syntax error in `source`, one
+/// per error; `None` when the file's language has no tree-sitter grammar here.
+pub(crate) fn syntax_errors(path: &Path, source: &str) -> Option<Vec<usize>> {
+    let configuration = language(path)?;
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&configuration.language).ok()?;
+    let tree = parser.parse(source, None)?;
+    let mut lines = Vec::new();
+    let mut cursor = tree.walk();
+    'walk: loop {
+        let node = cursor.node();
+        let error = node.is_error() || node.is_missing();
+        if error {
+            lines.push(node.start_position().row + 1);
+        }
+        if !error && node.has_error() && cursor.goto_first_child() {
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                break 'walk;
+            }
+        }
+    }
+    Some(lines)
+}
+
 /// The tag configuration for a file's language, chosen by its extension.
 fn language(path: &Path) -> Option<&'static TagsConfiguration> {
     let extension = path.extension()?.to_str()?.to_ascii_lowercase();
