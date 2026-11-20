@@ -13,6 +13,7 @@ mod edit;
 mod fetch;
 mod find;
 mod llm;
+mod mcp;
 pub mod oauth;
 mod outline;
 mod read;

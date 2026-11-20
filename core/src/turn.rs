@@ -480,10 +480,15 @@ impl Thread<'_> {
         let reads = command
             .as_ref()
             .is_some_and(|c| shell::reads_only(&c.command));
+        // What an MCP tool does is not known here (its annotations are
+        // untrusted), so a call to one is treated as a change.
+        let mcp = name.starts_with(crate::mcp::PREFIX);
         let changes = matches!(name, crate::edit::EDIT | crate::edit::WRITE)
-            || (name == shell::SHELL && !reads);
+            || (name == shell::SHELL && !reads)
+            || mcp;
         match self.mode {
             Mode::Ask if changes => Some("every change waits for the person in this mode".into()),
+            Mode::Auto if mcp => Some("calls to MCP tools are reviewed in this mode".into()),
             Mode::Auto if name == shell::SHELL && !reads => {
                 Some("commands that change something are reviewed in this mode".into())
             }
@@ -835,7 +840,8 @@ async fn steps(
     cancel: &mut watch::Receiver<bool>,
     usage: &mut TurnUsage,
 ) -> Ending {
-    let tools: Vec<ToolSpec> = agent_tools::specs(thread.sandboxed());
+    let mut tools: Vec<ToolSpec> = agent_tools::specs(thread.sandboxed());
+    tools.extend(crate::mcp::specs(thread.store).await);
     if let Err(error) = thread.record(vec![person(prompt)]).await {
         return Ending::Failed(error);
     }

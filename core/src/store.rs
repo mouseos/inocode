@@ -382,6 +382,9 @@ struct Inner {
     path: PathBuf,
     writer: Mutex<Connection>,
     readers: Mutex<Vec<Connection>>,
+    /// The MCP servers named beside the database, started at first use and
+    /// stopped when the last copy of the store is dropped.
+    mcp: tokio::sync::OnceCell<Arc<crate::mcp::Tools>>,
 }
 
 impl Store {
@@ -389,6 +392,10 @@ impl Store {
     /// as command logs: beside the database, named after it.
     pub(crate) fn files_folder(&self) -> PathBuf {
         self.inner.path.with_extension("files")
+    }
+
+    pub(crate) fn mcp(&self) -> &tokio::sync::OnceCell<Arc<crate::mcp::Tools>> {
+        &self.inner.mcp
     }
 
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, ErrorInfo> {
@@ -405,6 +412,7 @@ impl Store {
                 path,
                 writer: Mutex::new(writer),
                 readers: Mutex::new(Vec::new()),
+                mcp: tokio::sync::OnceCell::new(),
             }),
         })
     }

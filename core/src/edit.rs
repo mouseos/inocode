@@ -107,7 +107,11 @@ pub(crate) async fn write(folder: Option<&Path>, arguments: &str) -> Result<Stri
         if path.is_dir() {
             return Err(format!("{} is a folder", path.display()));
         }
-        let before = if existed { std::fs::read_to_string(&path).ok() } else { None };
+        let before = if existed {
+            std::fs::read_to_string(&path).ok()
+        } else {
+            None
+        };
         new_syntax_errors(&path, before.as_deref(), &arguments.content)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -389,18 +393,24 @@ mod tests {
         let folder = Some(dir.path());
         let path = dir.path().join("a.py");
         std::fs::write(&path, "def f():\n    return 1\n").expect("write");
-        let error = edit(folder, r#"{"path": "a.py", "old": "return 1", "new": "return (1"}"#)
-            .await
-            .unwrap_err();
+        let error = edit(
+            folder,
+            r#"{"path": "a.py", "old": "return 1", "new": "return (1"}"#,
+        )
+        .await
+        .unwrap_err();
         assert!(error.contains("was not changed"), "{error}");
         assert!(error.contains("   2:     return (1"), "{error}");
         assert_eq!(
             std::fs::read_to_string(&path).expect("read"),
             "def f():\n    return 1\n"
         );
-        edit(folder, r#"{"path": "a.py", "old": "return 1", "new": "return 2"}"#)
-            .await
-            .expect("a valid edit");
+        edit(
+            folder,
+            r#"{"path": "a.py", "old": "return 1", "new": "return 2"}"#,
+        )
+        .await
+        .expect("a valid edit");
         let error = write(folder, r#"{"path": "b.rs", "content": "fn main() {\n"}"#)
             .await
             .unwrap_err();
@@ -409,9 +419,12 @@ mod tests {
 
         // A file that already had an error may keep it; other files are not checked.
         std::fs::write(dir.path().join("c.rs"), "fn a( {}\nfn b() {}\n").expect("write");
-        edit(folder, r#"{"path": "c.rs", "old": "fn b() {}", "new": "fn b() { 1 }"}"#)
-            .await
-            .expect("an edit that adds no error");
+        edit(
+            folder,
+            r#"{"path": "c.rs", "old": "fn b() {}", "new": "fn b() { 1 }"}"#,
+        )
+        .await
+        .expect("an edit that adds no error");
         write(folder, r#"{"path": "notes.txt", "content": "(("}"#)
             .await
             .expect("not checked");

@@ -384,6 +384,91 @@ async fn a_long_message_is_recalled_on_from_an_offset() {
     .await;
 }
 
+/// A Python interpreter, if one runs here.
+fn python() -> Option<&'static str> {
+    ["python3", "python"].into_iter().find(|name| {
+        std::process::Command::new(name)
+            .arg("--version")
+            .output()
+            .is_ok_and(|output| output.status.success())
+    })
+}
+
+const FAKE_MCP_SERVER: &str = r#"
+import json, sys
+for line in sys.stdin:
+    message = json.loads(line)
+    if "id" not in message:
+        continue
+    method = message["method"]
+    if method == "initialize":
+        result = {"protocolVersion": "2025-11-25", "capabilities": {"tools": {}},
+                  "serverInfo": {"name": "calc", "version": "1"}}
+    elif method == "tools/list":
+        result = {"tools": [{"name": "add", "description": "Add two numbers",
+                  "inputSchema": {"type": "object", "properties": {
+                      "a": {"type": "number"}, "b": {"type": "number"}}}}]}
+    elif method == "tools/call":
+        arguments = message["params"]["arguments"]
+        result = {"content": [{"type": "text", "text": str(arguments["a"] + arguments["b"])}]}
+    else:
+        result = {}
+    print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": result}), flush=True)
+"#;
+
+#[tokio::test]
+async fn tools_of_the_configured_mcp_servers_are_offered_and_called() {
+    let Some(python) = python() else {
+        eprintln!("skipped: no Python to run the MCP server");
+        return;
+    };
+    with_timeout(async {
+        let mock = scripted(vec![tool_turn(
+            "c1",
+            "mcp__calc__add",
+            json!({"a": 2, "b": 3}),
+        )])
+        .await;
+        // A folder of its own: `mcp.json` is read beside the store.
+        let folder = database().with_extension("mcp");
+        std::fs::create_dir_all(&folder).expect("folder");
+        let script = folder.join("calc.py");
+        std::fs::write(&script, FAKE_MCP_SERVER).expect("script");
+        let config = json!({"mcpServers": {"calc": {"command": python, "args": [script]}}});
+        std::fs::write(folder.join("mcp.json"), config.to_string()).expect("config");
+        let llm = Llm::new(LlmConfig {
+            provider: ProviderKind::OpenAi,
+            auth: inocode_core::oauth::AuthKind::ApiKey,
+            base_url: mock.base_url.clone(),
+            model: "test-model".to_string(),
+            api_key: "test-key".to_string(),
+            auth_store_path: None,
+            reasoning: Default::default(),
+        })
+        .expect("client");
+        let store = Store::open(folder.join("inocode.db")).await.expect("store");
+        let core = Arc::new(Core::with_llm(llm).with_store(store));
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client).await;
+
+        let events = turn(&mut client, 2, thread, "add 2 and 3").await;
+        assert_eq!(tool_results(&events), ["5"]);
+        let requests = chats(&mock);
+        let tools = requests[0].body["tools"].as_array().expect("tools");
+        assert_eq!(tools.len(), 13);
+        let added = tools
+            .iter()
+            .find(|tool| tool["function"]["name"] == "mcp__calc__add")
+            .expect("the MCP tool");
+        assert_eq!(
+            added["function"]["description"],
+            "Add two numbers (tool add of MCP server calc)"
+        );
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn method_tags_must_be_in_use_unless_given_as_new() {
     with_timeout(async {

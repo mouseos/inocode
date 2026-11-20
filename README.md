@@ -105,6 +105,25 @@ export LOGFARE_API_KEY=...            # 環境変数からのみ読む。リポ�
 cargo run --release -p inocode-server
 ```
 
+### MCP サーバー
+
+`~/.inocode/mcp.json`（スレッドの保存先 `inocode.db` と同じフォルダー）に書いた MCP サーバーの道具を、モデルが使える。形式は Claude Desktop などと同じ `mcpServers`:
+
+```json
+{
+  "mcpServers": {
+    "github": {"command": "github-mcp-server", "args": ["stdio"], "env": {"GITHUB_TOKEN": "..."}}
+  }
+}
+```
+
+- 対応する接続は stdio だけ（HTTP は未対応）。使うのは道具（tools）だけで、リソース・プロンプトなどは使わない。
+- サーバーは最初のターンで起動し、inocode-server が終わるまで使い続ける。設定を変えたら inocode-server を起動し直す。起動に 30 秒以上かかったり失敗したりしたサーバーは飛ばし、標準エラーに理由を出す。
+- 道具の名前は `mcp__<サーバー名>__<道具名>`（英数字・`_`・`-` 以外は `_` にし、64 文字で切る）。
+- 承認：MCP の道具の呼び出しは変更として扱う（`ask` では人の承認を待ち、`auto` では審査される）。
+- Windows では `npx` などは `npx.cmd` と書く（拡張子を補わないため）。
+- 設計と根拠：[docs/evidence/mcp-client.md](docs/evidence/mcp-client.md)。
+
 ## ビルドとテスト
 
 ```bash
@@ -129,4 +148,4 @@ LOGFARE_API_KEY=... cargo test --release -p inocode-server --test live_api -- --
 
 ## 現状の範囲
 
-実装済み: フレームプロトコル、Server / Core、OpenAI 互換 API 接続と逐次配送、Anthropic Messages 互換接続、Responses 接続、Claude OAuth・GPT OAuth・Muse Code・DeepAI Code のログインと要求時認証、使用量の取得、モデル一覧取得（全方式。思考の深さの一覧と既定値を含む）、中断、複数クライアント。core のみ: 会話の型と 3 形式への変換、ツール定義の送信とストリームからのツール呼び出しの組み立て、思考の指定、SQLite の保存層（履歴・記憶・検索・連想）、規則（AGENTS.md からの取り込み・必須の規則の判定・適用の記録）とローカル issue。未実装: TCP での会話・ツールの公開、エージェントループとツールの実行、MCP、GUI、製品用 CLI。
+実装済み: フレームプロトコル、Server / Core、OpenAI 互換 API 接続と逐次配送、Anthropic Messages 互換接続、Responses 接続、Claude OAuth・GPT OAuth・Muse Code・DeepAI Code のログインと要求時認証、使用量の取得、モデル一覧取得（全方式。思考の深さの一覧と既定値を含む）、中断、複数クライアント。core のみ: 会話の型と 3 形式への変換、ツール定義の送信とストリームからのツール呼び出しの組み立て、思考の指定、SQLite の保存層（履歴・記憶・検索・連想）、規則（AGENTS.md からの取り込み・必須の規則の判定・適用の記録）とローカル issue。MCP は stdio のサーバーの道具だけ対応（上の「MCP サーバー」）。未実装: TCP での会話・ツールの公開、エージェントループとツールの実行、MCP の HTTP 接続、GUI、製品用 CLI。

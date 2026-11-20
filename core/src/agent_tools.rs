@@ -12,7 +12,7 @@ use crate::conversation::{AssistantPart, Body, Message, ToolSpec};
 use crate::store::{
     HistoryQuery, NewNote, NoteKind, NoteQuery, ProjectId, SessionId, Source, Store,
 };
-use crate::{edit, fetch, find, outline, read, shell, web_search, ErrorInfo};
+use crate::{edit, fetch, find, mcp, outline, read, shell, web_search, ErrorInfo};
 
 /// Messages one `recall` by position returns at most.
 const RECALL_RANGE: i64 = 20;
@@ -187,7 +187,7 @@ pub(crate) async fn run(context: &Context<'_>, name: &str, arguments: &str) -> O
         }
         shell::SHELL => shell::shell(place(context), arguments).await,
         shell::JOB => shell::job(place(context), arguments).await,
-        _ => return None,
+        _ => mcp::call(context.store, name, arguments, context.cancel.clone()).await?,
     };
     Some(answer.map_or_else(|message| (message, true), |text| (text, false)))
 }
