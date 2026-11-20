@@ -1648,6 +1648,7 @@ dependencies = [
  "tree-sitter-typescript",
  "two-face",
  "vt100",
+ "windows",
  "windows-sys 0.61.2",
  "zero-search",
 ]

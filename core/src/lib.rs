@@ -8,6 +8,8 @@
 mod agent_tools;
 mod ask;
 mod camera;
+#[cfg(windows)]
+mod camera_mode;
 pub mod catalog;
 mod colleague;
 mod compaction;

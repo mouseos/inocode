@@ -145,7 +145,7 @@ cargo run --release -p inocode-server
 ### 画像とカメラ
 
 - `read` で png・jpg・gif・webp を読むと、画像としてモデルに見せる（長辺 1,568 画素に縮める。`region` で一部を元の解像度で見る）。
-- 道具 `camera` で、カメラや UVC の HDMI キャプチャの一覧、調整できる項目、写真、動画（ffmpeg が要る）を扱う。撮影は full モード以外では必ず人の承認を待つ。Windows では自動・手動の切り替えは未対応。
+- 道具 `camera` で、カメラや UVC の HDMI キャプチャの一覧、調整できる項目、写真、動画（ffmpeg が要る）を扱う。撮影は full モード以外では必ず人の承認を待つ。調整の値に `"auto"`・`"manual"` を書くと、自動・手動を切り替える（Windows。撮影と同じく未試行）。
 - 設計と根拠：[docs/evidence/image-input.md](docs/evidence/image-input.md)。
 
 ### モデルの一覧の価格とベンチマーク

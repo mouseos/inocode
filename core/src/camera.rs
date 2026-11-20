@@ -39,8 +39,9 @@ pub(crate) fn spec() -> ToolSpec {
             exposure, gain, white_balance, zoom and others, with their ranges and current \
             values). photo: take a photo, shown to you; video: record seconds of video to \
             a file, with a few frames shown to you (needs ffmpeg). Both can first set \
-            controls by name to a number or true/false, and pick a resolution [width, \
-            height]; photo can show only a region [x0, y0, x1, y1] at full detail. \
+            controls by name to a number, true/false, or \"auto\"/\"manual\" for its \
+            mode, and pick a resolution [width, height]; photo can show only a region \
+            [x0, y0, x1, y1] at full detail. \
             Taking photos and videos waits for the person's approval unless the mode is \
             full."
             .into(),
@@ -56,7 +57,7 @@ pub(crate) fn spec() -> ToolSpec {
                 "controls": {
                     "type": "object",
                     "description": "Control names (from controls) and the values to set.",
-                    "additionalProperties": {"type": ["number", "boolean"]}
+                    "additionalProperties": {"type": ["number", "boolean", "string"]}
                 },
                 "resolution": {
                     "type": "array", "items": {"type": "integer", "minimum": 1},
@@ -160,7 +161,10 @@ fn index_of(device: Option<&Value>) -> Result<CameraIndex, String> {
 }
 
 fn open(arguments: &Arguments) -> Result<Camera, String> {
-    let index = index_of(arguments.device.as_ref())?;
+    open_index(index_of(arguments.device.as_ref())?, arguments)
+}
+
+fn open_index(index: CameraIndex, arguments: &Arguments) -> Result<Camera, String> {
     let requested = match (arguments.resolution, arguments.fps) {
         (Some([width, height]), fps) => RequestedFormatType::Closest(CameraFormat::new(
             Resolution::new(width, height),
@@ -289,6 +293,11 @@ fn set_controls(camera: &mut Camera, wanted: &Map<String, Value>) -> Result<Vec<
         .map_err(|error| format!("cannot read the controls: {error}"))?;
     let mut set = Vec::new();
     for (name, value) in wanted {
+        if value.is_string() {
+            // A mode, set before the camera was opened.
+            set.push(format!("{name}={value}"));
+            continue;
+        }
         let wanted_name = name.to_lowercase();
         let control = controls
             .iter()
@@ -338,8 +347,64 @@ fn grab(camera: &mut Camera) -> Result<RgbImage, String> {
         .ok_or_else(|| "the frame has the wrong size".into())
 }
 
+/// The modes asked for (control, automatic): `"auto"` or `"manual"`, and
+/// on Windows the manual mode a value needs to take effect.
+fn modes(wanted: &Map<String, Value>) -> Result<Vec<(String, bool)>, String> {
+    let mut modes = Vec::new();
+    for (name, value) in wanted {
+        let name = name.to_lowercase();
+        match value {
+            Value::String(text) => match text.as_str() {
+                "auto" => modes.push((name, true)),
+                "manual" => modes.push((name, false)),
+                other => {
+                    return Err(format!(
+                        "{name} takes a number, true/false, auto or manual, not {other}"
+                    ))
+                }
+            },
+            _ if cfg!(windows) && has_mode(&name) => modes.push((name, false)),
+            _ => {}
+        }
+    }
+    Ok(modes)
+}
+
+#[cfg(windows)]
+fn has_mode(name: &str) -> bool {
+    crate::camera_mode::has_mode(name)
+}
+
+#[cfg(not(windows))]
+fn has_mode(_name: &str) -> bool {
+    false
+}
+
+/// Switches the modes asked for, before the camera is opened.
+#[cfg(windows)]
+fn apply_modes(index: &CameraIndex, modes: &[(String, bool)]) -> Result<(), String> {
+    let index = match index {
+        CameraIndex::Index(index) => *index,
+        CameraIndex::String(_) => return Err("a mode needs the camera's index".into()),
+    };
+    crate::camera_mode::set_modes(index, modes)
+}
+
+#[cfg(not(windows))]
+fn apply_modes(_index: &CameraIndex, modes: &[(String, bool)]) -> Result<(), String> {
+    match modes.first() {
+        None => Ok(()),
+        Some((name, _)) => Err(format!(
+            "{name}: on this system an automatic mode is a control of its own; set the one \
+             controls lists"
+        )),
+    }
+}
+
 fn start(arguments: &Arguments) -> Result<(Camera, Vec<String>), String> {
-    let mut camera = open(arguments)?;
+    let index = index_of(arguments.device.as_ref())?;
+    apply_modes(&index, &modes(&arguments.controls)?)?;
+    let mut camera = open_index(index, arguments)?;
     let set = set_controls(&mut camera, &arguments.controls)?;
     camera
         .open_stream()
@@ -500,6 +565,22 @@ mod tests {
     #[ignore = "uses the machine's cameras"]
     fn lists_the_cameras_here() {
         println!("{}", list().expect("list"));
+    }
+
+    #[test]
+    fn modes_are_asked_by_auto_and_manual() {
+        let wanted: Map<String, Value> =
+            serde_json::from_value(json!({"Focus": "auto", "exposure": "manual", "gain": 3}))
+                .expect("map");
+        let modes = modes(&wanted).expect("modes");
+        assert!(modes.contains(&("focus".into(), true)));
+        assert!(modes.contains(&("exposure".into(), false)));
+        // A value needs the manual mode on Windows, where the library keeps
+        // the mode a control has.
+        assert_eq!(modes.contains(&("gain".into(), false)), cfg!(windows));
+        let wrong: Map<String, Value> =
+            serde_json::from_value(json!({"focus": "fast"})).expect("map");
+        assert!(super::modes(&wrong).unwrap_err().contains("not fast"));
     }
 
     #[test]
