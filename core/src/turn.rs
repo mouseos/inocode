@@ -276,9 +276,10 @@ impl Thread<'_> {
 
     /// Compacts what is sent when the latest request used most of the
     /// context window, or, before any request has reported its size (a new
-    /// turn, another model), when the estimated size would. The stored
-    /// history is kept; a compaction message is added and the history is
-    /// assembled again from the store.
+    /// turn, another model), when the estimated size exceeds the window: the
+    /// estimate runs high, so below the window the request is sent and its
+    /// measured size decides. The stored history is kept; a compaction
+    /// message is added and the history is assembled again from the store.
     async fn compact_if_due(
         &mut self,
         llm: &Llm,
@@ -288,16 +289,21 @@ impl Thread<'_> {
         let Some(window) = llm.context_window().await else {
             return Ok(());
         };
-        let input = self.last_input.unwrap_or_else(|| {
-            compaction::estimate(
-                self.conversation.system.as_deref(),
-                &self.conversation.messages,
-                tools,
-            )
-        });
-        if !compaction::due(input, window) {
-            return Ok(());
-        }
+        let input = match self.last_input {
+            Some(input) if compaction::due(input, window) => input,
+            Some(_) => return Ok(()),
+            None => {
+                let estimate = compaction::estimate(
+                    self.conversation.system.as_deref(),
+                    &self.conversation.messages,
+                    tools,
+                );
+                if estimate < window {
+                    return Ok(());
+                }
+                estimate
+            }
+        };
         let sent: Vec<(i64, Message)> = self
             .seqs
             .iter()
