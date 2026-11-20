@@ -507,8 +507,10 @@ impl Thread<'_> {
         // What an MCP tool does is not known here (its annotations are
         // untrusted), so a call to one is treated as a change.
         let mcp = name.starts_with(crate::mcp::PREFIX);
-        let changes = matches!(name, crate::edit::EDIT | crate::edit::WRITE)
-            || (name == shell::SHELL && !reads)
+        let changes = matches!(
+            name,
+            crate::edit::EDIT | crate::edit::EDITS | crate::edit::WRITE
+        ) || (name == shell::SHELL && !reads)
             || mcp;
         match self.mode {
             Mode::Ask if changes => Some("every change waits for the person in this mode".into()),

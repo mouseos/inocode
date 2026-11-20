@@ -10,6 +10,7 @@ use crate::conversation::ToolSpec;
 use crate::read::resolve;
 
 pub(crate) const EDIT: &str = "edit";
+pub(crate) const EDITS: &str = "edits";
 pub(crate) const WRITE: &str = "write";
 
 pub(crate) fn specs() -> Vec<ToolSpec> {
@@ -30,6 +31,35 @@ pub(crate) fn specs() -> Vec<ToolSpec> {
                     "old": {"type": "string"},
                     "new": {"type": "string"},
                     "all": {"type": "boolean"}
+                }
+            }),
+        },
+        ToolSpec {
+            name: EDITS.into(),
+            description: "Make several replacements in one call, in one file or several. \
+                Each works as in `edit`, on the text the earlier ones in the list left. \
+                They are made all together or not at all: when one cannot be made, or \
+                a file would get syntax errors it did not have, no file is changed and \
+                the answer says which one failed."
+                .into(),
+            parameters: json!({
+                "type": "object",
+                "required": ["edits"],
+                "properties": {
+                    "edits": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "required": ["path", "old", "new"],
+                            "properties": {
+                                "path": {"type": "string"},
+                                "old": {"type": "string"},
+                                "new": {"type": "string"},
+                                "all": {"type": "boolean"}
+                            }
+                        }
+                    }
                 }
             }),
         },
@@ -58,6 +88,11 @@ struct EditArguments {
     new: String,
     #[serde(default)]
     all: bool,
+}
+
+#[derive(Deserialize)]
+struct EditsArguments {
+    edits: Vec<EditArguments>,
 }
 
 #[derive(Deserialize)]
@@ -96,6 +131,92 @@ pub(crate) async fn edit(folder: Option<&Path>, arguments: &str) -> Result<Strin
     })
     .await
     .map_err(|error| format!("edit failed: {error}"))?
+}
+
+/// Makes every replacement of `edits`, in order, or none: each file is
+/// written only once every replacement applies and no file gets new syntax
+/// errors.
+pub(crate) async fn edits(folder: Option<&Path>, arguments: &str) -> Result<String, String> {
+    let arguments: EditsArguments =
+        serde_json::from_str(arguments).map_err(|error| format!("invalid arguments: {error}"))?;
+    if arguments.edits.is_empty() {
+        return Err("invalid arguments: `edits` is empty".into());
+    }
+    let mut planned = Vec::new();
+    for (index, edit) in arguments.edits.into_iter().enumerate() {
+        let path = resolve(folder, &edit.path)
+            .map_err(|problem| format!("Nothing was changed: edit {} {problem}", index + 1))?;
+        planned.push((path, edit));
+    }
+    tokio::task::spawn_blocking(move || {
+        // Each file's text before and after the replacements so far.
+        let mut files: Vec<(std::path::PathBuf, String, String)> = Vec::new();
+        let mut report = Vec::new();
+        for (index, (path, edit)) in planned.into_iter().enumerate() {
+            let number = index + 1;
+            let slot = match files.iter().position(|(known, _, _)| *known == path) {
+                Some(slot) => slot,
+                None => {
+                    let text = read_text(&path).map_err(|problem| {
+                        format!("Nothing was changed: edit {number}: {problem}")
+                    })?;
+                    files.push((path.clone(), text.clone(), text));
+                    files.len() - 1
+                }
+            };
+            let done =
+                replace(&files[slot].2, &edit.old, &edit.new, edit.all).map_err(|problem| {
+                    format!(
+                        "Nothing was changed: edit {number} ({}) {problem}",
+                        path.display()
+                    )
+                })?;
+            report.push(format!(
+                "{number}. {}: {} at line {}{}",
+                path.display(),
+                match done.count {
+                    1 => "1 occurrence".to_string(),
+                    count => format!("{count} occurrences, the first"),
+                },
+                done.line,
+                if done.loose {
+                    ", matched with whitespace ignored; read the lines to check their indentation"
+                } else {
+                    ""
+                }
+            ));
+            files[slot].2 = done.text;
+        }
+        for (path, before, after) in &files {
+            new_syntax_errors(path, Some(before), after)
+                .map_err(|problem| format!("Nothing was changed: {problem}"))?;
+        }
+        for (written, (path, _, after)) in files.iter().enumerate() {
+            std::fs::write(path, after).map_err(|error| {
+                let done: Vec<String> = files[..written]
+                    .iter()
+                    .map(|(path, _, _)| path.display().to_string())
+                    .collect();
+                format!(
+                    "cannot write {}: {error}; already written: {}",
+                    path.display(),
+                    if done.is_empty() {
+                        "none".to_string()
+                    } else {
+                        done.join(", ")
+                    }
+                )
+            })?;
+        }
+        Ok(format!(
+            "Made {} replacements in {} files:\n{}",
+            report.len(),
+            files.len(),
+            report.join("\n")
+        ))
+    })
+    .await
+    .map_err(|error| format!("edits failed: {error}"))?
 }
 
 pub(crate) async fn write(folder: Option<&Path>, arguments: &str) -> Result<String, String> {
@@ -428,6 +549,77 @@ mod tests {
         write(folder, r#"{"path": "notes.txt", "content": "(("}"#)
             .await
             .expect("not checked");
+    }
+
+    #[tokio::test]
+    async fn edits_are_made_all_together_or_not_at_all() {
+        let dir = tempfile::tempdir().expect("dir");
+        let folder = Some(dir.path());
+        std::fs::write(dir.path().join("a.txt"), "one\ntwo\n").expect("write");
+        std::fs::write(dir.path().join("b.py"), "x = 1\n").expect("write");
+        let read = |name: &str| std::fs::read_to_string(dir.path().join(name)).expect("read");
+
+        // The second fails: nothing is written, and the answer names it.
+        let error = edits(
+            folder,
+            r#"{"edits": [{"path": "a.txt", "old": "one", "new": "1"},
+                          {"path": "b.py", "old": "y = 1", "new": "y = 2"}]}"#,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error.starts_with("Nothing was changed: edit 2 ("),
+            "{error}"
+        );
+        assert!(error.contains("does not occur"), "{error}");
+        assert_eq!(read("a.txt"), "one\ntwo\n");
+
+        // A syntax error in one file keeps the other unchanged too.
+        let error = edits(
+            folder,
+            r#"{"edits": [{"path": "a.txt", "old": "one", "new": "1"},
+                          {"path": "b.py", "old": "x = 1", "new": "x = (1"}]}"#,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.starts_with("Nothing was changed: "), "{error}");
+        assert!(error.contains("syntax errors"), "{error}");
+        assert_eq!(read("a.txt"), "one\ntwo\n");
+
+        // Later edits see what the earlier ones left in the same file.
+        let done = edits(
+            folder,
+            r#"{"edits": [{"path": "a.txt", "old": "one", "new": "1"},
+                          {"path": "a.txt", "old": "1\ntwo", "new": "1\n2"},
+                          {"path": "b.py", "old": "x = 1", "new": "x = 2"}]}"#,
+        )
+        .await
+        .expect("edits");
+        assert!(
+            done.starts_with("Made 3 replacements in 2 files:\n1. "),
+            "{done}"
+        );
+        assert!(
+            done.contains("\n2. ") && done.contains("at line 1"),
+            "{done}"
+        );
+        assert_eq!(read("a.txt"), "1\n2\n");
+        assert_eq!(read("b.py"), "x = 2\n");
+
+        assert!(edits(folder, r#"{"edits": []}"#)
+            .await
+            .unwrap_err()
+            .contains("empty"));
+        let missing = edits(
+            folder,
+            r#"{"edits": [{"path": "none.txt", "old": "a", "new": "b"}]}"#,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            missing.starts_with("Nothing was changed: edit 1: cannot open"),
+            "{missing}"
+        );
     }
 
     #[tokio::test]

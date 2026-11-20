@@ -173,6 +173,7 @@ pub(crate) async fn run(context: &Context<'_>, name: &str, arguments: &str) -> O
         web_search::SEARCH => web_search::run(arguments).await,
         read::READ => read::run(context.folder, arguments).await,
         edit::EDIT => edit::edit(context.folder, arguments).await,
+        edit::EDITS => edit::edits(context.folder, arguments).await,
         edit::WRITE => edit::write(context.folder, arguments).await,
         find::FIND => {
             outline::use_grammars(context.store.files_folder().join("grammars"));
