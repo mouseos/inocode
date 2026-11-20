@@ -526,8 +526,9 @@ impl Thread<'_> {
         let Some((body, summary_usages)) = compacted else {
             return Ok(());
         };
-        for summary_usage in summary_usages {
-            usage.add(Some(summary_usage));
+        for record in summary_usages {
+            usage.add(record.usage);
+            usage.records.push(record);
         }
         self.record(vec![body]).await?;
         let stored = self.store.since(self.session, 0, i64::MAX as usize).await?;
@@ -750,7 +751,8 @@ impl Thread<'_> {
             )
             .await;
             if let Some(spent) = spent {
-                usage.add(spent);
+                usage.add(spent.as_ref().and_then(|record| record.usage));
+                usage.records.extend(spent);
             }
             return match verdict {
                 crate::review::Verdict::Allow => {

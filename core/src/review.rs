@@ -10,7 +10,7 @@ use std::path::Path;
 use serde_json::{json, Value};
 
 use crate::conversation::{AssistantPart, Body, Conversation, Message, Speaker};
-use crate::{Llm, TokenUsage};
+use crate::{Llm, RequestRecord};
 
 /// What the reviewer decided about one call.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -237,8 +237,8 @@ fn deepai_verdict(answer: &Value) -> Verdict {
 }
 
 /// A review's verdict, and the model request it took (`None` when no model
-/// was asked) with that request's usage.
-pub(crate) type Reviewed = (Verdict, Option<Option<TokenUsage>>);
+/// was asked), as it is logged (`None` when it could not be sent).
+pub(crate) type Reviewed = (Verdict, Option<Option<RequestRecord>>);
 
 /// Reviews `tool` with `arguments`, the latest call in `conversation`.
 /// `llm` is the provider in use and `reviewer` the model asked when the
@@ -275,10 +275,15 @@ pub(crate) async fn review(
         match stream.next().await {
             Ok(Some(text)) => answer.push_str(&text),
             Ok(None) => break,
-            Err(error) => return (Verdict::Unavailable(error.message), Some(stream.usage())),
+            Err(error) => {
+                return (
+                    Verdict::Unavailable(error.message),
+                    Some(Some(stream.record("review"))),
+                )
+            }
         }
     }
-    (parse(&answer), Some(stream.usage()))
+    (parse(&answer), Some(Some(stream.record("review"))))
 }
 
 #[cfg(test)]

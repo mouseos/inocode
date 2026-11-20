@@ -11,7 +11,7 @@
 
 use crate::conversation::{AssistantPart, Body, Conversation, Message, Speaker, ToolSpec};
 use crate::store::StoredMessage;
-use crate::{ErrorInfo, Llm, TokenUsage};
+use crate::{ErrorInfo, Llm, RequestRecord};
 
 /// Share of the context window at which a thread is compacted (DSH).
 pub(crate) const COMPACT_AT: f64 = 0.8;
@@ -338,13 +338,13 @@ async fn summarize(
     llm: &Llm,
     conversation: &Conversation,
     tools: &[ToolSpec],
-) -> Result<(String, Option<TokenUsage>), ErrorInfo> {
+) -> Result<(String, RequestRecord), ErrorInfo> {
     let mut stream = llm.converse(conversation, tools).await?;
     let mut summary = String::new();
     while let Some(text) = stream.next().await? {
         summary.push_str(&text);
     }
-    Ok((summary.trim().to_string(), stream.usage()))
+    Ok((summary.trim().to_string(), stream.record("compact")))
 }
 
 fn instruction(text: String) -> Message {
@@ -372,7 +372,7 @@ async fn summary(
     tools: &[ToolSpec],
     input: u64,
     window: u64,
-) -> (Result<String, ErrorInfo>, Vec<TokenUsage>) {
+) -> (Result<String, ErrorInfo>, Vec<RequestRecord>) {
     let mut usages = Vec::new();
     let model = summarizer.unwrap_or(llm);
     let model_window = match summarizer {
@@ -417,8 +417,8 @@ async fn summary(
         };
         let answer = summarize(model, &conversation, tools).await;
         return match answer {
-            Ok((text, usage)) => {
-                usages.extend(usage);
+            Ok((text, record)) => {
+                usages.push(record);
                 (Ok(text), usages)
             }
             Err(error) => (Err(error), usages),
@@ -443,8 +443,8 @@ async fn summary(
             messages: vec![instruction(text)],
         };
         match summarize(model, &conversation, &[]).await {
-            Ok((text, usage)) => {
-                usages.extend(usage);
+            Ok((text, record)) => {
+                usages.push(record);
                 summary = text;
             }
             Err(error) => return (Err(error), usages),
@@ -466,7 +466,7 @@ pub(crate) async fn compact(
     tools: &[ToolSpec],
     input: u64,
     window: u64,
-) -> Option<(Body, Vec<TokenUsage>)> {
+) -> Option<(Body, Vec<RequestRecord>)> {
     let start = cut(messages, input, window)?;
     let replaced = &messages[..start];
     let up_to = replaced

@@ -1815,6 +1815,21 @@ async fn near_the_window_older_work_is_compacted_and_the_person_kept() {
         .await;
         let stored = read["result"]["messages"].to_string();
         assert!(stored.contains("\"c1\""));
+
+        // Every request is logged, the summary's too.
+        let stats = call(
+            &mut client,
+            4,
+            json!({"id": 4, "method": "stats/models", "params": {}}),
+        )
+        .await;
+        let logged: u64 = stats["result"]["models"]
+            .as_array()
+            .expect("models")
+            .iter()
+            .filter_map(|model| model["requests"].as_u64())
+            .sum();
+        assert_eq!(logged, chats.len() as u64, "{stats}");
     })
     .await;
 }
