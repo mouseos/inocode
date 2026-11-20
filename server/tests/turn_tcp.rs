@@ -788,6 +788,71 @@ fn usage_chunk(input: u64) -> Vec<u8> {
 }
 
 #[tokio::test]
+async fn a_large_earlier_message_is_sent_shortened_and_saved_whole() {
+    with_timeout(async {
+        let step = AtomicUsize::new(0);
+        let mock = start_mock(move |request: &MockRequest| {
+            if request.method == "GET" {
+                return MockReply::status(
+                    200,
+                    &json!({"data": [{"id": "test-model", "context_length": 12000}]}).to_string(),
+                );
+            }
+            let body = request.body.to_string();
+            if body.contains("will be replaced by your summary")
+                || body.contains("too long to read at once")
+            {
+                return MockReply::stream(vec![sse_delta("SUMMARY"), finish("stop"), sse_done()]);
+            }
+            let index = step.fetch_add(1, Ordering::SeqCst);
+            if index < 3 {
+                let arguments =
+                    json!({"items": [{"step": format!("S{index} {}", "z".repeat(3_000)), "status": "in_progress"}]});
+                return MockReply::stream(vec![
+                    call_chunk(&format!("c{index}"), "plan", &arguments),
+                    finish("tool_calls"),
+                    sse_done(),
+                ]);
+            }
+            MockReply::stream(vec![sse_delta("done"), finish("stop"), sse_done()])
+        })
+        .await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client).await;
+        let pasted = format!("LOGSTART {} LOGEND", "y".repeat(30_000));
+
+        let events = turn(&mut client, 2, thread, &pasted).await;
+        assert_eq!(events.last().unwrap()["event"], "completed");
+        // This turn's own message is always sent whole.
+        for request in chats(&mock) {
+            let text = request.body.to_string();
+            if !text.contains("will be replaced by your summary")
+                && !text.contains("too long to read at once")
+            {
+                assert!(text.contains(&pasted));
+            }
+        }
+        let first_turn = chats(&mock).len();
+
+        let events = turn(&mut client, 3, thread, "what did the log end with?").await;
+        assert_eq!(events.last().unwrap()["event"], "completed");
+        let sent = chats(&mock)[first_turn].body["messages"].to_string();
+        assert!(!sent.contains(&pasted), "the earlier message is shortened");
+        assert!(sent.contains("LOGSTART") && sent.contains("LOGEND"), "{sent}");
+        let path = sent
+            .split("is saved in ")
+            .nth(1)
+            .and_then(|rest| rest.split("; read it").next())
+            .expect("the saved path")
+            .replace("\\\\", "\\");
+        assert_eq!(std::fs::read_to_string(&path).expect("saved"), pasted);
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn what_arrived_since_the_last_measured_request_counts_toward_compaction() {
     with_timeout(async {
         let step = AtomicUsize::new(0);

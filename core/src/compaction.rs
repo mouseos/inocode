@@ -6,7 +6,8 @@
 //! (the project's rules) and the plan are not part of the history, so they
 //! are untouched. Design and sources: docs/evidence/agent-tools.md; cost,
 //! oversized histories and the compaction model:
-//! docs/evidence/compaction-cost-and-overflow.md.
+//! docs/evidence/compaction-cost-and-overflow.md; the person's large
+//! messages: docs/evidence/large-person-messages.md.
 
 use crate::conversation::{AssistantPart, Body, Conversation, Message, Speaker, ToolSpec};
 use crate::store::StoredMessage;
@@ -22,6 +23,13 @@ const RECORD_MAX_CHARS: usize = 8_000;
 const RECORD_FIELD_CHARS: usize = 160;
 /// Speaker kind of a compaction message: `compaction:<last replaced seq>`.
 const KIND: &str = "compaction:";
+
+/// Share of the window above which a person's message from an earlier turn,
+/// kept before a compaction, is sent shortened with its whole text saved.
+const PERSON_MAX_SHARE: f64 = 0.05;
+/// Characters of a shortened person's message kept from its start and end.
+const PERSON_HEAD_CHARS: usize = 2_000;
+const PERSON_TAIL_CHARS: usize = 1_000;
 
 /// Bytes counted as one token when the model's own ratio has not been
 /// measured yet: low enough that Japanese text, about three bytes a token,
@@ -97,6 +105,54 @@ pub(crate) fn assemble(stored: Vec<StoredMessage>) -> Vec<(i64, Message)> {
     head.extend(summary);
     head.extend(tail);
     head
+}
+
+/// Shortens, in what is sent (`messages`, with their `seqs`), the person's
+/// messages from turns before the one starting at `turn_start` that stand
+/// before the latest compaction and exceed [`PERSON_MAX_SHARE`] of
+/// `window`: kept word for word, they would hold the history above the
+/// compaction threshold however often it is compacted. The start and end
+/// stay; `save` stores the whole text and returns where, and a message it
+/// cannot save stays whole.
+pub(crate) fn shorten_people(
+    messages: &mut [Message],
+    seqs: &[i64],
+    turn_start: i64,
+    window: u64,
+    mut save: impl FnMut(i64, &str) -> Option<std::path::PathBuf>,
+) {
+    let Some(summary) = messages
+        .iter()
+        .rposition(|message| replaced_up_to(message).is_some())
+    else {
+        return;
+    };
+    let limit = (PERSON_MAX_SHARE * window as f64 * FALLBACK_BYTES_PER_TOKEN) as usize;
+    for (message, &seq) in messages[..summary].iter_mut().zip(seqs) {
+        if seq >= turn_start || !is_person(message) {
+            continue;
+        }
+        let Body::User { parts, .. } = &mut message.body else {
+            continue;
+        };
+        let text = parts.join("\n");
+        let chars = text.chars().count();
+        if text.len() <= limit || chars <= PERSON_HEAD_CHARS + PERSON_TAIL_CHARS {
+            continue;
+        }
+        let Some(path) = save(seq, &text) else {
+            continue;
+        };
+        let head: String = text.chars().take(PERSON_HEAD_CHARS).collect();
+        let tail: String = text.chars().skip(chars - PERSON_TAIL_CHARS).collect();
+        let omitted = chars - PERSON_HEAD_CHARS - PERSON_TAIL_CHARS;
+        *parts = vec![format!(
+            "{head}\n…({omitted} characters of this message are left out here. The whole \
+             message is saved in {}; read it with the read tool by that path. find does not \
+             search there.)…\n{tail}",
+            path.display()
+        )];
+    }
 }
 
 /// Whether a request that used `input` tokens calls for compaction.
@@ -624,5 +680,63 @@ mod tests {
         assert!(parts[0].contains(&long));
         // Other messages are cut as recall cuts them.
         assert!(!parts[0].contains(&"p".repeat(5_000)));
+    }
+
+    #[test]
+    fn large_earlier_person_messages_are_sent_shortened_and_saved() {
+        let summary = Message {
+            id: String::new(),
+            body: Body::User {
+                from: Speaker::Harness(format!("{KIND}4")),
+                parts: vec!["record".into(), "summary".into()],
+            },
+        };
+        let big = format!("START{}END", "x".repeat(20_000));
+        let mut messages = vec![
+            person(&big),
+            person("small"),
+            person(&big),
+            summary,
+            person(&big),
+        ];
+        let seqs = [1, 2, 6, 7, 8];
+        let mut saved = Vec::new();
+        // Window 100,000: the limit is 5% of it at three bytes a token.
+        shorten_people(&mut messages, &seqs, 6, 100_000, |seq, text| {
+            saved.push((seq, text.to_string()));
+            Some(std::path::PathBuf::from(format!("saved-{seq}.txt")))
+        });
+        assert_eq!(saved, [(1, big.clone())]);
+        let Body::User { parts, .. } = &messages[0].body else {
+            panic!("a person's message");
+        };
+        assert!(parts[0].starts_with("STARTxx"));
+        assert!(parts[0].ends_with("xxEND"));
+        assert!(parts[0].contains("saved in saved-1.txt"));
+        assert!(parts[0].chars().count() < 3_300);
+        // Small messages, this turn's messages and those after the summary stay.
+        for index in [1, 2, 4] {
+            let Body::User { parts, .. } = &messages[index].body else {
+                panic!("a person's message");
+            };
+            assert!(parts[0] == "small" || parts[0] == big);
+        }
+
+        // A message that cannot be saved stays whole.
+        let mut messages = vec![
+            person(&big),
+            Message {
+                id: String::new(),
+                body: Body::User {
+                    from: Speaker::Harness(format!("{KIND}1")),
+                    parts: vec![],
+                },
+            },
+        ];
+        shorten_people(&mut messages, &[1, 2], 3, 100_000, |_, _| None);
+        let Body::User { parts, .. } = &messages[0].body else {
+            panic!("a person's message");
+        };
+        assert_eq!(parts[0], big);
     }
 }

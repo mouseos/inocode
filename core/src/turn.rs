@@ -231,6 +231,9 @@ struct Thread<'a> {
     seqs: Vec<i64>,
     /// The position the next stored message takes.
     next_seq: i64,
+    /// The position of this turn's prompt; the person's messages from here
+    /// on are always sent whole.
+    turn_start: i64,
     events: mpsc::Sender<TurnEvent>,
     /// `ask` rules the person approved for this turn.
     allowed: HashSet<NoteId>,
@@ -336,7 +339,30 @@ impl Thread<'_> {
         let (seqs, messages) = compaction::assemble(stored).into_iter().unzip();
         self.seqs = seqs;
         self.conversation.messages = messages;
+        self.shorten_people(window);
         Ok(())
+    }
+
+    /// Sends the person's large messages from earlier turns shortened, each
+    /// saved whole once under the store's files folder
+    /// ([`compaction::shorten_people`]).
+    fn shorten_people(&mut self, window: u64) {
+        let folder = self.store.files_folder().join("messages");
+        let session = self.session.0;
+        compaction::shorten_people(
+            &mut self.conversation.messages,
+            &self.seqs,
+            self.turn_start,
+            window,
+            |seq, text| {
+                let path = folder.join(format!("{session}-{seq}.txt"));
+                if !path.exists() {
+                    std::fs::create_dir_all(&folder).ok()?;
+                    std::fs::write(&path, text).ok()?;
+                }
+                Some(path)
+            },
+        );
     }
 
     /// The plan and the lessons, shown after the history with each request
@@ -700,6 +726,9 @@ pub async fn run(
     let mut thread = match open(store, session, &prompt, approvals, cancel.clone(), events).await {
         Ok(mut thread) => {
             (thread.reviewer, thread.compactor) = reviewer;
+            if let Some(window) = llm.context_window().await {
+                thread.shorten_people(window);
+            }
             thread
         }
         Err(error) => {
@@ -783,6 +812,7 @@ async fn open<'a>(
         },
         seqs,
         next_seq,
+        turn_start: next_seq,
         rules,
         events,
         allowed: approvals.rules.into_iter().collect(),
