@@ -1,7 +1,7 @@
 # MCP の受け口（stdio と HTTP のサーバーの道具）
 
 - **対象と範囲：** `~/.inocode/mcp.json` に書かれた MCP サーバーを stdio で起動するか Streamable HTTP でつなぎ、その道具（tools）をモデルに渡して呼べるようにする。
-  - 範囲外（未実装）：OAuth（HTTP では、設定に書いたヘッダーで認証する）、セッションが切れたときのつなぎ直し、切れたイベントの流れの再開（`Last-Event-ID`）、サーバーから始める流れ（GET）、古い HTTP+SSE 方式（2024-11-05）、リソース、プロンプト、サンプリング・ルートなどクライアント側の機能（聞き返しは form だけ対応。URL の聞き返しは未対応）、道具一覧の変更通知への追従、プロジェクトごとの設定ファイル。
+  - 範囲外（未実装）：OAuth（HTTP では、設定に書いたヘッダーで認証する）、切れたイベントの流れの再開（`Last-Event-ID`）、サーバーから始める流れ（GET）、古い HTTP+SSE 方式（2024-11-05）、リソース、プロンプト、サンプリング・ルートなどクライアント側の機能（聞き返しは form だけ対応。URL の聞き返しは未対応）、道具一覧の変更通知への追従、プロジェクトごとの設定ファイル。
 - **関連コード：**
   - `core/src/mcp.rs`：設定の読み込み、起動、ハンドシェイク、道具の一覧と呼び出し、結果の文字列化。
   - `core/src/store.rs`：起動したサーバーをスレッドの保存先（`Store`）に持たせる。
@@ -40,7 +40,7 @@
   - メッセージは 1 つずつ、エンドポイントへの POST で送る。`Accept: application/json, text/event-stream` を付ける（仕様の MUST）。
   - 要求への返事は、JSON 1 つか、イベントの流れ（SSE）のどちらでも読む（仕様の MUST）。流れの中のサーバーからの要求（`ping` など）には、別の POST で答える。流れが答えの前に閉じたら失敗にする（再開は未対応）。
   - 初期化の返事に `MCP-Session-Id` があれば、以後のすべての要求に付ける（仕様の MUST）。合意した版を `MCP-Protocol-Version` で以後の要求に付ける（仕様の MUST）。
-  - セッションを持つ要求に 404 が返ったら「セッションが終わった」として失敗にする。仕様は新しいセッションを始めるよう求める（MUST）が、未対応。
+  - セッションを持つ要求に 404 が返ったら、セッションと版を消し、初期化（`initialize` と `notifications/initialized`）をやり直して新しいセッションを始め、元の要求を 1 回だけ送り直す（仕様の MUST。2026-11-21）。
   - 接続を捨てるとき、セッションがあれば DELETE を送って終える（仕様の SHOULD）。待たない（5 秒で打ち切り）。
   - 答えの JSON は 16 MiB まで読む。
 - サーバーからの要求：`ping` には空の結果で答える（仕様の MUST）。`elicitation/create` は下の「聞き返し」。それ以外の要求には -32601（Method not found）を返す（ほかのクライアントの機能を宣言していないため）。通知は読み捨てる。
@@ -60,5 +60,5 @@
   - 設定がないとき、起動できないコマンドのとき、道具がないこと。
 - 結合テスト（`server/tests/turn_tcp.rs` の `tools_of_the_configured_mcp_servers_are_offered_and_called`）：Python で書いた偽の MCP サーバーを実際に起動し、ターンの中でモデル（模擬 API）が呼んだ道具の結果が返ること、道具の一覧が 13 個になること。Python が動かない環境では飛ばす。
 - 単体テスト（HTTP、`a_server_over_http_is_listed_called_and_its_session_kept`）：手書きの HTTP サーバーで、初期化・通知・イベントの流れでの一覧・流れの中の `ping` への POST での答え・JSON での呼び出し。設定のヘッダー、`Accept`、2 回目以降の `MCP-Session-Id` と `MCP-Protocol-Version`、最後の DELETE を確認。`command` と `url` の両方・どちらもない・http でない URL を断ること。
-- 聞き返し：結合テスト `a_question_of_an_mcp_server_waits_for_the_persons_answer`（Python の偽の stdio サーバーが呼び出しの途中で聞き返し、ターンの通知 `elicitation` が届き、`turn/answer` の `accept` と `decline` がサーバーに返ること、待っていない番号への答えは受け付けないこと）。単体テスト `a_requested_schema_becomes_the_questions_of_ask`。HTTP の聞き返しは書いたが、テストしていない。
+- 聞き返し：結合テスト `a_question_of_an_mcp_server_waits_for_the_persons_answer`（Python の偽の stdio サーバーが呼び出しの途中で聞き返し、ターンの通知 `elicitation` が届き、`turn/answer` の `accept` と `decline` がサーバーに返ること、待っていない番号への答えは受け付けないこと）。単体テスト `a_requested_schema_becomes_the_questions_of_ask`。HTTP の聞き返しとセッションのつなぎ直しは単体テスト `an_ended_http_session_is_started_anew_and_questions_are_answered`（手書きの HTTP サーバーが最初のセッションを道具の呼び出しで終わらせ、新しいセッションで送り直されること。呼び出しの SSE の流れの中の聞き返しが接続の受け口に届き、答えが別の POST で返ること）。
 - 未検証：実在の MCP サーバー（HTTP も）、実際のモデルが MCP の道具を選んで使えるか、Linux・macOS での起動と終了、2026-07-28 版だけのサーバー。

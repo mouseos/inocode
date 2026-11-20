@@ -519,7 +519,19 @@ impl Connection {
         }
     }
 
+    /// Sends a request; over HTTP, a session the server ended is started
+    /// anew and the request sent once more, as the transport requires.
     async fn request(&self, method: &str, params: Value) -> Result<Value, String> {
+        match self.send(method, params.clone()).await {
+            Err(error) if error == SESSION_ENDED => {
+                self.initialize().await?;
+                self.send(method, params).await
+            }
+            answer => answer,
+        }
+    }
+
+    async fn send(&self, method: &str, params: Value) -> Result<Value, String> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let message = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
         match &self.transport {
@@ -528,18 +540,11 @@ impl Connection {
         }
     }
 
-    async fn notify(&self, method: &str) -> Result<(), String> {
-        let message = json!({"jsonrpc": "2.0", "method": method});
-        match &self.transport {
-            Transport::Pipe(pipe) => send(&pipe.writer, &message).await,
-            Transport::Http(http) => http.post(&message).await.map(drop),
-        }
-    }
-
-    /// The handshake, then every page of the server's tools.
-    async fn list_tools(&self) -> Result<Vec<Value>, String> {
+    /// The handshake: `initialize`, the version check, and
+    /// `notifications/initialized`.
+    async fn initialize(&self) -> Result<(), String> {
         let answer = self
-            .request(
+            .send(
                 "initialize",
                 json!({
                     "protocolVersion": PROTOCOL_VERSION,
@@ -558,7 +563,20 @@ impl Connection {
         if let Transport::Http(http) = &self.transport {
             *http.version.lock().expect("version lock") = Some(version.to_string());
         }
-        self.notify("notifications/initialized").await?;
+        self.notify("notifications/initialized").await
+    }
+
+    async fn notify(&self, method: &str) -> Result<(), String> {
+        let message = json!({"jsonrpc": "2.0", "method": method});
+        match &self.transport {
+            Transport::Pipe(pipe) => send(&pipe.writer, &message).await,
+            Transport::Http(http) => http.post(&message).await.map(drop),
+        }
+    }
+
+    /// The handshake, then every page of the server's tools.
+    async fn list_tools(&self) -> Result<Vec<Value>, String> {
+        self.initialize().await?;
         let mut tools = Vec::new();
         let mut cursor: Option<String> = None;
         loop {
@@ -614,6 +632,8 @@ impl Pipe {
 }
 
 const SESSION_HEADER: &str = "MCP-Session-Id";
+/// The error of a request whose session the server ended (HTTP 404).
+const SESSION_ENDED: &str = "the MCP server ended the session";
 const VERSION_HEADER: &str = "MCP-Protocol-Version";
 /// Bytes of one JSON answer read at most, as for the providers' answers.
 const MAX_HTTP_BODY: usize = 16 * 1024 * 1024;
@@ -686,7 +706,9 @@ impl Http {
         let status = response.status();
         if !status.is_success() {
             if status == reqwest::StatusCode::NOT_FOUND && session.is_some() {
-                return Err("the MCP server ended the session".into());
+                *self.session.lock().expect("session lock") = None;
+                *self.version.lock().expect("version lock") = None;
+                return Err(SESSION_ENDED.into());
             }
             let body = crate::llm::read_capped(&mut response, 1024)
                 .await
@@ -1025,7 +1047,22 @@ mod tests {
     /// A Streamable HTTP server: it gives a session at initialization,
     /// answers `tools/list` with events that first ping the client, and
     /// `tools/call` with JSON.
+    /// What the fake HTTP server keeps between requests.
+    #[derive(Default)]
+    struct HttpState {
+        /// Sessions given so far; each initialization gives `s-<n>`.
+        sessions: AtomicU64,
+        /// Whether a tool call in the first session ends it (404).
+        expire_first: bool,
+        /// Where the answer to the question of `greet` goes.
+        waiting: Mutex<Option<oneshot::Sender<Value>>>,
+    }
+
     async fn http_server(seen: Arc<Mutex<Vec<Seen>>>) -> String {
+        http_server_with(seen, Arc::new(HttpState::default())).await
+    }
+
+    async fn http_server_with(seen: Arc<Mutex<Vec<Seen>>>, state: Arc<HttpState>) -> String {
         use tokio::io::AsyncReadExt;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -1037,6 +1074,7 @@ mod tests {
                     return;
                 };
                 let seen = seen.clone();
+                let state = state.clone();
                 tokio::spawn(async move {
                     let mut buffer = Vec::new();
                     let mut chunk = [0u8; 4096];
@@ -1067,9 +1105,11 @@ mod tests {
                     let body: Value =
                         serde_json::from_slice(&buffer[header_end..header_end + length])
                             .unwrap_or(Value::Null);
-                    seen.lock()
-                        .expect("seen")
-                        .push((method.to_string(), headers, body.clone()));
+                    seen.lock().expect("seen").push((
+                        method.to_string(),
+                        headers.clone(),
+                        body.clone(),
+                    ));
                     let id = body.get("id").cloned().unwrap_or(Value::Null);
                     let json_answer = |result: Value, extra: &str| {
                         let text =
@@ -1080,16 +1120,65 @@ mod tests {
                             text.len()
                         )
                     };
+                    let accepted =
+                        "HTTP/1.1 202 Accepted\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
+                    let session = headers.get("mcp-session-id").cloned();
+                    let tool = body
+                        .get("params")
+                        .and_then(|params| params.get("name"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
                     let reply = match (method, body.get("method").and_then(Value::as_str)) {
                         ("DELETE", _) => {
                             "HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
                                 .to_string()
                         }
-                        (_, Some("initialize")) => json_answer(
-                            json!({"protocolVersion": PROTOCOL_VERSION, "capabilities": {},
-                                   "serverInfo": {"name": "fake", "version": "1"}}),
-                            "mcp-session-id: s-1\r\n",
-                        ),
+                        (_, Some("initialize")) => {
+                            let number = state.sessions.fetch_add(1, Ordering::SeqCst) + 1;
+                            json_answer(
+                                json!({"protocolVersion": PROTOCOL_VERSION, "capabilities": {},
+                                       "serverInfo": {"name": "fake", "version": "1"}}),
+                                &format!("mcp-session-id: s-{number}\r\n"),
+                            )
+                        }
+                        (_, Some("tools/call"))
+                            if state.expire_first && session.as_deref() == Some("s-1") =>
+                        {
+                            "HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                                .to_string()
+                        }
+                        (_, Some("tools/call")) if tool == "greet" => {
+                            // The question goes on the call's own stream; its
+                            // answer comes as a POST of its own.
+                            let (sender, answer) = oneshot::channel();
+                            *state.waiting.lock().expect("waiting") = Some(sender);
+                            let question = json!({"jsonrpc": "2.0", "id": "e1",
+                                "method": "elicitation/create",
+                                "params": {"message": "Who?", "requestedSchema": {
+                                    "type": "object",
+                                    "properties": {"name": {"type": "string"}}}}});
+                            let head = format!(
+                                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                                 connection: close\r\n\r\ndata: {question}\n\n"
+                            );
+                            let _ = stream.write_all(head.as_bytes()).await;
+                            let answer = answer.await.unwrap_or(Value::Null);
+                            let name = answer["content"]["name"].as_str().unwrap_or("nobody");
+                            let result = json!({"jsonrpc": "2.0", "id": id, "result":
+                                {"content": [{"type": "text", "text": format!("hello {name}")}]}});
+                            let _ = stream
+                                .write_all(format!("data: {result}\n\n").as_bytes())
+                                .await;
+                            let _ = stream.shutdown().await;
+                            return;
+                        }
+                        (_, None) if body.get("id") == Some(&json!("e1")) => {
+                            if let Some(waiting) = state.waiting.lock().expect("waiting").take() {
+                                let _ = waiting.send(body["result"].clone());
+                            }
+                            accepted.to_string()
+                        }
                         (_, Some("tools/list")) => {
                             let ping = json!({"jsonrpc": "2.0", "id": "p1", "method": "ping"});
                             let answer = json!({"jsonrpc": "2.0", "id": id, "result":
@@ -1104,8 +1193,7 @@ mod tests {
                             json!({"content": [{"type": "text", "text": "echoed"}]}),
                             "",
                         ),
-                        _ => "HTTP/1.1 202 Accepted\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
-                            .to_string(),
+                        _ => accepted.to_string(),
                     };
                     let _ = stream.write_all(reply.as_bytes()).await;
                     let _ = stream.shutdown().await;
@@ -1113,6 +1201,65 @@ mod tests {
             }
         });
         format!("http://{address}/mcp")
+    }
+
+    #[tokio::test]
+    async fn an_ended_http_session_is_started_anew_and_questions_are_answered() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let state = Arc::new(HttpState {
+            expire_first: true,
+            ..HttpState::default()
+        });
+        let url = http_server_with(seen.clone(), state).await;
+        let settings: ServerConfig =
+            serde_json::from_value(json!({ "url": url })).expect("settings");
+        let connection = connect(&settings).expect("connect");
+        connection.list_tools().await.expect("tools");
+
+        // The server ends the first session at the call: a new one is
+        // started and the call sent again.
+        let echoed = connection
+            .request("tools/call", json!({"name": "echo", "arguments": {}}))
+            .await
+            .and_then(|result| render(&result));
+        assert_eq!(echoed, Ok("echoed".into()));
+        let requests = seen.lock().expect("seen").clone();
+        // After the handshake, the list and the answer to its ping:
+        let later: Vec<(Option<&str>, Option<&str>)> = requests[4..]
+            .iter()
+            .map(|(_, headers, body)| {
+                (
+                    body.get("method").and_then(Value::as_str),
+                    headers.get("mcp-session-id").map(String::as_str),
+                )
+            })
+            .collect();
+        assert_eq!(
+            later,
+            [
+                (Some("tools/call"), Some("s-1")),
+                (Some("initialize"), None),
+                (Some("notifications/initialized"), Some("s-2")),
+                (Some("tools/call"), Some("s-2")),
+            ]
+        );
+
+        // A question on the call's event stream reaches whoever waits on
+        // the connection, and the answer goes back as a POST.
+        let (sender, mut questions) = mpsc::unbounded_channel::<Elicitation>();
+        *connection.elicit.lock().expect("elicit") = Some(sender);
+        tokio::spawn(async move {
+            let question = questions.recv().await.expect("a question");
+            assert_eq!(question.params["message"], "Who?");
+            let _ = question
+                .reply
+                .send(json!({"action": "accept", "content": {"name": "Bo"}}));
+        });
+        let greeted = connection
+            .request("tools/call", json!({"name": "greet", "arguments": {}}))
+            .await
+            .and_then(|result| render(&result));
+        assert_eq!(greeted, Ok("hello Bo".into()));
     }
 
     #[tokio::test]
