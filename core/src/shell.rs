@@ -28,6 +28,11 @@ const MAX_WAIT: f64 = 600.0;
 /// Lines shown from the start and from the end of a finished command.
 const EDGE_LINES: usize = 20;
 const LINE_CHARS: usize = 500;
+/// Bytes of a command's output written to its log at most: a command that
+/// never stops printing must not fill the disk. The screen keeps showing the
+/// latest output.
+const LOG_LIMIT: u64 = 64 * 1024 * 1024;
+const LOG_CUT: &str = "\n[inocode: the log stops here at 64 MiB; the output went on]\n";
 
 /// The tools; `sandboxed` is whether commands run confined in this turn.
 pub(crate) fn specs(sandboxed: bool) -> Vec<ToolSpec> {
@@ -463,7 +468,11 @@ fn shell_command(command: &str) -> Vec<String> {
 /// Copies the terminal's output to the screen and, without terminal
 /// control sequences, to the log.
 fn copy(mut reader: Box<dyn Read + Send>, file: File, job: &Job) {
-    let mut log = strip_ansi_escapes::Writer::new(file);
+    let mut log = CappedLog {
+        out: strip_ansi_escapes::Writer::new(file),
+        written: 0,
+        limit: LOG_LIMIT,
+    };
     let mut buffer = [0u8; 8192];
     loop {
         match reader.read(&mut buffer) {
@@ -483,11 +492,31 @@ fn copy(mut reader: Box<dyn Read + Send>, file: File, job: &Job) {
                         let _ = writer.flush();
                     }
                 }
-                let _ = log.write_all(chunk);
+                log.write(chunk);
             }
         }
     }
-    let _ = log.flush();
+    let _ = log.out.flush();
+}
+
+/// A log that takes `limit` bytes at most, then notes that it stopped.
+struct CappedLog<W: Write> {
+    out: W,
+    written: u64,
+    limit: u64,
+}
+
+impl<W: Write> CappedLog<W> {
+    fn write(&mut self, chunk: &[u8]) {
+        if self.written >= self.limit {
+            return;
+        }
+        self.written += chunk.len() as u64;
+        let _ = self.out.write_all(chunk);
+        if self.written >= self.limit {
+            let _ = self.out.write_all(LOG_CUT.as_bytes());
+        }
+    }
 }
 
 fn asks_cursor(chunk: &[u8]) -> bool {
@@ -632,6 +661,20 @@ fn cut(text: &str, chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_log_stops_at_its_limit_with_a_note() {
+        let mut log = CappedLog {
+            out: Vec::new(),
+            written: 0,
+            limit: 10,
+        };
+        log.write(b"123456");
+        log.write(b"789012");
+        log.write(b"never");
+        let text = String::from_utf8(log.out).expect("text");
+        assert_eq!(text, format!("123456789012{LOG_CUT}"));
+    }
 
     #[test]
     fn only_plain_reading_commands_count_as_reading() {
