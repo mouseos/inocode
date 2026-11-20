@@ -118,7 +118,13 @@ cargo run --release -p inocode-server
 }
 ```
 
-- 対応する接続は stdio だけ（HTTP は未対応）。使うのは道具（tools）だけで、リソース・プロンプトなどは使わない。
+- リモートのサーバーは Streamable HTTP でつなぐ。`command` の代わりに `url` と、必要なら `headers` を書く（OAuth は未対応なので、鍵はヘッダーで渡す）:
+
+  ```json
+  {"mcpServers": {"remote": {"url": "https://example.com/mcp", "headers": {"Authorization": "Bearer ..."}}}}
+  ```
+
+- 使うのは道具（tools）だけで、リソース・プロンプトなどは使わない。
 - サーバーは最初のターンで起動し、inocode-server が終わるまで使い続ける。設定を変えたら inocode-server を起動し直す。起動に 30 秒以上かかったり失敗したりしたサーバーは飛ばし、標準エラーに理由を出す。
 - 道具の名前は `mcp__<サーバー名>__<道具名>`（英数字・`_`・`-` 以外は `_` にし、64 文字で切る）。
 - 承認：MCP の道具の呼び出しは変更として扱う（`ask` では人の承認を待ち、`auto` では審査される）。

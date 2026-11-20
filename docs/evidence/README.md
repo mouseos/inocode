@@ -59,6 +59,7 @@
 | [sandbox.md](sandbox.md) | シェルの命令の書き込みを、プロジェクトと一時フォルダーに限る（DSH からの移植。Linux・macOS・Windows） | UNSUPPORTED_APPROVED | `core/src/sandbox/` |
 | [colleague-review.md](colleague-review.md) | 別のモデルの同僚が作業に口を出す仕組み（同僚の選び方、issue の未解決回数をきっかけにする案）の調査 | UNSUPPORTED_PENDING | 未実装（調査のみ） |
 | [explore-subagent.md](explore-subagent.md) | 読むだけの探索役 `explore`（場所と行だけを返す） | RESEARCH_SUPPORTED（査読前のみ） | 実装済み（`core/src/explore.rs`） |
+| [reply-to-message.md](reply-to-message.md) | 特定のメッセージへの返信（ID で指定し、原文を引用して渡す） | UNSUPPORTED_PENDING | 未実装（調査のみ） |
 | [reply-language.md](reply-language.md) | 返答の言語（OS の表示言語か設定ファイルの既定、会話の中の指定で変わる、指示の位置） | UNSUPPORTED_APPROVED | 実装済み（`core/src/language.rs`） |
 | [mcp-client.md](mcp-client.md) | MCP の受け口（stdio のサーバーの道具を `mcp__<サーバー>__<道具>` としてモデルに渡す） | UNSUPPORTED_APPROVED（仕様は MCP 2025-11-25） | `core/src/mcp.rs`。単体テストと、偽のサーバーを起動する結合テスト |
 | [edit-write.md](edit-write.md) | edit・write の道具、空白を無視した照合、編集後の構文検査、効率化の候補 | 置換形式・完全一致・空白を無視した照合・構文検査は RESEARCH_SUPPORTED（査読前を含む）、細部は UNSUPPORTED_APPROVED | `core/src/edit.rs`、構文検査は `core/src/outline.rs` |

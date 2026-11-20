@@ -1,6 +1,7 @@
 //! The MCP client: the servers listed in `mcp.json` beside the thread store
-//! are started over stdio, and their tools are given to the model as
-//! `mcp__<server>__<tool>`. Design and sources: docs/evidence/mcp-client.md.
+//! are started over stdio or reached over Streamable HTTP, and their tools
+//! are given to the model as `mcp__<server>__<tool>`. Design and sources:
+//! docs/evidence/mcp-client.md.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -35,11 +36,18 @@ struct Config {
 
 #[derive(Deserialize)]
 struct ServerConfig {
-    command: String,
+    #[serde(default)]
+    command: Option<String>,
     #[serde(default)]
     args: Vec<String>,
     #[serde(default)]
     env: HashMap<String, String>,
+    /// The MCP endpoint of a server reached over Streamable HTTP.
+    #[serde(default)]
+    url: Option<String>,
+    /// Sent with every HTTP request, such as an `Authorization` header.
+    #[serde(default)]
+    headers: HashMap<String, String>,
 }
 
 /// The tools of every server that started, in the order of the file.
@@ -111,7 +119,7 @@ async fn load(config: &Path) -> Tools {
     };
     for (server, settings) in config.servers {
         let started = tokio::time::timeout(START_TIMEOUT, async {
-            let connection = Arc::new(spawn(&settings)?);
+            let connection = Arc::new(connect(&settings)?);
             let listed = connection.list_tools().await?;
             Ok::<_, String>((connection, listed))
         })
@@ -224,8 +232,19 @@ fn render(result: &Value) -> Result<String, String> {
     }
 }
 
-fn spawn(settings: &ServerConfig) -> Result<Connection, String> {
-    let mut child = tokio::process::Command::new(&settings.command)
+fn connect(settings: &ServerConfig) -> Result<Connection, String> {
+    match (&settings.command, &settings.url) {
+        (Some(command), None) => spawn(command, settings),
+        (None, Some(url)) => Ok(Connection::with(Transport::Http(Http::new(
+            url,
+            &settings.headers,
+        )?))),
+        _ => Err("give either command or url".into()),
+    }
+}
+
+fn spawn(command: &str, settings: &ServerConfig) -> Result<Connection, String> {
+    let mut child = tokio::process::Command::new(command)
         .args(&settings.args)
         .envs(&settings.env)
         .stdin(Stdio::piped())
@@ -233,11 +252,13 @@ fn spawn(settings: &ServerConfig) -> Result<Connection, String> {
         .stderr(Stdio::inherit())
         .kill_on_drop(true)
         .spawn()
-        .map_err(|error| format!("cannot run {}: {error}", settings.command))?;
+        .map_err(|error| format!("cannot run {command}: {error}"))?;
     let stdin = child.stdin.take().expect("piped stdin");
     let stdout = child.stdout.take().expect("piped stdout");
     let mut connection = Connection::new(stdout, stdin);
-    connection.child = Some(child);
+    if let Transport::Pipe(pipe) = &mut connection.transport {
+        pipe.child = Some(child);
+    }
     Ok(connection)
 }
 
@@ -245,11 +266,21 @@ type Writer = Arc<tokio::sync::Mutex<Box<dyn AsyncWrite + Send + Unpin>>>;
 /// Requests waiting for their answer; `None` once the server has closed.
 type Pending = Arc<Mutex<Option<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>>;
 
-/// One server, spoken to with JSON-RPC messages, one per line.
+/// One server, spoken to with JSON-RPC messages.
 pub(crate) struct Connection {
+    next_id: AtomicU64,
+    transport: Transport,
+}
+
+enum Transport {
+    Pipe(Pipe),
+    Http(Http),
+}
+
+/// A server this client started, spoken to one message per line.
+struct Pipe {
     writer: Writer,
     pending: Pending,
-    next_id: AtomicU64,
     /// Ended when the connection is dropped.
     child: Option<tokio::process::Child>,
 }
@@ -262,31 +293,35 @@ impl Connection {
         let writer: Writer = Arc::new(tokio::sync::Mutex::new(Box::new(writer)));
         let pending: Pending = Arc::new(Mutex::new(Some(HashMap::new())));
         tokio::spawn(read(reader, writer.clone(), pending.clone()));
-        Self {
+        Self::with(Transport::Pipe(Pipe {
             writer,
             pending,
-            next_id: AtomicU64::new(1),
             child: None,
+        }))
+    }
+
+    fn with(transport: Transport) -> Self {
+        Self {
+            next_id: AtomicU64::new(1),
+            transport,
         }
     }
 
     async fn request(&self, method: &str, params: Value) -> Result<Value, String> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let (sender, receiver) = oneshot::channel();
-        match self.pending.lock().expect("pending lock").as_mut() {
-            Some(pending) => pending.insert(id, sender),
-            None => return Err("the MCP server has stopped".into()),
-        };
         let message = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
-        if let Err(error) = send(&self.writer, &message).await {
-            if let Some(pending) = self.pending.lock().expect("pending lock").as_mut() {
-                pending.remove(&id);
-            }
-            return Err(error);
+        match &self.transport {
+            Transport::Pipe(pipe) => pipe.request(id, &message).await,
+            Transport::Http(http) => http.request(id, &message).await,
         }
-        receiver
-            .await
-            .unwrap_or_else(|_| Err("the MCP server has stopped".into()))
+    }
+
+    async fn notify(&self, method: &str) -> Result<(), String> {
+        let message = json!({"jsonrpc": "2.0", "method": method});
+        match &self.transport {
+            Transport::Pipe(pipe) => send(&pipe.writer, &message).await,
+            Transport::Http(http) => http.post(&message).await.map(drop),
+        }
     }
 
     /// The handshake, then every page of the server's tools.
@@ -308,11 +343,10 @@ impl Connection {
         if !SUPPORTED_VERSIONS.contains(&version) {
             return Err(format!("unsupported protocol version {version:?}"));
         }
-        send(
-            &self.writer,
-            &json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
-        )
-        .await?;
+        if let Transport::Http(http) = &self.transport {
+            *http.version.lock().expect("version lock") = Some(version.to_string());
+        }
+        self.notify("notifications/initialized").await?;
         let mut tools = Vec::new();
         let mut cursor: Option<String> = None;
         loop {
@@ -337,9 +371,231 @@ impl Connection {
 
 impl Drop for Connection {
     fn drop(&mut self) {
-        if let Some(child) = self.child.as_mut() {
-            let _ = child.start_kill();
+        match &mut self.transport {
+            Transport::Pipe(pipe) => {
+                if let Some(child) = pipe.child.as_mut() {
+                    let _ = child.start_kill();
+                }
+            }
+            Transport::Http(http) => http.end(),
         }
+    }
+}
+
+impl Pipe {
+    async fn request(&self, id: u64, message: &Value) -> Result<Value, String> {
+        let (sender, receiver) = oneshot::channel();
+        match self.pending.lock().expect("pending lock").as_mut() {
+            Some(pending) => pending.insert(id, sender),
+            None => return Err("the MCP server has stopped".into()),
+        };
+        if let Err(error) = send(&self.writer, message).await {
+            if let Some(pending) = self.pending.lock().expect("pending lock").as_mut() {
+                pending.remove(&id);
+            }
+            return Err(error);
+        }
+        receiver
+            .await
+            .unwrap_or_else(|_| Err("the MCP server has stopped".into()))
+    }
+}
+
+const SESSION_HEADER: &str = "MCP-Session-Id";
+const VERSION_HEADER: &str = "MCP-Protocol-Version";
+/// Bytes of one JSON answer read at most, as for the providers' answers.
+const MAX_HTTP_BODY: usize = 16 * 1024 * 1024;
+/// How long ending a session may take; it is not waited for.
+const END_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// A server reached over Streamable HTTP: every message is one POST to its
+/// endpoint, answered with JSON or with a stream of server-sent events.
+struct Http {
+    client: reqwest::Client,
+    url: reqwest::Url,
+    headers: reqwest::header::HeaderMap,
+    /// The session the server gave at initialization, sent with every later
+    /// request.
+    session: Mutex<Option<String>>,
+    /// The protocol version agreed at initialization, sent with every later
+    /// request.
+    version: Mutex<Option<String>>,
+}
+
+impl Http {
+    fn new(url: &str, headers: &HashMap<String, String>) -> Result<Self, String> {
+        let url =
+            reqwest::Url::parse(url).map_err(|error| format!("invalid url {url}: {error}"))?;
+        if !matches!(url.scheme(), "http" | "https") {
+            return Err(format!("{url} is not an http or https url"));
+        }
+        let mut map = reqwest::header::HeaderMap::new();
+        for (name, value) in headers {
+            let header = reqwest::header::HeaderName::from_bytes(name.as_bytes())
+                .map_err(|_| format!("invalid header name {name}"))?;
+            let value = reqwest::header::HeaderValue::from_str(value)
+                .map_err(|_| format!("invalid value for header {name}"))?;
+            map.insert(header, value);
+        }
+        Ok(Self {
+            client: reqwest::Client::new(),
+            url,
+            headers: map,
+            session: Mutex::new(None),
+            version: Mutex::new(None),
+        })
+    }
+
+    /// Posts one message; the response once its status is a success.
+    async fn post(&self, message: &Value) -> Result<reqwest::Response, String> {
+        let mut request = self
+            .client
+            .post(self.url.clone())
+            .headers(self.headers.clone())
+            .header(
+                reqwest::header::ACCEPT,
+                "application/json, text/event-stream",
+            )
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(message.to_string());
+        let session = self.session.lock().expect("session lock").clone();
+        if let Some(session) = &session {
+            request = request.header(SESSION_HEADER, session);
+        }
+        if let Some(version) = self.version.lock().expect("version lock").clone() {
+            request = request.header(VERSION_HEADER, version);
+        }
+        let mut response = request
+            .send()
+            .await
+            .map_err(|error| format!("cannot reach the MCP server: {error}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            if status == reqwest::StatusCode::NOT_FOUND && session.is_some() {
+                return Err("the MCP server ended the session".into());
+            }
+            let body = crate::llm::read_capped(&mut response, 1024)
+                .await
+                .ok()
+                .flatten()
+                .map(|body| String::from_utf8_lossy(&body).trim().to_string())
+                .unwrap_or_default();
+            return Err(format!("the MCP server answered {status}: {body}"));
+        }
+        if let Some(session) = response
+            .headers()
+            .get(SESSION_HEADER)
+            .and_then(|value| value.to_str().ok())
+        {
+            *self.session.lock().expect("session lock") = Some(session.to_string());
+        }
+        Ok(response)
+    }
+
+    async fn request(&self, id: u64, message: &Value) -> Result<Value, String> {
+        let mut response = self.post(message).await?;
+        let events = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|kind| kind.starts_with("text/event-stream"));
+        if events {
+            return self.answer_in_events(id, response).await;
+        }
+        let body = crate::llm::read_capped(&mut response, MAX_HTTP_BODY)
+            .await
+            .map_err(|error| format!("cannot read the MCP server's answer: {error}"))?
+            .ok_or("the MCP server's answer is too large")?;
+        let message: Value = serde_json::from_slice(&body)
+            .map_err(|error| format!("the MCP server's answer is not JSON: {error}"))?;
+        if message.get("id").and_then(Value::as_u64) != Some(id) {
+            return Err("the MCP server answered another request".into());
+        }
+        answer_of(&message)
+    }
+
+    /// Reads the server's events until the answer to request `id`; the
+    /// server's own requests met on the way are answered with a POST each.
+    async fn answer_in_events(
+        &self,
+        id: u64,
+        mut response: reqwest::Response,
+    ) -> Result<Value, String> {
+        let mut parser = crate::sse::SseParser::new();
+        let mut ended = false;
+        loop {
+            while let Some(item) = parser.next_item() {
+                let data = item.map_err(|error| error.message)?;
+                let Ok(message) = serde_json::from_str::<Value>(&data) else {
+                    continue;
+                };
+                match (
+                    message.get("method").and_then(Value::as_str),
+                    message.get("id"),
+                ) {
+                    (Some(method), Some(request)) => {
+                        let _ = self.post(&reply(method, request.clone())).await;
+                    }
+                    (None, Some(answered)) if answered.as_u64() == Some(id) => {
+                        return answer_of(&message);
+                    }
+                    _ => {}
+                }
+            }
+            if ended {
+                return Err("the MCP server closed the stream before answering".into());
+            }
+            match response.chunk().await {
+                Ok(Some(chunk)) => parser.push(&chunk),
+                Ok(None) => {
+                    parser.end();
+                    ended = true;
+                }
+                Err(error) => return Err(format!("cannot read the MCP server's answer: {error}")),
+            }
+        }
+    }
+
+    /// Ends the session, if the server gave one, without waiting.
+    fn end(&self) {
+        let Some(session) = self.session.lock().expect("session lock").take() else {
+            return;
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let request = self
+            .client
+            .delete(self.url.clone())
+            .headers(self.headers.clone())
+            .header(SESSION_HEADER, session)
+            .timeout(END_TIMEOUT);
+        runtime.spawn(async move {
+            let _ = request.send().await;
+        });
+    }
+}
+
+/// The result of an answer, or its error as text.
+fn answer_of(message: &Value) -> Result<Value, String> {
+    match message.get("error") {
+        Some(error) => Err(format!(
+            "MCP error {}: {}",
+            error.get("code").unwrap_or(&Value::Null),
+            error.get("message").and_then(Value::as_str).unwrap_or("")
+        )),
+        None => Ok(message.get("result").cloned().unwrap_or(Value::Null)),
+    }
+}
+
+/// The answer to a request from the server: `ping` is answered and the
+/// other requests are refused, since this client offers none of the client
+/// features.
+fn reply(method: &str, id: Value) -> Value {
+    match method {
+        "ping" => json!({"jsonrpc": "2.0", "id": id, "result": {}}),
+        _ => json!({"jsonrpc": "2.0", "id": id,
+            "error": {"code": -32601, "message": "Method not found"}}),
     }
 }
 
@@ -366,12 +622,7 @@ async fn read(reader: impl AsyncRead + Unpin, writer: Writer, pending: Pending) 
         let id = message.get("id").cloned();
         match (message.get("method").and_then(Value::as_str), id) {
             (Some(method), Some(id)) => {
-                let answer = match method {
-                    "ping" => json!({"jsonrpc": "2.0", "id": id, "result": {}}),
-                    _ => json!({"jsonrpc": "2.0", "id": id,
-                        "error": {"code": -32601, "message": "Method not found"}}),
-                };
-                let _ = send(&writer, &answer).await;
+                let _ = send(&writer, &reply(method, id)).await;
             }
             (Some(_), None) => {}
             (None, Some(id)) => {
@@ -381,16 +632,8 @@ async fn read(reader: impl AsyncRead + Unpin, writer: Writer, pending: Pending) 
                     .expect("pending lock")
                     .as_mut()
                     .and_then(|pending| pending.remove(&id));
-                let answer = match message.get("error") {
-                    Some(error) => Err(format!(
-                        "MCP error {}: {}",
-                        error.get("code").unwrap_or(&Value::Null),
-                        error.get("message").and_then(Value::as_str).unwrap_or("")
-                    )),
-                    None => Ok(message.get("result").cloned().unwrap_or(Value::Null)),
-                };
                 if let Some(sender) = sender {
-                    let _ = sender.send(answer);
+                    let _ = sender.send(answer_of(&message));
                 }
             }
             (None, None) => {}
@@ -530,13 +773,210 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.contains("MCP server"), "{error}");
-        let waiting = connection
+        let Transport::Pipe(pipe) = &connection.transport else {
+            unreachable!("a connection made with new is a pipe");
+        };
+        let waiting = pipe
             .pending
             .lock()
             .expect("pending")
             .as_ref()
             .map(HashMap::len);
         assert!(matches!(waiting, None | Some(0)), "{waiting:?}");
+    }
+
+    /// One HTTP request as the fake server saw it: method, headers with
+    /// lowercase names, and body.
+    type Seen = (String, HashMap<String, String>, Value);
+
+    /// A Streamable HTTP server: it gives a session at initialization,
+    /// answers `tools/list` with events that first ping the client, and
+    /// `tools/call` with JSON.
+    async fn http_server(seen: Arc<Mutex<Vec<Seen>>>) -> String {
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let address = listener.local_addr().expect("address");
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let seen = seen.clone();
+                tokio::spawn(async move {
+                    let mut buffer = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    let header_end = loop {
+                        if let Some(end) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
+                            break end + 4;
+                        }
+                        let read = stream.read(&mut chunk).await.expect("read");
+                        assert!(read > 0, "the request ended early");
+                        buffer.extend_from_slice(&chunk[..read]);
+                    };
+                    let head = String::from_utf8_lossy(&buffer[..header_end]).to_string();
+                    let mut lines = head.split("\r\n");
+                    let method = lines.next().unwrap_or("").split(' ').next().unwrap_or("");
+                    let headers: HashMap<String, String> = lines
+                        .filter_map(|line| line.split_once(':'))
+                        .map(|(name, value)| (name.to_lowercase(), value.trim().to_string()))
+                        .collect();
+                    let length: usize = headers
+                        .get("content-length")
+                        .and_then(|length| length.parse().ok())
+                        .unwrap_or(0);
+                    while buffer.len() < header_end + length {
+                        let read = stream.read(&mut chunk).await.expect("read");
+                        assert!(read > 0, "the body ended early");
+                        buffer.extend_from_slice(&chunk[..read]);
+                    }
+                    let body: Value =
+                        serde_json::from_slice(&buffer[header_end..header_end + length])
+                            .unwrap_or(Value::Null);
+                    seen.lock()
+                        .expect("seen")
+                        .push((method.to_string(), headers, body.clone()));
+                    let id = body.get("id").cloned().unwrap_or(Value::Null);
+                    let json_answer = |result: Value, extra: &str| {
+                        let text =
+                            json!({"jsonrpc": "2.0", "id": id, "result": result}).to_string();
+                        format!(
+                            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n{extra}\
+                             content-length: {}\r\nconnection: close\r\n\r\n{text}",
+                            text.len()
+                        )
+                    };
+                    let reply = match (method, body.get("method").and_then(Value::as_str)) {
+                        ("DELETE", _) => {
+                            "HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                                .to_string()
+                        }
+                        (_, Some("initialize")) => json_answer(
+                            json!({"protocolVersion": PROTOCOL_VERSION, "capabilities": {},
+                                   "serverInfo": {"name": "fake", "version": "1"}}),
+                            "mcp-session-id: s-1\r\n",
+                        ),
+                        (_, Some("tools/list")) => {
+                            let ping = json!({"jsonrpc": "2.0", "id": "p1", "method": "ping"});
+                            let answer = json!({"jsonrpc": "2.0", "id": id, "result":
+                                {"tools": [{"name": "echo", "inputSchema": {"type": "object"}}]}});
+                            format!(
+                                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                                 connection: close\r\n\r\nid: 1\ndata:\n\n\
+                                 data: {ping}\n\ndata: {answer}\n\n"
+                            )
+                        }
+                        (_, Some("tools/call")) => json_answer(
+                            json!({"content": [{"type": "text", "text": "echoed"}]}),
+                            "",
+                        ),
+                        _ => "HTTP/1.1 202 Accepted\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                            .to_string(),
+                    };
+                    let _ = stream.write_all(reply.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+        format!("http://{address}/mcp")
+    }
+
+    #[tokio::test]
+    async fn a_server_over_http_is_listed_called_and_its_session_kept() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let url = http_server(seen.clone()).await;
+        let settings: ServerConfig = serde_json::from_value(json!({
+            "url": url, "headers": {"Authorization": "Bearer t"}
+        }))
+        .expect("settings");
+        let connection = Arc::new(connect(&settings).expect("connect"));
+        let listed = connection.list_tools().await.expect("tools");
+        assert_eq!(listed.len(), 1);
+        let mut tools = Tools::default();
+        add(&mut tools, "web", &connection, listed);
+        let (route, tool) = tools.routes.get("mcp__web__echo").expect("route");
+        let result = route
+            .request("tools/call", json!({"name": tool, "arguments": {}}))
+            .await
+            .and_then(|result| render(&result));
+        assert_eq!(result, Ok("echoed".into()));
+
+        let requests = seen.lock().expect("seen").clone();
+        let methods: Vec<&str> = requests
+            .iter()
+            .map(|(_, _, body)| {
+                body.get("method")
+                    .and_then(Value::as_str)
+                    .unwrap_or("(answer)")
+            })
+            .collect();
+        assert_eq!(
+            methods,
+            [
+                "initialize",
+                "notifications/initialized",
+                "tools/list",
+                "(answer)",
+                "tools/call"
+            ]
+        );
+        // The ping met in the event stream is answered with a POST of its own.
+        assert_eq!(
+            requests[3].2,
+            json!({"jsonrpc": "2.0", "id": "p1", "result": {}})
+        );
+        for (index, (method, headers, _)) in requests.iter().enumerate() {
+            assert_eq!(method, "POST");
+            assert_eq!(
+                headers.get("authorization").map(String::as_str),
+                Some("Bearer t")
+            );
+            assert_eq!(
+                headers.get("accept").map(String::as_str),
+                Some("application/json, text/event-stream")
+            );
+            let later = index > 0;
+            assert_eq!(headers.get("mcp-session-id").is_some(), later, "{index}");
+            assert_eq!(
+                headers.get("mcp-protocol-version").map(String::as_str),
+                later.then_some(PROTOCOL_VERSION),
+                "{index}"
+            );
+        }
+
+        // Dropping the last copy ends the session.
+        drop(tools);
+        drop(connection);
+        for _ in 0..100 {
+            if seen
+                .lock()
+                .expect("seen")
+                .iter()
+                .any(|(method, _, _)| method == "DELETE")
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("the session was not ended");
+    }
+
+    #[test]
+    fn a_server_needs_either_a_command_or_a_url() {
+        for config in [
+            json!({}),
+            json!({"command": "x", "url": "http://localhost/mcp"}),
+        ] {
+            let settings: ServerConfig = serde_json::from_value(config).expect("settings");
+            assert_eq!(
+                connect(&settings).err().as_deref(),
+                Some("give either command or url")
+            );
+        }
+        let settings: ServerConfig =
+            serde_json::from_value(json!({"url": "file:///etc/passwd"})).expect("settings");
+        assert!(connect(&settings).is_err());
     }
 
     #[test]
