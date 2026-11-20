@@ -185,7 +185,7 @@ fn summarize(rows: Vec<Row>, utc_offset_minutes: i64) -> Vec<ModelStats> {
             }
         })
         .collect();
-    models.sort_by(|a, b| b.requests.cmp(&a.requests));
+    models.sort_by_key(|stats| std::cmp::Reverse(stats.requests));
     models
 }
 
