@@ -7,6 +7,7 @@
 
 mod agent_tools;
 mod ask;
+mod colleague;
 mod compaction;
 pub mod conversation;
 pub mod deepai;

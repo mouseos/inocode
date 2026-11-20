@@ -380,6 +380,15 @@ struct Thread<'a> {
     compactor: Option<std::sync::Arc<Llm>>,
     /// The model that answers `explore` when it is not the turn's own.
     explorer: Option<std::sync::Arc<Llm>>,
+    /// The colleague the person set up, asked when the work looks stuck.
+    colleague: Option<std::sync::Arc<Llm>>,
+    monitor: crate::colleague::Monitor,
+    /// The person's request of this turn, for the colleague.
+    request: String,
+    /// Where the steps since the colleague's last advice start in
+    /// `conversation.messages`, and that advice.
+    advised_from: usize,
+    last_advice: Option<String>,
     /// The reviewer's refusals in a row and in this turn.
     denials: (u32, u32),
 }
@@ -741,6 +750,41 @@ impl Thread<'_> {
         (text, true)
     }
 
+    /// Has the colleague advise on the steps since its last advice, and
+    /// adds the advice to the thread. A colleague that cannot be asked is
+    /// reported and the work goes on without it.
+    async fn ask_colleague(
+        &mut self,
+        sign: &crate::colleague::Sign,
+        cancel: &mut watch::Receiver<bool>,
+        usage: &mut TurnUsage,
+    ) -> Result<(), ErrorInfo> {
+        let Some(colleague) = self.colleague.clone() else {
+            return Ok(());
+        };
+        let from = self.advised_from.min(self.conversation.messages.len());
+        let steps = self.conversation.messages[from..].to_vec();
+        let asked = crate::colleague::advise(
+            &colleague,
+            &self.request,
+            &steps,
+            self.last_advice.as_deref(),
+            sign,
+            cancel,
+            usage,
+        )
+        .await;
+        match asked {
+            Ok(advice) => {
+                self.last_advice = crate::colleague::advice_of(&advice).map(str::to_string);
+                self.record(vec![advice]).await?;
+                self.advised_from = self.conversation.messages.len();
+            }
+            Err(error) => eprintln!("inocode: the colleague could not be asked: {error}"),
+        }
+        Ok(())
+    }
+
     /// The stored position of the answer to call `call`.
     fn seq_of_result(&self, call: &str) -> Option<i64> {
         self.conversation
@@ -908,6 +952,17 @@ pub async fn run(
             thread.reviewer = reviewer;
             thread.compactor = compactor;
             thread.explorer = explorer;
+            match colleague(llm, store).await {
+                Ok(colleague) => thread.colleague = colleague,
+                Err(error) => {
+                    return Outcome {
+                        ending: Ending::Failed(error),
+                        usage,
+                        held: Vec::new(),
+                        questions: Vec::new(),
+                    }
+                }
+            }
             if let Some(window) = llm.context_window().await {
                 thread.shorten_people(window);
             }
@@ -974,6 +1029,28 @@ fn explorer(llm: &Llm) -> Result<Option<std::sync::Arc<Llm>>, ErrorInfo> {
     other_model(llm, EXPLORE_MODEL_ENV)
 }
 
+/// The colleague named in `settings.json` beside the database, if any.
+async fn colleague(llm: &Llm, store: &Store) -> Result<Option<std::sync::Arc<Llm>>, ErrorInfo> {
+    let settings = store.files_folder().with_file_name("settings.json");
+    let configured = crate::colleague::configured(&settings)
+        .await
+        .map_err(|error| {
+            ErrorInfo::new(
+                "colleague_config",
+                format!("{}: {error}", settings.display()),
+            )
+        })?;
+    configured
+        .map(|colleague| {
+            llm.other(
+                colleague.provider.as_deref(),
+                &colleague.model,
+                colleague.base_url.as_deref(),
+            )
+        })
+        .transpose()
+}
+
 fn other_model(llm: &Llm, variable: &str) -> Result<Option<std::sync::Arc<Llm>>, ErrorInfo> {
     match std::env::var(variable) {
         Ok(model) if !model.trim().is_empty() && model.trim() != llm.model() => {
@@ -1030,6 +1107,11 @@ async fn open<'a>(
         reviewer: None,
         compactor: None,
         explorer: None,
+        colleague: None,
+        monitor: Default::default(),
+        request: String::new(),
+        advised_from: 0,
+        last_advice: None,
         denials: (0, 0),
     })
 }
@@ -1051,6 +1133,8 @@ async fn steps(
             Err(error) => return Ending::Failed(error),
         }
     }
+    thread.request = prompt.text.clone();
+    thread.advised_from = thread.conversation.messages.len();
     opening.push(person(prompt.text));
     if let Err(error) = thread.record(opening).await {
         return Ending::Failed(error);
@@ -1140,8 +1224,17 @@ async fn steps(
                 parts: vec![RESUME.to_string()],
             });
         }
+        let sign = match &thread.colleague {
+            Some(_) => thread.monitor.step(&body),
+            None => None,
+        };
         if let Err(error) = thread.record(bodies).await {
             return Ending::Failed(error);
+        }
+        if let (Some(sign), Some(Step::Continue)) = (sign, &step) {
+            if let Err(error) = thread.ask_colleague(&sign, cancel, usage).await {
+                return Ending::Failed(error);
+            }
         }
         match step {
             None => return Ending::Failed(failure.expect("no step only after a failure")),

@@ -57,7 +57,7 @@
 | [compaction-cost-and-overflow.md](compaction-cost-and-overflow.md) | 圧縮の要求でキャッシュを効かせる、送る前の見積もり、窓に入らない履歴を区切って要約する、要約できないときの代替、圧縮モデルの指定（`INOCODE_COMPACT_MODEL`） | 区切った要約は RESEARCH_SUPPORTED（題材は本）、ほかは UNSUPPORTED_APPROVED | `core/src/compaction.rs`、`core/src/turn.rs`。実測（Haiku、4 回ずつ、5abc52f）：要約 1 回のキャッシュ外の入力 −76%、実行全体 −29%（有意ではない） |
 | [large-person-messages.md](large-person-messages.md) | 人の大きな発言で圧縮が毎回起きる問題の 4 案（中略して recall、中略してファイル保存、送らない、繰り返さない）の比較 | B は UNSUPPORTED_APPROVED | B（中略してファイル保存）を実装。`core/src/compaction.rs`、`core/src/turn.rs`。実測（Haiku、各 4 回）：ファイル保存の案が正答 6.75/7、費用 −57%。recall で読ませる案と送らない案は 4.5/7 |
 | [sandbox.md](sandbox.md) | シェルの命令の書き込みを、プロジェクトと一時フォルダーに限る（DSH からの移植。Linux・macOS・Windows） | UNSUPPORTED_APPROVED | `core/src/sandbox/` |
-| [colleague-review.md](colleague-review.md) | 別のモデルの同僚が作業に口を出す仕組み（同僚の選び方、issue の未解決回数をきっかけにする案）の調査 | UNSUPPORTED_PENDING | 未実装（調査のみ） |
+| [colleague-review.md](colleague-review.md) | 別のモデルの同僚が作業に口を出す仕組み（行き詰まりを規則で見つけたときの助言。同僚の選び方などの調査） | 行き詰まったときの助言：RESEARCH_SUPPORTED（査読前のみ）。選び方などは研究なし | 行き詰まったときの同僚は実装済み（`core/src/colleague.rs`）。選び方・issue の記録は未実装 |
 | [explore-subagent.md](explore-subagent.md) | 読むだけの探索役 `explore`（場所と行だけを返す） | RESEARCH_SUPPORTED（査読前のみ） | 実装済み（`core/src/explore.rs`） |
 | [ask-person.md](ask-person.md) | 人に質問するツール `ask`（フォームの形、ターンの終わりに返す） | UNSUPPORTED_APPROVED | 実装済み（`core/src/ask.rs`） |
 | [tool-guidance.md](tool-guidance.md) | システムプロンプトのツールの使い分け | 説明を詳しくする：RESEARCH_SUPPORTED。システムプロンプトに置く：UNSUPPORTED_APPROVED | 実装済み（`core/src/turn.rs` の `TOOL_GUIDE`） |

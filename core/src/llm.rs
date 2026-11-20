@@ -35,6 +35,8 @@ pub const DEFAULT_MAX_TOKENS: u32 = 8192;
 const API_KEY_ENV: &str = "LOGFARE_API_KEY";
 const BASE_URL_ENV: &str = "INOCODE_LLM_BASE_URL";
 const MODEL_ENV: &str = "INOCODE_LLM_MODEL";
+/// The key of a colleague model on a static-key provider.
+const COLLEAGUE_API_KEY_ENV: &str = "INOCODE_COLLEAGUE_API_KEY";
 const PROVIDER_ENV: &str = "INOCODE_LLM_PROVIDER";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// Whole-request bound for model discovery, body included (reference
@@ -292,6 +294,78 @@ impl Llm {
         let sibling = std::sync::Arc::new(self.with_model(model)?);
         siblings.insert(model.to_string(), sibling.clone());
         Ok(sibling)
+    }
+
+    /// A client for `model` on the provider `provider` names: an OAuth
+    /// provider, whose credential comes from the same store as this
+    /// client's, or `openai`, `anthropic` or `responses` with the key in
+    /// `INOCODE_COLLEAGUE_API_KEY`. Without `provider`, a sibling on this
+    /// client's provider. Made once and kept.
+    pub(crate) fn other(
+        &self,
+        provider: Option<&str>,
+        model: &str,
+        base_url: Option<&str>,
+    ) -> Result<std::sync::Arc<Llm>, ErrorInfo> {
+        let Some(name) = provider.map(str::trim).filter(|name| !name.is_empty()) else {
+            return self.sibling(model);
+        };
+        let key = format!("{name}\n{model}\n{}", base_url.unwrap_or(""));
+        let mut siblings = self
+            .siblings
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(other) = siblings.get(&key) {
+            return Ok(other.clone());
+        }
+        let config = if let Some(auth) = AuthKind::from_provider_name(name) {
+            let default = OAUTH_DEFAULTS
+                .iter()
+                .find(|row| row.0 == auth)
+                .expect("every OAuth kind has defaults");
+            LlmConfig {
+                provider: default.3,
+                auth,
+                base_url: base_url.unwrap_or(default.1).to_string(),
+                model: model.to_string(),
+                api_key: String::new(),
+                auth_store_path: self.config.auth_store_path.clone(),
+                reasoning: Default::default(),
+            }
+        } else {
+            let provider = match name.to_ascii_lowercase().as_str() {
+                "openai" => ProviderKind::OpenAi,
+                "anthropic" => ProviderKind::Anthropic,
+                "responses" => ProviderKind::Responses,
+                _ => {
+                    return Err(ErrorInfo::new(
+                        "provider_config",
+                        format!("unknown provider {name}"),
+                    ))
+                }
+            };
+            let api_key = std::env::var(COLLEAGUE_API_KEY_ENV)
+                .ok()
+                .filter(|key| !key.trim().is_empty())
+                .ok_or_else(|| {
+                    ErrorInfo::new(
+                        "provider_unconfigured",
+                        format!("{COLLEAGUE_API_KEY_ENV} is not set"),
+                    )
+                })?;
+            LlmConfig {
+                provider,
+                auth: AuthKind::ApiKey,
+                base_url: base_url.unwrap_or(DEFAULT_BASE_URL).to_string(),
+                model: model.to_string(),
+                api_key,
+                auth_store_path: None,
+                reasoning: Default::default(),
+            }
+        };
+        let other = std::sync::Arc::new(Self::new(config)?);
+        siblings.insert(key, other.clone());
+        Ok(other)
     }
 
     /// A client for `model` on the same provider and credential.

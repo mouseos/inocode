@@ -131,6 +131,17 @@ cargo run --release -p inocode-server
 - Windows では `npx` などは `npx.cmd` と書く（拡張子を補わないため）。
 - 設計と根拠：[docs/evidence/mcp-client.md](docs/evidence/mcp-client.md)。
 
+### 行き詰まったときの同僚
+
+`settings.json` に同僚のモデルを書くと、同じ呼び出しを 3 回したときや、探す・編集・実行のどれかだけを 7 手続けたときに、そのモデルに次の一手を聞き、作業中のモデルに伝える（助言の後 5 手は聞かない、1 ターンに 5 回まで）。書かなければ同僚はいない:
+
+```json
+{"colleague": {"model": "claude-haiku-4-5", "provider": "claude-oauth"}}
+```
+
+- `provider` を省くと、作業中のモデルと同じ提供元・同じ認証。`openai`・`anthropic`・`responses` では鍵を環境変数 `INOCODE_COLLEAGUE_API_KEY` に置き、必要なら `base_url` を書く。
+- 設計と根拠：[docs/evidence/colleague-review.md](docs/evidence/colleague-review.md)。
+
 ### 返答の言語
 
 モデルは、OS の表示言語で返答する。話しかけた文から言語を推定はしない。会話の中で別の言語を頼むと、最後に頼んだ言語に変わる。OS と違う言語を既定にするには、`~/.inocode/settings.json`（`inocode.db` と同じフォルダー）に書く:

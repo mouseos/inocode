@@ -479,6 +479,86 @@ async fn questions_are_reported_when_the_turn_ends_and_answered_by_a_reply() {
     .await;
 }
 
+/// A core whose settings name `colleague`, on the mock's provider.
+async fn core_with_colleague(mock: &MockApi, colleague: Value) -> Arc<Core> {
+    let database = database();
+    std::fs::write(
+        database.with_file_name("settings.json"),
+        json!({"language": LANGUAGE, "colleague": colleague}).to_string(),
+    )
+    .expect("settings");
+    let llm = Llm::new(LlmConfig {
+        provider: ProviderKind::OpenAi,
+        auth: inocode_core::oauth::AuthKind::ApiKey,
+        base_url: mock.base_url.clone(),
+        model: "test-model".to_string(),
+        api_key: "test-key".to_string(),
+        auth_store_path: None,
+        reasoning: Default::default(),
+    })
+    .expect("client");
+    let store = Store::open(database).await.expect("store");
+    Arc::new(Core::with_llm(llm).with_store(store))
+}
+
+#[tokio::test]
+async fn a_colleague_advises_when_the_same_call_is_made_a_third_time() {
+    with_timeout(async {
+        let read = json!({"path": "a.txt"});
+        let mock = scripted(vec![
+            tool_turn("r1", "read", read.clone()),
+            tool_turn("r2", "read", read.clone()),
+            tool_turn("r3", "read", read),
+            vec![sse_delta("Use an absolute path."), finish("stop"), sse_done()],
+        ])
+        .await;
+        let core = core_with_colleague(&mock, json!({"model": "colleague-model"})).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client).await;
+
+        let events = turn(&mut client, 2, thread, "check a.txt").await;
+        assert_eq!(events.last().unwrap()["event"], "completed");
+        let chats = chats(&mock);
+        assert_eq!(chats.len(), 5);
+        // The colleague is asked once, with its own instructions and no tools.
+        let asked = &chats[3].body;
+        assert_eq!(asked["model"], "colleague-model");
+        assert!(asked["tools"].as_array().is_none_or(Vec::is_empty));
+        assert!(asked["messages"][0]["content"]
+            .as_str()
+            .is_some_and(|text| text.starts_with("You advise a coding agent")));
+        let question = asked["messages"][1]["content"].as_str().expect("question");
+        assert!(question.starts_with("The person's request:\ncheck a.txt\n"), "{question}");
+        assert!(question.contains("same arguments 3 times"), "{question}");
+        assert!(question.contains("Agent called read {\"path\":\"a.txt\"}"), "{question}");
+        // The advice reaches the agent before its next request.
+        let next = chats[4].body["messages"].to_string();
+        assert!(next.contains("A colleague (colleague-model) was asked because you made the same call to read 3 times. Their advice:\\nUse an absolute path."), "{next}");
+        assert_eq!(chats[4].body["model"], "test-model");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_colleague_that_cannot_be_set_up_fails_the_turn() {
+    with_timeout(async {
+        let mock = scripted(Vec::new()).await;
+        let core = core_with_colleague(&mock, json!({"model": "m", "provider": "nonsense"})).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client).await;
+        let events = turn(&mut client, 2, thread, "hello").await;
+        let last = events.last().unwrap();
+        assert_eq!(last["event"], "failed");
+        assert!(
+            last.to_string().contains("unknown provider nonsense"),
+            "{last}"
+        );
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn the_plan_is_shown_after_the_history_with_every_request() {
     with_timeout(async {
