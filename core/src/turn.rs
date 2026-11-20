@@ -69,16 +69,25 @@ impl Ending {
     }
 }
 
-/// The tokens of every request of a turn, added up.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+/// The tokens of every request of a turn, added up, and the requests as
+/// they are logged.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct TurnUsage {
     pub requests: u64,
     pub input: u64,
     pub output: u64,
     pub cached: u64,
+    #[serde(skip)]
+    pub records: Vec<crate::RequestRecord>,
 }
 
 impl TurnUsage {
+    /// Adds a streamed request, and logs it as made for `purpose`.
+    pub(crate) fn add_stream(&mut self, stream: &crate::ChatStream, purpose: &'static str) {
+        self.add(stream.usage());
+        self.records.push(stream.record(purpose));
+    }
+
     pub(crate) fn add(&mut self, usage: Option<TokenUsage>) {
         self.requests += 1;
         if let Some(usage) = usage {
@@ -1222,6 +1231,9 @@ pub async fn run(
         shell::stop_all(&store.files_folder().join("logs"), session);
     }
     thread.record_attempt(&ending).await;
+    if let Err(error) = store.log_requests(session, &usage.records).await {
+        eprintln!("inocode: the requests were not logged: {}", error.message);
+    }
     let mut questions: Vec<Asked> = thread
         .asked
         .iter()
@@ -1437,7 +1449,7 @@ async fn steps(
                 () = cancelled(cancel) => break,
             }
         }
-        usage.add(stream.usage());
+        usage.add_stream(&stream, "turn");
         if let Some(measured) = stream.usage() {
             llm.measured(
                 thread.session.0,

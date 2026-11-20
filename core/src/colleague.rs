@@ -328,17 +328,17 @@ pub(crate) async fn advise(
                 Ok(Some(_)) => {}
                 Ok(None) => break,
                 Err(error) => {
-                    usage.add(stream.usage());
+                    usage.add_stream(&stream, KIND);
                     return Err(error.message);
                 }
             },
             () = crate::turn::cancelled(cancel) => {
-                usage.add(stream.usage());
+                usage.add_stream(&stream, KIND);
                 return Err("stopped with the turn".into());
             }
         }
     }
-    usage.add(stream.usage());
+    usage.add_stream(&stream, KIND);
     let Body::Assistant { parts, .. } = stream.assistant() else {
         unreachable!("a stream assembles an assistant turn");
     };

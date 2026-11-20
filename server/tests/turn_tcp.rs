@@ -607,6 +607,51 @@ async fn an_issue_left_unfinished_brings_the_colleague_then_the_person() {
 }
 
 #[tokio::test]
+async fn requests_are_logged_and_summed_up_per_model() {
+    with_timeout(async {
+        let answer = vec![
+            sse_delta("hi"),
+            finish("stop"),
+            usage_chunk(1_000),
+            sse_done(),
+        ];
+        let mock = scripted(vec![answer.clone(), answer]).await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client).await;
+        turn(&mut client, 2, thread, "one").await;
+        turn(&mut client, 3, thread, "two").await;
+
+        let stats = call(
+            &mut client,
+            4,
+            json!({"id": 4, "method": "stats/models", "params": {"days": 1, "utc_offset_minutes": 540}}),
+        )
+        .await;
+        let models = stats["result"]["models"].as_array().expect("models");
+        assert_eq!(models.len(), 1, "{stats}");
+        let model = &models[0];
+        assert_eq!(model["model"], "test-model");
+        assert!(model["provider"].as_str().is_some_and(|provider| provider.starts_with("openai@")));
+        assert_eq!(model["requests"], 2);
+        assert_eq!(model["input"], 2_000);
+        assert_eq!(model["output"], 10);
+        assert!(model["first_output_ms"].is_u64(), "{model}");
+        assert_eq!(model["by_hour"].as_array().map(Vec::len), Some(1));
+
+        let bad = call(
+            &mut client,
+            5,
+            json!({"id": 5, "method": "stats/models", "params": {"utc_offset_minutes": 2000}}),
+        )
+        .await;
+        assert_eq!(bad["error"]["code"], "invalid_params");
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn a_new_thread_starts_with_the_unfinished_issues() {
     with_timeout(async {
         let mock = scripted(Vec::new()).await;

@@ -163,17 +163,17 @@ async fn request(
                 Ok(Some(_)) => {}
                 Ok(None) => break,
                 Err(error) => {
-                    usage.add(stream.usage());
+                    usage.add_stream(&stream, EXPLORE);
                     return Err(format!("the explorer failed: {}", error.message));
                 }
             },
             () = crate::turn::cancelled(cancel) => {
-                usage.add(stream.usage());
+                usage.add_stream(&stream, EXPLORE);
                 return Err(STOPPED.into());
             }
         }
     }
-    usage.add(stream.usage());
+    usage.add_stream(&stream, EXPLORE);
     Ok(stream.assistant())
 }
 

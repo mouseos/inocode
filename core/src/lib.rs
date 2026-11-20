@@ -31,13 +31,14 @@ mod sse;
 pub mod store;
 pub mod turn;
 mod usage;
+pub mod usage_log;
 mod web_search;
 
 pub use usage::{Usage, UsageWindow};
 
 pub use llm::{
-    ChatStream, JsonOutput, Llm, LlmConfig, ModelInfo, ProviderKind, TokenUsage, DEFAULT_BASE_URL,
-    DEFAULT_MAX_TOKENS, DEFAULT_MODEL,
+    ChatStream, JsonOutput, Llm, LlmConfig, ModelInfo, ProviderKind, RequestRecord, TokenUsage,
+    DEFAULT_BASE_URL, DEFAULT_MAX_TOKENS, DEFAULT_MODEL,
 };
 
 use std::collections::HashMap;
@@ -196,6 +197,35 @@ impl Request {
             action => json!({ "action": action }),
         };
         Ok((id, answer))
+    }
+
+    /// The window of a `stats/models` request: `days` back from now (30
+    /// when absent, at most 3,650), and `utc_offset_minutes`, the caller's
+    /// time zone for the hours (0 when absent).
+    pub fn stats_window(&self) -> Result<(u64, i64), ErrorInfo> {
+        let params = self.params.as_ref();
+        let days = match params.and_then(|params| params.get("days")) {
+            None | Some(Value::Null) => 30,
+            Some(value) => value
+                .as_u64()
+                .filter(|days| (1..=3_650).contains(days))
+                .ok_or_else(|| {
+                    ErrorInfo::new("invalid_params", "\"days\" must be from 1 to 3650")
+                })?,
+        };
+        let offset = match params.and_then(|params| params.get("utc_offset_minutes")) {
+            None | Some(Value::Null) => 0,
+            Some(value) => value
+                .as_i64()
+                .filter(|offset| (-720..=840).contains(offset))
+                .ok_or_else(|| {
+                    ErrorInfo::new(
+                        "invalid_params",
+                        "\"utc_offset_minutes\" must be from -720 to 840",
+                    )
+                })?,
+        };
+        Ok((days, offset))
     }
 
     /// Request id that a `cancel` request refers to.
@@ -511,6 +541,19 @@ impl Core {
             .ok()
             .and_then(|turns| turns.get(&thread).map(|sender| sender.send(text).is_ok()))
             .unwrap_or(false)
+    }
+
+    /// The requests to models of the last `days`, per model.
+    pub async fn model_stats(
+        &self,
+        days: u64,
+        utc_offset_minutes: i64,
+    ) -> Result<Vec<usage_log::ModelStats>, ErrorInfo> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |now| now.as_millis() as u64);
+        let since = now.saturating_sub(days * 24 * 3_600_000);
+        self.store()?.model_stats(since, utc_offset_minutes).await
     }
 
     /// Hands the person's answer to a question of an MCP server that the

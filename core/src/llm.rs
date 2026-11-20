@@ -7,7 +7,7 @@
 //! ([`crate::oauth`]), refreshed at request time when it has expired.
 
 use std::fmt;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
@@ -258,6 +258,26 @@ impl Llm {
     }
 
     /// The configured model.
+    /// The provider as logged: the account kind for sign-in providers, else
+    /// the API format and the endpoint's host.
+    pub(crate) fn provider_label(&self) -> String {
+        if self.config.auth != AuthKind::ApiKey {
+            return self.config.auth.store_name().to_string();
+        }
+        let format = match self.config.provider {
+            ProviderKind::OpenAi => "openai",
+            ProviderKind::Anthropic => "anthropic",
+            ProviderKind::Responses => "responses",
+        };
+        match reqwest::Url::parse(&self.config.base_url)
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_string))
+        {
+            Some(host) => format!("{format}@{host}"),
+            None => format.to_string(),
+        }
+    }
+
     pub(crate) fn model(&self) -> &str {
         &self.config.model
     }
@@ -455,8 +475,14 @@ impl Llm {
         tools: &[ToolSpec],
         output: Option<&JsonOutput>,
     ) -> Result<ChatStream, ErrorInfo> {
+        let started = Instant::now();
         if let Some(session) = &self.deepai {
-            return self.deepai_chat(session, conversation, tools, output).await;
+            let mut stream = self
+                .deepai_chat(session, conversation, tools, output)
+                .await?;
+            stream.started = started;
+            stream.provider = self.provider_label();
+            return Ok(stream);
         }
         let format = self.config.provider;
         let effort = self.effort().await;
@@ -486,6 +512,8 @@ impl Llm {
         }?;
         let mut stream = ChatStream::new(format, &self.config.model, response);
         stream.aliases = aliases;
+        stream.started = started;
+        stream.provider = self.provider_label();
         Ok(stream)
     }
 
@@ -1152,6 +1180,25 @@ fn request_body(
     Ok(Value::Object(body))
 }
 
+/// One request to a model as it is logged: when, for what, to whom, what it
+/// cost in tokens and how long it took (docs/evidence/usage-log.md).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestRecord {
+    /// Milliseconds since the Unix epoch at which the request was sent.
+    pub at_ms: u64,
+    /// What the request was for: `turn`, `explore`, `colleague`.
+    pub purpose: &'static str,
+    pub provider: String,
+    pub model: String,
+    pub usage: Option<TokenUsage>,
+    /// From sending to the first text of the answer; `None` when the answer
+    /// had no text (only tool calls).
+    pub first_output_ms: Option<u64>,
+    pub duration_ms: u64,
+    /// `completed`, `failed`, or `stopped` when it was not read to the end.
+    pub outcome: &'static str,
+}
+
 /// Tokens a provider reported for one request. `input` includes the
 /// `cached` part.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1444,6 +1491,11 @@ pub struct ChatStream {
     failed: bool,
     /// (declared name, name sent) of tools renamed for the request.
     aliases: Vec<(String, String)>,
+    /// When the request was sent, and when the first text of the answer
+    /// arrived.
+    started: Instant,
+    first_output: Option<Instant>,
+    provider: String,
 }
 
 impl ChatStream {
@@ -1460,6 +1512,33 @@ impl ChatStream {
             model: model.to_string(),
             failed: false,
             aliases: Vec::new(),
+            started: Instant::now(),
+            first_output: None,
+            provider: String::new(),
+        }
+    }
+
+    /// The request as it is logged, for `purpose`, as read so far.
+    pub fn record(&self, purpose: &'static str) -> RequestRecord {
+        let elapsed = self.started.elapsed();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |now| now.as_millis() as u64);
+        RequestRecord {
+            at_ms: now_ms.saturating_sub(elapsed.as_millis() as u64),
+            purpose,
+            provider: self.provider.clone(),
+            model: self.model.clone(),
+            usage: self.usage(),
+            first_output_ms: self
+                .first_output
+                .map(|first| first.duration_since(self.started).as_millis() as u64),
+            duration_ms: elapsed.as_millis() as u64,
+            outcome: match (self.failed, self.done) {
+                (true, _) => "failed",
+                (false, true) => "completed",
+                (false, false) => "stopped",
+            },
         }
     }
 
@@ -1513,7 +1592,10 @@ impl ChatStream {
                     &mut self.signalled,
                     &mut self.turn,
                 )? {
-                    StreamItem::Text(text) => return Ok(Some(text)),
+                    StreamItem::Text(text) => {
+                        self.first_output.get_or_insert_with(Instant::now);
+                        return Ok(Some(text));
+                    }
                     StreamItem::Skip => continue,
                     StreamItem::Finish => {
                         self.done = true;

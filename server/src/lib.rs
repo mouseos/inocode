@@ -248,6 +248,16 @@ async fn dispatch(
             true
         }
         "cancel" => cancel(request, stream_id, queue, in_flight).await,
+        "stats/models" => {
+            // A store read, off the read loop like the thread requests.
+            tokio::spawn(model_stats(
+                request,
+                stream_id,
+                Arc::clone(core),
+                queue.clone(),
+            ));
+            true
+        }
         "usage" => {
             // An HTTP round trip like discovery, so it runs beside the read loop.
             tokio::spawn(read_usage(
@@ -379,6 +389,23 @@ async fn read_thread(request: &Request, core: &Core) -> Result<Value, ErrorInfo>
         })
         .collect();
     Ok(json!({ "messages": messages }))
+}
+
+async fn model_stats(
+    request: Request,
+    stream_id: u64,
+    core: Arc<Core>,
+    queue: mpsc::Sender<Outgoing>,
+) {
+    let id = request.id;
+    let payload = match request.stats_window() {
+        Ok((days, offset)) => match core.model_stats(days, offset).await {
+            Ok(models) => json!({ "id": id, "result": { "models": models } }),
+            Err(error) => json!({ "id": id, "error": error }),
+        },
+        Err(error) => json!({ "id": id, "error": error }),
+    };
+    let _ = send(&queue, stream_id, payload).await;
 }
 
 async fn read_usage(id: u64, stream_id: u64, core: Arc<Core>, queue: mpsc::Sender<Outgoing>) {

@@ -142,6 +142,16 @@ cargo run --release -p inocode-server
 - `provider` を省くと、作業中のモデルと同じ提供元・同じ認証。`openai`・`anthropic`・`responses` では鍵を環境変数 `INOCODE_COLLEAGUE_API_KEY` に置き、必要なら `base_url` を書く。
 - 設計と根拠：[docs/evidence/colleague-review.md](docs/evidence/colleague-review.md)。
 
+### 使用量のログ
+
+モデルへの要求を 1 件ずつ記録する（ターン、探索役、同僚）。`stats/models` で、モデルごとの件数・トークン・キャッシュの割合・最初の文字までの時間・tok/s（中央値）を、時間帯ごとにも返す:
+
+```json
+{"id": 1, "method": "stats/models", "params": {"days": 30, "utc_offset_minutes": 540}}
+```
+
+- 設計と根拠：[docs/evidence/usage-log.md](docs/evidence/usage-log.md)。
+
 ### 返答の言語
 
 モデルは、OS の表示言語で返答する。話しかけた文から言語を推定はしない。会話の中で別の言語を頼むと、最後に頼んだ言語に変わる。OS と違う言語を既定にするには、`~/.inocode/settings.json`（`inocode.db` と同じフォルダー）に書く:

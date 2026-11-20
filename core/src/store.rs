@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use crate::conversation::{AssistantPart, Body, Message};
 use crate::ErrorInfo;
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 /// Tool results above this size are stored once in `blobs` and referenced.
 const BLOB_THRESHOLD: usize = 16 * 1024;
 /// Text indexed per message; the rest stays readable but unsearchable.
@@ -179,8 +179,29 @@ CREATE TABLE plans(
 );
 "#;
 
+/// The log of requests to models (docs/evidence/usage-log.md).
+const SCHEMA_V6: &str = r#"
+CREATE TABLE requests(
+    id INTEGER PRIMARY KEY,
+    at INTEGER NOT NULL,
+    session_id INTEGER,
+    purpose TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    input INTEGER,
+    output INTEGER,
+    cached INTEGER,
+    first_output_ms INTEGER,
+    duration_ms INTEGER NOT NULL,
+    outcome TEXT NOT NULL
+);
+CREATE INDEX requests_at ON requests(at);
+"#;
+
 /// Schema steps; step `i` brings the database to version `i + 1`.
-const MIGRATIONS: [&str; 5] = [SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5];
+const MIGRATIONS: [&str; 6] = [
+    SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6,
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ProjectId(pub i64);
