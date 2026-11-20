@@ -148,6 +148,12 @@ cargo run --release -p inocode-server
 - 道具 `camera` で、カメラや UVC の HDMI キャプチャの一覧、調整できる項目、写真、動画（ffmpeg が要る）を扱う。撮影は full モード以外では必ず人の承認を待つ。Windows では自動・手動の切り替えは未対応。
 - 設計と根拠：[docs/evidence/image-input.md](docs/evidence/image-input.md)。
 
+### モデルの一覧の価格とベンチマーク
+
+`models/catalog` で、接続先のモデルの一覧に、価格（models.dev）、ベンチマークの順位（LLMBenchmark、CC BY 4.0）、ここで測った速さ、請求の種類、GPT の fast・flex と Daybreak、DeepAI の Theos、Claude のプランを付けて返す。取得した写しは 12〜24 時間使う。
+
+- 設計と根拠：[docs/evidence/model-catalog.md](docs/evidence/model-catalog.md)。
+
 ### 使用量のログ
 
 モデルへの要求を 1 件ずつ記録する（ターン、探索役、同僚）。`stats/models` で、モデルごとの件数・トークン・キャッシュの割合・最初の文字までの時間・tok/s（中央値）を、時間帯ごとにも返す:

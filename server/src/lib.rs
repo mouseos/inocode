@@ -248,6 +248,18 @@ async fn dispatch(
             true
         }
         "cancel" => cancel(request, stream_id, queue, in_flight).await,
+        "models/catalog" => {
+            // Fetches prices and scores: off the read loop, like discovery.
+            let (id, core, queue) = (request.id, Arc::clone(core), queue.clone());
+            tokio::spawn(async move {
+                let payload = match core.model_catalog().await {
+                    Ok(catalog) => json!({ "id": id, "result": catalog }),
+                    Err(error) => json!({ "id": id, "error": error }),
+                };
+                let _ = send(&queue, stream_id, payload).await;
+            });
+            true
+        }
         "stats/models" => {
             // A store read, off the read loop like the thread requests.
             tokio::spawn(model_stats(

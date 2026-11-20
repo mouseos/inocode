@@ -153,7 +153,7 @@ pub(crate) struct CatalogModel {
     /// Input tokens the model accepts (`contextWindow`).
     pub(crate) context_window: Option<u64>,
     responses: bool,
-    theos_per_request: Option<String>,
+    pub(crate) theos_per_request: Option<String>,
     theos_per_second: Vec<String>,
     premier: bool,
 }

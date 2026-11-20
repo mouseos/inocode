@@ -59,6 +59,7 @@
 | [sandbox.md](sandbox.md) | シェルの命令の書き込みを、プロジェクトと一時フォルダーに限る（DSH からの移植。Linux・macOS・Windows） | UNSUPPORTED_APPROVED | `core/src/sandbox/` |
 | [colleague-review.md](colleague-review.md) | 別のモデルの同僚が作業に口を出す仕組み（行き詰まりを規則で見つけたときの助言。同僚の選び方などの調査） | 行き詰まったときの助言：RESEARCH_SUPPORTED（査読前のみ）。選び方などは研究なし | 行き詰まったときの同僚は実装済み（`core/src/colleague.rs`）。選び方・issue の記録は未実装 |
 | [explore-subagent.md](explore-subagent.md) | 読むだけの探索役 `explore`（場所と行だけを返す） | RESEARCH_SUPPORTED（査読前のみ） | 実装済み（`core/src/explore.rs`） |
+| [model-catalog.md](model-catalog.md) | モデルの一覧の価格・ベンチマーク・実測の速さ、選び方の研究 | 一覧：UNSUPPORTED_APPROVED。自動の割り振り：未実装 | 一覧は実装済み（`core/src/catalog.rs`、`models/catalog`） |
 | [usage-log.md](usage-log.md) | 使用量のログとモデルごとの速さ（tok/s、最初の文字までの時間、キャッシュ、時間帯） | UNSUPPORTED_APPROVED | 実装済み（`core/src/usage_log.rs`、`stats/models`） |
 | [goal-command.md](goal-command.md) | goal コマンド（目標の達成まで自動で続ける） | UNSUPPORTED_PENDING | 未実装（調査のみ） |
 | [image-input.md](image-input.md) | 画像をモデルに見せる（read で画像、縮小、切り抜き） | 機能は UNSUPPORTED_APPROVED、既定値は公式文書と研究による | 画像は実装済み（`core/src/picture.rs`）、カメラも実装済み（`core/src/camera.rs`、撮影は未試行） |

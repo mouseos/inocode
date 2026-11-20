@@ -8,6 +8,7 @@
 mod agent_tools;
 mod ask;
 mod camera;
+pub mod catalog;
 mod colleague;
 mod compaction;
 pub mod conversation;
@@ -543,6 +544,15 @@ impl Core {
             .ok()
             .and_then(|turns| turns.get(&thread).map(|sender| sender.send(text).is_ok()))
             .unwrap_or(false)
+    }
+
+    /// The configured provider's models with their prices, benchmark scores
+    /// and measured speed (docs/evidence/model-catalog.md).
+    pub async fn model_catalog(&self) -> Result<catalog::Catalog, ErrorInfo> {
+        let llm = self.llm()?;
+        let store = self.store()?;
+        let models = llm.models().await?;
+        Ok(catalog::build(llm, store, models).await)
     }
 
     /// The requests to models of the last `days`, per model.

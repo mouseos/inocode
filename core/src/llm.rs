@@ -278,6 +278,45 @@ impl Llm {
         }
     }
 
+    /// How requests to this provider are paid for, as the catalog shows it.
+    pub(crate) fn billing(&self) -> &'static str {
+        match self.config.auth {
+            AuthKind::ApiKey => "api",
+            AuthKind::DeepAi => "theos",
+            AuthKind::ClaudeOauth | AuthKind::GptOauth | AuthKind::MuseSubscription => {
+                "plan_included"
+            }
+        }
+    }
+
+    pub(crate) fn http(&self) -> &reqwest::Client {
+        &self.client
+    }
+
+    /// The plan of a Claude sign-in (`rate_limit_tier`, else the
+    /// organization type, of `/api/oauth/profile`); `None` for other
+    /// providers or when it cannot be read.
+    pub(crate) async fn claude_plan(&self) -> Option<String> {
+        if self.config.auth != AuthKind::ClaudeOauth {
+            return None;
+        }
+        let credential = self.credential().await.ok()?;
+        let response = self
+            .client
+            .get("https://api.anthropic.com/api/oauth/profile")
+            .timeout(MODELS_TIMEOUT)
+            .bearer_auth(&credential.access)
+            .header("anthropic-beta", "oauth-2025-04-20")
+            .send()
+            .await
+            .ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        let profile: Value = serde_json::from_str(&read_bounded_body(response).await.ok()?).ok()?;
+        claude_plan_of(&profile)
+    }
+
     pub(crate) fn model(&self) -> &str {
         &self.config.model
     }
@@ -942,6 +981,9 @@ impl Llm {
                     default_reasoning: None,
                     context_window: model.context_window,
                     max_output: None,
+                    speed_tiers: None,
+                    access_programs: None,
+                    theos_per_request: model.theos_per_request.clone(),
                 })
                 .collect());
         }
@@ -1272,6 +1314,65 @@ pub struct ModelInfo {
     /// Output tokens the model may produce in one answer, when the provider
     /// says.
     pub max_output: Option<u64>,
+    /// Speed tiers besides the standard one (`fast`, `flex`), as the ChatGPT
+    /// roster lists them.
+    pub speed_tiers: Option<Vec<String>>,
+    /// Access programs the model is offered under (the ChatGPT roster's
+    /// cyber programs, such as Daybreak).
+    pub access_programs: Option<Vec<String>>,
+    /// DeepAI's Theos per request.
+    pub theos_per_request: Option<String>,
+}
+
+/// The names in a roster field that lists names or objects with a name.
+fn names_in(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| match item {
+                    Value::String(name) => Some(name.clone()),
+                    other => ["name", "id", "slug"]
+                        .iter()
+                        .find_map(|key| other.get(*key)?.as_str())
+                        .map(str::to_string),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The speed tiers of a ChatGPT roster row: `priority` in `service_tiers`
+/// or `fast` in `additional_speed_tiers` is the Fast tier; `flex` is Flex.
+fn speed_tiers_of(item: &Value) -> Option<Vec<String>> {
+    let mut tiers: Vec<String> = Vec::new();
+    for name in names_in(item.get("service_tiers"))
+        .into_iter()
+        .chain(names_in(item.get("additional_speed_tiers")))
+    {
+        let tier = match name.as_str() {
+            "priority" | "fast" => "fast",
+            "flex" => "flex",
+            _ => continue,
+        };
+        if !tiers.iter().any(|known| known == tier) {
+            tiers.push(tier.to_string());
+        }
+    }
+    (item.get("service_tiers").is_some() || item.get("additional_speed_tiers").is_some())
+        .then_some(tiers)
+}
+
+/// The plan in a Claude OAuth profile.
+fn claude_plan_of(profile: &Value) -> Option<String> {
+    let organization = profile.get("organization")?;
+    organization
+        .get("rate_limit_tier")
+        .or_else(|| organization.get("organization_type"))
+        .and_then(Value::as_str)
+        .filter(|plan| !plan.is_empty())
+        .map(str::to_ascii_lowercase)
 }
 
 /// The community model catalog used when a provider's own list gives no
@@ -1362,6 +1463,11 @@ fn models_from_json(value: &Value) -> Result<Vec<ModelInfo>, ErrorInfo> {
                     .or_else(|| item.get("top_provider")?.get("max_completion_tokens"))
                     .and_then(Value::as_u64)
                     .filter(|&output| output > 0),
+                speed_tiers: speed_tiers_of(item),
+                access_programs: item
+                    .get("available_access_programs")
+                    .map(|programs| names_in(programs.get("cyber"))),
+                theos_per_request: None,
             })
         })
         .collect())
@@ -2278,6 +2384,48 @@ mod tests {
         // A payload without a model list is invalid.
         let error = models_from_json(&serde_json::json!({"other": []})).expect_err("no list");
         assert_eq!(error.code, "provider_protocol");
+    }
+
+    #[test]
+    fn roster_rows_tell_the_speed_tiers_and_access_programs() {
+        let roster = serde_json::json!({"models": [
+            {"slug": "gpt-a", "supported_in_api": true, "visibility": "show",
+             "service_tiers": ["priority", "flex", "default"],
+             "available_access_programs": {"cyber": ["daybreakBlue", {"name": "daybreakRed"}]}},
+            {"slug": "gpt-b", "supported_in_api": true, "visibility": "show",
+             "additional_speed_tiers": ["fast"]},
+            {"slug": "gpt-c", "supported_in_api": true, "visibility": "show"}
+        ]});
+        let models = models_from_json(&roster).expect("models");
+        assert_eq!(
+            models[0].speed_tiers,
+            Some(vec!["fast".into(), "flex".into()])
+        );
+        assert_eq!(
+            models[0].access_programs,
+            Some(vec!["daybreakBlue".into(), "daybreakRed".into()])
+        );
+        assert_eq!(models[1].speed_tiers, Some(vec!["fast".into()]));
+        assert_eq!(
+            (
+                models[2].speed_tiers.clone(),
+                models[2].access_programs.clone()
+            ),
+            (None, None)
+        );
+    }
+
+    #[test]
+    fn the_claude_plan_is_the_rate_limit_tier() {
+        let profile = serde_json::json!({"organization": {
+            "rate_limit_tier": "default_claude_max_5x", "organization_type": "claude_max"}});
+        assert_eq!(
+            claude_plan_of(&profile).as_deref(),
+            Some("default_claude_max_5x")
+        );
+        let typed = serde_json::json!({"organization": {"organization_type": "Claude_Pro"}});
+        assert_eq!(claude_plan_of(&typed).as_deref(), Some("claude_pro"));
+        assert_eq!(claude_plan_of(&serde_json::json!({})), None);
     }
 
     #[test]
