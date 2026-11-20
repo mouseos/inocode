@@ -58,7 +58,7 @@
 | [large-person-messages.md](large-person-messages.md) | 人の大きな発言で圧縮が毎回起きる問題の 4 案（中略して recall、中略してファイル保存、送らない、繰り返さない）の比較 | B は UNSUPPORTED_APPROVED | B（中略してファイル保存）を実装。`core/src/compaction.rs`、`core/src/turn.rs`。実測（Haiku、各 4 回）：ファイル保存の案が正答 6.75/7、費用 −57%。recall で読ませる案と送らない案は 4.5/7 |
 | [sandbox.md](sandbox.md) | シェルの命令の書き込みを、プロジェクトと一時フォルダーに限る（DSH からの移植。Linux・macOS・Windows） | UNSUPPORTED_APPROVED | `core/src/sandbox/` |
 | [colleague-review.md](colleague-review.md) | 別のモデルの同僚が作業に口を出す仕組み（同僚の選び方、issue の未解決回数をきっかけにする案）の調査 | UNSUPPORTED_PENDING | 未実装（調査のみ） |
-| [reply-language.md](reply-language.md) | 返答の言語の決め方（明示の設定、明示がないときの合わせ方、指示の位置）の調査 | UNSUPPORTED_PENDING | 未実装（調査のみ） |
+| [reply-language.md](reply-language.md) | 返答の言語（OS の表示言語か設定ファイルの既定、会話の中の指定で変わる、指示の位置） | UNSUPPORTED_APPROVED | 実装済み（`core/src/language.rs`） |
 | [mcp-client.md](mcp-client.md) | MCP の受け口（stdio のサーバーの道具を `mcp__<サーバー>__<道具>` としてモデルに渡す） | UNSUPPORTED_APPROVED（仕様は MCP 2025-11-25） | `core/src/mcp.rs`。単体テストと、偽のサーバーを起動する結合テスト |
 | [edit-write.md](edit-write.md) | edit・write の道具、空白を無視した照合、編集後の構文検査、効率化の候補 | 置換形式・完全一致・空白を無視した照合・構文検査は RESEARCH_SUPPORTED（査読前を含む）、細部は UNSUPPORTED_APPROVED | `core/src/edit.rs`、構文検査は `core/src/outline.rs` |
 

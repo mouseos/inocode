@@ -203,13 +203,18 @@ async fn read_rules(project_key: &str) -> Option<String> {
     (!text.is_empty()).then(|| text.to_string())
 }
 
-/// The system prompt: the project's rules as written, never summarized.
-fn system_prompt(rules: Option<&str>) -> String {
+/// The system prompt: the reply language, then the project's rules as
+/// written, never summarized.
+fn system_prompt(rules: Option<&str>, language: Option<&str>) -> String {
     let mut system = String::from(
         "You are a coding agent working on a user's project. When a method is shown to \
          work, save it with the method tool. Before investigating a device, format or \
          program from scratch, use recall to look for methods saved in earlier work.",
     );
+    if let Some(language) = language {
+        system.push(' ');
+        system.push_str(&crate::language::instruction(language));
+    }
     if let Some(rules) = rules {
         system.push_str(" Follow the project's rules below.\n----- RULES -----\n");
         system.push_str(rules);
@@ -242,6 +247,9 @@ struct Thread<'a> {
     failures: HashMap<(String, String, String), u32>,
     /// Lessons that may apply to this turn's request.
     lessons: Option<String>,
+    /// The reply language, repeated after the conversation as in the system
+    /// prompt, since the tool output in between is mostly English.
+    language: Option<String>,
     mode: Mode,
     /// Held calls the person approved, each run once.
     approved: Vec<(String, String)>,
@@ -371,10 +379,16 @@ impl Thread<'_> {
     async fn state(&self) -> Result<Option<String>, ErrorInfo> {
         let plan = agent_tools::render_plan(self.store, self.session).await?;
         let jobs = shell::render_jobs(&self.store.files_folder().join("logs"), self.session);
-        let parts: Vec<&str> = [plan.as_deref(), jobs.as_deref(), self.lessons.as_deref()]
-            .into_iter()
-            .flatten()
-            .collect();
+        let language = self.language.as_deref().map(crate::language::instruction);
+        let parts: Vec<&str> = [
+            plan.as_deref(),
+            jobs.as_deref(),
+            self.lessons.as_deref(),
+            language.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
         Ok((!parts.is_empty()).then(|| parts.join("\n")))
     }
 
@@ -805,6 +819,8 @@ async fn open<'a>(
     let next_seq = stored.last().map_or(1, |last| last.seq + 1);
     let (seqs, messages) = compaction::assemble(stored).into_iter().unzip();
     let lessons = agent_tools::render_lessons(store, project, prompt).await?;
+    let language =
+        crate::language::default(&store.files_folder().with_file_name("settings.json")).await;
     Ok(Thread {
         store,
         session,
@@ -812,7 +828,7 @@ async fn open<'a>(
         folder,
         cancel,
         conversation: Conversation {
-            system: Some(system_prompt(rules.as_deref())),
+            system: Some(system_prompt(rules.as_deref(), language.as_deref())),
             messages,
         },
         seqs,
@@ -824,6 +840,7 @@ async fn open<'a>(
         held: Vec::new(),
         failures: HashMap::new(),
         lessons,
+        language,
         mode: approvals.mode,
         approved: approvals.calls,
         reviewer: None,
@@ -973,12 +990,20 @@ mod tests {
 
     #[test]
     fn the_rules_are_given_whole_inside_markers() {
-        let system = system_prompt(Some("- テストは全部実行する"));
+        let system = system_prompt(Some("- テストは全部実行する"), None);
         assert!(
             system.ends_with("----- RULES -----\n- テストは全部実行する\n----- END RULES -----")
         );
-        let bare = system_prompt(None);
+        let bare = system_prompt(None, None);
         assert!(bare.starts_with("You are a coding agent working on a user's project."));
         assert!(!bare.contains("RULES"));
+    }
+
+    #[test]
+    fn the_reply_language_comes_before_the_rules() {
+        let system = system_prompt(Some("- rule"), Some("ja-JP"));
+        let language = system.find("in ja-JP").unwrap();
+        assert!(language < system.find("----- RULES -----").unwrap());
+        assert!(!system_prompt(None, None).contains("Write your replies"));
     }
 }

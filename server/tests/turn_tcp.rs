@@ -9,8 +9,12 @@ use inocode_core::{Core, Llm, LlmConfig, ProviderKind};
 use serde_json::{json, Value};
 use support::*;
 
-/// A fresh database path: tests run in parallel and the clock may not tell
-/// them apart.
+/// The reply language every test's settings name, so that what is sent
+/// does not depend on the system's language.
+const LANGUAGE: &str = "Japanese";
+
+/// A fresh database path, in a folder of its own with the settings beside
+/// it: tests run in parallel and the clock may not tell them apart.
 fn database() -> std::path::PathBuf {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let nanos = std::time::SystemTime::now()
@@ -18,10 +22,25 @@ fn database() -> std::path::PathBuf {
         .expect("clock")
         .as_nanos();
     let index = NEXT.fetch_add(1, Ordering::SeqCst);
-    std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
-        "inocode-turn-{}-{nanos}-{index}.db",
+    let folder = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
+        "inocode-turn-{}-{nanos}-{index}",
         std::process::id()
-    ))
+    ));
+    std::fs::create_dir_all(&folder).expect("folder");
+    std::fs::write(
+        folder.join("settings.json"),
+        json!({"language": LANGUAGE}).to_string(),
+    )
+    .expect("settings");
+    folder.join("inocode.db")
+}
+
+/// The reply-language line that ends every request.
+fn language_line() -> String {
+    format!(
+        "Write your replies to the person in {LANGUAGE}. If the person asks for another \
+         language, use the language they asked for most recently instead."
+    )
 }
 
 async fn core_for(mock: &MockApi) -> Arc<Core> {
@@ -149,9 +168,15 @@ async fn a_turn_streams_stores_and_reports_why_it_ended() {
         turn(&mut client, 4, thread, "again").await;
         let chats = chats(&mock);
         let sent = &chats[1].body["messages"];
-        assert_eq!(sent.as_array().map(Vec::len), Some(4));
+        assert_eq!(sent.as_array().map(Vec::len), Some(5));
         assert_eq!(sent[0]["role"], "system");
+        assert!(sent[0]["content"]
+            .as_str()
+            .is_some_and(|text| text.contains(&language_line())));
         assert_eq!(sent[2]["content"], "hello");
+        assert_eq!(sent[3]["content"], "again");
+        // The reply language is repeated after the history, and not stored.
+        assert_eq!(sent[4]["content"], language_line());
     })
     .await;
 }
@@ -294,7 +319,10 @@ async fn the_plan_is_shown_after_the_history_with_every_request() {
         assert_eq!(state["role"], "user");
         assert_eq!(
             state["content"],
-            "Current plan:\n[x] write the parser\n[>] test it\n"
+            format!(
+                "Current plan:\n[x] write the parser\n[>] test it\n\n{}",
+                language_line()
+            )
         );
         // The plan is not stored in the history.
         let read = call(
@@ -815,7 +843,9 @@ async fn an_answer_cut_at_the_output_limit_is_resumed_three_times() {
         assert_eq!(events.last().unwrap()["reason"], "completed");
         let sent = chats(&mock);
         assert_eq!(sent.len(), 3);
-        let resumed = last_message(&sent[1]);
+        let messages = sent[1].body["messages"].as_array().expect("messages");
+        assert_eq!(messages.last().unwrap()["content"], language_line());
+        let resumed = &messages[messages.len() - 2];
         assert_eq!(resumed["role"], "user");
         assert!(resumed["content"]
             .to_string()

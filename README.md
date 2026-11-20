@@ -124,6 +124,18 @@ cargo run --release -p inocode-server
 - Windows では `npx` などは `npx.cmd` と書く（拡張子を補わないため）。
 - 設計と根拠：[docs/evidence/mcp-client.md](docs/evidence/mcp-client.md)。
 
+### 返答の言語
+
+モデルは、OS の表示言語で返答する。話しかけた文から言語を推定はしない。会話の中で別の言語を頼むと、最後に頼んだ言語に変わる。OS と違う言語を既定にするには、`~/.inocode/settings.json`（`inocode.db` と同じフォルダー）に書く:
+
+```json
+{"language": "Japanese"}
+```
+
+- OS の表示言語は、Windows では表示言語の設定の 1 番目、それ以外では `LC_ALL`・`LC_MESSAGES`・`LANG` の順で最初に値のあるもの（`C`・`POSIX` は言語なしとみなす）。どちらからも決まらなければ、言語の指示を入れない。
+- 設定は毎ターンの始めに読む。
+- 設計と根拠：[docs/evidence/reply-language.md](docs/evidence/reply-language.md)。
+
 ## ビルドとテスト
 
 ```bash

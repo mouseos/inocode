@@ -12,6 +12,7 @@ pub mod deepai;
 mod edit;
 mod fetch;
 mod find;
+mod language;
 mod llm;
 mod mcp;
 pub mod oauth;

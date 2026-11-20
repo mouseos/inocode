@@ -48,8 +48,8 @@ stay as they are. Do not call tools. ";
 const SUMMARY_CONTENT: &str = "Write the summary for yourself, to continue exactly where the \
 work stands: what the person asked for and the constraints they set; what has been done and \
 how it was verified; what remains, in order; decisions and their reasons; and the exact file \
-paths, identifiers, commands, values, and error messages that the remaining work needs. Say \
-plainly which steps are finished and which are not. Do not restate the project rules or the \
+paths, identifiers, commands, values, and error messages that the remaining work needs. If \
+the person asked for replies in a language, name it. Say plainly which steps are finished and which are not. Do not restate the project rules or the \
 plan; they are kept separately. Answer with the summary only.";
 
 /// The seq up to which a compaction message replaced the history.
