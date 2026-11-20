@@ -522,6 +522,7 @@ async fn run_turn(
             ending.as_str(),
             outcome.usage,
             outcome.held,
+            outcome.questions,
         )),
     };
     settle(id, stream_id, &queue, &in_flight, cancelled, terminal).await;

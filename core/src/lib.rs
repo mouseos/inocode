@@ -6,6 +6,7 @@
 //! framing, or connections, so the server owns all transport concerns.
 
 mod agent_tools;
+mod ask;
 mod compaction;
 pub mod conversation;
 pub mod deepai;
@@ -229,6 +230,9 @@ pub struct EventPayload {
     /// Calls of a turn that wait for the person's approval.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub held: Option<Vec<turn::Held>>,
+    /// Questions of a turn for the person, from `ask`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub questions: Option<Vec<turn::Asked>>,
 }
 
 impl EventPayload {
@@ -256,11 +260,13 @@ impl EventPayload {
         reason: &'static str,
         usage: turn::TurnUsage,
         held: Vec<turn::Held>,
+        questions: Vec<turn::Asked>,
     ) -> Self {
         Self {
             reason: Some(reason),
             usage: Some(usage),
             held: Some(held),
+            questions: Some(questions),
             ..Self::new(id, "completed")
         }
     }
@@ -290,6 +296,7 @@ impl EventPayload {
             reason: None,
             usage: None,
             held: None,
+            questions: None,
         }
     }
 }
@@ -482,6 +489,7 @@ impl Core {
                 ending: turn::Ending::Failed(error),
                 usage: Default::default(),
                 held: Vec::new(),
+                questions: Vec::new(),
             },
         }
     }

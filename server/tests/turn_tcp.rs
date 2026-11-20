@@ -433,6 +433,53 @@ async fn a_reply_quotes_the_message_it_replies_to() {
 }
 
 #[tokio::test]
+async fn questions_are_reported_when_the_turn_ends_and_answered_by_a_reply() {
+    with_timeout(async {
+        let form = json!({"questions": [
+            {"question": "Which database?", "kind": "choose_one",
+             "options": [{"label": "SQLite"}, {"label": "Postgres"}]}
+        ]});
+        let mock = scripted(vec![
+            tool_turn("q0", "ask", json!({"questions": []})),
+            tool_turn("q1", "ask", form.clone()),
+        ])
+        .await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client).await;
+
+        let events = turn(&mut client, 2, thread, "set up storage").await;
+        let results = tool_results(&events);
+        assert!(results[0].contains("1 to 4 questions"), "{}", results[0]);
+        assert!(results[1].starts_with("Asked the person:\n1. Which database? (choose one: SQLite (recommended), Postgres)"), "{}", results[1]);
+        let last = events.last().unwrap();
+        assert_eq!(last["event"], "completed");
+        // Only the form that could be shown is reported.
+        let questions = last["questions"].as_array().expect("questions");
+        assert_eq!(questions.len(), 1);
+        assert_eq!(questions[0]["questions"], form["questions"]);
+        let seq = questions[0]["seq"].as_i64().expect("seq");
+
+        turn_with(
+            &mut client,
+            3,
+            json!({"thread_id": thread, "prompt": "SQLite", "reply_to": seq}),
+        )
+        .await;
+        let sent = &chats(&mock)[3].body["messages"];
+        let count = sent.as_array().map(Vec::len).expect("messages");
+        let quoted = sent[count - 3]["content"].as_str().expect("quote");
+        assert!(
+            quoted.starts_with(&format!("The person's next message replies to message {seq}, written by the tool ask:\n> Asked the person:")),
+            "{quoted}"
+        );
+        assert_eq!(sent[count - 2]["content"], "SQLite");
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn the_plan_is_shown_after_the_history_with_every_request() {
     with_timeout(async {
         let items = json!({"items": [
@@ -453,7 +500,7 @@ async fn the_plan_is_shown_after_the_history_with_every_request() {
         let requests = chats(&mock);
         assert!(requests[0].body["tools"]
             .as_array()
-            .is_some_and(|tools| tools.len() == 14));
+            .is_some_and(|tools| tools.len() == 15));
         let state = last_message(&requests[1]);
         assert_eq!(state["role"], "user");
         assert_eq!(
@@ -623,7 +670,7 @@ async fn tools_of_the_configured_mcp_servers_are_offered_and_called() {
         assert_eq!(tool_results(&events), ["5"]);
         let requests = chats(&mock);
         let tools = requests[0].body["tools"].as_array().expect("tools");
-        assert_eq!(tools.len(), 15);
+        assert_eq!(tools.len(), 16);
         let added = tools
             .iter()
             .find(|tool| tool["function"]["name"] == "mcp__calc__add")
@@ -1332,7 +1379,7 @@ async fn near_the_window_older_work_is_compacted_and_the_person_kept() {
             .expect("a summary request");
         assert_eq!(
             summary_request.body["tools"].as_array().map(Vec::len),
-            Some(14)
+            Some(15)
         );
         assert!(summary_request.body["messages"]
             .to_string()

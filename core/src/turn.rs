@@ -149,6 +149,16 @@ pub struct Outcome {
     pub ending: Ending,
     pub usage: TurnUsage,
     pub held: Vec<Held>,
+    pub questions: Vec<Asked>,
+}
+
+/// Questions the model asked the person with `ask`, as the form they make.
+/// `seq` is the stored answer of the call, which a reply to the questions
+/// names; `None` when it is not in the thread's history.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Asked {
+    pub seq: Option<i64>,
+    pub questions: serde_json::Value,
 }
 
 /// What the person sent to start a turn: the text, and the earlier message
@@ -303,6 +313,8 @@ summarized, and searches past work and saved knowledge.\n\
 - lesson proposes a lesson for later work in this project; method saves a method \
 verified to work, for any project.\n\
 - search and fetch read the web.\n\
+- ask asks the person questions as a form on their screen; the answers come in a \
+later message.\n\
 - Tools named mcp__<server>__<tool> come from the MCP servers the person set up.";
 
 /// The system prompt: how to use the tools, the reply language, then the
@@ -350,6 +362,8 @@ struct Thread<'a> {
     /// `ask` rules the person approved for this turn.
     allowed: HashSet<NoteId>,
     held: Vec<Held>,
+    /// The `ask` calls of this turn, by call id, and their questions.
+    asked: Vec<(String, serde_json::Value)>,
     /// Identical failed calls and how often they failed.
     failures: HashMap<(String, String, String), u32>,
     /// Lessons that may apply to this turn's request.
@@ -727,6 +741,18 @@ impl Thread<'_> {
         (text, true)
     }
 
+    /// The stored position of the answer to call `call`.
+    fn seq_of_result(&self, call: &str) -> Option<i64> {
+        self.conversation
+            .messages
+            .iter()
+            .zip(&self.seqs)
+            .find(|(message, _)| {
+                matches!(&message.body, Body::ToolResult { call_id, .. } if call_id == call)
+            })
+            .map(|(_, seq)| *seq)
+    }
+
     async fn titles(&self, rules: &[NoteId]) -> Vec<String> {
         let mut titles = Vec::with_capacity(rules.len());
         for rule in rules {
@@ -782,6 +808,11 @@ impl Thread<'_> {
             let answer = match stop {
                 StopReason::ToolUse | StopReason::Completed => {
                     let answer = self.answer(llm, body, name, arguments, usage).await;
+                    if name == crate::ask::ASK && !answer.1 {
+                        if let Ok((questions, _)) = crate::ask::check(arguments) {
+                            self.asked.push((call_id.clone(), questions));
+                        }
+                    }
                     self.note_repeats(name, arguments, answer)
                 }
                 StopReason::Length => (
@@ -859,6 +890,7 @@ pub async fn run(
                 ending: Ending::Failed(error),
                 usage,
                 held: Vec::new(),
+                questions: Vec::new(),
             }
         }
     };
@@ -886,6 +918,7 @@ pub async fn run(
                 ending: Ending::Failed(error),
                 usage,
                 held: Vec::new(),
+                questions: Vec::new(),
             }
         }
     };
@@ -901,10 +934,19 @@ pub async fn run(
     if ending == Ending::Interrupted {
         shell::stop_all(&store.files_folder().join("logs"), session);
     }
+    let questions = thread
+        .asked
+        .iter()
+        .map(|(call, questions)| Asked {
+            seq: thread.seq_of_result(call),
+            questions: questions.clone(),
+        })
+        .collect();
     Outcome {
         ending,
         usage,
         held: thread.held,
+        questions,
     }
 }
 
@@ -979,6 +1021,7 @@ async fn open<'a>(
         events,
         allowed: approvals.rules.into_iter().collect(),
         held: Vec::new(),
+        asked: Vec::new(),
         failures: HashMap::new(),
         lessons,
         language,

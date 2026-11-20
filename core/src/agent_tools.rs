@@ -125,6 +125,7 @@ pub(crate) fn specs(sandboxed: bool) -> Vec<ToolSpec> {
         fetch::spec(),
         find::spec(),
         crate::explore::spec(),
+        crate::ask::spec(),
     ]
     .into_iter()
     .chain(edit::specs())
@@ -172,6 +173,7 @@ pub(crate) async fn run(context: &Context<'_>, name: &str, arguments: &str) -> O
         METHOD => method(context, arguments).await,
         web_search::SEARCH => web_search::run(arguments).await,
         read::READ => read::run(context.folder, arguments).await,
+        crate::ask::ASK => crate::ask::check(arguments).map(|(_, told)| told),
         edit::EDIT => edit::edit(context.folder, arguments).await,
         edit::EDITS => edit::edits(context.folder, arguments).await,
         edit::WRITE => edit::write(context.folder, arguments).await,
