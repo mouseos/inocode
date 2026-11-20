@@ -275,11 +275,13 @@ impl Thread<'_> {
     }
 
     /// Compacts what is sent when the latest request used most of the
-    /// context window, or, before any request has reported its size (a new
-    /// turn, another model), when the estimated size exceeds the window: the
-    /// estimate runs high, so below the window the request is sent and its
-    /// measured size decides. The stored history is kept; a compaction
-    /// message is added and the history is assembled again from the store.
+    /// context window, or, before this turn's first request has reported
+    /// its size, when the estimated size would: estimated at the model's own
+    /// measured bytes per token, or, before the model measured any request
+    /// (another model), at a rate that runs high, so then only a size over
+    /// the whole window compacts first. The stored history is kept; a
+    /// compaction message is added and the history is assembled again from
+    /// the store.
     async fn compact_if_due(
         &mut self,
         llm: &Llm,
@@ -293,15 +295,24 @@ impl Thread<'_> {
             Some(input) if compaction::due(input, window) => input,
             Some(_) => return Ok(()),
             None => {
-                let estimate = compaction::estimate(
+                let bytes = compaction::request_bytes(
                     self.conversation.system.as_deref(),
                     &self.conversation.messages,
                     tools,
                 );
-                if estimate < window {
-                    return Ok(());
+                let estimate = match llm.bytes_per_token() {
+                    Some(ratio) => Some(compaction::tokens(bytes, ratio))
+                        .filter(|&estimate| compaction::due(estimate, window)),
+                    None => Some(compaction::tokens(
+                        bytes,
+                        compaction::FALLBACK_BYTES_PER_TOKEN,
+                    ))
+                    .filter(|&estimate| estimate >= window),
+                };
+                match estimate {
+                    Some(estimate) => estimate,
+                    None => return Ok(()),
                 }
-                estimate
             }
         };
         let sent: Vec<(i64, Message)> = self
@@ -861,6 +872,12 @@ async fn steps(
         }
         usage.add(stream.usage());
         thread.last_input = stream.usage().map(|usage| usage.input);
+        if let Some(input) = thread.last_input {
+            llm.measured(
+                compaction::request_bytes(sent.system.as_deref(), &sent.messages, &tools),
+                input,
+            );
+        }
         let mut body = stream.assistant();
         drop_cut_calls(&mut body);
         let Body::Assistant { stop, .. } = &body else {

@@ -23,10 +23,10 @@ const RECORD_FIELD_CHARS: usize = 160;
 /// Speaker kind of a compaction message: `compaction:<last replaced seq>`.
 const KIND: &str = "compaction:";
 
-/// Bytes of a request counted as one token when no provider has measured
-/// it: low enough that Japanese text, about three bytes a token, is not
-/// underestimated.
-const BYTES_PER_TOKEN: u64 = 3;
+/// Bytes counted as one token when the model's own ratio has not been
+/// measured yet: low enough that Japanese text, about three bytes a token,
+/// is not underestimated.
+pub(crate) const FALLBACK_BYTES_PER_TOKEN: f64 = 3.0;
 /// Share of the window the turn's own request may fill when it is sent
 /// again to be summarized: compaction starts at [`COMPACT_AT`], and the
 /// rest leaves room for the instruction and the summary.
@@ -215,9 +215,9 @@ fn record(previous: Option<&str>, new: Vec<String>) -> String {
     )
 }
 
-/// Input tokens of a request with `system`, `messages` and `tools`,
-/// estimated from its size for when no provider has measured it.
-pub(crate) fn estimate(system: Option<&str>, messages: &[Message], tools: &[ToolSpec]) -> u64 {
+/// The size of a request with `system`, `messages` and `tools`, in bytes
+/// of what is sent; tokens are estimated from it.
+pub(crate) fn request_bytes(system: Option<&str>, messages: &[Message], tools: &[ToolSpec]) -> u64 {
     let bodies: usize = messages
         .iter()
         .map(|message| serde_json::to_string(&message.body).map_or(0, |text| text.len()))
@@ -226,12 +226,17 @@ pub(crate) fn estimate(system: Option<&str>, messages: &[Message], tools: &[Tool
         .iter()
         .map(|tool| tool.name.len() + tool.description.len() + tool.parameters.to_string().len())
         .sum();
-    (system.map_or(0, str::len) + bodies + tools) as u64 / BYTES_PER_TOKEN
+    (system.map_or(0, str::len) + bodies + tools) as u64
 }
 
-/// The older messages as plain text, in parts of at most `budget`
-/// estimated tokens, each ending before a message that is not a tool
-/// result so a call and its result stay together.
+/// Tokens of `bytes` at `bytes_per_token`.
+pub(crate) fn tokens(bytes: u64, bytes_per_token: f64) -> u64 {
+    (bytes as f64 / bytes_per_token) as u64
+}
+
+/// The older messages as plain text, in parts of at most `budget` bytes,
+/// each ending before a message that is not a tool result so a call and
+/// its result stay together.
 fn parts(messages: &[(i64, Message)], budget: u64) -> Vec<String> {
     let mut parts = Vec::new();
     let mut current = String::new();
@@ -239,7 +244,7 @@ fn parts(messages: &[(i64, Message)], budget: u64) -> Vec<String> {
         let line = format!("#{seq} {}\n", crate::agent_tools::render(message));
         let splits = !current.is_empty()
             && !matches!(message.body, Body::ToolResult { .. })
-            && (current.len() + line.len()) as u64 / BYTES_PER_TOKEN > budget;
+            && (current.len() + line.len()) as u64 > budget;
         if splits {
             parts.push(std::mem::take(&mut current));
         }
@@ -302,6 +307,17 @@ async fn summary(
         .iter()
         .map(|(_, message)| message.clone())
         .collect();
+    // The request's tokens shared out by bytes, as for the kept tail.
+    let all: Vec<Message> = messages
+        .iter()
+        .map(|(_, message)| message.clone())
+        .collect();
+    let bytes_per_token =
+        request_bytes(system.as_deref(), &all, tools).max(1) as f64 / input.max(1) as f64;
+    let replaced_tokens = tokens(
+        request_bytes(system.as_deref(), &replaced_messages, &[]),
+        bytes_per_token,
+    );
     let resend = summarizer.is_none() && input as f64 <= RESEND_UP_TO * window as f64;
     let single = if resend {
         let mut request: Vec<Message> = messages
@@ -310,7 +326,7 @@ async fn summary(
             .collect();
         request.push(instruction(format!("{FULL_INSTRUCTIONS}{SUMMARY_CONTENT}")));
         Some((request, tools))
-    } else if estimate(system.as_deref(), &replaced_messages, &[]) <= budget {
+    } else if replaced_tokens <= budget {
         let mut request = replaced_messages;
         request.push(instruction(format!("{INSTRUCTIONS}{SUMMARY_CONTENT}")));
         Some((request, &[][..]))
@@ -331,9 +347,9 @@ async fn summary(
             Err(error) => (Err(error), usages),
         };
     }
-    let fixed = estimate(system.as_deref(), &[], &[]);
+    let fixed = tokens(request_bytes(system.as_deref(), &[], &[]), bytes_per_token);
     let part_budget = (budget.saturating_sub(fixed) / 2).max(1_000);
-    let parts = parts(replaced, part_budget);
+    let parts = parts(replaced, (part_budget as f64 * bytes_per_token) as u64);
     let count = parts.len();
     let mut summary = String::from("(none yet)");
     for (index, part) in parts.into_iter().enumerate() {
@@ -550,9 +566,14 @@ mod tests {
     fn an_unmeasured_request_is_estimated_from_its_size() {
         let messages = vec![person(&"あ".repeat(300))];
         let bytes = serde_json::to_string(&messages[0].body).unwrap().len() as u64;
-        assert_eq!(estimate(Some("abc"), &messages, &[]), (bytes + 3) / 3);
+        assert_eq!(request_bytes(Some("abc"), &messages, &[]), bytes + 3);
         // Japanese is about three bytes a token: not underestimated.
-        assert!(estimate(None, &messages, &[]) >= 300);
+        let fallback = tokens(
+            request_bytes(None, &messages, &[]),
+            FALLBACK_BYTES_PER_TOKEN,
+        );
+        assert!(fallback >= 300);
+        assert_eq!(tokens(4_000, 4.0), 1_000);
     }
 
     #[test]

@@ -217,6 +217,8 @@ pub struct Llm {
     catalog_window: tokio::sync::OnceCell<Option<u64>>,
     /// The configured model's output limit, looked up once.
     catalog_output: tokio::sync::OnceCell<Option<u64>>,
+    /// Bytes of the latest request this model measured per input token.
+    bytes_per_token: std::sync::Mutex<Option<f64>>,
 }
 
 impl Llm {
@@ -239,6 +241,7 @@ impl Llm {
             catalog_effort: tokio::sync::OnceCell::new(),
             catalog_window: tokio::sync::OnceCell::new(),
             catalog_output: tokio::sync::OnceCell::new(),
+            bytes_per_token: std::sync::Mutex::new(None),
         })
     }
 
@@ -249,6 +252,25 @@ impl Llm {
     /// The configured model.
     pub(crate) fn model(&self) -> &str {
         &self.config.model
+    }
+
+    /// Bytes per input token this model measured on its latest request;
+    /// `None` before any request reported its size.
+    pub(crate) fn bytes_per_token(&self) -> Option<f64> {
+        *self
+            .bytes_per_token
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
+    /// Records that a request of `bytes` measured `input` tokens.
+    pub(crate) fn measured(&self, bytes: u64, input: u64) {
+        if bytes > 0 && input > 0 {
+            *self
+                .bytes_per_token
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = Some(bytes as f64 / input as f64);
+        }
     }
 
     /// A client for `model` on the same provider and credential.
