@@ -517,13 +517,13 @@ async fn run_turn(
     let terminal = match outcome.ending {
         Ending::Interrupted => Terminal::Cancelled,
         Ending::Failed(error) => Terminal::Failed(error),
-        ending => Terminal::Ended(EventPayload::turn_completed(
+        ending => Terminal::Ended(Box::new(EventPayload::turn_completed(
             id,
             ending.as_str(),
             outcome.usage,
             outcome.held,
             outcome.questions,
-        )),
+        ))),
     };
     settle(id, stream_id, &queue, &in_flight, cancelled, terminal).await;
 }
@@ -610,7 +610,7 @@ enum Terminal {
     Completed,
     Failed(ErrorInfo),
     /// A turn's own completion event.
-    Ended(EventPayload),
+    Ended(Box<EventPayload>),
 }
 
 /// Delivers one event of a running generation, staying responsive to cancel
@@ -670,7 +670,7 @@ async fn settle(
             Terminal::Cancelled => EventPayload::cancelled(id),
             Terminal::Completed => EventPayload::completed(id),
             Terminal::Failed(error) => EventPayload::failed(id, error),
-            Terminal::Ended(event) => event,
+            Terminal::Ended(event) => *event,
         }
     };
     // The queue may be full behind a slow reader; waiting here is bounded by
