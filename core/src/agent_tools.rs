@@ -24,6 +24,11 @@ pub(crate) const PLAN: &str = "plan";
 pub(crate) const RECALL: &str = "recall";
 pub(crate) const LESSON: &str = "lesson";
 pub(crate) const METHOD: &str = "method";
+pub(crate) const ISSUE: &str = "issue";
+/// Unfinished issues `issue` lists at most.
+const ISSUES_LISTED: usize = 20;
+/// Characters of one event of an issue's history that `issue` shows.
+const EVENT_CHARS: usize = 600;
 
 /// The tools; `sandboxed` is whether shell commands run confined.
 pub(crate) fn specs(sandboxed: bool) -> Vec<ToolSpec> {
@@ -126,6 +131,29 @@ pub(crate) fn specs(sandboxed: bool) -> Vec<ToolSpec> {
         find::spec(),
         crate::explore::spec(),
         crate::ask::spec(),
+        ToolSpec {
+            name: ISSUE.into(),
+            description: "Work with the project's local issues, which last across \
+                conversations: list the unfinished ones; show one with its history; open a \
+                new one (priority 0 is the most urgent); start the one you work on now; \
+                close one as done or wontfix, with the reason. The harness records each \
+                turn that ends with the issue you started still unfinished, and after \
+                repeated ones may ask a colleague or the person."
+                .into(),
+            parameters: json!({
+                "type": "object",
+                "required": ["action"],
+                "properties": {
+                    "action": {"type": "string", "enum": ["list", "show", "open", "start", "close"]},
+                    "id": {"type": "integer"},
+                    "title": {"type": "string"},
+                    "body": {"type": "string"},
+                    "priority": {"type": "integer", "minimum": 0},
+                    "state": {"type": "string", "enum": ["done", "wontfix"]},
+                    "reason": {"type": "string"}
+                }
+            }),
+        },
     ]
     .into_iter()
     .chain(edit::specs())
@@ -159,6 +187,8 @@ pub(crate) struct Context<'a> {
     pub cancel: tokio::sync::watch::Receiver<bool>,
     /// Whether shell commands run confined.
     pub sandboxed: bool,
+    /// The stored position the message making the call takes.
+    pub seq: i64,
 }
 
 /// The answer to one call: its text and whether it is an error.
@@ -171,6 +201,7 @@ pub(crate) async fn run(context: &Context<'_>, name: &str, arguments: &str) -> O
         RECALL => recall(context, arguments).await,
         LESSON => lesson(context, arguments).await,
         METHOD => method(context, arguments).await,
+        ISSUE => issue(context, arguments).await,
         web_search::SEARCH => web_search::run(arguments).await,
         read::READ => read::run(context.folder, arguments).await,
         crate::ask::ASK => crate::ask::check(arguments).map(|(_, told)| told),
@@ -647,6 +678,140 @@ fn unknown_tag(in_use: &[(String, u64)], tag: &str) -> String {
          if none fits, put `{tag}` in new_tags.",
         listed.join(", ")
     )
+}
+
+async fn issue(context: &Context<'_>, arguments: &str) -> Result<String, String> {
+    use crate::rules::{Actor, At, IssueState};
+    #[derive(Deserialize)]
+    struct Arguments {
+        action: String,
+        id: Option<i64>,
+        title: Option<String>,
+        body: Option<String>,
+        priority: Option<i64>,
+        state: Option<String>,
+        reason: Option<String>,
+    }
+    let arguments: Arguments = parse(arguments)?;
+    let store = context.store;
+    let at = Some(At {
+        session: context.session,
+        seq: context.seq,
+    });
+    let found = |id: Option<i64>| async move {
+        let id = crate::store::NoteId(id.ok_or("this action needs the issue's id")?);
+        store
+            .issue(context.project, id)
+            .await
+            .map_err(|error| error.message)?
+            .ok_or_else(|| format!("this project has no issue {}", id.0))
+    };
+    match arguments.action.as_str() {
+        "list" => {
+            let issues = store
+                .issues(context.project, false, ISSUES_LISTED)
+                .await
+                .map_err(|error| error.message)?;
+            if issues.is_empty() {
+                return Ok("No unfinished issues.".into());
+            }
+            let lines: Vec<String> = issues
+                .iter()
+                .map(|issue| {
+                    let blocked: Vec<String> = issue
+                        .blocked_by
+                        .iter()
+                        .map(|id| format!("#{}", id.0))
+                        .collect();
+                    let blocked = match blocked.is_empty() {
+                        true => String::new(),
+                        false => format!(" (blocked by {})", blocked.join(", ")),
+                    };
+                    format!(
+                        "#{} [{}] priority {}: {}{blocked}",
+                        issue.id.0, issue.state, issue.priority, issue.title
+                    )
+                })
+                .collect();
+            Ok(lines.join("\n"))
+        }
+        "show" => {
+            let (issue, body) = found(arguments.id).await?;
+            let events = store
+                .events(issue.id)
+                .await
+                .map_err(|error| error.message)?;
+            let history: Vec<String> = events
+                .iter()
+                .map(|event| {
+                    let detail: String = event.detail.chars().take(EVENT_CHARS).collect();
+                    match detail.is_empty() {
+                        true => format!("- {} ({})", event.event, event.actor),
+                        false => format!("- {} ({}): {detail}", event.event, event.actor),
+                    }
+                })
+                .collect();
+            Ok(format!(
+                "#{} [{}] priority {}: {}\n{body}\n\nHistory:\n{}",
+                issue.id.0,
+                issue.state,
+                issue.priority,
+                issue.title,
+                history.join("\n")
+            ))
+        }
+        "open" => {
+            let title = arguments.title.as_deref().map(str::trim).unwrap_or("");
+            if title.is_empty() {
+                return Err("open needs a title".into());
+            }
+            let id = store
+                .open_issue_as(
+                    context.project,
+                    title,
+                    arguments.body.as_deref().unwrap_or("").trim(),
+                    arguments.priority.unwrap_or(2).max(0),
+                    Vec::new(),
+                    Actor::Model,
+                    at,
+                )
+                .await
+                .map_err(|error| error.message)?;
+            Ok(format!(
+                "Opened issue #{}. Start it when you work on it.",
+                id.0
+            ))
+        }
+        "start" => {
+            let (issue, _) = found(arguments.id).await?;
+            store
+                .set_issue_state(issue.id, IssueState::InProgress, Actor::Model, at, "")
+                .await
+                .map_err(|error| error.message)?;
+            Ok(format!(
+                "Started issue #{}: {}. Each turn that ends with it unfinished is recorded.",
+                issue.id.0, issue.title
+            ))
+        }
+        "close" => {
+            let (issue, _) = found(arguments.id).await?;
+            let state = match arguments.state.as_deref() {
+                Some("done") => IssueState::Done,
+                Some("wontfix") => IssueState::WontFix,
+                _ => return Err("close needs state done or wontfix".into()),
+            };
+            let reason = arguments.reason.as_deref().map(str::trim).unwrap_or("");
+            if reason.is_empty() {
+                return Err("close needs the reason".into());
+            }
+            store
+                .set_issue_state(issue.id, state, Actor::Model, at, reason)
+                .await
+                .map_err(|error| error.message)?;
+            Ok(format!("Closed issue #{}.", issue.id.0))
+        }
+        other => Err(format!("unknown action {other}")),
+    }
 }
 
 fn cut_title(text: &str) -> String {

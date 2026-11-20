@@ -541,6 +541,75 @@ async fn a_colleague_advises_when_the_same_call_is_made_a_third_time() {
 }
 
 #[tokio::test]
+async fn an_issue_left_unfinished_brings_the_colleague_then_the_person() {
+    with_timeout(async {
+        let done = || vec![sse_delta("done"), finish("stop"), sse_done()];
+        let advice = |text: &str| vec![sse_delta(text), finish("stop"), sse_done()];
+        let mock = scripted(vec![
+            tool_turn("i1", "issue", json!({"action": "open", "title": "fix the crash"})),
+            tool_turn("i2", "issue", json!({"action": "start", "id": 1})),
+            done(),
+            done(),
+            advice("Read the stack trace first."),
+            done(),
+            done(),
+            advice("Bisect the last change."),
+        ])
+        .await;
+        let core = core_with_colleague(&mock, json!({"model": "colleague-model"})).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client).await;
+
+        let first = turn(&mut client, 2, thread, "the app crashes").await;
+        assert_eq!(
+            tool_results(&first),
+            [
+                "Opened issue #1. Start it when you work on it.",
+                "Started issue #1: fix the crash. Each turn that ends with it unfinished is recorded."
+            ]
+        );
+        turn(&mut client, 3, thread, "go on").await;
+        // Two unfinished turns: the colleague is asked before the third.
+        turn(&mut client, 4, thread, "go on").await;
+        let sent = chats(&mock);
+        let asked = &sent[4].body;
+        assert_eq!(asked["model"], "colleague-model");
+        let question = asked["messages"][1]["content"].as_str().expect("question");
+        assert!(question.contains("The issue the agent works on:\n#1 fix the crash"), "{question}");
+        assert!(question.contains("the last 2 turns on this issue ended with it unfinished"), "{question}");
+        assert!(question.contains("1. The turn ended (completed). Last words: done"), "{question}");
+        assert!(sent[5].body["messages"].to_string().contains(
+            "was asked because the issue you work on stayed unfinished in the last 2 turns"
+        ));
+
+        turn(&mut client, 5, thread, "go on").await;
+        // Two more: the colleague again, with its last advice.
+        turn(&mut client, 6, thread, "go on").await;
+        let sent = chats(&mock);
+        let again = sent[7].body["messages"][1]["content"].as_str().expect("question");
+        assert!(again.contains("Your last advice on it:\nRead the stack trace first."), "{again}");
+
+        turn(&mut client, 7, thread, "go on").await;
+        // After two rounds of advice and two more unfinished turns: the person.
+        let last = turn(&mut client, 8, thread, "go on").await;
+        let end = last.last().unwrap();
+        assert_eq!(end["event"], "completed");
+        let questions = end["questions"].as_array().expect("questions");
+        assert_eq!(questions.len(), 1);
+        let text = questions[0]["questions"][0]["question"].as_str().expect("text");
+        assert!(text.starts_with("Issue #1 \"fix the crash\" is still unfinished after 2 rounds"), "{text}");
+        assert!(questions[0]["seq"].as_i64().is_some());
+        let sent = chats(&mock);
+        assert_eq!(sent.len(), 11, "no colleague is asked the third time");
+        assert!(sent[10].body["messages"]
+            .to_string()
+            .contains("The harness asked the person how to go on: Issue #1"));
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn a_colleague_that_cannot_be_set_up_fails_the_turn() {
     with_timeout(async {
         let mock = scripted(Vec::new()).await;
@@ -580,7 +649,7 @@ async fn the_plan_is_shown_after_the_history_with_every_request() {
         let requests = chats(&mock);
         assert!(requests[0].body["tools"]
             .as_array()
-            .is_some_and(|tools| tools.len() == 15));
+            .is_some_and(|tools| tools.len() == 16));
         let state = last_message(&requests[1]);
         assert_eq!(state["role"], "user");
         assert_eq!(
@@ -750,7 +819,7 @@ async fn tools_of_the_configured_mcp_servers_are_offered_and_called() {
         assert_eq!(tool_results(&events), ["5"]);
         let requests = chats(&mock);
         let tools = requests[0].body["tools"].as_array().expect("tools");
-        assert_eq!(tools.len(), 16);
+        assert_eq!(tools.len(), 17);
         let added = tools
             .iter()
             .find(|tool| tool["function"]["name"] == "mcp__calc__add")
@@ -1459,7 +1528,7 @@ async fn near_the_window_older_work_is_compacted_and_the_person_kept() {
             .expect("a summary request");
         assert_eq!(
             summary_request.body["tools"].as_array().map(Vec::len),
-            Some(15)
+            Some(16)
         );
         assert!(summary_request.body["messages"]
             .to_string()

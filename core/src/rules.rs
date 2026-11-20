@@ -434,6 +434,22 @@ impl Store {
         priority: i64,
         tags: Vec<String>,
     ) -> Result<NoteId, ErrorInfo> {
+        self.open_issue_as(project, title, body, priority, tags, Actor::Person, None)
+            .await
+    }
+
+    /// Opens an issue, recording who opened it and where.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn open_issue_as(
+        &self,
+        project: Option<ProjectId>,
+        title: &str,
+        body: &str,
+        priority: i64,
+        tags: Vec<String>,
+        actor: Actor,
+        at: Option<At>,
+    ) -> Result<NoteId, ErrorInfo> {
         let (title, body) = (title.to_string(), body.to_string());
         self.write(move |db| {
             let tags = normalize_tags(db, &tags)?;
@@ -442,8 +458,15 @@ impl Store {
             tx.execute(
                 "INSERT INTO notes(project_id, kind, title, summary, keywords, condition, body,
                                    tags, status, source, created, updated)
-                 VALUES (?1, 'issue', ?2, '', '', '', ?3, ?4, 'open', 'person', ?5, ?5)",
-                params![project.map(|p| p.0), title, body, tags.join(" "), time],
+                 VALUES (?1, 'issue', ?2, '', '', '', ?3, ?4, 'open', ?5, ?6, ?6)",
+                params![
+                    project.map(|p| p.0),
+                    title,
+                    body,
+                    tags.join(" "),
+                    actor.as_str(),
+                    time
+                ],
             )
             .map_err(store_error)?;
             let id = NoteId(tx.last_insert_rowid());
@@ -459,7 +482,7 @@ impl Store {
                 params![id.0, priority],
             )
             .map_err(store_error)?;
-            record(&tx, id, "opened", Actor::Person, None, "")?;
+            record(&tx, id, "opened", actor, at, "")?;
             tx.commit().map_err(store_error)?;
             Ok(id)
         })
@@ -489,6 +512,55 @@ impl Store {
             }
             record(&tx, issue, state.as_str(), actor, at, &reason)?;
             tx.commit().map_err(store_error)
+        })
+        .await
+    }
+
+    /// One issue of the project, with its text; `None` when the project has
+    /// no issue of that id.
+    pub async fn issue(
+        &self,
+        project: Option<ProjectId>,
+        issue: NoteId,
+    ) -> Result<Option<(Issue, String)>, ErrorInfo> {
+        self.read(Duration::from_secs(30), move |db| {
+            db.query_row(
+                "SELECT n.title, n.status, i.priority, n.body FROM notes n
+                 JOIN issues i ON i.note_id = n.id
+                 WHERE n.id = ?1 AND n.project_id IS ?2",
+                params![issue.0, project.map(|p| p.0)],
+                |row| {
+                    Ok((
+                        Issue {
+                            id: issue,
+                            title: row.get(0)?,
+                            state: row.get(1)?,
+                            priority: row.get(2)?,
+                            blocked_by: Vec::new(),
+                        },
+                        row.get(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(store_error)
+        })
+        .await
+    }
+
+    /// The issue a thread last started that is still in progress.
+    pub async fn current_issue(&self, session: SessionId) -> Result<Option<NoteId>, ErrorInfo> {
+        self.read(Duration::from_secs(30), move |db| {
+            db.query_row(
+                "SELECT e.note_id FROM note_events e JOIN notes n ON n.id = e.note_id
+                 WHERE e.session_id = ?1 AND e.event = 'in_progress'
+                   AND n.kind = 'issue' AND n.status = 'in_progress'
+                 ORDER BY e.at DESC, e.id DESC LIMIT 1",
+                [session.0],
+                |row| row.get(0).map(NoteId),
+            )
+            .optional()
+            .map_err(store_error)
         })
         .await
     }

@@ -21,13 +21,22 @@ const SAME_KIND_STEPS: usize = 7;
 const SAME_CALL: u32 = 3;
 /// Steps after advice before the next can be asked for (LivePlan: 5).
 const COOLDOWN_STEPS: usize = 5;
-/// Advice at most in one turn.
-const ADVICE_PER_TURN: u32 = 5;
+/// Advice in one turn after which the next sign goes to the person instead,
+/// once: the work stays stuck although the colleague was heard.
+pub(crate) const ADVICE_PER_TURN: u32 = 2;
 /// Characters of the steps the colleague reads, the newest kept.
 const STEPS_CHARS: usize = 24_000;
 const ARGUMENTS_CHARS: usize = 600;
 const RESULT_CHARS: usize = 800;
 pub(crate) const KIND: &str = "colleague";
+/// The event the harness records on an issue for a turn that ended with it
+/// unfinished.
+pub(crate) const UNFINISHED: &str = "unfinished";
+/// Unfinished turns in a row on an issue after which the colleague is
+/// asked about it, at the start of the next turn.
+pub(crate) const UNFINISHED_TURNS: usize = 2;
+/// Rounds of advice on an issue after which the person is asked instead.
+pub(crate) const ISSUE_ADVICE: usize = 2;
 
 const INSTRUCTIONS: &str = "You advise a coding agent working on a person's request. A \
 monitor found a sign that it may be stuck; you get the request, the agent's steps since \
@@ -83,7 +92,7 @@ pub(crate) enum Kind {
 impl Sign {
     /// The hint the colleague gets with the steps, in the manner of
     /// LivePlan's predefined advice.
-    fn hint(&self) -> String {
+    pub(crate) fn hint(&self) -> String {
         match self {
             Self::Repeated { tool, times } => format!(
                 "The agent made the call {tool} with the same arguments {times} times; its \
@@ -132,6 +141,13 @@ impl Sign {
     }
 }
 
+/// Whom a sign goes to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Call {
+    Colleague(Sign),
+    Person(Sign),
+}
+
 /// The rules over one turn's steps.
 #[derive(Debug, Default)]
 pub(crate) struct Monitor {
@@ -140,12 +156,13 @@ pub(crate) struct Monitor {
     run: usize,
     since_advice: Option<usize>,
     advice: u32,
+    escalated: bool,
 }
 
 impl Monitor {
-    /// Takes one step, the calls of an assistant message; a sign when the
-    /// work looks stuck and the colleague may be asked now.
-    pub(crate) fn step(&mut self, assistant: &Body) -> Option<Sign> {
+    /// Takes one step, the calls of an assistant message; whom to ask when
+    /// the work looks stuck and someone may be asked now.
+    pub(crate) fn step(&mut self, assistant: &Body) -> Option<Call> {
         let Body::Assistant { parts, .. } = assistant else {
             return None;
         };
@@ -192,12 +209,16 @@ impl Monitor {
         let cooled = self
             .since_advice
             .is_none_or(|since| since >= COOLDOWN_STEPS);
-        let sign = sign.filter(|_| cooled && self.advice < ADVICE_PER_TURN)?;
-        self.advice += 1;
+        let sign = sign.filter(|_| cooled && !self.escalated)?;
         self.since_advice = Some(0);
         self.run = 0;
         self.calls.clear();
-        Some(sign)
+        if self.advice >= ADVICE_PER_TURN {
+            self.escalated = true;
+            return Some(Call::Person(sign));
+        }
+        self.advice += 1;
+        Some(Call::Colleague(sign))
     }
 }
 
@@ -229,17 +250,14 @@ fn kind(calls: &[(&str, &str)]) -> Option<Kind> {
     }
 }
 
-/// Asks the colleague about `steps`, the messages since the last advice;
-/// the harness message that brings the advice to the agent.
-pub(crate) async fn advise(
-    colleague: &Llm,
+/// What the colleague is asked about `steps`, the messages since the last
+/// advice in this turn.
+pub(crate) fn about_steps(
     request: &str,
     steps: &[Message],
     last_advice: Option<&str>,
     sign: &Sign,
-    cancel: &mut watch::Receiver<bool>,
-    usage: &mut TurnUsage,
-) -> Result<Body, String> {
+) -> (String, String) {
     let mut asked = format!("The person's request:\n{request}\n\n");
     if let Some(last) = last_advice {
         asked.push_str(&format!("Your last advice:\n{last}\n\n"));
@@ -249,6 +267,46 @@ pub(crate) async fn advise(
         sign.hint(),
         render(steps)
     ));
+    (asked, sign.reason())
+}
+
+/// What the colleague is asked about an issue that earlier turns left
+/// unfinished: the issue, what each of those turns ended with, and the
+/// last advice on it.
+pub(crate) fn about_issue(
+    request: &str,
+    issue: &str,
+    attempts: &[String],
+    last_advice: Option<&str>,
+) -> (String, String) {
+    let mut asked = format!(
+        "The person's request now:\n{request}\n\nThe issue the agent works on:\n{issue}\n\n"
+    );
+    if let Some(last) = last_advice {
+        asked.push_str(&format!("Your last advice on it:\n{last}\n\n"));
+    }
+    asked.push_str(&format!(
+        "Hint: the last {} turns on this issue ended with it unfinished. How each ended:\n",
+        attempts.len()
+    ));
+    for (number, attempt) in attempts.iter().enumerate() {
+        asked.push_str(&format!("{}. {attempt}\n", number + 1));
+    }
+    let reason = format!(
+        "the issue you work on stayed unfinished in the last {} turns",
+        attempts.len()
+    );
+    (asked, reason)
+}
+
+/// Asks the colleague `asked`; the harness message that brings the advice
+/// to the agent, saying `reason`, why the colleague was asked.
+pub(crate) async fn advise(
+    colleague: &Llm,
+    (asked, reason): (String, String),
+    cancel: &mut watch::Receiver<bool>,
+    usage: &mut TurnUsage,
+) -> Result<(Body, String), String> {
     let conversation = Conversation {
         system: Some(INSTRUCTIONS.to_string()),
         messages: vec![Message {
@@ -295,26 +353,15 @@ pub(crate) async fn advise(
     if advice.is_empty() {
         return Err("the colleague gave no advice".into());
     }
-    Ok(Body::User {
+    let message = Body::User {
         from: Speaker::Harness(KIND.to_string()),
         parts: vec![format!(
-            "A colleague ({}) was asked because {}. Their advice:\n{advice}\n\nWeigh it \
-             against what you know. If you do not follow it, say why in your next answer.",
+            "A colleague ({}) was asked because {reason}. Their advice:\n{advice}\n\nWeigh \
+             it against what you know. If you do not follow it, say why in your next answer.",
             colleague.model(),
-            sign.reason()
         )],
-    })
-}
-
-/// The advice in a colleague message, for the next time it is asked.
-pub(crate) fn advice_of(body: &Body) -> Option<&str> {
-    match body {
-        Body::User {
-            from: Speaker::Harness(kind),
-            parts,
-        } if kind == KIND => parts.first().map(String::as_str),
-        _ => None,
-    }
+    };
+    Ok((message, advice.to_string()))
 }
 
 /// The steps as text, each part cut, the newest kept within `STEPS_CHARS`.
@@ -411,10 +458,10 @@ mod tests {
         assert_eq!(monitor.step(&call), None);
         assert_eq!(
             monitor.step(&call),
-            Some(Sign::Repeated {
+            Some(Call::Colleague(Sign::Repeated {
                 tool: "shell".into(),
                 times: 3
-            })
+            }))
         );
     }
 
@@ -429,10 +476,10 @@ mod tests {
         }
         assert_eq!(
             monitor.step(&calls(&[("find", r#"{"pattern":"x"}"#)])),
-            Some(Sign::Prolonged {
+            Some(Call::Colleague(Sign::Prolonged {
                 kind: Kind::Looking,
                 steps: 7
-            })
+            }))
         );
         // An edit starts a new run.
         let mut monitor = Monitor::default();
@@ -444,21 +491,19 @@ mod tests {
     }
 
     #[test]
-    fn advice_waits_five_steps_and_comes_five_times_a_turn_at_most() {
+    fn advice_waits_five_steps_then_after_two_the_person_is_asked_once() {
         let mut monitor = Monitor::default();
         let call = calls(&[("shell", r#"{"command":"make"}"#)]);
-        let mut signs = Vec::new();
-        for _ in 0..60 {
-            signs.push(monitor.step(&call).is_some());
+        let mut asked = Vec::new();
+        for step in 0..60 {
+            match monitor.step(&call) {
+                Some(Call::Colleague(_)) => asked.push((step, "colleague")),
+                Some(Call::Person(_)) => asked.push((step, "person")),
+                None => {}
+            }
         }
-        let at: Vec<usize> = signs
-            .iter()
-            .enumerate()
-            .filter(|(_, sign)| **sign)
-            .map(|(index, _)| index)
-            .collect();
         // The 3rd call, then 5 steps of waiting and 3 identical calls again.
-        assert_eq!(at, [2, 7, 12, 17, 22]);
+        assert_eq!(asked, [(2, "colleague"), (7, "colleague"), (12, "person")]);
     }
 
     #[test]

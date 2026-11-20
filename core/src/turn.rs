@@ -173,6 +173,9 @@ pub struct Prompt {
 /// with `recall`.
 const QUOTE_CHARS: usize = 2_000;
 const REPLY_KIND: &str = "reply";
+const ESCALATION_KIND: &str = "escalation";
+/// Characters of a turn's last words kept with an unfinished attempt.
+const ATTEMPT_CHARS: usize = 1_000;
 
 /// The replied-to message `seq` of `session`, quoted for the model, so the
 /// next message can be read as a reply to it (docs/evidence/reply-to-message.md).
@@ -315,6 +318,8 @@ verified to work, for any project.\n\
 - search and fetch read the web.\n\
 - ask asks the person questions as a form on their screen; the answers come in a \
 later message.\n\
+- issue keeps the project's local issues across conversations; start the one you work \
+on, and close it with the reason when it is done or will not be done.\n\
 - Tools named mcp__<server>__<tool> come from the MCP servers the person set up.";
 
 /// The system prompt: how to use the tools, the reply language, then the
@@ -389,6 +394,8 @@ struct Thread<'a> {
     /// `conversation.messages`, and that advice.
     advised_from: usize,
     last_advice: Option<String>,
+    /// Questions the harness put to the person in this turn.
+    escalations: Vec<Asked>,
     /// The reviewer's refusals in a row and in this turn.
     denials: (u32, u32),
 }
@@ -605,6 +612,7 @@ impl Thread<'_> {
             folder: self.folder.as_deref(),
             cancel: self.cancel.clone(),
             sandboxed: self.sandboxed(),
+            seq: self.next_seq,
         };
         if name == crate::explore::EXPLORE {
             let explorer = self.explorer.clone();
@@ -755,34 +763,222 @@ impl Thread<'_> {
     /// reported and the work goes on without it.
     async fn ask_colleague(
         &mut self,
-        sign: &crate::colleague::Sign,
+        call: crate::colleague::Call,
         cancel: &mut watch::Receiver<bool>,
         usage: &mut TurnUsage,
     ) -> Result<(), ErrorInfo> {
-        let Some(colleague) = self.colleague.clone() else {
-            return Ok(());
-        };
-        let from = self.advised_from.min(self.conversation.messages.len());
-        let steps = self.conversation.messages[from..].to_vec();
-        let asked = crate::colleague::advise(
-            &colleague,
-            &self.request,
-            &steps,
-            self.last_advice.as_deref(),
-            sign,
-            cancel,
-            usage,
-        )
-        .await;
-        match asked {
-            Ok(advice) => {
-                self.last_advice = crate::colleague::advice_of(&advice).map(str::to_string);
-                self.record(vec![advice]).await?;
-                self.advised_from = self.conversation.messages.len();
+        match call {
+            crate::colleague::Call::Colleague(sign) => {
+                let from = self.advised_from.min(self.conversation.messages.len());
+                let asked = crate::colleague::about_steps(
+                    &self.request,
+                    &self.conversation.messages[from..],
+                    self.last_advice.as_deref(),
+                    &sign,
+                );
+                if let Some(advice) = self.hear_colleague(asked, cancel, usage).await? {
+                    self.last_advice = Some(advice);
+                }
             }
-            Err(error) => eprintln!("inocode: the colleague could not be asked: {error}"),
+            crate::colleague::Call::Person(sign) => {
+                let question = format!(
+                    "The work still looks stuck after {} rounds of the colleague's advice \
+                     in this turn. {} How should it go on?",
+                    crate::colleague::ADVICE_PER_TURN,
+                    sign.hint()
+                );
+                self.escalate(&question, &["Keep going", "Stop and wait for my direction"])
+                    .await?;
+            }
         }
         Ok(())
+    }
+
+    /// Asks the colleague and adds its advice to the thread; the advice, or
+    /// `None` when the colleague could not be asked, which is reported and
+    /// the work goes on without it.
+    async fn hear_colleague(
+        &mut self,
+        asked: (String, String),
+        cancel: &mut watch::Receiver<bool>,
+        usage: &mut TurnUsage,
+    ) -> Result<Option<String>, ErrorInfo> {
+        let Some(colleague) = self.colleague.clone() else {
+            return Ok(None);
+        };
+        match crate::colleague::advise(&colleague, asked, cancel, usage).await {
+            Ok((message, advice)) => {
+                self.record(vec![message]).await?;
+                self.advised_from = self.conversation.messages.len();
+                Ok(Some(advice))
+            }
+            Err(error) => {
+                eprintln!("inocode: the colleague could not be asked: {error}");
+                Ok(None)
+            }
+        }
+    }
+
+    /// Puts a question to the person: it is added to the thread, so the
+    /// model knows and the person can reply to it, and reported when the
+    /// turn ends with the questions of `ask`.
+    async fn escalate(&mut self, question: &str, options: &[&str]) -> Result<(), ErrorInfo> {
+        let note = format!(
+            "The harness asked the person how to go on: {question} Their answer comes in a \
+             later message. Go on with work that does not depend on it; if none is left, end \
+             your answer and say what you are waiting for."
+        );
+        self.record(vec![Body::User {
+            from: Speaker::Harness(ESCALATION_KIND.to_string()),
+            parts: vec![note],
+        }])
+        .await?;
+        let options: Vec<serde_json::Value> = options
+            .iter()
+            .map(|label| serde_json::json!({ "label": label }))
+            .collect();
+        self.escalations.push(Asked {
+            seq: self.seqs.last().copied(),
+            questions: serde_json::json!([{
+                "question": question,
+                "kind": "choose_one",
+                "options": options
+            }]),
+        });
+        Ok(())
+    }
+
+    /// At the start of a turn: when the issue this thread works on was left
+    /// unfinished by the last turns, the colleague is asked about it, or,
+    /// after its advice did not help either, the person.
+    async fn check_issue(
+        &mut self,
+        cancel: &mut watch::Receiver<bool>,
+        usage: &mut TurnUsage,
+    ) -> Result<(), ErrorInfo> {
+        use crate::colleague::{ISSUE_ADVICE, UNFINISHED, UNFINISHED_TURNS};
+        if self.colleague.is_none() {
+            return Ok(());
+        }
+        let Some(id) = self.store.current_issue(self.session).await? else {
+            return Ok(());
+        };
+        let Some((issue, body)) = self.store.issue(self.project, id).await? else {
+            return Ok(());
+        };
+        let events = self.store.events(id).await?;
+        let started = events
+            .iter()
+            .rposition(|event| event.event == "in_progress")
+            .map_or(0, |index| index + 1);
+        let since = events
+            .iter()
+            .rposition(|event| {
+                ["in_progress", "advised", "escalated"].contains(&event.event.as_str())
+            })
+            .map_or(0, |index| index + 1);
+        let unfinished: Vec<String> = events[since..]
+            .iter()
+            .filter(|event| event.event == UNFINISHED)
+            .map(|event| event.detail.clone())
+            .collect();
+        if unfinished.len() < UNFINISHED_TURNS {
+            return Ok(());
+        }
+        let advice: Vec<&str> = events[started..]
+            .iter()
+            .filter(|event| event.event == "advised")
+            .map(|event| event.detail.as_str())
+            .collect();
+        let at = Some(crate::rules::At {
+            session: self.session,
+            seq: self.seqs.last().copied().unwrap_or(0),
+        });
+        if advice.len() >= ISSUE_ADVICE {
+            let question = format!(
+                "Issue #{} \"{}\" is still unfinished after {} rounds of the colleague's \
+                 advice and {} more turns. How should it go on?",
+                id.0,
+                issue.title,
+                advice.len(),
+                unfinished.len()
+            );
+            self.escalate(
+                &question,
+                &[
+                    "Keep working on it",
+                    "Set it aside",
+                    "Wait for my direction",
+                ],
+            )
+            .await?;
+            self.store
+                .record(id, "escalated", crate::rules::Actor::Harness, at, "")
+                .await?;
+            return Ok(());
+        }
+        let asked = crate::colleague::about_issue(
+            &self.request,
+            &format!("#{} {}\n{body}", id.0, issue.title),
+            &unfinished,
+            advice.last().copied(),
+        );
+        if let Some(given) = self.hear_colleague(asked, cancel, usage).await? {
+            self.store
+                .record(id, "advised", crate::rules::Actor::Harness, at, &given)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// At the end of a turn: when the issue this thread works on is still
+    /// unfinished, the harness records the turn as an unfinished attempt,
+    /// with how it ended.
+    async fn record_attempt(&self, ending: &Ending) {
+        let Ok(Some(id)) = self.store.current_issue(self.session).await else {
+            return;
+        };
+        let said: String = self
+            .conversation
+            .messages
+            .iter()
+            .rev()
+            .find_map(|message| match &message.body {
+                Body::Assistant { parts, .. } => {
+                    let text: String = parts
+                        .iter()
+                        .filter_map(|part| match part {
+                            AssistantPart::Text { text } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect();
+                    (!text.trim().is_empty()).then_some(text)
+                }
+                _ => None,
+            })
+            .unwrap_or_default();
+        let said: String = said.trim().chars().take(ATTEMPT_CHARS).collect();
+        let detail = format!("The turn ended ({}). Last words: {said}", ending.as_str());
+        let at = Some(crate::rules::At {
+            session: self.session,
+            seq: self.seqs.last().copied().unwrap_or(0),
+        });
+        let recorded = self
+            .store
+            .record(
+                id,
+                crate::colleague::UNFINISHED,
+                crate::rules::Actor::Harness,
+                at,
+                &detail,
+            )
+            .await;
+        if let Err(error) = recorded {
+            eprintln!(
+                "inocode: the unfinished turn was not recorded: {}",
+                error.message
+            );
+        }
     }
 
     /// The stored position of the answer to call `call`.
@@ -989,7 +1185,8 @@ pub async fn run(
     if ending == Ending::Interrupted {
         shell::stop_all(&store.files_folder().join("logs"), session);
     }
-    let questions = thread
+    thread.record_attempt(&ending).await;
+    let mut questions: Vec<Asked> = thread
         .asked
         .iter()
         .map(|(call, questions)| Asked {
@@ -997,6 +1194,7 @@ pub async fn run(
             questions: questions.clone(),
         })
         .collect();
+    questions.append(&mut thread.escalations);
     Outcome {
         ending,
         usage,
@@ -1112,6 +1310,7 @@ async fn open<'a>(
         request: String::new(),
         advised_from: 0,
         last_advice: None,
+        escalations: Vec::new(),
         denials: (0, 0),
     })
 }
@@ -1137,6 +1336,9 @@ async fn steps(
     thread.advised_from = thread.conversation.messages.len();
     opening.push(person(prompt.text));
     if let Err(error) = thread.record(opening).await {
+        return Ending::Failed(error);
+    }
+    if let Err(error) = thread.check_issue(cancel, usage).await {
         return Ending::Failed(error);
     }
     let mut cuts = 0;
@@ -1231,8 +1433,8 @@ async fn steps(
         if let Err(error) = thread.record(bodies).await {
             return Ending::Failed(error);
         }
-        if let (Some(sign), Some(Step::Continue)) = (sign, &step) {
-            if let Err(error) = thread.ask_colleague(&sign, cancel, usage).await {
+        if let (Some(call), Some(Step::Continue)) = (sign, &step) {
+            if let Err(error) = thread.ask_colleague(call, cancel, usage).await {
                 return Ending::Failed(error);
             }
         }

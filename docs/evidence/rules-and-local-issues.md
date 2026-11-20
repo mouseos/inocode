@@ -1,7 +1,7 @@
 # 守ってほしいこと（規則）とローカル issue
 
 - **対象と範囲：** (1) AGENTS.md / CLAUDE.md を発展させた「守ってほしいこと」：規則を 1 件ずつ ID つきで持ち、どの規則がいつ提示・適用・逸脱されたかを追えるようにする。既存の AGENTS.md / CLAUDE.md から規則を取り込む。(2) ローカル issue：会話をまたいで残る作業・不具合・課題の記録。いずれも `docs/evidence/project-memory.md` の保存層（ノート・タグ・リンク・検索）の上に載せる案。
-- **関連コード：** `core/src/rules_import.rs`（取り込み `import_rules`、抽出 `extract`、応答の読み取りと出典の照合 `prepare`・`locate`・`fold`、文書全体を 1 件にする `whole`）、`core/src/llm.rs`（構造化出力 `converse_json`・`JsonOutput`）、`core/src/rules.rs`（`add_rule`、`rules_for`、`propose_enforcement`・`approve_enforcement`・`check`、`record`・`events`、issue の `open_issue`・`set_issue_state`・`block_issue`・`issues`）、`core/src/store.rs`（スキーマ v2：`rules`・`issues`・`note_events` 表、v3：`rules.segmented_by`・`rule_sections` 表、v4：`rules.details`、旧版からの移行）。
+- **関連コード：** `core/src/rules_import.rs`（取り込み `import_rules`、抽出 `extract`、応答の読み取りと出典の照合 `prepare`・`locate`・`fold`、文書全体を 1 件にする `whole`）、`core/src/llm.rs`（構造化出力 `converse_json`・`JsonOutput`）、`core/src/rules.rs`（`add_rule`、`rules_for`、`propose_enforcement`・`approve_enforcement`・`check`、`record`・`events`、issue の `open_issue`・`set_issue_state`・`block_issue`・`issues`）、`core/src/store.rs`（スキーマ v2：`rules`・`issues`・`note_events` 表、v3：`rules.segmented_by`・`rule_sections` 表、v4：`rules.details`、旧版からの移行）。 モデルが使う道具 `issue` と、試行の記録・同僚・人への質問は `colleague-review.md` の「issue ごとの試行の記録と、人に回すこと」（`core/src/agent_tools.rs` の `issue`、`core/src/turn.rs` の `check_issue`・`record_attempt`、`core/src/rules.rs` の `open_issue_as`・`issue`・`current_issue`）。
 - **根拠の状態：** UNSUPPORTED_APPROVED（2026-11-16、ユーザーが「Approve both」で規則とローカル issue の両方を承認）。規則の一部は下表のとおり研究で支持される。ローカル issue は適用可能な学術研究を確認できていない。
 
 ## 研究で分かったこと
