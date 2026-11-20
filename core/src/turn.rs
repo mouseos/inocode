@@ -245,6 +245,45 @@ async fn quote(store: &Store, session: SessionId, seq: i64) -> Result<Body, Erro
     })
 }
 
+/// Unfinished issues shown when a thread starts, most urgent first.
+const ISSUES_SHOWN: usize = 5;
+const ISSUES_KIND: &str = "issues";
+
+/// The project's most urgent unfinished issues, for the start of a thread
+/// (docs/evidence/rules-and-local-issues.md); `None` when there are none.
+async fn open_issues(store: &Store, project: Option<ProjectId>) -> Result<Option<Body>, ErrorInfo> {
+    let issues = store.issues(project, false, ISSUES_SHOWN).await?;
+    if issues.is_empty() {
+        return Ok(None);
+    }
+    let lines: Vec<String> = issues
+        .iter()
+        .map(|issue| {
+            let blocked: Vec<String> = issue
+                .blocked_by
+                .iter()
+                .map(|id| format!("#{}", id.0))
+                .collect();
+            let blocked = match blocked.is_empty() {
+                true => String::new(),
+                false => format!(" (blocked by {})", blocked.join(", ")),
+            };
+            format!(
+                "#{} [{}] priority {}: {}{blocked}",
+                issue.id.0, issue.state, issue.priority, issue.title
+            )
+        })
+        .collect();
+    Ok(Some(Body::User {
+        from: Speaker::Harness(ISSUES_KIND.to_string()),
+        parts: vec![format!(
+            "Unfinished local issues of this project, most urgent first (the issue tool \
+             shows more):\n{}",
+            lines.join("\n")
+        )],
+    }))
+}
+
 /// After a step, the turn goes on or ends with this.
 #[derive(Debug, PartialEq)]
 enum Step {
@@ -1323,6 +1362,13 @@ async fn steps(
     let mut tools: Vec<ToolSpec> = agent_tools::specs(thread.sandboxed());
     tools.extend(crate::mcp::specs(thread.store).await);
     let mut opening = Vec::new();
+    if thread.conversation.messages.is_empty() {
+        match open_issues(thread.store, thread.project).await {
+            Ok(Some(issues)) => opening.push(issues),
+            Ok(None) => {}
+            Err(error) => return Ending::Failed(error),
+        }
+    }
     if let Some(seq) = prompt.reply_to {
         match quote(thread.store, thread.session, seq).await {
             Ok(quoted) => opening.push(quoted),

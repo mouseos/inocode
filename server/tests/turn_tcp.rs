@@ -607,6 +607,40 @@ async fn an_issue_left_unfinished_brings_the_colleague_then_the_person() {
 }
 
 #[tokio::test]
+async fn a_new_thread_starts_with_the_unfinished_issues() {
+    with_timeout(async {
+        let mock = scripted(Vec::new()).await;
+        let (core, store) = core_and_store(&mock).await;
+        let crash = store
+            .open_issue(None, "fix the crash", "", 0, Vec::new())
+            .await
+            .expect("issue");
+        let docs = store
+            .open_issue(None, "write the docs", "", 3, Vec::new())
+            .await
+            .expect("issue");
+        store.block_issue(crash, docs).await.expect("block");
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client).await;
+
+        turn(&mut client, 2, thread, "hello").await;
+        turn(&mut client, 3, thread, "again").await;
+        let sent = chats(&mock);
+        let shown = format!(
+            "Unfinished local issues of this project, most urgent first (the issue tool shows more):\n#{} [open] priority 0: fix the crash\n#{} [open] priority 3: write the docs (blocked by #{})",
+            crash.0, docs.0, crash.0
+        );
+        assert_eq!(sent[0].body["messages"][1]["content"], shown);
+        assert_eq!(sent[0].body["messages"][2]["content"], "hello");
+        // Shown once, at the start; later turns read it in the history.
+        let later = sent[1].body["messages"].to_string();
+        assert_eq!(later.matches("Unfinished local issues").count(), 1);
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn a_colleague_that_cannot_be_set_up_fails_the_turn() {
     with_timeout(async {
         let mock = scripted(Vec::new()).await;
