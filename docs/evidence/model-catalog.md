@@ -1,8 +1,8 @@
 # モデルの一覧の価格・ベンチマーク・実測の速さ、と仕事に合わせたモデルの選び方
 
-- **対象と範囲：** 接続先が出すモデルの一覧に、価格（models.dev）、ベンチマーク（LLMBenchmark）、ここで測った速さ（使用量のログ）、請求の種類、GPT の速さの区分（fast・flex）とアクセスプログラム（Daybreak など）、DeepAI の Theos、Claude のプランを付けて返す（`models/catalog`）。モデルを選ぶ画面に載せるため。
-  - 範囲外（未実装）：これを使った自動の割り振り（仕事の種類・難しさ・時間帯でモデルを選ぶ、同僚を選ぶ）、Claude の CVP（Cyber Verification Program）の状態、利用者が価格を上書きする設定、用途と指標の対応の変更。
-- **関連コード：** `core/src/catalog.rs`（取得と保存、照合、順位、組み立て）、`core/src/llm.rs`（`ModelInfo` の `speed_tiers`・`access_programs`・`theos_per_request`、`Llm::billing`・`claude_plan`）、`core/src/deepai.rs`（Theos）、`core/src/lib.rs`（`Core::model_catalog`）、`server/src/lib.rs`（`models/catalog`）。
+- **対象と範囲：** 接続先が出すモデルの一覧に、価格（models.dev）、ベンチマーク（LLMBenchmark）、ここで測った速さ（使用量のログ）、請求の種類、GPT の速さの区分（fast・flex）とアクセスプログラム（Daybreak など）、DeepAI の Theos、Claude のプランと、Claude のモデル一覧のバッジ（CVP の状態）を付けて返す（`models/catalog`）。モデルを選ぶ画面に載せるため。
+  - 範囲外（未実装）：これを使った自動の割り振り（仕事の種類・難しさ・時間帯でモデルを選ぶ、同僚を選ぶ）、利用者が価格を上書きする設定、用途と指標の対応の変更。
+- **関連コード：** `core/src/catalog.rs`（取得と保存、照合、順位、組み立て）、`core/src/llm.rs`（`ModelInfo` の `speed_tiers`・`access_programs`・`theos_per_request`、`Llm::billing`・`claude_plan`・`claude_badges`）、`core/src/deepai.rs`（Theos）、`core/src/lib.rs`（`Core::model_catalog`）、`server/src/lib.rs`（`models/catalog`）。
 - **根拠の状態：**
   - 一覧に情報を載せること：UNSUPPORTED_APPROVED（表示の機能）。
   - 自動の割り振り：未実装。研究は下の「選び方の研究」。
@@ -15,7 +15,7 @@
 - モデルの名前の照合：提供元の名前の対応、そのまま、小文字で `.` と `-` を同じとみなす、日付の後ろ部分を外す。あいまいな照合はしない。
 - DeepAI は Theos（1 日の割り当て）で払う。一覧の `theosPerRequest` が `0` なら無料。価格は出さない。
 - GPT：Daybreak は OpenAI のサイバーのアクセスプログラム（`standard`・`daybreakBlue`・`daybreakRed`）。ChatGPT の一覧の各モデルの `available_access_programs.cyber[]` に出る（出ていても使えるとは限らず、サーバーが確かめる）。Fast はモデルではなく速さの区分で、`service_tiers` に `priority` があるか `additional_speed_tiers` に `fast` があると使える。Flex もある。
-- Claude：プランは `GET https://api.anthropic.com/api/oauth/profile`（`anthropic-beta: oauth-2025-04-20`）の `organization.rate_limit_tier`、なければ `organization_type`。CVP（Cyber Verification Program）は旧版にも取り方がなく、Claude Desktop の配布物に申請の画面があるだけ（取り方は不明）。
+- Claude：プランは `GET https://api.anthropic.com/api/oauth/profile`（`anthropic-beta: oauth-2025-04-20`）の `organization.rate_limit_tier`、なければ `organization_type`。CVP（Cyber Verification Program）の状態は、下の「CVP の取り方」の方法で取る。
 
 ## 実装
 
@@ -25,6 +25,7 @@
   - `scores`：用途ごとの指標の値、単位、順位（指標に載っているモデルの中で。時間の指標は小さいほど上）、日付、出典の URL。
   - `measured`：過去 30 日の使用量のログから、件数、tok/s と最初の文字までの時間の中央値、キャッシュの割合（同じ接続先・同じモデル）。
   - `speed_tiers`（`fast`・`flex`）、`access_programs`（Daybreak など）、`theos_per_request`、`context_window`。
+  - `badge`：Claude のサインインのとき、Claude のモデル一覧がそのモデルに付けるバッジ。Claude が送った形のまま（例：`message` が "CVP: Defense Access"）。
   - 全体に `plan`（Claude のサインインのときのプラン）、`sources`（出典と使用許諾）、`stale`（取得に失敗して古い写しを使ったとき）。
 - 取得した写しは `<名前>.files/catalog/` に保存し（一時ファイルに書いてから名前を変える）、期限内はそれを使う。取得に失敗したら古い写しを使う。
 - 照合は旧版の方式の一部（提供元の対応表、小文字と `.`・`-` の同一視、`provider/` の除去、日付の除去）。
@@ -40,6 +41,31 @@
 
 ## 検証
 
-- 単体テスト（`catalog.rs`）：価格の照合（日付付き、`.` と `-`、0 は価格にしない）、順位（時間は小さいほど上）、DeepAI の請求と価格、名前の正規化。`llm.rs`：ChatGPT の一覧の速さの区分とアクセスプログラム、Claude のプラン。
+- 単体テスト（`catalog.rs`）：価格の照合（日付付き、`.` と `-`、0 は価格にしない）、順位（時間は小さいほど上）、DeepAI の請求と価格、名前の正規化。`llm.rs`：ChatGPT の一覧の速さの区分とアクセスプログラム、Claude のプラン、Claude のバッジの取り出し（`cc` の一覧だけ、バッジのないモデルは除く）。
 - 手動のテスト `the_real_catalogs_answer`（2026-11-21、実際の models.dev と LLMBenchmark から取得できた。claude-haiku-4-5 は入力 $1・出力 $5・キャッシュ読み $0.1・書き $1.25）。
-- 未検証：実際の ChatGPT の一覧の `service_tiers`・`available_access_programs` の形（旧版のソースの記述に合わせた）、Claude のプランの取得、`models/catalog` の結合テスト（外部に取りに行くため書いていない）。
+- 未検証：実際の ChatGPT の一覧の `service_tiers`・`available_access_programs` の形（旧版のソースの記述に合わせた）、Claude のプランとバッジの実際の取得（バッジの項目の名前を含む）、`models/catalog` の結合テスト（外部に取りに行くため書いていない）。
+
+## CVP の取り方（2026-11-21、配布物を読んで確かめた）
+
+ユーザーが「現バージョンGUI解析しなさい。出るから」と指示した。Claude Desktop のモデル選択には「CVP: Defense Access」のバッジが出て、チップには「CVP」と出る。読んだのは次の 2 つ。
+
+- Claude Desktop 6.6395.0.0 の `ion-dist.asar`（画面）
+- 同梱の Claude Code 2.1.326 の `claude.exe`
+
+確かめたこと（配布物のコードと、手元の保存データ）：
+
+- バッジの文字は、どちらのコードにも書かれていない。サーバーが返すモデルの一覧の、モデルごとの `badge` に入っている。手元の claude.ai の IndexedDB に保存された一覧で、Opus 5.5 の項目に `CVP: Defense Access` と `CVP` と `program` の文字があった。保存データは圧縮されていて、項目の名前は読み取れない。
+- 一覧の取り方（Claude Code の `servedCatalog`）：
+  - Claude の OAuth トークンなら `GET /api/model_selector/{surface}`。
+    - 送り先は api（`api.anthropic.com`）。
+    - ヘッダは `Authorization: Bearer`、OAuth の `anthropic-beta`、`anthropic-client-platform`（ターミナルからは `claude_code_cli`）。
+  - claude.ai のセッションなら `GET /api/organizations/{org}/model_selector/{surface}`。
+  - `surface` は、ターミナルの Claude Code が `cc`、デスクトップが `ccd`。
+  - 応答は `model_selector_config`（`id` が surface、`models` にモデル）と `model_selector_state`。
+  - 各モデルには `id`、`name`、`badge`（`message`・`variant` など）、`tooltip`、`selector_label`、`thinking`、`min_claude_code_version` などがある。
+- 断られた応答からも分かる：`stop_reason` が `refusal` のとき、`stop_details.cyber_verification` が状態を持つ。
+  - `{"type": "active", "tier": "a" | "b" | "c"}`：画面の対応では `c` が Defense、`b` が Red Team、`a` が Specialized。
+  - `{"type": "inactive", "reason": "not_assigned_but_organization_approved" | "organization_not_approved"}`
+  - 申請の先は `https://portal.anthropic.com/programs/cvp`。
+- inocode は 1 つ目の方法を使う（`Llm::claude_badges`、surface は `cc`）。バッジの中の項目の名前（短い「CVP」や `program` がどの項目か）は確かめられていないので、解釈せず `badge` をそのまま返す。
+- 未検証：実際の API での取得。手元のトークンで 1 回取りに行けば確かめられる（モデルは呼ばない）。

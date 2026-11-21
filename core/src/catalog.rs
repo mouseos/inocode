@@ -89,6 +89,10 @@ pub struct Entry {
     /// Access programs the model is offered under (OpenAI's cyber programs
     /// such as Daybreak).
     pub access_programs: Option<Vec<String>>,
+    /// The badge Claude's own model list gives the model for this account,
+    /// as Claude sends it; it tells the Cyber Verification Program access
+    /// (for example the message "CVP: Defense Access").
+    pub badge: Option<Value>,
 }
 
 /// List prices in US dollars per million tokens.
@@ -364,13 +368,16 @@ pub(crate) async fn build(
     let stats = store.model_stats(since, 0).await.unwrap_or_default();
     let provider = llm.provider_label();
     let billing = llm.billing();
+    let mut badges = llm.claude_badges().await;
     let models = models
         .iter()
         .map(|model| {
             let measured = stats
                 .iter()
                 .find(|stats| stats.provider == provider && stats.model == model.id);
-            entry(model, billing, prices.as_ref(), &boards, measured)
+            let mut entry = entry(model, billing, prices.as_ref(), &boards, measured);
+            entry.badge = badges.remove(&model.id);
+            entry
         })
         .collect();
     Catalog {
@@ -417,6 +424,7 @@ pub(crate) fn entry(
         context_window: model.context_window,
         speed_tiers: model.speed_tiers.clone(),
         access_programs: model.access_programs.clone(),
+        badge: None,
     }
 }
 

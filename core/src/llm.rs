@@ -6,6 +6,7 @@
 //! static API key or a stored OAuth/subscription credential
 //! ([`crate::oauth`]), refreshed at request time when it has expired.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::time::{Duration, Instant};
 
@@ -315,6 +316,41 @@ impl Llm {
         }
         let profile: Value = serde_json::from_str(&read_bounded_body(response).await.ok()?).ok()?;
         claude_plan_of(&profile)
+    }
+
+    /// The badges of Claude's model list for this account, by model id, as
+    /// Claude Code reads them (`/api/model_selector/cc`); empty for other
+    /// providers or when they cannot be read.
+    pub(crate) async fn claude_badges(&self) -> HashMap<String, Value> {
+        if self.config.auth != AuthKind::ClaudeOauth {
+            return HashMap::new();
+        }
+        let Ok(credential) = self.credential().await else {
+            return HashMap::new();
+        };
+        let Ok(response) = self
+            .client
+            .get(format!(
+                "https://api.anthropic.com/api/model_selector/{CLAUDE_SURFACE}"
+            ))
+            .timeout(MODELS_TIMEOUT)
+            .bearer_auth(&credential.access)
+            .header("anthropic-beta", "oauth-2025-04-20")
+            .header("anthropic-client-platform", "claude_code_cli")
+            .send()
+            .await
+        else {
+            return HashMap::new();
+        };
+        if !response.status().is_success() {
+            return HashMap::new();
+        }
+        read_bounded_body(response)
+            .await
+            .ok()
+            .and_then(|body| serde_json::from_str(&body).ok())
+            .map(|list: Value| claude_badges_of(&list))
+            .unwrap_or_default()
     }
 
     pub(crate) fn model(&self) -> &str {
@@ -1365,6 +1401,31 @@ fn speed_tiers_of(item: &Value) -> Option<Vec<String>> {
 }
 
 /// The plan in a Claude OAuth profile.
+/// The model list Claude serves to Claude Code's terminal client.
+const CLAUDE_SURFACE: &str = "cc";
+
+/// The `badge` of each model of a served model list, by model id.
+fn claude_badges_of(list: &Value) -> HashMap<String, Value> {
+    let configs = list
+        .get("model_selector_config")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    configs
+        .iter()
+        .find(|config| config.get("id").and_then(Value::as_str) == Some(CLAUDE_SURFACE))
+        .and_then(|config| config.get("models"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|model| {
+            let id = model.get("id")?.as_str()?;
+            let badge = model.get("badge").filter(|badge| badge.is_object())?;
+            Some((id.to_string(), badge.clone()))
+        })
+        .collect()
+}
+
 fn claude_plan_of(profile: &Value) -> Option<String> {
     let organization = profile.get("organization")?;
     organization
@@ -2413,6 +2474,22 @@ mod tests {
             ),
             (None, None)
         );
+    }
+
+    #[test]
+    fn the_badges_of_claudes_model_list_are_kept_by_model() {
+        let list = serde_json::json!({"model_selector_config": [
+            {"id": "ccd", "models": [{"id": "claude-opus-5-5", "badge": {"message": "other"}}]},
+            {"id": "cc", "models": [
+                {"id": "claude-opus-5-5", "name": "Opus 5.5",
+                 "badge": {"message": "CVP: Defense Access", "variant": "program"}},
+                {"id": "claude-haiku-5-5", "name": "Haiku 5.5"}
+            ]}
+        ]});
+        let badges = claude_badges_of(&list);
+        assert_eq!(badges.len(), 1);
+        assert_eq!(badges["claude-opus-5-5"]["message"], "CVP: Defense Access");
+        assert!(claude_badges_of(&serde_json::json!({})).is_empty());
     }
 
     #[test]
