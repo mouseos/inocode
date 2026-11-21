@@ -155,6 +155,9 @@ const DENIALS_PER_TURN: u32 = 20;
 const REVIEW_MODEL_ENV: &str = "INOCODE_REVIEW_MODEL";
 const COMPACT_MODEL_ENV: &str = "INOCODE_COMPACT_MODEL";
 const EXPLORE_MODEL_ENV: &str = "INOCODE_EXPLORE_MODEL";
+/// Names a model to check goals instead of the turn's
+/// (docs/evidence/goal-command.md).
+const CHECK_MODEL_ENV: &str = "INOCODE_CHECK_MODEL";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Outcome {
@@ -446,6 +449,14 @@ struct Thread<'a> {
     shown: std::sync::Mutex<Vec<crate::conversation::Image>>,
     /// The reviewer's refusals in a row and in this turn.
     denials: (u32, u32),
+    /// The thread's goal, as stored when the turn started or last checked.
+    goal: Option<crate::goal::Goal>,
+    /// The model that checks the goal when it is not the turn's own.
+    checker: Option<std::sync::Arc<Llm>>,
+    /// Tool calls since the goal was last checked, and the turn's tokens
+    /// then.
+    goal_calls: u32,
+    goal_mark: u64,
 }
 
 impl Thread<'_> {
@@ -568,7 +579,13 @@ impl Thread<'_> {
         let plan = agent_tools::render_plan(self.store, self.session).await?;
         let jobs = shell::render_jobs(&self.store.files_folder().join("logs"), self.session);
         let language = self.language.as_deref().map(crate::language::instruction);
+        let goal = self
+            .goal
+            .as_ref()
+            .filter(|goal| goal.is_active())
+            .map(crate::goal::Goal::render);
         let parts: Vec<&str> = [
+            goal.as_deref(),
             plan.as_deref(),
             jobs.as_deref(),
             self.lessons.as_deref(),
@@ -665,6 +682,9 @@ impl Thread<'_> {
             events: Some(&self.events),
             shown: &self.shown,
         };
+        if name == crate::goal::GOAL {
+            return self.claim(arguments).await;
+        }
         if name == crate::explore::EXPLORE {
             let explorer = self.explorer.clone();
             let model = explorer.as_deref().unwrap_or(llm);
@@ -879,6 +899,10 @@ impl Thread<'_> {
     /// model knows and the person can reply to it, and reported when the
     /// turn ends with the questions of `ask`.
     async fn escalate(&mut self, question: &str, options: &[&str]) -> Result<(), ErrorInfo> {
+        // A goal runs without asking the person; its limits stop it instead.
+        if self.goal_active() {
+            return Ok(());
+        }
         let note = format!(
             "The harness asked the person how to go on: {question} Their answer comes in a \
              later message. Go on with work that does not depend on it; if none is left, end \
@@ -1037,6 +1061,100 @@ impl Thread<'_> {
         }
     }
 
+    fn goal_active(&self) -> bool {
+        self.goal.as_ref().is_some_and(crate::goal::Goal::is_active)
+    }
+
+    /// Keeps the working model's claim for the next check; deciding is the
+    /// checker's.
+    async fn claim(&mut self, arguments: &str) -> Answer {
+        let claim = match crate::goal::claim(arguments) {
+            Ok(claim) => claim,
+            Err(error) => return (error, true),
+        };
+        let goal = match crate::goal::load(self.store, self.session).await {
+            Ok(Some(goal)) if goal.is_active() => goal,
+            Ok(_) => return ("This thread has no active goal.".to_string(), true),
+            Err(error) => return (error.message, true),
+        };
+        let goal = crate::goal::Goal {
+            claim: Some(claim),
+            ..goal
+        };
+        if let Err(error) = crate::goal::save(self.store, self.session, &goal).await {
+            return (error.message, true);
+        }
+        self.goal = Some(goal);
+        (
+            "Recorded as a claim. End your answer; the checker decides from the evidence."
+                .to_string(),
+            false,
+        )
+    }
+
+    /// After the model ended its answer with a goal active: has the checker
+    /// judge it and records what follows. `true` when the turn goes on.
+    async fn pursue(&mut self, llm: &Llm, usage: &mut TurnUsage) -> Result<bool, ErrorInfo> {
+        // Read again: the person may have stopped or replaced the goal.
+        let goal = crate::goal::load(self.store, self.session).await?;
+        let Some(mut goal) = goal.filter(crate::goal::Goal::is_active) else {
+            self.goal = None;
+            return Ok(false);
+        };
+        let work: Vec<(i64, Message)> = self
+            .seqs
+            .iter()
+            .copied()
+            .zip(self.conversation.messages.iter().cloned())
+            .filter(|(seq, _)| *seq >= goal.from_seq)
+            .collect();
+        let checker = self.checker.clone();
+        let context = agent_tools::Context {
+            store: self.store,
+            session: self.session,
+            project: self.project,
+            rules: self.rules.as_deref(),
+            folder: self.folder.as_deref(),
+            cancel: self.cancel.clone(),
+            sandboxed: self.sandboxed(),
+            seq: self.next_seq,
+            events: None,
+            shown: &self.shown,
+        };
+        let checked = crate::goal::check(
+            checker.as_deref().unwrap_or(llm),
+            &context,
+            &goal,
+            &work,
+            usage,
+        )
+        .await;
+        let spent = (usage.input + usage.output).saturating_sub(self.goal_mark);
+        self.goal_mark = usage.input + usage.output;
+        let (text, goes_on) = match checked {
+            Ok(verdict) => {
+                let after = crate::goal::apply(&mut goal, verdict, self.goal_calls > 0, spent);
+                self.goal_calls = 0;
+                crate::goal::save(self.store, self.session, &goal).await?;
+                match after {
+                    crate::goal::After::Continue(text) => (text, true),
+                    crate::goal::After::End(text) => (text, false),
+                }
+            }
+            Err(why) => (
+                format!("The checker could not decide ({why}); the goal stays active."),
+                false,
+            ),
+        };
+        self.goal = Some(goal);
+        self.record(vec![Body::User {
+            from: Speaker::Harness(crate::goal::GOAL_KIND.to_string()),
+            parts: vec![text],
+        }])
+        .await?;
+        Ok(goes_on)
+    }
+
     /// The stored position of the answer to call `call`.
     fn seq_of_result(&self, call: &str) -> Option<i64> {
         self.conversation
@@ -1103,6 +1221,9 @@ impl Thread<'_> {
             };
             let answer = match stop {
                 StopReason::ToolUse | StopReason::Completed => {
+                    if name != crate::goal::GOAL {
+                        self.goal_calls += 1;
+                    }
                     let answer = self.answer(llm, body, name, arguments, usage).await;
                     if name == crate::ask::ASK && !answer.1 {
                         if let Ok((questions, _)) = crate::ask::check(arguments) {
@@ -1208,6 +1329,17 @@ pub async fn run(
             thread.explorer = explorer;
             match colleague(llm, store).await {
                 Ok(colleague) => thread.colleague = colleague,
+                Err(error) => {
+                    return Outcome {
+                        ending: Ending::Failed(error),
+                        usage,
+                        held: Vec::new(),
+                        questions: Vec::new(),
+                    }
+                }
+            }
+            match other_model(llm, CHECK_MODEL_ENV) {
+                Ok(checker) => thread.checker = checker.or_else(|| thread.colleague.clone()),
                 Err(error) => {
                     return Outcome {
                         ending: Ending::Failed(error),
@@ -1340,6 +1472,7 @@ async fn open<'a>(
     let lessons = agent_tools::render_lessons(store, project, prompt).await?;
     let language =
         crate::language::default(&store.files_folder().with_file_name("settings.json")).await;
+    let goal = crate::goal::load(store, session).await?;
     Ok(Thread {
         store,
         session,
@@ -1374,6 +1507,10 @@ async fn open<'a>(
         escalations: Vec::new(),
         shown: std::sync::Mutex::new(Vec::new()),
         denials: (0, 0),
+        goal,
+        checker: None,
+        goal_calls: 0,
+        goal_mark: 0,
     })
 }
 
@@ -1386,6 +1523,11 @@ async fn steps(
     usage: &mut TurnUsage,
 ) -> Ending {
     let mut tools: Vec<ToolSpec> = agent_tools::specs(thread.sandboxed());
+    // Under a goal the model does not ask the person; it can claim instead.
+    if thread.goal_active() {
+        tools.retain(|tool| tool.name != crate::ask::ASK);
+        tools.push(crate::goal::spec());
+    }
     tools.extend(crate::mcp::specs(thread.store).await);
     let mut opening = Vec::new();
     if thread.conversation.messages.is_empty() {
@@ -1511,6 +1653,18 @@ async fn steps(
             None => return Ending::Failed(failure.expect("no step only after a failure")),
             Some(Step::Continue) => cuts = 0,
             Some(Step::Resume) => cuts += 1,
+            Some(Step::Finish(Ending::Completed)) if thread.goal_active() => {
+                let pursued = tokio::select! {
+                    pursued = thread.pursue(llm, usage) => Some(pursued),
+                    () = cancelled(cancel) => None,
+                };
+                match pursued {
+                    Some(Ok(true)) => cuts = 0,
+                    Some(Ok(false)) => return Ending::Completed,
+                    Some(Err(error)) => return Ending::Failed(error),
+                    None => return Ending::Interrupted,
+                }
+            }
             Some(Step::Finish(ending)) => return ending,
         }
     }

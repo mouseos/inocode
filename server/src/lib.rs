@@ -237,7 +237,7 @@ async fn dispatch(
             )
             .await
         }
-        "thread/start" | "thread/read" => {
+        "thread/start" | "thread/read" | "goal/set" | "goal/read" | "goal/stop" => {
             // Store work runs off the read loop, like discovery.
             tokio::spawn(thread_request(
                 request,
@@ -339,10 +339,21 @@ async fn thread_request(
     core: Arc<Core>,
     queue: mpsc::Sender<Outgoing>,
 ) {
-    let result = if request.method == "thread/start" {
-        start_thread(&request, &core).await
-    } else {
-        read_thread(&request, &core).await
+    let result = match request.method.as_str() {
+        "thread/start" => start_thread(&request, &core).await,
+        "goal/set" => set_goal(&request, &core).await,
+        "goal/read" => match request.thread() {
+            Ok(thread) => core.goal(thread).await.map(|goal| json!({ "goal": goal })),
+            Err(error) => Err(error),
+        },
+        "goal/stop" => match request.thread() {
+            Ok(thread) => core
+                .stop_goal(thread)
+                .await
+                .map(|goal| json!({ "goal": goal })),
+            Err(error) => Err(error),
+        },
+        _ => read_thread(&request, &core).await,
     };
     let payload = match result {
         Ok(result) => json!({ "id": request.id, "result": result }),
@@ -369,6 +380,38 @@ async fn start_thread(request: &Request, core: &Core) -> Result<Value, ErrorInfo
     };
     let thread = core.start_thread(project).await?;
     Ok(json!({ "thread_id": thread.0 }))
+}
+
+/// `goal/set`: `objective`, and optionally the `check` command, the
+/// `rounds` and the `tokens` the goal may use.
+async fn set_goal(request: &Request, core: &Core) -> Result<Value, ErrorInfo> {
+    let thread = request.thread()?;
+    let field = |name: &str| request.params.as_ref().and_then(|params| params.get(name));
+    let objective = field("objective")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ErrorInfo::new("invalid_params", "requires an \"objective\" string"))?;
+    let check = match field("check") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(check)) => Some(check.as_str()),
+        Some(_) => {
+            return Err(ErrorInfo::new(
+                "invalid_params",
+                "\"check\" must be a command string",
+            ))
+        }
+    };
+    let number = |name: &str| match field(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value.as_u64().map(Some).ok_or_else(|| {
+            ErrorInfo::new("invalid_params", format!("\"{name}\" must be a number"))
+        }),
+    };
+    let rounds = number("rounds")?.map(|rounds| u32::try_from(rounds).unwrap_or(u32::MAX));
+    let tokens = number("tokens")?;
+    let goal = core
+        .set_goal(thread, objective, check, rounds, tokens)
+        .await?;
+    Ok(json!({ "goal": goal }))
 }
 
 async fn read_thread(request: &Request, core: &Core) -> Result<Value, ErrorInfo> {

@@ -68,9 +68,36 @@ pub(crate) async fn run(
     if question.trim().is_empty() {
         return Err("explore needs a question".into());
     }
+    read_only(llm, context, &EXPLORER, question, usage).await
+}
+
+/// A helper that only reads: its instructions, what it is told on its last
+/// round, its name in errors, and the purpose its requests are logged as.
+pub(crate) struct Helper {
+    pub system: &'static str,
+    pub last_round: &'static str,
+    pub name: &'static str,
+    pub purpose: &'static str,
+}
+
+const EXPLORER: Helper = Helper {
+    system: INSTRUCTIONS,
+    last_round: LAST_ROUND,
+    name: "the explorer",
+    purpose: EXPLORE,
+};
+
+/// Has `llm` answer `question` as `helper`, with `find` and `read` only.
+pub(crate) async fn read_only(
+    llm: &Llm,
+    context: &Context<'_>,
+    helper: &Helper,
+    question: String,
+    usage: &mut TurnUsage,
+) -> Result<String, String> {
     let tools = vec![find::spec(), read::spec()];
     let mut conversation = Conversation {
-        system: Some(INSTRUCTIONS.to_string()),
+        system: Some(helper.system.to_string()),
         messages: vec![message(Body::User {
             from: Speaker::Person,
             parts: vec![question],
@@ -80,11 +107,11 @@ pub(crate) async fn run(
     for round in 0..=ROUNDS {
         if round == ROUNDS {
             conversation.messages.push(message(Body::User {
-                from: Speaker::Harness("explore".into()),
-                parts: vec![LAST_ROUND.into()],
+                from: Speaker::Harness(helper.purpose.into()),
+                parts: vec![helper.last_round.into()],
             }));
         }
-        let body = request(llm, &conversation, &tools, &mut cancel, usage).await?;
+        let body = request(llm, helper, &conversation, &tools, &mut cancel, usage).await?;
         let Body::Assistant { stop, parts, .. } = &body else {
             unreachable!("a stream assembles an assistant turn");
         };
@@ -110,7 +137,7 @@ pub(crate) async fn run(
                 .collect();
             let text = text.trim();
             return if text.is_empty() {
-                Err("the explorer gave no answer".into())
+                Err(format!("{} gave no answer", helper.name))
             } else {
                 Ok(text.to_string())
             };
@@ -127,7 +154,7 @@ pub(crate) async fn run(
                 let answer = agent_tools::run(context, &name, &arguments)
                     .await
                     .unwrap_or_else(|| (format!("no tool named {name}"), true));
-                // Images read here are not shown to the explorer, nor kept
+                // Images read here are not shown to the helper, nor kept
                 // for the asking model.
                 let mut shown = context.shown.lock().expect("shown lock");
                 match shown.is_empty() {
@@ -135,7 +162,7 @@ pub(crate) async fn run(
                     false => {
                         shown.clear();
                         (
-                            format!("{} (the image is not shown to the explorer)", answer.0),
+                            format!("{} (the image is not shown to {})", answer.0, helper.name),
                             answer.1,
                         )
                     }
@@ -161,6 +188,7 @@ pub(crate) async fn run(
 /// One request: the assistant turn it produced, or why there is none.
 async fn request(
     llm: &Llm,
+    helper: &Helper,
     conversation: &Conversation,
     tools: &[ToolSpec],
     cancel: &mut watch::Receiver<bool>,
@@ -168,30 +196,33 @@ async fn request(
 ) -> Result<Body, String> {
     let started = tokio::select! {
         started = llm.converse(conversation, tools) => started,
-        () = crate::turn::cancelled(cancel) => return Err(STOPPED.into()),
+        () = crate::turn::cancelled(cancel) => return Err(stopped(helper)),
     };
-    let mut stream = started.map_err(|error| format!("the explorer failed: {}", error.message))?;
+    let mut stream =
+        started.map_err(|error| format!("{} failed: {}", helper.name, error.message))?;
     loop {
         tokio::select! {
             next = stream.next() => match next {
                 Ok(Some(_)) => {}
                 Ok(None) => break,
                 Err(error) => {
-                    usage.add_stream(&stream, EXPLORE);
-                    return Err(format!("the explorer failed: {}", error.message));
+                    usage.add_stream(&stream, helper.purpose);
+                    return Err(format!("{} failed: {}", helper.name, error.message));
                 }
             },
             () = crate::turn::cancelled(cancel) => {
-                usage.add_stream(&stream, EXPLORE);
-                return Err(STOPPED.into());
+                usage.add_stream(&stream, helper.purpose);
+                return Err(stopped(helper));
             }
         }
     }
-    usage.add_stream(&stream, EXPLORE);
+    usage.add_stream(&stream, helper.purpose);
     Ok(stream.assistant())
 }
 
-const STOPPED: &str = "the explorer was stopped with the turn";
+fn stopped(helper: &Helper) -> String {
+    format!("{} was stopped with the turn", helper.name)
+}
 
 fn message(body: Body) -> Message {
     Message {

@@ -2447,3 +2447,203 @@ async fn a_deepai_account_uses_its_own_review_service() {
     })
     .await;
 }
+
+fn text_turn(text: &str) -> Vec<Vec<u8>> {
+    vec![sse_delta(text), finish("stop"), sse_done()]
+}
+
+fn verdict_turn(verdict: &str, reason: &str) -> Vec<Vec<u8>> {
+    let answer = json!({
+        "points": ["out.txt holds ok"], "verdict": verdict, "reason": reason, "next": "write it"
+    });
+    text_turn(&answer.to_string())
+}
+
+fn tool_names(request: &MockRequest) -> Vec<String> {
+    request.body["tools"]
+        .as_array()
+        .map(|tools| {
+            tools
+                .iter()
+                .filter_map(|tool| tool["function"]["name"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn a_goal_goes_on_until_a_separate_checker_finds_it_achieved() {
+    with_timeout(async {
+        let project = database().with_extension("project");
+        std::fs::create_dir_all(&project).expect("project");
+        let mock = scripted(vec![
+            text_turn("It is done."),
+            verdict_turn("continue", "out.txt does not exist"),
+            tool_turn("w1", "write", json!({"path": "out.txt", "content": "ok"})),
+            text_turn("Written."),
+            verdict_turn("achieved", "out.txt holds ok"),
+        ])
+        .await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = project_thread(&mut client, &project).await;
+        let set = call(
+            &mut client,
+            2,
+            json!({"id": 2, "method": "goal/set", "params": {
+                "thread_id": thread, "objective": "out.txt holds ok", "rounds": 5,
+                "check": "echo checked-by-harness"}}),
+        )
+        .await;
+        assert_eq!(set["result"]["goal"]["state"], "active");
+
+        let events = turn_with(
+            &mut client,
+            3,
+            json!({"thread_id": thread, "prompt": "go", "mode": "full"}),
+        )
+        .await;
+        assert_eq!(events.last().unwrap()["reason"], "completed");
+        let chats = chats(&mock);
+        assert_eq!(chats.len(), 5);
+        // The working model cannot ask the person; it can only claim.
+        let worker = tool_names(&chats[0]);
+        assert!(worker.contains(&"goal".to_string()), "{worker:?}");
+        assert!(!worker.contains(&"ask".to_string()), "{worker:?}");
+        assert!(chats[0].body["messages"]
+            .to_string()
+            .contains("The goal of this thread, set by the person:\\nout.txt holds ok"));
+        // The checker has its own instructions and only reads.
+        let checker = &chats[1].body;
+        assert!(checker["messages"][0]["content"]
+            .as_str()
+            .is_some_and(|text| text.starts_with("You check whether another agent")));
+        assert!(checker["messages"][1]["content"]
+            .as_str()
+            .is_some_and(|text| text.contains("[the agent wrote, a claim]\nIt is done.")));
+        assert_eq!(tool_names(&chats[1]), ["find", "read"]);
+        // The person's check command is run by the harness for the checker.
+        let asked = checker["messages"][1]["content"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            asked.contains("check command, run now by the harness: echo checked-by-harness"),
+            "{asked}"
+        );
+        assert!(asked.matches("checked-by-harness").count() >= 2, "{asked}");
+        // Its finding goes back to the working model, which goes on.
+        let next = chats[2].body["messages"].to_string();
+        assert!(next.contains("out.txt does not exist"), "{next}");
+        assert!(next.contains("round 1 of 5"), "{next}");
+        assert_eq!(
+            std::fs::read_to_string(project.join("out.txt")).expect("written"),
+            "ok"
+        );
+
+        let read = call(
+            &mut client,
+            4,
+            json!({"id": 4, "method": "goal/read", "params": {"thread_id": thread}}),
+        )
+        .await;
+        let goal = &read["result"]["goal"];
+        assert_eq!(goal["state"], "achieved");
+        assert_eq!(goal["points"], json!(["out.txt holds ok"]));
+        assert_eq!(goal["rounds"], 1);
+        let _ = std::fs::remove_dir_all(&project);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_goal_without_progress_stops_after_three_checks() {
+    with_timeout(async {
+        let mut replies = Vec::new();
+        for index in 0..3 {
+            replies.push(text_turn("Still thinking."));
+            replies.push(verdict_turn("continue", &format!("not yet {index}")));
+        }
+        let mock = scripted(replies).await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client).await;
+        call(
+            &mut client,
+            2,
+            json!({"id": 2, "method": "goal/set", "params": {
+                "thread_id": thread, "objective": "out.txt holds ok"}}),
+        )
+        .await;
+
+        let events = turn(&mut client, 3, thread, "go").await;
+        assert_eq!(events.last().unwrap()["reason"], "completed");
+        assert_eq!(chats(&mock).len(), 6);
+        let read = call(
+            &mut client,
+            4,
+            json!({"id": 4, "method": "goal/read", "params": {"thread_id": thread}}),
+        )
+        .await;
+        let goal = &read["result"]["goal"];
+        assert_eq!(goal["state"], "stopped");
+        assert!(goal["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("no progress")));
+
+        // A stopped goal no longer drives the turns.
+        let events = turn(&mut client, 5, thread, "hi").await;
+        assert_eq!(events.last().unwrap()["reason"], "completed");
+        assert_eq!(chats(&mock).len(), 7);
+        assert!(!tool_names(&chats(&mock)[6]).contains(&"goal".to_string()));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn goal_requests_check_their_parameters() {
+    with_timeout(async {
+        let mock = scripted(Vec::new()).await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client).await;
+        for params in [
+            json!({"thread_id": thread}),
+            json!({"thread_id": thread, "objective": "x", "rounds": 0}),
+            json!({"thread_id": thread, "objective": "x", "tokens": "many"}),
+            json!({"thread_id": 999, "objective": "x"}),
+        ] {
+            let answer = call(
+                &mut client,
+                2,
+                json!({"id": 2, "method": "goal/set", "params": params}),
+            )
+            .await;
+            assert!(answer["error"]["code"].is_string(), "{answer}");
+        }
+        let none = call(
+            &mut client,
+            3,
+            json!({"id": 3, "method": "goal/stop", "params": {"thread_id": thread}}),
+        )
+        .await;
+        assert_eq!(none["result"]["goal"], Value::Null);
+        call(
+            &mut client,
+            4,
+            json!({"id": 4, "method": "goal/set", "params": {
+                "thread_id": thread, "objective": "x"}}),
+        )
+        .await;
+        let stopped = call(
+            &mut client,
+            5,
+            json!({"id": 5, "method": "goal/stop", "params": {"thread_id": thread}}),
+        )
+        .await;
+        assert_eq!(stopped["result"]["goal"]["state"], "stopped");
+    })
+    .await;
+}

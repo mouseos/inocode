@@ -19,6 +19,7 @@ mod edit;
 mod explore;
 mod fetch;
 mod find;
+pub mod goal;
 mod language;
 mod llm;
 mod mcp;
@@ -509,6 +510,55 @@ impl Core {
             return Err(unknown_thread());
         }
         store.page(thread, before, limit).await
+    }
+
+    /// Sets the goal of `thread`, replacing any earlier one; the turns from
+    /// now on keep going until the checker finds it achieved or impossible,
+    /// or a limit stops it (docs/evidence/goal-command.md).
+    pub async fn set_goal(
+        &self,
+        thread: SessionId,
+        objective: &str,
+        check: Option<&str>,
+        rounds: Option<u32>,
+        tokens: Option<u64>,
+    ) -> Result<goal::Goal, ErrorInfo> {
+        let store = self.store()?;
+        if !store.session_exists(thread).await? {
+            return Err(unknown_thread());
+        }
+        let from_seq = store
+            .page(thread, None, 1)
+            .await?
+            .last()
+            .map_or(1, |last| last.seq + 1);
+        let goal = goal::Goal::new(objective, check, rounds, tokens, from_seq)?;
+        goal::save(store, thread, &goal).await?;
+        Ok(goal)
+    }
+
+    /// The goal of `thread`, if one was ever set.
+    pub async fn goal(&self, thread: SessionId) -> Result<Option<goal::Goal>, ErrorInfo> {
+        let store = self.store()?;
+        if !store.session_exists(thread).await? {
+            return Err(unknown_thread());
+        }
+        goal::load(store, thread).await
+    }
+
+    /// Stops the active goal of `thread`; the running turn ends at its next
+    /// check. Returns the goal as it now is.
+    pub async fn stop_goal(&self, thread: SessionId) -> Result<Option<goal::Goal>, ErrorInfo> {
+        let store = self.store()?;
+        let Some(mut goal) = self.goal(thread).await? else {
+            return Ok(None);
+        };
+        if goal.is_active() {
+            goal.state = goal::State::Stopped;
+            goal.reason = "stopped by the person".to_string();
+            goal::save(store, thread, &goal).await?;
+        }
+        Ok(Some(goal))
     }
 
     /// Claims `thread` for a new turn and returns where its steering input

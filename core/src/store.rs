@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use crate::conversation::{AssistantPart, Body, Message};
 use crate::ErrorInfo;
 
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 /// Tool results above this size are stored once in `blobs` and referenced.
 const BLOB_THRESHOLD: usize = 16 * 1024;
 /// Text indexed per message; the rest stays readable but unsearchable.
@@ -198,9 +198,19 @@ CREATE TABLE requests(
 CREATE INDEX requests_at ON requests(at);
 "#;
 
+/// The goal of a thread (docs/evidence/goal-command.md), as JSON written by
+/// the harness, kept apart from the history like the plan.
+const SCHEMA_V7: &str = r#"
+CREATE TABLE goals(
+    session_id INTEGER PRIMARY KEY REFERENCES sessions(id),
+    goal TEXT NOT NULL,
+    updated INTEGER NOT NULL
+);
+"#;
+
 /// Schema steps; step `i` brings the database to version `i + 1`.
-const MIGRATIONS: [&str; 6] = [
-    SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6,
+const MIGRATIONS: [&str; 7] = [
+    SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7,
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -619,6 +629,33 @@ impl Store {
         self.read(Duration::from_secs(5), move |db| {
             db.query_row(
                 "SELECT items FROM plans WHERE session_id = ?1",
+                [session.0],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(store_error)
+        })
+        .await
+    }
+
+    /// Replaces the goal of `session` (JSON written by the harness).
+    pub async fn set_goal(&self, session: SessionId, goal: String) -> Result<(), ErrorInfo> {
+        self.write(move |db| {
+            db.execute(
+                "INSERT INTO goals(session_id, goal, updated) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(session_id) DO UPDATE SET goal = ?2, updated = ?3",
+                params![session.0, goal, now()],
+            )
+            .map(drop)
+            .map_err(store_error)
+        })
+        .await
+    }
+
+    pub async fn goal(&self, session: SessionId) -> Result<Option<String>, ErrorInfo> {
+        self.read(Duration::from_secs(5), move |db| {
+            db.query_row(
+                "SELECT goal FROM goals WHERE session_id = ?1",
                 [session.0],
                 |row| row.get(0),
             )
