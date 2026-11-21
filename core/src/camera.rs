@@ -567,6 +567,22 @@ mod tests {
         println!("{}", list().expect("list"));
     }
 
+    /// Takes one photo with camera 0 into the system's temporary folder;
+    /// run by hand, with the person's approval.
+    #[test]
+    #[ignore = "takes a photo with the machine's camera"]
+    fn takes_a_photo_here() {
+        let folder = std::env::temp_dir().join("inocode-camera-photo");
+        std::fs::create_dir_all(&folder).expect("folder");
+        let arguments: Arguments =
+            serde_json::from_value(json!({"action": "photo", "device": 0})).expect("arguments");
+        let (text, images) = photo(&arguments, &folder).expect("photo");
+        println!("{text}");
+        for image in images {
+            println!("{}", image.path);
+        }
+    }
+
     #[test]
     fn modes_are_asked_by_auto_and_manual() {
         let wanted: Map<String, Value> =
