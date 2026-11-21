@@ -583,6 +583,46 @@ mod tests {
         }
     }
 
+    /// Prints the controls of each camera and the mean brightness of its
+    /// frames for four seconds after the stream opens, to see when the
+    /// automatic exposure settles. Keeps no picture; run by hand, with the
+    /// person's approval.
+    #[test]
+    #[ignore = "uses the machine's cameras"]
+    fn prints_brightness_as_the_stream_starts() {
+        for device in 0..nokhwa::query(backend()).expect("cameras").len() {
+            let arguments: Arguments =
+                serde_json::from_value(json!({"action": "controls", "device": device}))
+                    .expect("arguments");
+            println!(
+                "=== camera {device}\n{}",
+                describe(&arguments).expect("controls")
+            );
+            brightness(&arguments);
+        }
+    }
+
+    fn brightness(arguments: &Arguments) {
+        let (mut camera, _) = start(arguments).expect("camera");
+        let started = Instant::now();
+        let mut index = 0;
+        while started.elapsed() < Duration::from_secs(4) {
+            let frame = grab(&mut camera).expect("frame");
+            let pixels = frame.pixels().count().max(1) as u64;
+            let sum: u64 = frame
+                .pixels()
+                .map(|pixel| pixel.0.iter().map(|&value| u64::from(value)).sum::<u64>() / 3)
+                .sum();
+            println!(
+                "frame {index} at {} ms: mean {}",
+                started.elapsed().as_millis(),
+                sum / pixels
+            );
+            index += 1;
+        }
+        let _ = camera.stop_stream();
+    }
+
     #[test]
     fn modes_are_asked_by_auto_and_manual() {
         let wanted: Map<String, Value> =

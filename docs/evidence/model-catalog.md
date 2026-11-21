@@ -72,4 +72,5 @@
   - 応答は 200。最上位の項目は `model_selector_state`、`model_selector_config`、`organization_uuid`、`resolution`。
   - `cc` の 15 モデルのどれにも `badge` の項目がない。Opus 5.5 の項目は `capabilities`、`description`、`fast_mode`、`id`、`min_claude_code_version`、`name`、`quick_select`、`runtime`、`section`、`short_name`、`thinking`。ほかのモデルには、さらに `notice`、`confidential`、`early_access`、`auto_permission_mode` などがある。
   - このため、今の実装（`cc` の `badge` を読む）では、このアカウントでは何も出ない。
-- 未検証：バッジが入っている場所。候補は、デスクトップ用の `ccd` の一覧、claude.ai のセッションで取る `/api/organizations/{org}/model_selector/{surface}`、`cc` の `capabilities` か `notice` の中身（今回は中身を表示していない）。
+- 実測 2（同日、ユーザーの「全部やっておいて」で、同じ方法で `GET /api/model_selector/ccd` を 1 回）：200 が返った。`ccd` の 15 モデルのどれにも `badge` の項目がない。項目の名前は `cc` とほぼ同じで、Mythos 5.2 に `confidential` と `early_access` がある。値は表示していない。
+- 未検証：バッジが入っている場所。候補は、claude.ai のセッションで取る `/api/organizations/{org}/model_selector/{surface}`、`cc` の `capabilities` か `notice` の中身（今回は中身を表示していない）。
