@@ -25,6 +25,10 @@ const PROTOCOL_VERSION: &str = "2025-11-25";
 const SUPPORTED_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 /// How long a server may take to start and list its tools.
 const START_TIMEOUT: Duration = Duration::from_secs(30);
+/// The tools an account's connector may bring at most. ChatGPT's apps list
+/// hundreds (415 for one account); every tool is sent with every request,
+/// and OpenAI's Chat Completions accepts at most 128 tools.
+const CONNECTOR_TOOLS: usize = 100;
 /// Providers accept tool names of at most 64 characters.
 const NAME_CHARS: usize = 64;
 
@@ -328,6 +332,7 @@ async fn load(config: &Path, accounts: &Path, hosts: &crate::connectors::Hosts) 
         ));
     }
     for (server, source) in sources {
+        let connector = matches!(source, Source::Connector(..));
         let started = tokio::time::timeout(START_TIMEOUT, async {
             let mut connection = source.connect()?;
             connection.server = server.clone();
@@ -338,6 +343,11 @@ async fn load(config: &Path, accounts: &Path, hosts: &crate::connectors::Hosts) 
         .await
         .unwrap_or_else(|_| Err(format!("did not start within {START_TIMEOUT:?}")));
         match started {
+            Ok((_, listed)) if connector && listed.len() > CONNECTOR_TOOLS => eprintln!(
+                "MCP: the {} tools of {server} are left out: more than {CONNECTOR_TOOLS} \
+                 cannot be given to the model in every request",
+                listed.len()
+            ),
             Ok((connection, listed)) => add(&mut tools, &server, &connection, listed),
             Err(error) => eprintln!("MCP: server {server} is not available: {error}"),
         }
@@ -1631,5 +1641,38 @@ mod tests {
             .iter()
             .all(|(_, headers, _)| headers["chatgpt-account-id"] == "acct-1"));
         assert_eq!(claude.len() + chatgpt.len(), seen.len());
+    }
+
+    /// Lists the real connectors of the accounts signed in at
+    /// `~/.inocode/auth.json`: claude.ai's list (one request) and the tools
+    /// of ChatGPT's apps (its handshake and one list). Connects to no
+    /// claude.ai connector and calls no tool. Run by hand, with the
+    /// person's approval.
+    #[tokio::test]
+    #[ignore = "reaches the real accounts"]
+    async fn lists_the_real_connectors() {
+        let accounts = crate::oauth::Store::default_path().expect("store");
+        let servers =
+            crate::connectors::servers(&accounts, &crate::connectors::Hosts::default()).await;
+        for server in &servers {
+            println!("server: {} ({:?})", server.name, server.account);
+        }
+        for server in servers
+            .into_iter()
+            .filter(|server| server.account == crate::connectors::Account::ChatGpt)
+        {
+            let connection = Source::Connector(server, accounts.clone())
+                .connect()
+                .expect("connect");
+            match connection.list_tools().await {
+                Ok(tools) => {
+                    println!("codex_apps tools: {}", tools.len());
+                    for tool in tools.iter().take(15) {
+                        println!("  {}", tool["name"].as_str().unwrap_or("?"));
+                    }
+                }
+                Err(error) => println!("codex_apps: {error}"),
+            }
+        }
     }
 }

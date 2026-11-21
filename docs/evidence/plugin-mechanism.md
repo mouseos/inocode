@@ -20,7 +20,11 @@
   - スコープ：一覧には `user:mcp_servers` が要る。inocode の Claude のサインインで求めるスコープを Claude Code と同じ `org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload user:plugins` にした。前のスコープでサインインしたトークンでは一覧が断られるので、サインインし直す必要がある（断られたときはそう表示する）。
 - ChatGPT の apps（Codex のソース `codex-rs/codex-mcp/src/mcp/mod.rs`、`connection_manager.rs` による）：`https://chatgpt.com/backend-api/wham/apps` へ Streamable HTTP。`Authorization: Bearer <ChatGPT のトークン>` と `ChatGPT-Account-ID`。サーバー名は `codex_apps`。
 - トークンは要求ごとに保存場所から読み、期限切れなら更新する（モデルの要求と同じ `oauth::fresh`）。
-- 検証：単体テスト `signed_in_accounts_bring_their_connectors`（偽のサーバーで、サインインがないと何も読まないこと、両方のサインインで両方の道具が出ること、各要求に正しいヘッダーが付くこと）。実際の claude.ai・ChatGPT への接続はまだ試していない（実際に試すにはユーザーの許可が要る）。
+- 検証：単体テスト `signed_in_accounts_bring_their_connectors`（偽のサーバーで、サインインがないと何も読まないこと、両方のサインインで両方の道具が出ること、各要求に正しいヘッダーが付くこと）。
+- 実測（2026-11-21、ユーザーの「1 回ずつ試して」。手動のテスト `lists_the_real_connectors`。道具は呼んでいない）：
+  - claude.ai：一覧の要求 1 回。403「OAuth token does not meet scope requirement user:mcp_servers」。前のスコープでサインインしたトークンのため。サインインし直してから、もう一度確かめる必要がある。
+  - ChatGPT の apps：初期化、初期化の通知、道具の一覧の 3 回（接続を閉じるときの DELETE がもう 1 回送られた可能性がある）。道具は 415 個で、名前は `github_add_comment_to_issue` など、アプリ名が頭に付く形。
+- 道具が多すぎる問題：道具はすべて毎回の要求に入る。OpenAI の Chat Completions は道具を 128 個までしか受けない（OpenAI の API 文書）。415 個を渡すと要求が重く、断られるおそれもある。Codex は apps の道具を最初から渡さず、`tool_search` で必要なものだけ読み込む（`codex-rs/core/src/context/apps_instructions.rs`）。inocode にはこの仕組みがないので、当面、コネクタ 1 つの道具が 100 個（`CONNECTOR_TOOLS`）を超えたら、モデルに渡さず理由を表示する。このため今は ChatGPT の apps は使えない。道具を探して読み込む仕組みは新しい機能で、研究の確認とユーザーの承認が先（UNSUPPORTED_PENDING）。
 - **調べ方：** サブエージェントが公式文書、openai/codex のソース、ローカルの claude.exe の文字列、ローカルに入っているプラグインを読んだ報告（以下、報告のまま）。認証付きの通信はしていない。
 
 ---
