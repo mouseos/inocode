@@ -68,4 +68,8 @@
   - `{"type": "inactive", "reason": "not_assigned_but_organization_approved" | "organization_not_approved"}`
   - 申請の先は `https://portal.anthropic.com/programs/cvp`。
 - inocode は 1 つ目の方法を使う（`Llm::claude_badges`、surface は `cc`）。バッジの中の項目の名前（短い「CVP」や `program` がどの項目か）は確かめられていないので、解釈せず `badge` をそのまま返す。
-- 未検証：実際の API での取得。手元のトークンで 1 回取りに行けば確かめられる（モデルは呼ばない）。
+- 実測（2026-11-21、ユーザーの許可を得て、inocode に保存した Claude の OAuth トークンで `GET /api/model_selector/cc` を取得。モデルは呼んでいない）：
+  - 応答は 200。最上位の項目は `model_selector_state`、`model_selector_config`、`organization_uuid`、`resolution`。
+  - `cc` の 15 モデルのどれにも `badge` の項目がない。Opus 5.5 の項目は `capabilities`、`description`、`fast_mode`、`id`、`min_claude_code_version`、`name`、`quick_select`、`runtime`、`section`、`short_name`、`thinking`。ほかのモデルには、さらに `notice`、`confidential`、`early_access`、`auto_permission_mode` などがある。
+  - このため、今の実装（`cc` の `badge` を読む）では、このアカウントでは何も出ない。
+- 未検証：バッジが入っている場所。候補は、デスクトップ用の `ccd` の一覧、claude.ai のセッションで取る `/api/organizations/{org}/model_selector/{surface}`、`cc` の `capabilities` か `notice` の中身（今回は中身を表示していない）。
