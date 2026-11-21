@@ -396,9 +396,23 @@ pub(crate) async fn check(
         None => None,
     };
     let asked = question(goal, output.as_deref(), work);
-    let answer = crate::explore::read_only(checker, context, &CHECKER, asked, usage).await?;
+    let (answer, reads) =
+        crate::explore::read_only(checker, context, &CHECKER, asked.clone(), usage).await?;
+    let found = verdict(&answer)?;
+    // A judge that reads the files itself agrees with people more often than
+    // one that reads the conversation (Agent-as-a-Judge): an achieved found
+    // without reading is asked once more, to read first. Without a project
+    // folder there is nothing to read.
+    if found.verdict != Decision::Achieved || reads > 0 || context.folder.is_none() {
+        return Ok(found);
+    }
+    let again = format!("{asked}\n\n{READ_FIRST}");
+    let (answer, _) = crate::explore::read_only(checker, context, &CHECKER, again, usage).await?;
     verdict(&answer)
 }
+
+const READ_FIRST: &str = "You found it achieved before without reading anything yourself. \
+This time read the files the points depend on with find and read before you answer.";
 
 /// What follows a check.
 #[derive(Debug, Clone, PartialEq, Eq)]

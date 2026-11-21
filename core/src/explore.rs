@@ -68,7 +68,9 @@ pub(crate) async fn run(
     if question.trim().is_empty() {
         return Err("explore needs a question".into());
     }
-    read_only(llm, context, &EXPLORER, question, usage).await
+    read_only(llm, context, &EXPLORER, question, usage)
+        .await
+        .map(|(answer, _)| answer)
 }
 
 /// A helper that only reads: its instructions, what it is told on its last
@@ -88,13 +90,15 @@ const EXPLORER: Helper = Helper {
 };
 
 /// Has `llm` answer `question` as `helper`, with `find` and `read` only.
+/// Returns the answer and how many reads the helper made.
 pub(crate) async fn read_only(
     llm: &Llm,
     context: &Context<'_>,
     helper: &Helper,
     question: String,
     usage: &mut TurnUsage,
-) -> Result<String, String> {
+) -> Result<(String, usize), String> {
+    let mut reads = 0;
     let tools = vec![find::spec(), read::spec()];
     let mut conversation = Conversation {
         system: Some(helper.system.to_string()),
@@ -139,7 +143,7 @@ pub(crate) async fn read_only(
             return if text.is_empty() {
                 Err(format!("{} gave no answer", helper.name))
             } else {
-                Ok(text.to_string())
+                Ok((text.to_string(), reads))
             };
         }
         let stop = *stop;
@@ -151,6 +155,7 @@ pub(crate) async fn read_only(
                     true,
                 )
             } else if name == find::FIND || name == read::READ {
+                reads += 1;
                 let answer = agent_tools::run(context, &name, &arguments)
                     .await
                     .unwrap_or_else(|| (format!("no tool named {name}"), true));

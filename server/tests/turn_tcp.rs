@@ -2482,6 +2482,8 @@ async fn a_goal_goes_on_until_a_separate_checker_finds_it_achieved() {
             tool_turn("w1", "write", json!({"path": "out.txt", "content": "ok"})),
             text_turn("Written."),
             verdict_turn("achieved", "out.txt holds ok"),
+            tool_turn("r1", "read", json!({"path": "out.txt"})),
+            verdict_turn("achieved", "read out.txt: ok"),
         ])
         .await;
         let (core, _store) = core_and_store(&mock).await;
@@ -2506,7 +2508,17 @@ async fn a_goal_goes_on_until_a_separate_checker_finds_it_achieved() {
         .await;
         assert_eq!(events.last().unwrap()["reason"], "completed");
         let chats = chats(&mock);
-        assert_eq!(chats.len(), 5);
+        assert_eq!(chats.len(), 7);
+        // An achieved found without reading is asked again, to read first;
+        // a continue is not.
+        let again = chats[5].body["messages"][1]["content"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(again.ends_with("before you answer."), "{again}");
+        assert!(!chats[1].body["messages"]
+            .to_string()
+            .contains("before you answer."));
+        assert!(chats[6].body["messages"].to_string().contains("1: ok"));
         // The working model cannot ask the person; it can only claim.
         let worker = tool_names(&chats[0]);
         assert!(worker.contains(&"goal".to_string()), "{worker:?}");
