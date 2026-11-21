@@ -223,6 +223,47 @@ fn lock_file(path: &std::path::Path) -> Result<std::fs::File, String> {
     Ok(file)
 }
 
+/// The credential stored at `path` for `auth`, refreshed first when it has
+/// expired.
+pub(crate) async fn fresh(path: PathBuf, auth: AuthKind) -> Result<Credential, crate::ErrorInfo> {
+    use crate::ErrorInfo;
+    let store =
+        Store::load(path.clone()).map_err(|error| ErrorInfo::new("provider_config", error))?;
+    let name = auth.store_name();
+    let credential = store.credential(name).cloned().ok_or_else(|| {
+        ErrorInfo::new(
+            "provider_config",
+            format!("no stored credential for {name}; run the login first"),
+        )
+    })?;
+    if is_fresh(&credential, now_ms()) {
+        return Ok(credential);
+    }
+    if matches!(
+        auth,
+        AuthKind::MuseSubscription | AuthKind::ApiKey | AuthKind::DeepAi
+    ) {
+        // The Muse and DeepAI keys are static; the Muse account token
+        // exists only to mint its key.
+        return Ok(credential);
+    }
+    refresh_stored(path, name, |refresh| async move {
+        if auth == AuthKind::GptOauth {
+            refresh_gpt(&FlowEndpoints::chatgpt(), &refresh).await
+        } else {
+            refresh_claude(&FlowEndpoints::anthropic(), &refresh).await
+        }
+    })
+    .await
+    .map_err(|error| match error {
+        RefreshError::Store(error) => ErrorInfo::new("provider_config", error),
+        RefreshError::Refresh(error) => ErrorInfo::new(
+            "provider_http",
+            format!("credential refresh failed: {error}"),
+        ),
+    })
+}
+
 /// Whether `credential` can be used at `now_ms` without a refresh.
 pub(crate) fn is_fresh(credential: &Credential, now_ms: u64) -> bool {
     credential
@@ -407,7 +448,7 @@ impl FlowEndpoints {
 
 const ANTHROPIC_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const GPT_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
-const ANTHROPIC_SCOPES: &str = "org:create_api_key user:profile user:inference";
+const ANTHROPIC_SCOPES: &str = "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload user:plugins";
 /// Anthropic's OAuth beta opt-in; requests with an OAuth bearer are rejected
 /// without it.
 pub const CLAUDE_CODE_BETA: &str = "claude-code-20250219,oauth-2025-04-20";
@@ -691,7 +732,7 @@ async fn send_token_request(request: reqwest::RequestBuilder) -> Result<Value, S
     serde_json::from_slice(&bytes).map_err(|_| "token response was not valid JSON".to_string())
 }
 
-fn urlencode(value: &str) -> String {
+pub(crate) fn urlencode(value: &str) -> String {
     let mut encoded = String::with_capacity(value.len());
     for byte in value.as_bytes() {
         match byte {

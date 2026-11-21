@@ -16,7 +16,7 @@ use crate::conversation::{
     self, AssistantPart, Body, Conversation, Message, Origin, Replay, Speaker, StopReason,
     ToolSpec, TurnBuilder,
 };
-use crate::oauth::{AuthKind, Credential, FlowEndpoints};
+use crate::oauth::{AuthKind, Credential};
 use crate::sse::SseParser;
 use crate::ErrorInfo;
 
@@ -54,7 +54,7 @@ const MUSE_USAGE_TIMEOUT: Duration = Duration::from_secs(20);
 const USAGE_BODY_MAX_BYTES: usize = 512 * 1024;
 /// Identity the reference sends on the Anthropic usage read
 /// (`claude-cli-identity.ts`).
-const CLAUDE_USAGE_USER_AGENT: &str = "claude-cli/2.1.321 (external, cli)";
+pub(crate) const CLAUDE_USER_AGENT: &str = "claude-cli/2.1.321 (external, cli)";
 const CLAUDE_USAGE_BETA: &str = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05";
 /// The ChatGPT backend filters `/models` by a required `client_version`
 /// parameter; asking as a client newer than any release shows the whole
@@ -671,42 +671,7 @@ impl Llm {
             None => crate::oauth::Store::default_path()
                 .map_err(|error| ErrorInfo::new("provider_config", error))?,
         };
-        let store = crate::oauth::Store::load(path.clone())
-            .map_err(|error| ErrorInfo::new("provider_config", error))?;
-        let name = self.config.auth.store_name();
-        let credential = store.credential(name).cloned().ok_or_else(|| {
-            ErrorInfo::new(
-                "provider_config",
-                format!("no stored credential for {name}; run the login first"),
-            )
-        })?;
-        if crate::oauth::is_fresh(&credential, crate::oauth::now_ms()) {
-            return Ok(credential);
-        }
-        let auth = self.config.auth;
-        if matches!(
-            auth,
-            AuthKind::MuseSubscription | AuthKind::ApiKey | AuthKind::DeepAi
-        ) {
-            // The Muse and DeepAI keys are static; the Muse account token
-            // exists only to mint its key.
-            return Ok(credential);
-        }
-        crate::oauth::refresh_stored(path, name, |refresh| async move {
-            if auth == AuthKind::GptOauth {
-                crate::oauth::refresh_gpt(&FlowEndpoints::chatgpt(), &refresh).await
-            } else {
-                crate::oauth::refresh_claude(&FlowEndpoints::anthropic(), &refresh).await
-            }
-        })
-        .await
-        .map_err(|error| match error {
-            crate::oauth::RefreshError::Store(error) => ErrorInfo::new("provider_config", error),
-            crate::oauth::RefreshError::Refresh(error) => ErrorInfo::new(
-                "provider_http",
-                format!("credential refresh failed: {error}"),
-            ),
-        })
+        crate::oauth::fresh(path, self.config.auth).await
     }
 
     fn url(&self, path: &str) -> String {
@@ -814,7 +779,7 @@ impl Llm {
                             .timeout(USAGE_TIMEOUT)
                             .header("accept", "application/json, text/plain, */*")
                             .header("content-type", "application/json")
-                            .header("user-agent", CLAUDE_USAGE_USER_AGENT)
+                            .header("user-agent", CLAUDE_USER_AGENT)
                             .header("anthropic-beta", CLAUDE_USAGE_BETA)
                             .bearer_auth(&credential.access),
                         crate::usage::from_anthropic,

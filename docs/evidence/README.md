@@ -62,7 +62,8 @@
 | [model-catalog.md](model-catalog.md) | モデルの一覧の価格・ベンチマーク・実測の速さ、選び方の研究 | 一覧：UNSUPPORTED_APPROVED。自動の割り振り：未実装 | 一覧は実装済み（`core/src/catalog.rs`、`models/catalog`） |
 | [usage-log.md](usage-log.md) | 使用量のログとモデルごとの速さ（tok/s、最初の文字までの時間、キャッシュ、時間帯） | UNSUPPORTED_APPROVED | 実装済み（`core/src/usage_log.rs`、`stats/models`） |
 | [goal-command.md](goal-command.md) | goal コマンド（目標の達成まで自動で続ける） | UNSUPPORTED_APPROVED | 実装済み（`core/src/goal.rs`、`goal/set`・`goal/read`・`goal/stop`） |
-| [plugin-mechanism.md](plugin-mechanism.md) | Claude Code・Codex のプラグインの仕組み（inocode から呼べるか） | UNSUPPORTED_PENDING | 未実装（調査のみ） |
+| [plugin-mechanism.md](plugin-mechanism.md) | Claude・ChatGPT のサインインで使うコネクタとプラグイン（仕組み、実装） | UNSUPPORTED_APPROVED | コネクタは実装済み（`core/src/connectors.rs`、`core/src/mcp.rs`）。プラグインのストアと読み込みは作業中 |
+| [pageindex.md](pageindex.md) | PageIndex（目次の木をたどる検索） | UNSUPPORTED_PENDING | 採用しない（調査のみ） |
 | [image-input.md](image-input.md) | 画像をモデルに見せる（read で画像、縮小、切り抜き） | 機能は UNSUPPORTED_APPROVED、既定値は公式文書と研究による | 画像は実装済み（`core/src/picture.rs`）、カメラも実装済み（`core/src/camera.rs`、撮影は未試行） |
 | [lsp-diagnostics.md](lsp-diagnostics.md) | 編集の後の型検査・LSP の診断 | UNSUPPORTED_PENDING | 未実装（適用できる研究なし） |
 | [ask-person.md](ask-person.md) | 人に質問するツール `ask`（フォームの形、ターンの終わりに返す） | UNSUPPORTED_APPROVED | 実装済み（`core/src/ask.rs`） |

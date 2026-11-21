@@ -1,9 +1,26 @@
 # Claude Code・Codex のプラグインの仕組み（inocode から呼べるか）
 
-- **対象と範囲：** Claude Code と Codex のプラグインを inocode が読み込み・呼び出せるか。仕組みの調査だけで、実装はしていない。
-- **関連ソース：** inocode にはまだない。
-- **根拠の状態：** UNSUPPORTED_PENDING。プラグインを読み込む機能が結果を良くするという研究は調べていない。実装するかはユーザーの判断待ち。
-- **ユーザーの判断：** 2026-11-21「claudeやcodexのプラグイン機能の仕組み調べて。仕組みわかればoauthさえあれば呼び出せるはずだ。」
+- **対象と範囲：** Claude Code と Codex のプラグインとコネクタを、inocode がログイン済みのアカウント（Claude の OAuth、ChatGPT の OAuth）で使えるようにする。Claude でログインしていれば claude.ai のコネクタとプラグイン、ChatGPT でログインしていれば Codex の apps とプラグイン。両方なら両方。
+- **関連ソース：** 実装中（下の「実装」）。
+- **根拠の状態：** UNSUPPORTED_APPROVED。プラグインやコネクタが結果を良くするという研究は確認していない。ユーザーが機能として個別に承認した。
+- **ユーザーの判断：**
+  - 2026-11-21「claudeやcodexのプラグイン機能の仕組み調べて。仕組みわかればoauthさえあれば呼び出せるはずだ。」
+  - 同日、調査結果（Claude 側は公式文書が第三者による Claude.ai ログインの利用を禁止していること）を伝えたあとで、「だめです。oauthで使える機能はすべて実装対象です。」
+  - 同日「codex claudeそれぞれプラグイン配布のストアみたいなのがあるでしょう」「oauthログイン済みならそれも実装して。codexログイン済みならcodexのプラグイン使える。claudeも同様。両方ログイン済みなら共存していい。」
+- **規約上の注意（文書の読み取り、法的判断ではない）：** Anthropic の legal-and-compliance は、第三者のアプリが Claude.ai のログインを使うことを禁止している。この制約はユーザーに伝えたうえで、ユーザーが実装を判断した。端末の証明（attestation）やボット検出を回避する処理は作らない。相手がそれを求めるなら、そこで止める。
+
+## 実装
+
+### コネクタ（`core/src/connectors.rs`、`core/src/mcp.rs`）
+
+- サインインの保存場所は、スレッドの保存場所の隣の `auth.json`（既定では `~/.inocode/auth.json`、`~/.inocode/inocode.db` の隣）。ここに Claude のサインインがあれば claude.ai のコネクタを、ChatGPT のサインインがあれば ChatGPT の apps を、MCP のサーバーとして足す。両方あれば両方。`mcp.json` のサーバーと並ぶ。
+- claude.ai のコネクタ（接続先は Claude Code 2.1.326 の実行ファイルの文字列から読み取った）：
+  - 一覧：`GET https://api.anthropic.com/v1/mcp_servers?limit=1000`。`Authorization: Bearer <サインインのトークン>`、`anthropic-version: 2023-06-01`、`anthropic-beta: mcp-servers-2025-12-04`、`User-Agent: claude-cli/…`。答えは `{"data": [{"id", "display_name", "url", …}], "next_page"}`。`next_page` があれば `&page=` で続きを読む（最大 20 ページ）。
+  - 接続：コネクタごとに `https://mcp-proxy.anthropic.com/v1/mcp/{id}` へ Streamable HTTP。`Authorization`、`User-Agent`、`X-Mcp-Client-Session-Id`（接続ごとの乱数）。サーバー名は `claude.ai <display_name>`、道具の名前は `mcp__claude_ai_<名前>__<道具>`（Claude Code と同じ形）。
+  - スコープ：一覧には `user:mcp_servers` が要る。inocode の Claude のサインインで求めるスコープを Claude Code と同じ `org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload user:plugins` にした。前のスコープでサインインしたトークンでは一覧が断られるので、サインインし直す必要がある（断られたときはそう表示する）。
+- ChatGPT の apps（Codex のソース `codex-rs/codex-mcp/src/mcp/mod.rs`、`connection_manager.rs` による）：`https://chatgpt.com/backend-api/wham/apps` へ Streamable HTTP。`Authorization: Bearer <ChatGPT のトークン>` と `ChatGPT-Account-ID`。サーバー名は `codex_apps`。
+- トークンは要求ごとに保存場所から読み、期限切れなら更新する（モデルの要求と同じ `oauth::fresh`）。
+- 検証：単体テスト `signed_in_accounts_bring_their_connectors`（偽のサーバーで、サインインがないと何も読まないこと、両方のサインインで両方の道具が出ること、各要求に正しいヘッダーが付くこと）。実際の claude.ai・ChatGPT への接続はまだ試していない（実際に試すにはユーザーの許可が要る）。
 - **調べ方：** サブエージェントが公式文書、openai/codex のソース、ローカルの claude.exe の文字列、ローカルに入っているプラグインを読んだ報告（以下、報告のまま）。認証付きの通信はしていない。
 
 ---

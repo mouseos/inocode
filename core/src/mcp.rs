@@ -61,9 +61,12 @@ pub(crate) struct Tools {
 /// with the store, so the tool list stays the same from request to request.
 async fn loaded(store: &Store) -> Arc<Tools> {
     let config: PathBuf = store.files_folder().with_file_name("mcp.json");
+    let accounts = crate::connectors::store_beside(store);
     store
         .mcp()
-        .get_or_init(|| async { Arc::new(load(&config).await) })
+        .get_or_init(|| async {
+            Arc::new(load(&config, &accounts, &crate::connectors::Hosts::default()).await)
+        })
         .await
         .clone()
 }
@@ -265,26 +268,68 @@ fn questions_of(schema: &Value) -> Value {
     Value::Array(questions)
 }
 
-async fn load(config: &Path) -> Tools {
-    let mut tools = Tools::default();
+/// The servers of `mcp.json`, in the order of the file.
+fn configured(config: &Path) -> Vec<(String, ServerConfig)> {
     let text = match std::fs::read_to_string(config) {
         Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return tools,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
         Err(error) => {
             eprintln!("MCP: cannot read {}: {error}", config.display());
-            return tools;
+            return Vec::new();
         }
     };
-    let config: Config = match serde_json::from_str(&text) {
-        Ok(config) => config,
+    match serde_json::from_str::<Config>(&text) {
+        Ok(config) => config.servers.into_iter().collect(),
         Err(error) => {
             eprintln!("MCP: {} is not valid: {error}", config.display());
-            return tools;
+            Vec::new()
         }
-    };
-    for (server, settings) in config.servers {
+    }
+}
+
+/// How a server is reached: as `mcp.json` says, or as an account's
+/// connector.
+enum Source {
+    Configured(ServerConfig),
+    Connector(crate::connectors::Server, PathBuf),
+}
+
+impl Source {
+    fn connect(&self) -> Result<Connection, String> {
+        match self {
+            Self::Configured(settings) => connect(settings),
+            Self::Connector(server, store) => {
+                let elicit = Elicit::default();
+                let headers = server.headers.iter().cloned().collect();
+                let http = Http::new(
+                    &server.url,
+                    &headers,
+                    Some((server.account, store.clone())),
+                    elicit.clone(),
+                )?;
+                Ok(Connection::with(Transport::Http(http), elicit))
+            }
+        }
+    }
+}
+
+/// The servers of `config` and the connectors of the accounts signed in at
+/// `accounts`, started.
+async fn load(config: &Path, accounts: &Path, hosts: &crate::connectors::Hosts) -> Tools {
+    let mut tools = Tools::default();
+    let mut sources: Vec<(String, Source)> = configured(config)
+        .into_iter()
+        .map(|(name, settings)| (name, Source::Configured(settings)))
+        .collect();
+    for server in crate::connectors::servers(accounts, hosts).await {
+        sources.push((
+            server.name.clone(),
+            Source::Connector(server, accounts.to_path_buf()),
+        ));
+    }
+    for (server, source) in sources {
         let started = tokio::time::timeout(START_TIMEOUT, async {
-            let mut connection = connect(&settings)?;
+            let mut connection = source.connect()?;
             connection.server = server.clone();
             let connection = Arc::new(connection);
             let listed = connection.list_tools().await?;
@@ -404,7 +449,7 @@ fn connect(settings: &ServerConfig) -> Result<Connection, String> {
         (Some(command), None) => spawn(command, settings),
         (None, Some(url)) => {
             let elicit = Elicit::default();
-            let http = Http::new(url, &settings.headers, elicit.clone())?;
+            let http = Http::new(url, &settings.headers, None, elicit.clone())?;
             Ok(Connection::with(Transport::Http(http), elicit))
         }
         _ => Err("give either command or url".into()),
@@ -653,10 +698,17 @@ struct Http {
     /// request.
     version: Mutex<Option<String>>,
     elicit: Elicit,
+    /// The account every request signs in with, and its sign-in store.
+    account: Option<(crate::connectors::Account, PathBuf)>,
 }
 
 impl Http {
-    fn new(url: &str, headers: &HashMap<String, String>, elicit: Elicit) -> Result<Self, String> {
+    fn new(
+        url: &str,
+        headers: &HashMap<String, String>,
+        account: Option<(crate::connectors::Account, PathBuf)>,
+        elicit: Elicit,
+    ) -> Result<Self, String> {
         let url =
             reqwest::Url::parse(url).map_err(|error| format!("invalid url {url}: {error}"))?;
         if !matches!(url.scheme(), "http" | "https") {
@@ -677,7 +729,16 @@ impl Http {
             session: Mutex::new(None),
             version: Mutex::new(None),
             elicit,
+            account,
         })
+    }
+
+    /// The headers signing a request in, when the server is an account's.
+    async fn signed(&self) -> Result<reqwest::header::HeaderMap, String> {
+        match &self.account {
+            Some((account, store)) => account.headers(store).await,
+            None => Ok(reqwest::header::HeaderMap::new()),
+        }
     }
 
     /// Posts one message; the response once its status is a success.
@@ -686,6 +747,7 @@ impl Http {
             .client
             .post(self.url.clone())
             .headers(self.headers.clone())
+            .headers(self.signed().await?)
             .header(
                 reqwest::header::ACCEPT,
                 "application/json, text/event-stream",
@@ -812,7 +874,15 @@ impl Http {
             .headers(self.headers.clone())
             .header(SESSION_HEADER, session)
             .timeout(END_TIMEOUT);
+        let account = self.account.clone();
         runtime.spawn(async move {
+            let request = match account {
+                Some((account, store)) => match account.headers(&store).await {
+                    Ok(headers) => request.headers(headers),
+                    Err(_) => return,
+                },
+                None => request,
+            };
             let _ = request.send().await;
         });
     }
@@ -1426,12 +1496,140 @@ mod tests {
     async fn missing_and_broken_servers_give_no_tools() {
         let dir = tempfile::tempdir().expect("dir");
         let config = dir.path().join("mcp.json");
-        assert!(load(&config).await.specs.is_empty());
+        let accounts = dir.path().join("auth.json");
+        let hosts = crate::connectors::Hosts::default();
+        assert!(load(&config, &accounts, &hosts).await.specs.is_empty());
         std::fs::write(
             &config,
             r#"{"mcpServers": {"none": {"command": "inocode-no-such-command"}}}"#,
         )
         .expect("write");
-        assert!(load(&config).await.specs.is_empty());
+        assert!(load(&config, &accounts, &hosts).await.specs.is_empty());
+    }
+
+    /// A request line and its headers with lowercase names.
+    type Listed = (String, HashMap<String, String>);
+
+    /// Answers every request with `body` and keeps each request's first
+    /// line and headers.
+    async fn list_server(body: Value, seen: Arc<Mutex<Vec<Listed>>>) -> String {
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let address = listener.local_addr().expect("address");
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut buffer = Vec::new();
+                let mut chunk = [0u8; 4096];
+                while !buffer.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let read = stream.read(&mut chunk).await.unwrap_or(0);
+                    if read == 0 {
+                        break;
+                    }
+                    buffer.extend_from_slice(&chunk[..read]);
+                }
+                let head = String::from_utf8_lossy(&buffer).to_string();
+                let mut lines = head.split("\r\n");
+                let first = lines.next().unwrap_or("").to_string();
+                let headers = lines
+                    .filter_map(|line| line.split_once(':'))
+                    .map(|(name, value)| (name.to_lowercase(), value.trim().to_string()))
+                    .collect();
+                seen.lock().expect("seen").push((first, headers));
+                let text = body.to_string();
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
+                     connection: close\r\n\r\n{text}",
+                    text.len()
+                );
+                let _ = stream.write_all(reply.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        format!("http://{address}")
+    }
+
+    fn signed_in(path: &Path, provider: &str, access: &str, account: Option<&str>) {
+        let mut store = crate::oauth::Store::load(path.to_path_buf()).expect("store");
+        store
+            .save(
+                provider,
+                crate::oauth::Credential {
+                    access: access.into(),
+                    refresh: "r".into(),
+                    expires_at_ms: Some(u64::MAX),
+                    account_id: account.map(str::to_string),
+                    email: None,
+                    api_key: None,
+                    oauth_access_token: None,
+                },
+            )
+            .expect("save");
+    }
+
+    #[tokio::test]
+    async fn signed_in_accounts_bring_their_connectors() {
+        let dir = tempfile::tempdir().expect("dir");
+        let accounts = dir.path().join("auth.json");
+        let listed = Arc::new(Mutex::new(Vec::new()));
+        let claude_api = list_server(
+            json!({"data": [{"id": "srv1", "display_name": "Notion"}], "next_page": null}),
+            listed.clone(),
+        )
+        .await;
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mcp = http_server(seen.clone()).await;
+        let base = mcp.trim_end_matches("/mcp").to_string();
+        let hosts = crate::connectors::Hosts {
+            claude_api,
+            claude_proxy: base.clone(),
+            chatgpt: base,
+        };
+        let config = dir.path().join("mcp.json");
+
+        // Without a sign-in nothing is listed or reached.
+        assert!(load(&config, &accounts, &hosts).await.specs.is_empty());
+        assert!(listed.lock().expect("listed").is_empty());
+
+        signed_in(&accounts, "claude-oauth", "claude-token", None);
+        signed_in(&accounts, "gpt-oauth", "gpt-token", Some("acct-1"));
+        let tools = load(&config, &accounts, &hosts).await;
+        let names: Vec<&str> = tools.specs.iter().map(|spec| spec.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["mcp__claude_ai_Notion__echo", "mcp__codex_apps__echo"]
+        );
+
+        let listed = listed.lock().expect("listed").clone();
+        assert!(
+            listed[0].0.starts_with("GET /v1/mcp_servers?limit=1000 "),
+            "{listed:?}"
+        );
+        assert_eq!(listed[0].1["authorization"], "Bearer claude-token");
+        assert_eq!(listed[0].1["anthropic-beta"], "mcp-servers-2025-12-04");
+
+        let seen = seen.lock().expect("seen").clone();
+        let claude: Vec<_> = seen
+            .iter()
+            .filter(|(_, headers, _)| {
+                headers.get("authorization").map(String::as_str) == Some("Bearer claude-token")
+            })
+            .collect();
+        assert!(!claude.is_empty());
+        assert!(claude.iter().all(|(_, headers, _)| headers
+            .contains_key("x-mcp-client-session-id")
+            && headers["user-agent"].starts_with("claude-cli/")));
+        let chatgpt: Vec<_> = seen
+            .iter()
+            .filter(|(_, headers, _)| {
+                headers.get("authorization").map(String::as_str) == Some("Bearer gpt-token")
+            })
+            .collect();
+        assert!(!chatgpt.is_empty());
+        assert!(chatgpt
+            .iter()
+            .all(|(_, headers, _)| headers["chatgpt-account-id"] == "acct-1"));
+        assert_eq!(claude.len() + chatgpt.len(), seen.len());
     }
 }

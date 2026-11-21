@@ -13,6 +13,7 @@ mod camera_mode;
 pub mod catalog;
 mod colleague;
 mod compaction;
+mod connectors;
 pub mod conversation;
 pub mod deepai;
 mod edit;
