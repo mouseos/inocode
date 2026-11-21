@@ -226,6 +226,29 @@ fn lock_file(path: &std::path::Path) -> Result<std::fs::File, String> {
 /// The credential stored at `path` for `auth`, refreshed first when it has
 /// expired.
 pub(crate) async fn fresh(path: PathBuf, auth: AuthKind) -> Result<Credential, crate::ErrorInfo> {
+    renewed(path, auth, None, None).await
+}
+
+/// The stored credential for `auth` after refreshing it even though it has
+/// not expired, unless it no longer holds `rejected`: another request
+/// already replaced the token a service refused. Refreshing asks for the
+/// current scopes, which is how a sign-in made before a scope was added
+/// gains it. `token_url` replaces the provider's token endpoint in tests.
+pub(crate) async fn renew(
+    path: PathBuf,
+    auth: AuthKind,
+    rejected: &str,
+    token_url: Option<&str>,
+) -> Result<Credential, crate::ErrorInfo> {
+    renewed(path, auth, Some(rejected), token_url).await
+}
+
+async fn renewed(
+    path: PathBuf,
+    auth: AuthKind,
+    rejected: Option<&str>,
+    token_url: Option<&str>,
+) -> Result<Credential, crate::ErrorInfo> {
     use crate::ErrorInfo;
     let store =
         Store::load(path.clone()).map_err(|error| ErrorInfo::new("provider_config", error))?;
@@ -236,7 +259,7 @@ pub(crate) async fn fresh(path: PathBuf, auth: AuthKind) -> Result<Credential, c
             format!("no stored credential for {name}; run the login first"),
         )
     })?;
-    if is_fresh(&credential, now_ms()) {
+    if is_fresh(&credential, now_ms()) && rejected.is_none() {
         return Ok(credential);
     }
     if matches!(
@@ -247,11 +270,19 @@ pub(crate) async fn fresh(path: PathBuf, auth: AuthKind) -> Result<Credential, c
         // exists only to mint its key.
         return Ok(credential);
     }
-    refresh_stored(path, name, |refresh| async move {
+    let mut endpoints = if auth == AuthKind::GptOauth {
+        FlowEndpoints::chatgpt()
+    } else {
+        FlowEndpoints::anthropic()
+    };
+    if let Some(url) = token_url {
+        endpoints.token_url = url.to_string();
+    }
+    refresh_stored(path, name, rejected, |refresh| async move {
         if auth == AuthKind::GptOauth {
-            refresh_gpt(&FlowEndpoints::chatgpt(), &refresh).await
+            refresh_gpt(&endpoints, &refresh).await
         } else {
-            refresh_claude(&FlowEndpoints::anthropic(), &refresh).await
+            refresh_claude(&endpoints, &refresh).await
         }
     })
     .await
@@ -291,10 +322,12 @@ pub(crate) enum RefreshError {
 /// credential expired must not both spend it. The second one waits for the
 /// refresh lock, finds the credential the first one stored, and uses it. The
 /// result is the stored credential, so fields the token response does not
-/// carry (account id, email) are kept.
+/// carry (account id, email) are kept. With `rejected`, a credential that
+/// has not expired is refreshed too while it still holds that access token.
 pub(crate) async fn refresh_stored<F, Fut>(
     path: PathBuf,
     provider: &str,
+    rejected: Option<&str>,
     refresh: F,
 ) -> Result<Credential, RefreshError>
 where
@@ -328,7 +361,8 @@ where
             "no stored credential for {provider}; run the login first"
         ))
     })?;
-    if is_fresh(&current, now_ms()) {
+    let replaced = rejected.is_some_and(|token| token != current.access);
+    if is_fresh(&current, now_ms()) && (rejected.is_none() || replaced) {
         return Ok(current);
     }
     let new = refresh(current.refresh.clone())
@@ -449,6 +483,9 @@ impl FlowEndpoints {
 const ANTHROPIC_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const GPT_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const ANTHROPIC_SCOPES: &str = "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload user:plugins";
+/// The scopes a refresh asks for, Claude Code's list without
+/// `org:create_api_key`; a refresh that names them widens an older grant.
+const ANTHROPIC_REFRESH_SCOPES: &str = "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload user:plugins";
 /// Anthropic's OAuth beta opt-in; requests with an OAuth bearer are rejected
 /// without it.
 pub const CLAUDE_CODE_BETA: &str = "claude-code-20250219,oauth-2025-04-20";
@@ -922,16 +959,34 @@ pub async fn refresh_claude(
     refresh: &str,
 ) -> Result<Credential, String> {
     let client = token_client()?;
-    let token = post_token_json(
+    let scoped = post_token_json(
         &client,
         &endpoints.token_url,
         json!({
             "grant_type": "refresh_token",
             "client_id": ANTHROPIC_CLIENT_ID,
             "refresh_token": refresh,
+            "scope": ANTHROPIC_REFRESH_SCOPES,
         }),
     )
-    .await?;
+    .await;
+    // A grant the scopes cannot widen is refused; the refresh token is not
+    // spent then, so it is refreshed with the scopes it already has.
+    let token = match scoped {
+        Ok(token) => token,
+        Err(_) => {
+            post_token_json(
+                &client,
+                &endpoints.token_url,
+                json!({
+                    "grant_type": "refresh_token",
+                    "client_id": ANTHROPIC_CLIENT_ID,
+                    "refresh_token": refresh,
+                }),
+            )
+            .await?
+        }
+    };
     credential_from_token(&token, Some(refresh))
 }
 
@@ -1512,7 +1567,7 @@ mod tests {
                 let path = path.clone();
                 let calls = std::sync::Arc::clone(&calls);
                 tokio::spawn(async move {
-                    refresh_stored(path, "gpt-oauth", |refresh| async move {
+                    refresh_stored(path, "gpt-oauth", None, |refresh| async move {
                         assert_eq!(refresh, "rt-1", "only the stored token is spent");
                         calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                         tokio::time::sleep(Duration::from_millis(200)).await;

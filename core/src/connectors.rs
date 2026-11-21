@@ -20,6 +20,8 @@ pub(crate) struct Hosts {
     pub claude_proxy: String,
     /// ChatGPT's backend; its apps are at `{chatgpt}/wham/apps`.
     pub chatgpt: String,
+    /// Claude's token endpoint when it is not the real one.
+    pub claude_token: Option<String>,
 }
 
 impl Default for Hosts {
@@ -28,6 +30,7 @@ impl Default for Hosts {
             claude_api: "https://api.anthropic.com".into(),
             claude_proxy: "https://mcp-proxy.anthropic.com".into(),
             chatgpt: "https://chatgpt.com/backend-api".into(),
+            claude_token: None,
         }
     }
 }
@@ -53,6 +56,13 @@ impl Account {
         let credential = crate::oauth::fresh(store.to_path_buf(), self.auth())
             .await
             .map_err(|error| error.message)?;
+        self.sign(&credential)
+    }
+
+    fn sign(
+        self,
+        credential: &crate::oauth::Credential,
+    ) -> Result<reqwest::header::HeaderMap, String> {
         let mut headers = reqwest::header::HeaderMap::new();
         let mut add = |name: &'static str, value: &str| -> Result<(), String> {
             let value = reqwest::header::HeaderValue::from_str(value)
@@ -146,14 +156,19 @@ async fn claude(store: &Path, hosts: &Hosts) -> Result<Vec<Server>, String> {
     );
     let mut connectors = Vec::new();
     let mut page: Option<String> = None;
-    for _ in 0..LIST_PAGES {
+    let mut credential = crate::oauth::fresh(store.to_path_buf(), AuthKind::ClaudeOauth)
+        .await
+        .map_err(|error| error.message)?;
+    let mut renewed = false;
+    let mut read_pages = 0;
+    while read_pages < LIST_PAGES {
         let url = match &page {
             Some(token) => format!("{list}&page={}", crate::oauth::urlencode(token)),
             None => list.clone(),
         };
         let mut response = client
             .get(url)
-            .headers(Account::Claude.headers(store).await?)
+            .headers(Account::Claude.sign(&credential)?)
             .header("anthropic-version", "2023-06-01")
             .header("anthropic-beta", CONNECTORS_BETA)
             .header("content-type", "application/json")
@@ -168,15 +183,29 @@ async fn claude(store: &Path, hosts: &Hosts) -> Result<Vec<Server>, String> {
             .ok_or("the list is too large")?;
         if !status.is_success() {
             let text = String::from_utf8_lossy(&body);
+            // A sign-in made before the scope was asked for lacks it; a
+            // refresh asks for it, as Claude Code does on every refresh.
+            if status.as_u16() == 403 && text.contains("scope") && !renewed {
+                renewed = true;
+                credential = crate::oauth::renew(
+                    store.to_path_buf(),
+                    AuthKind::ClaudeOauth,
+                    &credential.access,
+                    hosts.claude_token.as_deref(),
+                )
+                .await
+                .map_err(|error| error.message)?;
+                continue;
+            }
             return Err(match status.as_u16() {
                 401 | 403 => format!(
-                    "the list was refused ({status}); the sign-in may lack the \
-                     user:mcp_servers scope, so sign in to Claude again: {}",
+                    "the list was refused ({status}); sign in to Claude again: {}",
                     text.trim()
                 ),
                 _ => format!("the list answered {status}: {}", text.trim()),
             });
         }
+        read_pages += 1;
         let read: Page = serde_json::from_slice(&body)
             .map_err(|error| format!("the list is not the expected JSON: {error}"))?;
         connectors.extend(read.data);

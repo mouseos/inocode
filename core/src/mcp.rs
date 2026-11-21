@@ -1523,6 +1523,15 @@ mod tests {
     /// Answers every request with `body` and keeps each request's first
     /// line and headers.
     async fn list_server(body: Value, seen: Arc<Mutex<Vec<Listed>>>) -> String {
+        answering_server(seen, move |_, _, _| (200, body.clone())).await
+    }
+
+    /// Answers each request with what `answer` makes of its first line,
+    /// headers and body, and keeps each request's first line and headers.
+    async fn answering_server(
+        seen: Arc<Mutex<Vec<Listed>>>,
+        answer: impl Fn(&str, &HashMap<String, String>, &str) -> (u16, Value) + Send + 'static,
+    ) -> String {
         use tokio::io::AsyncReadExt;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -1532,24 +1541,40 @@ mod tests {
             while let Ok((mut stream, _)) = listener.accept().await {
                 let mut buffer = Vec::new();
                 let mut chunk = [0u8; 4096];
-                while !buffer.windows(4).any(|w| w == b"\r\n\r\n") {
+                let end = loop {
+                    if let Some(at) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
+                        break at;
+                    }
+                    let read = stream.read(&mut chunk).await.unwrap_or(0);
+                    if read == 0 {
+                        break buffer.len();
+                    }
+                    buffer.extend_from_slice(&chunk[..read]);
+                };
+                let head = String::from_utf8_lossy(&buffer[..end]).to_string();
+                let mut lines = head.split("\r\n");
+                let first = lines.next().unwrap_or("").to_string();
+                let headers: HashMap<String, String> = lines
+                    .filter_map(|line| line.split_once(':'))
+                    .map(|(name, value)| (name.to_lowercase(), value.trim().to_string()))
+                    .collect();
+                let length: usize = headers
+                    .get("content-length")
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(0);
+                let mut content = buffer[(end + 4).min(buffer.len())..].to_vec();
+                while content.len() < length {
                     let read = stream.read(&mut chunk).await.unwrap_or(0);
                     if read == 0 {
                         break;
                     }
-                    buffer.extend_from_slice(&chunk[..read]);
+                    content.extend_from_slice(&chunk[..read]);
                 }
-                let head = String::from_utf8_lossy(&buffer).to_string();
-                let mut lines = head.split("\r\n");
-                let first = lines.next().unwrap_or("").to_string();
-                let headers = lines
-                    .filter_map(|line| line.split_once(':'))
-                    .map(|(name, value)| (name.to_lowercase(), value.trim().to_string()))
-                    .collect();
+                let (status, reply) = answer(&first, &headers, &String::from_utf8_lossy(&content));
                 seen.lock().expect("seen").push((first, headers));
-                let text = body.to_string();
+                let text = reply.to_string();
                 let reply = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
                      connection: close\r\n\r\n{text}",
                     text.len()
                 );
@@ -1595,6 +1620,7 @@ mod tests {
             claude_api,
             claude_proxy: base.clone(),
             chatgpt: base,
+            claude_token: None,
         };
         let config = dir.path().join("mcp.json");
 
@@ -1648,6 +1674,57 @@ mod tests {
     /// of ChatGPT's apps (its handshake and one list). Connects to no
     /// claude.ai connector and calls no tool. Run by hand, with the
     /// person's approval.
+    #[tokio::test]
+    async fn a_sign_in_missing_the_connector_scope_is_refreshed_once() {
+        let dir = tempfile::tempdir().expect("dir");
+        let accounts = dir.path().join("auth.json");
+        signed_in(&accounts, "claude-oauth", "old-token", None);
+        let refreshes = Arc::new(Mutex::new(Vec::new()));
+        let token = answering_server(refreshes.clone(), |_, _, body| {
+            let body: Value = serde_json::from_str(body).expect("json");
+            assert_eq!(body["grant_type"], "refresh_token");
+            assert!(body["scope"]
+                .as_str()
+                .is_some_and(|scope| scope.split(' ').any(|s| s == "user:mcp_servers")));
+            (
+                200,
+                json!({"access_token": "new-token", "expires_in": 3600}),
+            )
+        })
+        .await;
+        let listed = Arc::new(Mutex::new(Vec::new()));
+        let claude_api = answering_server(listed.clone(), |_, headers, _| {
+            if headers["authorization"] == "Bearer new-token" {
+                (200, json!({"data": [], "next_page": null}))
+            } else {
+                (
+                    403,
+                    json!({"error": {"message":
+                        "OAuth token does not meet scope requirement user:mcp_servers"}}),
+                )
+            }
+        })
+        .await;
+        let hosts = crate::connectors::Hosts {
+            claude_api,
+            claude_proxy: "http://127.0.0.1:9".into(),
+            chatgpt: "http://127.0.0.1:9".into(),
+            claude_token: Some(format!("{token}/v1/oauth/token")),
+        };
+        assert!(crate::connectors::servers(&accounts, &hosts)
+            .await
+            .is_empty());
+        assert_eq!(refreshes.lock().expect("refreshes").len(), 1);
+        let listed = listed.lock().expect("listed").clone();
+        assert_eq!(listed.len(), 2, "{listed:?}");
+        assert_eq!(listed[1].1["authorization"], "Bearer new-token");
+        let stored = crate::oauth::Store::load(accounts).expect("store");
+        assert_eq!(
+            stored.credential("claude-oauth").expect("stored").access,
+            "new-token"
+        );
+    }
+
     #[tokio::test]
     #[ignore = "reaches the real accounts"]
     async fn lists_the_real_connectors() {

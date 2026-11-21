@@ -438,6 +438,9 @@ async fn claude_refresh_exchanges_the_refresh_token() {
         let body: Value = serde_json::from_str(&request.body).expect("json token request");
         assert_eq!(body["grant_type"], "refresh_token");
         assert_eq!(body["refresh_token"], "rt-old");
+        assert!(body["scope"]
+            .as_str()
+            .is_some_and(|scope| scope.split(' ').any(|s| s == "user:mcp_servers")));
         (
             200,
             json!({"access_token": "at-new", "refresh_token": "rt-new", "expires_in": 3600})
@@ -457,6 +460,34 @@ async fn claude_refresh_exchanges_the_refresh_token() {
         .expect("refresh");
     assert_eq!(credential.access, "at-new");
     assert_eq!(credential.refresh, "rt-new");
+}
+
+#[tokio::test]
+async fn claude_refresh_keeps_the_old_scopes_when_new_ones_are_refused() {
+    let (base, log) = start_raw_mock(Arc::new(|request: &RawRequest| {
+        let body: Value = serde_json::from_str(&request.body).expect("json token request");
+        if body.get("scope").is_some() {
+            return (400, json!({"error": "invalid_scope"}).to_string());
+        }
+        (
+            200,
+            json!({"access_token": "at-new", "refresh_token": "rt-new", "expires_in": 3600})
+                .to_string(),
+        )
+    }))
+    .await;
+    let endpoints = FlowEndpoints {
+        authorize_url: format!("{base}/authorize"),
+        token_url: format!("{base}/v1/oauth/token"),
+        callback_port: 54545,
+        callback_path: "/callback".to_string(),
+        code_redirect_uri: None,
+    };
+    let credential = oauth::refresh_claude(&endpoints, "rt-old")
+        .await
+        .expect("refresh");
+    assert_eq!(credential.access, "at-new");
+    assert_eq!(log.lock().expect("log").len(), 2);
 }
 
 // ---------------------------------------------------------------------------
