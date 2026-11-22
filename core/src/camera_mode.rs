@@ -19,7 +19,9 @@ use windows::Win32::Media::MediaFoundation::{
     MFShutdown, MFStartup, MFSTARTUP_NOSOCKET, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
     MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID, MF_VERSION,
 };
-use windows::Win32::System::Com::{CoInitializeEx, CoTaskMemFree, COINIT_MULTITHREADED};
+use windows::Win32::System::Com::{
+    CoInitializeEx, CoTaskMemFree, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
+};
 
 /// Which interface holds a control, and its property there.
 enum Property {
@@ -70,8 +72,9 @@ pub(crate) fn set_modes(index: u32, modes: &[(String, bool)]) -> Result<(), Stri
     // describes: started before use, the activation list freed with
     // CoTaskMemFree, and the media source shut down before it is released.
     unsafe {
-        // A thread already set up for COM keeps its mode; that is fine.
-        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        // nokhwa sets the thread up the same way and fails on a thread set up
+        // in another mode, so the camera can still be opened after this.
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
         MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET)
             .map_err(|error| format!("cannot start Media Foundation: {error}"))?;
         let result = with_source(index, |source| {

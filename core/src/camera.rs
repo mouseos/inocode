@@ -583,6 +583,61 @@ mod tests {
         }
     }
 
+    fn device() -> usize {
+        std::env::var("INOCODE_CAMERA_DEVICE").map_or(0, |device| device.parse().expect("a number"))
+    }
+
+    /// Records two seconds of video with the camera `INOCODE_CAMERA_DEVICE` (0 when unset) into the system's
+    /// temporary folder; run by hand, with the person's approval.
+    #[test]
+    #[ignore = "records a video with the machine's camera"]
+    fn records_a_video_here() {
+        let folder = std::env::temp_dir().join("inocode-camera-video");
+        std::fs::create_dir_all(&folder).expect("folder");
+        let arguments: Arguments =
+            serde_json::from_value(json!({"action": "video", "device": device(), "seconds": 2}))
+                .expect("arguments");
+        let (text, images) = video(&arguments, &folder).expect("video");
+        println!("{text}");
+        for image in images {
+            println!("{}", image.path);
+        }
+    }
+
+    /// Takes photos with the camera `INOCODE_CAMERA_DEVICE` (0 when unset) after switching exposure to manual with a
+    /// value, then back to automatic, printing the controls before and after;
+    /// run by hand, with the person's approval. `INOCODE_CAMERA_EXPOSURE`
+    /// names the manual value.
+    #[test]
+    #[ignore = "changes the settings of the machine's camera"]
+    fn sets_controls_here() {
+        let folder = std::env::temp_dir().join("inocode-camera-controls");
+        std::fs::create_dir_all(&folder).expect("folder");
+        let show = |label: &str| {
+            let arguments: Arguments =
+                serde_json::from_value(json!({"action": "controls", "device": device()}))
+                    .expect("arguments");
+            println!("=== {label}\n{}", describe(&arguments).expect("controls"));
+        };
+        show("before");
+        let Ok(exposure) = std::env::var("INOCODE_CAMERA_EXPOSURE") else {
+            return;
+        };
+        let exposure: f64 = exposure.parse().expect("a number");
+        for controls in [json!({"exposure": exposure}), json!({"exposure": "auto"})] {
+            let arguments: Arguments = serde_json::from_value(
+                json!({"action": "photo", "device": device(), "controls": controls}),
+            )
+            .expect("arguments");
+            let (text, images) = photo(&arguments, &folder).expect("photo");
+            println!("--- {controls}\n{text}");
+            for image in images {
+                println!("{}", image.path);
+            }
+        }
+        show("after");
+    }
+
     /// Prints the controls of each camera and the mean brightness of its
     /// frames for four seconds after the stream opens, to see when the
     /// automatic exposure settles. Keeps no picture; run by hand, with the
