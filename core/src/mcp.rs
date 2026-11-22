@@ -386,11 +386,30 @@ async fn load(config: &Path, accounts: &Path, hosts: &crate::connectors::Hosts) 
     tools
 }
 
-/// A connector's tools without the apps turned off in `config` and without
-/// an app that brings more than `CONNECTOR_TOOLS`. ChatGPT's apps are one
-/// server whose tools name their app in `_meta`; a claude.ai connector is
-/// one app.
+/// Whether the person added this tool's app themselves. ChatGPT's apps list
+/// also carries apps OpenAI attaches on its own (`implicit_link`,
+/// `synthetic_link`); their tools' `resource_uri` is
+/// `/<connector>/<link>/<tool>`, and only a link the person made starts with
+/// `link_`. A tool without that path is a claude.ai connector's, which the
+/// person added.
+fn added_by_person(tool: &Value) -> bool {
+    let Some(uri) = tool
+        .pointer("/_meta/_codex_apps/resource_uri")
+        .and_then(Value::as_str)
+    else {
+        return true;
+    };
+    uri.split('/')
+        .nth(2)
+        .is_some_and(|link| link.starts_with("link_"))
+}
+
+/// A connector's tools without the apps the person did not add, the apps
+/// turned off in `config` and an app that brings more than `CONNECTOR_TOOLS`.
+/// ChatGPT's apps are one server whose tools name their app in `_meta`; a
+/// claude.ai connector is one app.
 fn by_app(config: &Config, server: &str, listed: Vec<Value>) -> Vec<Value> {
+    let listed: Vec<Value> = listed.into_iter().filter(added_by_person).collect();
     let app = |tool: &Value| -> (String, String) {
         let meta = tool.get("_meta");
         let field = |key: &str| {
@@ -1748,15 +1767,34 @@ mod tests {
     /// claude.ai connector and calls no tool. Run by hand, with the
     /// person's approval.
     #[test]
-    fn apps_are_used_unless_turned_off() {
+    fn only_apps_the_person_added_are_used_unless_turned_off() {
         let config: Config = serde_json::from_value(json!({"connectors": {
             "Pets": {"enabled": false},
             "connector_gh": {"enabled": false},
             "Notion": {"enabled": true},
         }}))
         .expect("config");
-        let tool = |name: &str, id: &str, app: &str| json!({"name": name, "_meta": {"connector_id": id, "connector_name": app}});
+        let linked = |name: &str, id: &str, app: &str, link: &str| {
+            json!({"name": name, "_meta": {
+                "connector_id": id,
+                "connector_name": app,
+                "_codex_apps": {"resource_uri": format!("/{id}/{link}/{name}")},
+            }})
+        };
+        let tool = |name: &str, id: &str, app: &str| linked(name, id, app, "link_69dced7");
         let mut listed = vec![
+            linked(
+                "sites_create",
+                "connector_sites",
+                "Sites",
+                "implicit_link::connector_sites",
+            ),
+            linked(
+                "linear_list",
+                "connector_linear",
+                "Linear",
+                "synthetic_link::connector_linear",
+            ),
             tool("pets_feed", "connector_pets", "Pets"),
             tool("github_list", "connector_gh", "GitHub"),
             tool("notion_search", "connector_notion", "Notion"),

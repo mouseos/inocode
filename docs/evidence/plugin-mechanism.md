@@ -35,8 +35,9 @@
 - apps の有効・無効（ユーザーの判断、2026-11-22「appは既に公式側で入れているのはdefault on。オフにもできる」）：
   - claude.ai のコネクタも ChatGPT の apps も、一覧に出たもの（公式側で入れてあるもの）は最初から使う。`mcp.json` の `"connectors": {"<名前か id>": {"enabled": false}}` で切る。claude.ai は表示名（`claude.ai ` を付けても付けなくてもよい）、ChatGPT の app は `_meta.connector_name` か `_meta.connector_id`。Codex の `[apps.<id>] enabled = false` と同じ考え方（`codex-rs/core/src/connectors.rs` の `with_app_enabled_state`）。
   - 道具の上限 `CONNECTOR_TOOLS`（100）は、ChatGPT の apps では app ごとに数える（前はサーバー全体で数えていたので、apps が丸ごと使えなかった）。
-  - 検証：単体テスト `apps_are_used_unless_turned_off`。ChatGPT の本物の一覧では試していない（`_meta` の形は Codex が保存した一覧で確認）。
-  - 残る問題：全部の app を使うと道具は 500 個を超え、毎回の要求に入れきれない。Codex と Claude Code はどちらも、道具を最初から渡さずに探させる仕組みで避けている。
+  - 本人が入れた app だけを使う（ユーザーの指摘、2026-11-22「google playがあったとして全アプリスマホに入れるバカがいるか？」）。ChatGPT の apps の一覧には、本人がつないだ app（`resource_uri` の 2 番目が `link_…`）のほかに、OpenAI が付ける app（`implicit_link`、`synthetic_link`）も混ざる。後者は使わない。Codex が保存した一覧では、本人がつないだ app は 9 個・道具 301 個、外すのは 10 個・道具 231 個（Sites、ChatGPT Space、Pets、Linear、Atlassian など）。
+  - 検証：単体テスト `only_apps_the_person_added_are_used_unless_turned_off`。ChatGPT の本物の一覧では試していない（`_meta` の形は Codex が保存した一覧で確認）。
+  - 残る問題：本人がつないだ app だけでも、この人の ChatGPT では道具が 301 個ある。OpenAI の Chat Completions の上限 128 個を超える。
 - ChatGPT の apps の中身（2026-11-22、ユーザーの Codex が保存した一覧 `~/.codex/cache/codex_apps_tools/*.json` を数えた。通信はしていない）：道具 532 個、app 19 個。各道具の `_meta._codex_apps.resource_uri` の 2 番目の部分で、出どころが分かれる。
   - ユーザーがつないだ app（`link_…`）：GitHub 91、Google Drive 45、Remote Desktop Commander 32、Gmail 21、Google Calendar 15、Notion 82、ほか 3 つ。
   - OpenAI が最初から入れている app（`implicit_link`）：ChatGPT Space 42、Sites 39、Pets 11、Plugin Management 6、Safety Settings 5 など 8 つ。

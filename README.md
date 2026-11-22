@@ -133,7 +133,7 @@ cargo run --release -p inocode-server
 
 ### アカウントのコネクタと apps
 
-Claude でサインインしていれば claude.ai のコネクタ、ChatGPT でサインインしていれば ChatGPT の apps の道具も使える。公式側で入れてあるものは最初から使い、`mcp.json` の `connectors` で名前か id を指定して切れる:
+Claude でサインインしていれば claude.ai のコネクタ、ChatGPT でサインインしていれば ChatGPT の apps の道具も使える。本人が公式側で入れたもの（ChatGPT が自分で付ける app は除く）は最初から使い、`mcp.json` の `connectors` で名前か id を指定して切れる:
 
 ```json
 {"connectors": {"Slack": {"enabled": false}, "Pets": {"enabled": false}}}
