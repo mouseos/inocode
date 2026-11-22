@@ -34,17 +34,21 @@
   - 更新後のトークンで Haiku の道具の往復（`a_tool_call_and_its_result_round_trip`）が通った。
 - apps の有効・無効（ユーザーの判断、2026-11-22「appは既に公式側で入れているのはdefault on。オフにもできる」）：
   - claude.ai のコネクタも ChatGPT の apps も、一覧に出たもの（公式側で入れてあるもの）は最初から使う。`mcp.json` の `"connectors": {"<名前か id>": {"enabled": false}}` で切る。claude.ai は表示名（`claude.ai ` を付けても付けなくてもよい）、ChatGPT の app は `_meta.connector_name` か `_meta.connector_id`。Codex の `[apps.<id>] enabled = false` と同じ考え方（`codex-rs/core/src/connectors.rs` の `with_app_enabled_state`）。
-  - 道具の上限 `CONNECTOR_TOOLS`（100）は、ChatGPT の apps では app ごとに数える（前はサーバー全体で数えていたので、apps が丸ごと使えなかった）。
   - 本人が入れた app だけを使う（ユーザーの指摘、2026-11-22「google playがあったとして全アプリスマホに入れるバカがいるか？」）。ChatGPT の apps の一覧には、本人がつないだ app（`resource_uri` の 2 番目が `link_…`）のほかに、OpenAI が付ける app（`implicit_link`、`synthetic_link`）も混ざる。後者は使わない。Codex が保存した一覧では、本人がつないだ app は 9 個・道具 301 個、外すのは 10 個・道具 231 個（Sites、ChatGPT Space、Pets、Linear、Atlassian など）。
   - 検証：単体テスト `only_apps_the_person_added_are_used_unless_turned_off`。ChatGPT の本物の一覧では試していない（`_meta` の形は Codex が保存した一覧で確認）。
-  - 残る問題：本人がつないだ app だけでも、この人の ChatGPT では道具が 301 個ある。OpenAI の Chat Completions の上限 128 個を超える。
+- 道具を探して渡す（`tool_search`）：
+  - ユーザーの指摘（2026-11-22）：「問題は絶対あんたの実装ミス。公式で問題なく動くものを動かないと言いはるのが大間違い」。道具の多いコネクタや app を数で捨てていたのは inocode の誤り。Codex は同じ apps を捨てずに使っている。
+  - 根拠の状態：UNSUPPORTED_APPROVED（上の指示で、公式と同じ動きにすることを求められた）。学術研究で有効性を確かめてはいない。BM25 の式は Robertson, Zaragoza "The Probabilistic Relevance Framework: BM25 and Beyond", Foundations and Trends in Information Retrieval 3(4), 2009, DOI 10.1561/1500000019 による。
+  - 公式の動き（`codex-rs` のソース、コミット `683bd170`）：MCP の道具が合わせて 100 個以上（`DIRECT_MCP_TOOL_EXPOSURE_THRESHOLD`、`core/src/mcp_tool_exposure.rs`）なら、最初は 1 つも渡さず、`tool_search` だけを渡す。`tool_search` は道具の名前・説明・引数名に BM25 で当て、既定で 8 個（`TOOL_SEARCH_DEFAULT_LIMIT`）返す。返した道具は次の要求から呼べる（`core/src/tools/handlers/tool_search.rs`、`tools/src/tool_search.rs`）。Codex は Responses API の `tool_search` という種類の道具を使うが、inocode はどの提供元でも使えるよう普通の関数の道具にした。
+  - inocode の実装（`core/src/mcp.rs` の `DEFER_AT`、`SEARCH`、`Tools::offered`、`Tools::search`、`bm25`。`core/src/turn.rs` の `steps` は要求ごとに道具の一覧を作り直す）：会話にある成功した `tool_search` の結果に名前が出た道具を渡す。要約で結果が消えたら、その道具はもう一度探す。道具を数で捨てることはしない。
+  - 検証：単体テスト `many_tools_are_found_by_search_and_offered_from_then_on`。本物のモデルが `tool_search` で道具を探して呼ぶところは、まだ試していない。
 - ChatGPT の apps の中身（2026-11-22、ユーザーの Codex が保存した一覧 `~/.codex/cache/codex_apps_tools/*.json` を数えた。通信はしていない）：道具 532 個、app 19 個。各道具の `_meta._codex_apps.resource_uri` の 2 番目の部分で、出どころが分かれる。
   - ユーザーがつないだ app（`link_…`）：GitHub 91、Google Drive 45、Remote Desktop Commander 32、Gmail 21、Google Calendar 15、Notion 82、ほか 3 つ。
   - OpenAI が最初から入れている app（`implicit_link`）：ChatGPT Space 42、Sites 39、Pets 11、Plugin Management 6、Safety Settings 5 など 8 つ。
   - `synthetic_link`：Linear 93、Atlassian 30。
   - Codex はこのうち設定で切っていない app を全部「使える app」とし、合計が 100 個以上なら最初から渡さず `tool_search` で探させる（`codex-rs/core/src/mcp_tool_exposure.rs`、`DIRECT_MCP_TOOL_EXPOSURE_THRESHOLD = 100`）。
   - ユーザーの指摘（2026-11-22）：「appsってnotionとかでしょ。あれ自分で追加するんであって全部llmに渡すものじゃない。前提からしておかしい。」どの app を渡すかの決め方は未決。
-- 道具が多すぎる問題：道具はすべて毎回の要求に入る。OpenAI の Chat Completions は道具を 128 個までしか受けない（OpenAI の API 文書）。415 個を渡すと要求が重く、断られるおそれもある。Codex は apps の道具を最初から渡さず、`tool_search` で必要なものだけ読み込む（`codex-rs/core/src/context/apps_instructions.rs`）。inocode にはこの仕組みがないので、当面、コネクタ 1 つの道具が 100 個（`CONNECTOR_TOOLS`）を超えたら、モデルに渡さず理由を表示する。このため今は ChatGPT の apps は使えない。道具を探して読み込む仕組みは新しい機能で、研究の確認とユーザーの承認が先（UNSUPPORTED_PENDING）。
+- 道具が多すぎる問題：道具はすべて毎回の要求に入る。OpenAI の Chat Completions は道具を 128 個までしか受けない（OpenAI の API 文書）。415 個を渡すと要求が重く、断られるおそれもある。Codex は apps の道具を最初から渡さず、`tool_search` で必要なものだけ読み込む（`codex-rs/core/src/context/apps_instructions.rs`）。inocode も同じ仕組みを入れた（上の「道具を探して渡す」）。
 - **調べ方：** サブエージェントが公式文書、openai/codex のソース、ローカルの claude.exe の文字列、ローカルに入っているプラグインを読んだ報告（以下、報告のまま）。認証付きの通信はしていない。
 
 ---

@@ -25,10 +25,15 @@ const PROTOCOL_VERSION: &str = "2025-11-25";
 const SUPPORTED_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 /// How long a server may take to start and list its tools.
 const START_TIMEOUT: Duration = Duration::from_secs(30);
-/// The tools one connector or one ChatGPT app may bring at most. Every tool
-/// is sent with every request, and OpenAI's Chat Completions accepts at most
-/// 128 tools.
-const CONNECTOR_TOOLS: usize = 100;
+/// From this many MCP tools on, none is given to the model up front; it finds
+/// the ones it needs with `SEARCH` (Codex's `DIRECT_MCP_TOOL_EXPOSURE_THRESHOLD`
+/// in `codex-rs/core/src/mcp_tool_exposure.rs`).
+const DEFER_AT: usize = 100;
+/// The tool that searches the MCP tools not given up front.
+pub(crate) const SEARCH: &str = "tool_search";
+/// How many tools a search returns unless the model asks for another number
+/// (Codex's `TOOL_SEARCH_DEFAULT_LIMIT`).
+const SEARCH_LIMIT: usize = 8;
 /// Providers accept tool names of at most 64 characters.
 const NAME_CHARS: usize = 64;
 
@@ -100,9 +105,178 @@ async fn loaded(store: &Store) -> Arc<Tools> {
         .clone()
 }
 
-/// The MCP tools to offer the model.
-pub(crate) async fn specs(store: &Store) -> Vec<ToolSpec> {
-    loaded(store).await.specs.clone()
+/// The MCP tools to offer the model in a request after `messages`: all of
+/// them when there are fewer than `DEFER_AT`, otherwise `SEARCH` and the
+/// tools an earlier search in `messages` found.
+pub(crate) async fn specs(
+    store: &Store,
+    messages: &[crate::conversation::Message],
+) -> Vec<ToolSpec> {
+    loaded(store).await.offered(messages)
+}
+
+impl Tools {
+    fn offered(&self, messages: &[crate::conversation::Message]) -> Vec<ToolSpec> {
+        if self.specs.len() < DEFER_AT {
+            return self.specs.clone();
+        }
+        let mut found = std::collections::HashSet::new();
+        for message in messages {
+            let crate::conversation::Body::ToolResult {
+                name,
+                content,
+                is_error: false,
+                ..
+            } = &message.body
+            else {
+                continue;
+            };
+            if name != SEARCH {
+                continue;
+            }
+            let Ok(result) = serde_json::from_str::<Value>(content) else {
+                continue;
+            };
+            for tool in result["tools"].as_array().into_iter().flatten() {
+                if let Some(name) = tool["name"].as_str() {
+                    found.insert(name.to_string());
+                }
+            }
+        }
+        let mut offered = vec![self.search_spec()];
+        offered.extend(
+            self.specs
+                .iter()
+                .filter(|spec| found.contains(&spec.name))
+                .cloned(),
+        );
+        offered
+    }
+
+    fn search_spec(&self) -> ToolSpec {
+        let mut servers: Vec<&str> = self
+            .routes
+            .values()
+            .map(|(connection, _)| connection.server.as_str())
+            .collect();
+        servers.sort_unstable();
+        servers.dedup();
+        ToolSpec {
+            name: SEARCH.to_string(),
+            description: format!(
+                "Searches the tools of these MCP servers, which are not given to you up \
+                 front: {}. The tools found can be called from your next step on.",
+                servers.join(", ")
+            ),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Words describing the tool needed."},
+                    "limit": {"type": "integer", "description": format!("How many tools to return; {SEARCH_LIMIT} if left out.")},
+                },
+                "required": ["query"],
+                "additionalProperties": false,
+            }),
+        }
+    }
+
+    /// The tools that best match `query` by BM25 over each tool's name,
+    /// description and argument names, as JSON naming each one.
+    fn search(&self, arguments: &str) -> Result<String, String> {
+        #[derive(Deserialize)]
+        struct Arguments {
+            query: String,
+            limit: Option<usize>,
+        }
+        let arguments: Arguments = serde_json::from_str(arguments)
+            .map_err(|error| format!("invalid arguments: {error}"))?;
+        let query = words(&arguments.query);
+        if query.is_empty() {
+            return Err("query must not be empty".into());
+        }
+        let limit = arguments.limit.unwrap_or(SEARCH_LIMIT);
+        if limit == 0 {
+            return Err("limit must be greater than zero".into());
+        }
+        let documents: Vec<Vec<String>> = self.specs.iter().map(search_words).collect();
+        let tools: Vec<Value> = bm25(&documents, &query)
+            .into_iter()
+            .take(limit)
+            .map(|index| {
+                let spec = &self.specs[index];
+                json!({"name": spec.name, "description": spec.description})
+            })
+            .collect();
+        Ok(json!({"tools": tools}).to_string())
+    }
+}
+
+/// Lowercased runs of letters and digits.
+fn words(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// The words a search matches a tool on: its name, its description and the
+/// names and descriptions of its arguments (as Codex's
+/// `default_tool_search_text`).
+fn search_words(spec: &ToolSpec) -> Vec<String> {
+    fn schema(value: &Value, text: &mut String) {
+        if let Some(description) = value.get("description").and_then(Value::as_str) {
+            text.push(' ');
+            text.push_str(description);
+        }
+        if let Some(properties) = value.get("properties").and_then(Value::as_object) {
+            for (name, property) in properties {
+                text.push(' ');
+                text.push_str(name);
+                schema(property, text);
+            }
+        }
+        if let Some(items) = value.get("items") {
+            schema(items, text);
+        }
+    }
+    let mut text = format!("{} {}", spec.name, spec.description);
+    schema(&spec.parameters, &mut text);
+    words(&text)
+}
+
+/// The indexes of `documents` that share a word with `query`, best first,
+/// ranked by Okapi BM25 (k1 = 1.2, b = 0.75; Robertson and Zaragoza 2009).
+fn bm25(documents: &[Vec<String>], query: &[String]) -> Vec<usize> {
+    const K1: f64 = 1.2;
+    const B: f64 = 0.75;
+    let count = documents.len() as f64;
+    let average = documents.iter().map(Vec::len).sum::<usize>() as f64 / count.max(1.0);
+    let mut terms: Vec<&String> = query.iter().collect();
+    terms.sort_unstable();
+    terms.dedup();
+    let mut scored: Vec<(usize, f64)> = documents
+        .iter()
+        .enumerate()
+        .filter_map(|(index, document)| {
+            let mut score = 0.0;
+            for term in &terms {
+                let frequency = document.iter().filter(|word| word == term).count() as f64;
+                if frequency == 0.0 {
+                    continue;
+                }
+                let holding = documents
+                    .iter()
+                    .filter(|other| other.contains(term))
+                    .count() as f64;
+                let idf = ((count - holding + 0.5) / (holding + 0.5) + 1.0).ln();
+                let length = document.len() as f64 / average.max(1.0);
+                score += idf * frequency * (K1 + 1.0) / (frequency + K1 * (1.0 - B + B * length));
+            }
+            (score > 0.0).then_some((index, score))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    scored.into_iter().map(|(index, _)| index).collect()
 }
 
 /// Where a call's server questions for the person go: the turn's events,
@@ -126,6 +300,9 @@ pub(crate) async fn call(
     mut cancel: tokio::sync::watch::Receiver<bool>,
     asking: Option<Asking<'_>>,
 ) -> Option<Result<String, String>> {
+    if name == SEARCH {
+        return Some(loaded(store).await.search(arguments));
+    }
     if !name.starts_with(PREFIX) {
         return None;
     }
@@ -404,47 +581,23 @@ fn added_by_person(tool: &Value) -> bool {
         .is_some_and(|link| link.starts_with("link_"))
 }
 
-/// A connector's tools without the apps the person did not add, the apps
-/// turned off in `config` and an app that brings more than `CONNECTOR_TOOLS`.
-/// ChatGPT's apps are one server whose tools name their app in `_meta`; a
-/// claude.ai connector is one app.
+/// A connector's tools without the apps the person did not add and the apps
+/// turned off in `config`. ChatGPT's apps are one server whose tools name
+/// their app in `_meta`; a claude.ai connector is one app.
 fn by_app(config: &Config, server: &str, listed: Vec<Value>) -> Vec<Value> {
-    let listed: Vec<Value> = listed.into_iter().filter(added_by_person).collect();
-    let app = |tool: &Value| -> (String, String) {
-        let meta = tool.get("_meta");
-        let field = |key: &str| {
-            meta.and_then(|meta| meta.get(key))
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        };
-        let id = field("connector_id").unwrap_or_else(|| server.to_string());
-        let name = field("connector_name").unwrap_or_else(|| id.clone());
-        (id, name)
-    };
-    let mut counts: HashMap<(String, String), usize> = HashMap::new();
-    for tool in &listed {
-        *counts.entry(app(tool)).or_default() += 1;
-    }
-    let mut kept = Vec::new();
-    let mut reported = std::collections::HashSet::new();
-    for tool in listed {
-        let (id, name) = app(&tool);
-        if !config.uses(&[&id, &name]) {
-            continue;
-        }
-        let count = counts[&(id.clone(), name.clone())];
-        if count > CONNECTOR_TOOLS {
-            if reported.insert(id) {
-                eprintln!(
-                    "MCP: the {count} tools of {name} ({server}) are left out: more than \
-                     {CONNECTOR_TOOLS} cannot be given to the model in every request"
-                );
-            }
-            continue;
-        }
-        kept.push(tool);
-    }
-    kept
+    listed
+        .into_iter()
+        .filter(added_by_person)
+        .filter(|tool| {
+            let field = |key: &str| {
+                tool.pointer(&format!("/_meta/{key}"))
+                    .and_then(Value::as_str)
+            };
+            let id = field("connector_id").unwrap_or(server);
+            let name = field("connector_name").unwrap_or(id);
+            config.uses(&[id, name])
+        })
+        .collect()
 }
 
 /// Adds a server's tools under names the providers accept; a tool whose
@@ -1782,7 +1935,7 @@ mod tests {
             }})
         };
         let tool = |name: &str, id: &str, app: &str| linked(name, id, app, "link_69dced7");
-        let mut listed = vec![
+        let listed = vec![
             linked(
                 "sites_create",
                 "connector_sites",
@@ -1800,10 +1953,6 @@ mod tests {
             tool("notion_search", "connector_notion", "Notion"),
             tool("gmail_read", "connector_gmail", "Gmail"),
         ];
-        listed.extend(
-            (0..=CONNECTOR_TOOLS)
-                .map(|index| tool(&format!("big_{index}"), "connector_big", "Big")),
-        );
         let kept: Vec<String> = by_app(&config, "codex_apps", listed)
             .iter()
             .map(|tool| tool["name"].as_str().expect("name").to_string())
@@ -1815,6 +1964,84 @@ mod tests {
         assert_eq!(by_app(&config, "claude.ai Slack", plain.clone()).len(), 1);
         assert!(config.uses(&["claude.ai Slack", "Slack"]));
         assert!(!config.uses(&["claude.ai Pets", "Pets"]));
+    }
+
+    #[test]
+    fn many_tools_are_found_by_search_and_offered_from_then_on() {
+        use crate::conversation::{Body, Message};
+        let spec = |name: &str, description: &str| ToolSpec {
+            name: name.to_string(),
+            description: description.to_string(),
+            parameters: json!({"type": "object", "properties": {"page_id": {"type": "string"}}}),
+        };
+        let mut tools = Tools::default();
+        tools
+            .specs
+            .push(spec("mcp__notion__fetch", "Fetch a Notion page"));
+        assert_eq!(
+            tools.offered(&[]).len(),
+            1,
+            "a few tools are all given up front"
+        );
+
+        tools
+            .specs
+            .push(spec("mcp__gmail__send", "Send an email message"));
+        tools.specs.push(spec(
+            "mcp__calendar__list_events",
+            "List the events of a calendar",
+        ));
+        for index in 0..DEFER_AT {
+            tools.specs.push(spec(
+                &format!("mcp__github__tool_{index}"),
+                "Work with a GitHub repository",
+            ));
+        }
+        let offered: Vec<String> = tools.offered(&[]).into_iter().map(|t| t.name).collect();
+        assert_eq!(offered, [SEARCH]);
+
+        let found = tools
+            .search(r#"{"query": "send an email"}"#)
+            .expect("search");
+        let names: Vec<String> = serde_json::from_str::<Value>(&found).expect("json")["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .map(|tool| tool["name"].as_str().expect("name").to_string())
+            .collect();
+        assert_eq!(names[0], "mcp__gmail__send");
+        assert!(names.len() <= SEARCH_LIMIT);
+        let one = tools
+            .search(r#"{"query": "calendar events", "limit": 1}"#)
+            .expect("search");
+        assert!(one.contains("mcp__calendar__list_events"));
+        assert_eq!(
+            serde_json::from_str::<Value>(&one).expect("json")["tools"]
+                .as_array()
+                .expect("tools")
+                .len(),
+            1
+        );
+        assert!(tools.search(r#"{"query": "  "}"#).is_err());
+
+        let answer = |content: String, is_error: bool| Message {
+            id: "r".to_string(),
+            body: Body::ToolResult {
+                call_id: "c".to_string(),
+                name: SEARCH.to_string(),
+                content,
+                is_error,
+                images: Vec::new(),
+            },
+        };
+        let offered: Vec<String> = tools
+            .offered(&[answer(one, false)])
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(offered, [SEARCH, "mcp__calendar__list_events"]);
+        let failed = tools.offered(&[answer(found, true)]);
+        assert_eq!(failed.len(), 1, "a failed search finds nothing");
     }
 
     #[tokio::test]

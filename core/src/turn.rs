@@ -1522,13 +1522,12 @@ async fn steps(
     cancel: &mut watch::Receiver<bool>,
     usage: &mut TurnUsage,
 ) -> Ending {
-    let mut tools: Vec<ToolSpec> = agent_tools::specs(thread.sandboxed());
+    let mut harness: Vec<ToolSpec> = agent_tools::specs(thread.sandboxed());
     // Under a goal the model does not ask the person; it can claim instead.
     if thread.goal_active() {
-        tools.retain(|tool| tool.name != crate::ask::ASK);
-        tools.push(crate::goal::spec());
+        harness.retain(|tool| tool.name != crate::ask::ASK);
+        harness.push(crate::goal::spec());
     }
-    tools.extend(crate::mcp::specs(thread.store).await);
     let mut opening = Vec::new();
     if thread.conversation.messages.is_empty() {
         match open_issues(thread.store, thread.project).await {
@@ -1554,6 +1553,9 @@ async fn steps(
     }
     let mut cuts = 0;
     loop {
+        // MCP tools found by a search are offered from the next request on.
+        let mut tools = harness.clone();
+        tools.extend(crate::mcp::specs(thread.store, &thread.conversation.messages).await);
         let compacted = tokio::select! {
             compacted = thread.compact_if_due(llm, &tools, usage) => Some(compacted),
             () = cancelled(cancel) => None,

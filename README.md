@@ -139,7 +139,7 @@ Claude でサインインしていれば claude.ai のコネクタ、ChatGPT で
 {"connectors": {"Slack": {"enabled": false}, "Pets": {"enabled": false}}}
 ```
 
-- 道具が 100 個を超えるコネクタや app は、毎回の要求に入れきれないので使わない（標準エラーに理由を出す）。
+- MCP の道具が合わせて 100 個以上あるときは最初から渡さず、モデルが `tool_search` で探す。見つかった道具は次の要求から渡す（Codex と同じやり方）。
 - 設計と根拠：[docs/evidence/plugin-mechanism.md](docs/evidence/plugin-mechanism.md)。
 
 ### 行き詰まったときの同僚
