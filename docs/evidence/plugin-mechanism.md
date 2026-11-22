@@ -63,7 +63,7 @@
   - 入れたプラグインのスキル（`skills/<名前>/SKILL.md`、または plugin.json の `skills`）は、名前・説明・場所を要求ごとにモデルに見せ、モデルが read で読む（Codex の `core-skills/src/render.rs` と同じやり方）。名前は Claude と同じ `<プラグイン>:<スキル>`。
   - 入れたプラグインの MCP サーバー（`.mcp.json`、または plugin.json の `mcpServers`）は `plugin_<プラグイン>_<サーバー>` として起動する（Claude と同じ名前）。`${CLAUDE_PLUGIN_ROOT}` をプラグインの場所に、ほかの `${名前}` を環境変数に置き換え、作業フォルダはプラグインの場所にする。入れた直後の次の要求から使える（MCP を読み直す）。
   - まだしないこと：コマンド（`commands/*.md`）、フック、エージェント定義、Codex の `.app.json`、アカウント側のストア（claude.ai の `user:plugins`、ChatGPT の `/ps/plugins/...`）。
-- 検証：単体テスト `plugins_are_found_installed_and_used`（手元に作った git のカタログで、探す・入れる・スキルを見せる・MCP サーバーを起動対象にするまで）。本物のカタログは手動のテスト `the_official_catalogs_are_read` で読んだ（2026-11-22。Claude 317 個、すべて説明あり。Codex 65 個、説明あり 62 個。説明のない 3 個は取得元が git で、カタログに説明がないもの）。モデルが実際に探して入れるところは、本物のモデルでは試していない。
+- 検証：単体テスト `plugins_are_found_installed_and_used`（手元に作った git のカタログで、探す・入れる・スキルを見せる・MCP サーバーを起動対象にするまで）。本物のカタログは手動のテスト `the_official_catalogs_are_read` で読んだ（2026-11-22。Claude 317 個、すべて説明あり。Codex 65 個、説明あり 62 個。説明のない 3 個は取得元が git で、カタログに説明がないもの）。本物のモデルでの実測は手動のテスト `server/tests/live_plugins.rs`（2026-11-22、Claude OAuth の `claude-haiku-5-5`、ユーザー承認のうえ 1 回）。1 回目の要求で `plugin_search`（"git commit message"）から `commit-commands@claude-plugins-official` を選び、`plugin_install` は承認待ちで止まった（3 要求、入力 21092・出力 665 トークン）。2 回目の要求で承認すると同じ引数で `plugin_install` を呼び、入った（2 要求、入力 15684・出力 531 トークン）。このプラグインはコマンドだけで、ここではまだ使えない。モデルはそのことを返答で伝えた。同じ日の 1 回目の試行は、C ドライブの空きがなく途中で失敗した（Codex のカタログ取得と保存が失敗）。作業用フォルダを D ドライブに移して流し直した。
 
 - **調べ方：** サブエージェントが公式文書、openai/codex のソース、ローカルの claude.exe の文字列、ローカルに入っているプラグインを読んだ報告（以下、報告のまま）。認証付きの通信はしていない。
 
