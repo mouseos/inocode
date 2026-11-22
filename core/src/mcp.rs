@@ -25,17 +25,42 @@ const PROTOCOL_VERSION: &str = "2025-11-25";
 const SUPPORTED_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 /// How long a server may take to start and list its tools.
 const START_TIMEOUT: Duration = Duration::from_secs(30);
-/// The tools an account's connector may bring at most. ChatGPT's apps list
-/// hundreds (415 for one account); every tool is sent with every request,
-/// and OpenAI's Chat Completions accepts at most 128 tools.
+/// The tools one connector or one ChatGPT app may bring at most. Every tool
+/// is sent with every request, and OpenAI's Chat Completions accepts at most
+/// 128 tools.
 const CONNECTOR_TOOLS: usize = 100;
 /// Providers accept tool names of at most 64 characters.
 const NAME_CHARS: usize = 64;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct Config {
     #[serde(rename = "mcpServers", default)]
     servers: BTreeMap<String, ServerConfig>,
+    /// The accounts' connectors and ChatGPT apps by name or id; each one
+    /// the account has added is used unless it is turned off here.
+    #[serde(default)]
+    connectors: HashMap<String, ConnectorSetting>,
+}
+
+#[derive(Deserialize)]
+struct ConnectorSetting {
+    #[serde(default = "turned_on")]
+    enabled: bool,
+}
+
+fn turned_on() -> bool {
+    true
+}
+
+impl Config {
+    /// Whether no name in `names` is turned off.
+    fn uses(&self, names: &[&str]) -> bool {
+        names.iter().all(|name| {
+            self.connectors
+                .get(*name)
+                .is_none_or(|setting| setting.enabled)
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -272,23 +297,20 @@ fn questions_of(schema: &Value) -> Value {
     Value::Array(questions)
 }
 
-/// The servers of `mcp.json`, in the order of the file.
-fn configured(config: &Path) -> Vec<(String, ServerConfig)> {
+/// `mcp.json`; empty when it is missing or not valid.
+fn configured(config: &Path) -> Config {
     let text = match std::fs::read_to_string(config) {
         Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Config::default(),
         Err(error) => {
             eprintln!("MCP: cannot read {}: {error}", config.display());
-            return Vec::new();
+            return Config::default();
         }
     };
-    match serde_json::from_str::<Config>(&text) {
-        Ok(config) => config.servers.into_iter().collect(),
-        Err(error) => {
-            eprintln!("MCP: {} is not valid: {error}", config.display());
-            Vec::new()
-        }
-    }
+    serde_json::from_str::<Config>(&text).unwrap_or_else(|error| {
+        eprintln!("MCP: {} is not valid: {error}", config.display());
+        Config::default()
+    })
 }
 
 /// How a server is reached: as `mcp.json` says, or as an account's
@@ -321,11 +343,21 @@ impl Source {
 /// `accounts`, started.
 async fn load(config: &Path, accounts: &Path, hosts: &crate::connectors::Hosts) -> Tools {
     let mut tools = Tools::default();
-    let mut sources: Vec<(String, Source)> = configured(config)
+    let mut config = configured(config);
+    let mut sources: Vec<(String, Source)> = std::mem::take(&mut config.servers)
         .into_iter()
         .map(|(name, settings)| (name, Source::Configured(settings)))
         .collect();
     for server in crate::connectors::servers(accounts, hosts).await {
+        let short = server
+            .name
+            .strip_prefix("claude.ai ")
+            .unwrap_or(&server.name);
+        if server.account == crate::connectors::Account::Claude
+            && !config.uses(&[&server.name, short])
+        {
+            continue;
+        }
         sources.push((
             server.name.clone(),
             Source::Connector(server, accounts.to_path_buf()),
@@ -343,16 +375,57 @@ async fn load(config: &Path, accounts: &Path, hosts: &crate::connectors::Hosts) 
         .await
         .unwrap_or_else(|_| Err(format!("did not start within {START_TIMEOUT:?}")));
         match started {
-            Ok((_, listed)) if connector && listed.len() > CONNECTOR_TOOLS => eprintln!(
-                "MCP: the {} tools of {server} are left out: more than {CONNECTOR_TOOLS} \
-                 cannot be given to the model in every request",
-                listed.len()
-            ),
+            Ok((connection, listed)) if connector => {
+                let listed = by_app(&config, &server, listed);
+                add(&mut tools, &server, &connection, listed);
+            }
             Ok((connection, listed)) => add(&mut tools, &server, &connection, listed),
             Err(error) => eprintln!("MCP: server {server} is not available: {error}"),
         }
     }
     tools
+}
+
+/// A connector's tools without the apps turned off in `config` and without
+/// an app that brings more than `CONNECTOR_TOOLS`. ChatGPT's apps are one
+/// server whose tools name their app in `_meta`; a claude.ai connector is
+/// one app.
+fn by_app(config: &Config, server: &str, listed: Vec<Value>) -> Vec<Value> {
+    let app = |tool: &Value| -> (String, String) {
+        let meta = tool.get("_meta");
+        let field = |key: &str| {
+            meta.and_then(|meta| meta.get(key))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        };
+        let id = field("connector_id").unwrap_or_else(|| server.to_string());
+        let name = field("connector_name").unwrap_or_else(|| id.clone());
+        (id, name)
+    };
+    let mut counts: HashMap<(String, String), usize> = HashMap::new();
+    for tool in &listed {
+        *counts.entry(app(tool)).or_default() += 1;
+    }
+    let mut kept = Vec::new();
+    let mut reported = std::collections::HashSet::new();
+    for tool in listed {
+        let (id, name) = app(&tool);
+        if !config.uses(&[&id, &name]) {
+            continue;
+        }
+        let count = counts[&(id.clone(), name.clone())];
+        if count > CONNECTOR_TOOLS {
+            if reported.insert(id) {
+                eprintln!(
+                    "MCP: the {count} tools of {name} ({server}) are left out: more than \
+                     {CONNECTOR_TOOLS} cannot be given to the model in every request"
+                );
+            }
+            continue;
+        }
+        kept.push(tool);
+    }
+    kept
 }
 
 /// Adds a server's tools under names the providers accept; a tool whose
@@ -1674,6 +1747,38 @@ mod tests {
     /// of ChatGPT's apps (its handshake and one list). Connects to no
     /// claude.ai connector and calls no tool. Run by hand, with the
     /// person's approval.
+    #[test]
+    fn apps_are_used_unless_turned_off() {
+        let config: Config = serde_json::from_value(json!({"connectors": {
+            "Pets": {"enabled": false},
+            "connector_gh": {"enabled": false},
+            "Notion": {"enabled": true},
+        }}))
+        .expect("config");
+        let tool = |name: &str, id: &str, app: &str| json!({"name": name, "_meta": {"connector_id": id, "connector_name": app}});
+        let mut listed = vec![
+            tool("pets_feed", "connector_pets", "Pets"),
+            tool("github_list", "connector_gh", "GitHub"),
+            tool("notion_search", "connector_notion", "Notion"),
+            tool("gmail_read", "connector_gmail", "Gmail"),
+        ];
+        listed.extend(
+            (0..=CONNECTOR_TOOLS)
+                .map(|index| tool(&format!("big_{index}"), "connector_big", "Big")),
+        );
+        let kept: Vec<String> = by_app(&config, "codex_apps", listed)
+            .iter()
+            .map(|tool| tool["name"].as_str().expect("name").to_string())
+            .collect();
+        assert_eq!(kept, ["notion_search", "gmail_read"]);
+
+        // A claude.ai connector is one app, named by the server.
+        let plain = vec![json!({"name": "search"})];
+        assert_eq!(by_app(&config, "claude.ai Slack", plain.clone()).len(), 1);
+        assert!(config.uses(&["claude.ai Slack", "Slack"]));
+        assert!(!config.uses(&["claude.ai Pets", "Pets"]));
+    }
+
     #[tokio::test]
     async fn a_sign_in_missing_the_connector_scope_is_refreshed_once() {
         let dir = tempfile::tempdir().expect("dir");
@@ -1734,21 +1839,43 @@ mod tests {
         for server in &servers {
             println!("server: {} ({:?})", server.name, server.account);
         }
+        // INOCODE_LIVE_ACCOUNT=claude or chatgpt picks whose servers are reached.
+        let account = match std::env::var("INOCODE_LIVE_ACCOUNT").as_deref() {
+            Ok("claude") => crate::connectors::Account::Claude,
+            _ => crate::connectors::Account::ChatGpt,
+        };
         for server in servers
             .into_iter()
-            .filter(|server| server.account == crate::connectors::Account::ChatGpt)
+            .filter(|server| server.account == account)
         {
+            let name = server.name.clone();
             let connection = Source::Connector(server, accounts.clone())
                 .connect()
                 .expect("connect");
             match connection.list_tools().await {
                 Ok(tools) => {
-                    println!("codex_apps tools: {}", tools.len());
+                    println!("{name} tools: {}", tools.len());
                     for tool in tools.iter().take(15) {
                         println!("  {}", tool["name"].as_str().unwrap_or("?"));
                     }
+                    // INOCODE_LIVE_CALL="<server name>:<tool>" calls that tool
+                    // with no arguments; pick one that only reads.
+                    let wanted = std::env::var("INOCODE_LIVE_CALL").unwrap_or_default();
+                    if let Some((server, tool)) = wanted.split_once(':') {
+                        if name.ends_with(server) {
+                            let result = connection
+                                .request("tools/call", json!({"name": tool, "arguments": {}}))
+                                .await;
+                            let shown = match result.map(|value| render(&value)) {
+                                Ok(Ok(text)) => format!("ok, {} chars", text.chars().count()),
+                                Ok(Err(text)) => format!("tool error: {text}"),
+                                Err(error) => format!("request failed: {error}"),
+                            };
+                            println!("{name} {tool}: {shown}");
+                        }
+                    }
                 }
-                Err(error) => println!("codex_apps: {error}"),
+                Err(error) => println!("{name}: {error}"),
             }
         }
     }

@@ -131,6 +131,17 @@ cargo run --release -p inocode-server
 - Windows では `npx` などは `npx.cmd` と書く（拡張子を補わないため）。
 - 設計と根拠：[docs/evidence/mcp-client.md](docs/evidence/mcp-client.md)。
 
+### アカウントのコネクタと apps
+
+Claude でサインインしていれば claude.ai のコネクタ、ChatGPT でサインインしていれば ChatGPT の apps の道具も使える。公式側で入れてあるものは最初から使い、`mcp.json` の `connectors` で名前か id を指定して切れる:
+
+```json
+{"connectors": {"Slack": {"enabled": false}, "Pets": {"enabled": false}}}
+```
+
+- 道具が 100 個を超えるコネクタや app は、毎回の要求に入れきれないので使わない（標準エラーに理由を出す）。
+- 設計と根拠：[docs/evidence/plugin-mechanism.md](docs/evidence/plugin-mechanism.md)。
+
 ### 行き詰まったときの同僚
 
 `settings.json` に同僚のモデルを書くと、同じ呼び出しを 3 回したときや、探す・編集・実行のどれかだけを 7 手続けたときに、そのモデルに次の一手を聞き、作業中のモデルに伝える（助言の後 5 手は聞かない）。1 ターンで 2 回助言の後もまだ行き詰まれば、人に質問として回す。着手中のローカル issue（道具 `issue`）が 2 ターン続けて未完了なら、次のターンの始めに同僚に聞き、2 回の助言の後も未完了が続けば人に回す。書かなければ同僚はいない:
