@@ -82,6 +82,9 @@ struct ServerConfig {
     /// Sent with every HTTP request, such as an `Authorization` header.
     #[serde(default)]
     headers: HashMap<String, String>,
+    /// Where a started server runs: an installed plugin's folder.
+    #[serde(skip)]
+    folder: Option<PathBuf>,
 }
 
 /// The tools of every server that started, in the order of the file.
@@ -91,18 +94,28 @@ pub(crate) struct Tools {
     routes: HashMap<String, (Arc<Connection>, String)>,
 }
 
-/// The servers in `mcp.json` beside the thread store, started once and kept
-/// with the store, so the tool list stays the same from request to request.
+/// The servers in `mcp.json` beside the thread store and those of the
+/// installed plugins, started once and kept with the store until a plugin
+/// is installed, so the tool list stays the same from request to request.
 async fn loaded(store: &Store) -> Arc<Tools> {
     let config: PathBuf = store.files_folder().with_file_name("mcp.json");
     let accounts = crate::connectors::store_beside(store);
-    store
-        .mcp()
-        .get_or_init(|| async {
-            Arc::new(load(&config, &accounts, &crate::connectors::Hosts::default()).await)
-        })
-        .await
-        .clone()
+    let plugins = crate::plugins::folder(store);
+    let mut kept = store.mcp().lock().await;
+    if let Some(tools) = kept.as_ref() {
+        return tools.clone();
+    }
+    let tools = Arc::new(
+        load(
+            &config,
+            &accounts,
+            &plugins,
+            &crate::connectors::Hosts::default(),
+        )
+        .await,
+    );
+    *kept = Some(tools.clone());
+    tools
 }
 
 /// The MCP tools to offer the model in a request after `messages`: all of
@@ -212,7 +225,7 @@ impl Tools {
 }
 
 /// Lowercased runs of letters and digits.
-fn words(text: &str) -> Vec<String> {
+pub(crate) fn words(text: &str) -> Vec<String> {
     text.split(|c: char| !c.is_alphanumeric())
         .filter(|word| !word.is_empty())
         .map(str::to_lowercase)
@@ -246,7 +259,7 @@ fn search_words(spec: &ToolSpec) -> Vec<String> {
 
 /// The indexes of `documents` that share a word with `query`, best first,
 /// ranked by Okapi BM25 (k1 = 1.2, b = 0.75; Robertson and Zaragoza 2009).
-fn bm25(documents: &[Vec<String>], query: &[String]) -> Vec<usize> {
+pub(crate) fn bm25(documents: &[Vec<String>], query: &[String]) -> Vec<usize> {
     const K1: f64 = 1.2;
     const B: f64 = 0.75;
     let count = documents.len() as f64;
@@ -516,15 +529,31 @@ impl Source {
     }
 }
 
-/// The servers of `config` and the connectors of the accounts signed in at
-/// `accounts`, started.
-async fn load(config: &Path, accounts: &Path, hosts: &crate::connectors::Hosts) -> Tools {
+/// The servers of `config`, of the plugins installed under `plugins` and the
+/// connectors of the accounts signed in at `accounts`, started.
+async fn load(
+    config: &Path,
+    accounts: &Path,
+    plugins: &Path,
+    hosts: &crate::connectors::Hosts,
+) -> Tools {
     let mut tools = Tools::default();
     let mut config = configured(config);
     let mut sources: Vec<(String, Source)> = std::mem::take(&mut config.servers)
         .into_iter()
         .map(|(name, settings)| (name, Source::Configured(settings)))
         .collect();
+    for plugin in crate::plugins::Installed::all(plugins) {
+        for (name, settings) in plugin.servers() {
+            match serde_json::from_value::<ServerConfig>(settings) {
+                Ok(mut settings) => {
+                    settings.folder = Some(plugin.root().to_path_buf());
+                    sources.push((name, Source::Configured(settings)));
+                }
+                Err(error) => eprintln!("MCP: server {name} is not valid: {error}"),
+            }
+        }
+    }
     for server in crate::connectors::servers(accounts, hosts).await {
         let short = server
             .name
@@ -712,7 +741,11 @@ fn connect(settings: &ServerConfig) -> Result<Connection, String> {
 }
 
 fn spawn(command: &str, settings: &ServerConfig) -> Result<Connection, String> {
-    let mut child = tokio::process::Command::new(command)
+    let mut command_line = tokio::process::Command::new(command);
+    if let Some(folder) = &settings.folder {
+        command_line.current_dir(folder);
+    }
+    let mut child = command_line
         .args(&settings.args)
         .envs(&settings.env)
         .stdin(Stdio::piped())
@@ -1753,13 +1786,19 @@ mod tests {
         let config = dir.path().join("mcp.json");
         let accounts = dir.path().join("auth.json");
         let hosts = crate::connectors::Hosts::default();
-        assert!(load(&config, &accounts, &hosts).await.specs.is_empty());
+        assert!(load(&config, &accounts, Path::new("no-plugins"), &hosts)
+            .await
+            .specs
+            .is_empty());
         std::fs::write(
             &config,
             r#"{"mcpServers": {"none": {"command": "inocode-no-such-command"}}}"#,
         )
         .expect("write");
-        assert!(load(&config, &accounts, &hosts).await.specs.is_empty());
+        assert!(load(&config, &accounts, Path::new("no-plugins"), &hosts)
+            .await
+            .specs
+            .is_empty());
     }
 
     /// A request line and its headers with lowercase names.
@@ -1870,12 +1909,15 @@ mod tests {
         let config = dir.path().join("mcp.json");
 
         // Without a sign-in nothing is listed or reached.
-        assert!(load(&config, &accounts, &hosts).await.specs.is_empty());
+        assert!(load(&config, &accounts, Path::new("no-plugins"), &hosts)
+            .await
+            .specs
+            .is_empty());
         assert!(listed.lock().expect("listed").is_empty());
 
         signed_in(&accounts, "claude-oauth", "claude-token", None);
         signed_in(&accounts, "gpt-oauth", "gpt-token", Some("acct-1"));
-        let tools = load(&config, &accounts, &hosts).await;
+        let tools = load(&config, &accounts, Path::new("no-plugins"), &hosts).await;
         let names: Vec<&str> = tools.specs.iter().map(|spec| spec.name.as_str()).collect();
         assert_eq!(
             names,

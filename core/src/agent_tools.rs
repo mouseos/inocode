@@ -157,6 +157,7 @@ pub(crate) fn specs(sandboxed: bool) -> Vec<ToolSpec> {
         },
     ]
     .into_iter()
+    .chain(crate::plugins::specs())
     .chain(edit::specs())
     .chain(shell::specs(sandboxed))
     .collect()
@@ -237,6 +238,8 @@ pub(crate) async fn run(context: &Context<'_>, name: &str, arguments: &str) -> O
                     text
                 })
         }
+        crate::plugins::SEARCH => crate::plugins::search(context.store, arguments).await,
+        crate::plugins::INSTALL => crate::plugins::install(context.store, arguments).await,
         edit::EDIT => edit::edit(context.folder, arguments).await,
         edit::EDITS => edit::edits(context.folder, arguments).await,
         edit::WRITE => edit::write(context.folder, arguments).await,

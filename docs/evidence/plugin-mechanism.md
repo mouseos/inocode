@@ -49,6 +49,22 @@
   - Codex はこのうち設定で切っていない app を全部「使える app」とし、合計が 100 個以上なら最初から渡さず `tool_search` で探させる（`codex-rs/core/src/mcp_tool_exposure.rs`、`DIRECT_MCP_TOOL_EXPOSURE_THRESHOLD = 100`）。
   - ユーザーの指摘（2026-11-22）：「appsってnotionとかでしょ。あれ自分で追加するんであって全部llmに渡すものじゃない。前提からしておかしい。」どの app を渡すかの決め方は未決。
 - 道具が多すぎる問題：道具はすべて毎回の要求に入る。OpenAI の Chat Completions は道具を 128 個までしか受けない（OpenAI の API 文書）。415 個を渡すと要求が重く、断られるおそれもある。Codex は apps の道具を最初から渡さず、`tool_search` で必要なものだけ読み込む（`codex-rs/core/src/context/apps_instructions.rs`）。inocode も同じ仕組みを入れた（上の「道具を探して渡す」）。
+
+### プラグインを探して入れる（`core/src/plugins.rs`）
+
+- ユーザーの判断：2026-11-21「claude codexのプラグインをチャット中のllmが探してインストールする機能なども実装」。2026-11-22、次の作業を聞かれて「進める」。
+- 根拠の状態：UNSUPPORTED_APPROVED。プラグインを探して入れることが結果を良くするという研究は確かめていない。BM25 の式は上の `tool_search` と同じ出典。
+- 公式の動き：
+  - Codex（`codex-rs` コミット `683bd170`）は `list_available_plugins_to_install`（候補を返す）と `request_plugin_install`（入れる候補を本人に見せ、本人が確認すると入る）を持つ（`core/src/tools/handlers/list_available_plugins_to_install_spec.rs`、`request_plugin_install_spec.rs`、`request_plugin_install.rs`）。モデルが勝手に入れることはない。
+  - 公式のカタログ：Claude は GitHub の `anthropics/claude-plugins-official` の `.claude-plugin/marketplace.json`（手元の写しで 317 個。取得元は `url` 163、`git-subdir` 98、相対パス 55、`command` 1）。Codex は `https://github.com/openai/plugins.git` の `HEAD`（Codex は取ったものを手元で `refs/codex/curated-sync` という名前で持つ。`startup_sync.rs` の `sync_openai_plugins_repo_via_git`。2026-11-22 に `git ls-remote` で、相手側にその名前の参照がないことを確かめた）の `.agents/plugins/marketplace.json`（名前 `openai-curated`、65 個。`local` 62、`url` 2、`git-subdir` 1。説明は各プラグインの `.codex-plugin/plugin.json` にある）。どちらも git で取る（`codex-rs/core-plugins/src/startup_sync.rs`、Claude の公式文書 plugin-marketplaces）。起動時に取り直す。
+- inocode の実装：
+  - `plugin_search`：2 つのカタログを git で取り（そのプロセスで最初に使うときだけ取り直す）、名前・説明・分類に BM25 で当てて返す。入れてあるかも返す。
+  - `plugin_install`：本人の承認を待ってから入れる（承認の要らない `full` モードを除く。`auto` モードでも審査役に任せず本人に聞く）。カタログの中のプラグインはそこから写し、`url`・`github`・`git-subdir` は git で取る。`npm`・`command`・`archive` は入れない。入れ先は `~/.inocode/plugins/installed/<カタログ>/<名前>/`。
+  - 入れたプラグインのスキル（`skills/<名前>/SKILL.md`、または plugin.json の `skills`）は、名前・説明・場所を要求ごとにモデルに見せ、モデルが read で読む（Codex の `core-skills/src/render.rs` と同じやり方）。名前は Claude と同じ `<プラグイン>:<スキル>`。
+  - 入れたプラグインの MCP サーバー（`.mcp.json`、または plugin.json の `mcpServers`）は `plugin_<プラグイン>_<サーバー>` として起動する（Claude と同じ名前）。`${CLAUDE_PLUGIN_ROOT}` をプラグインの場所に、ほかの `${名前}` を環境変数に置き換え、作業フォルダはプラグインの場所にする。入れた直後の次の要求から使える（MCP を読み直す）。
+  - まだしないこと：コマンド（`commands/*.md`）、フック、エージェント定義、Codex の `.app.json`、アカウント側のストア（claude.ai の `user:plugins`、ChatGPT の `/ps/plugins/...`）。
+- 検証：単体テスト `plugins_are_found_installed_and_used`（手元に作った git のカタログで、探す・入れる・スキルを見せる・MCP サーバーを起動対象にするまで）。本物のカタログは手動のテスト `the_official_catalogs_are_read` で読んだ（2026-11-22。Claude 317 個、すべて説明あり。Codex 65 個、説明あり 62 個。説明のない 3 個は取得元が git で、カタログに説明がないもの）。モデルが実際に探して入れるところは、本物のモデルでは試していない。
+
 - **調べ方：** サブエージェントが公式文書、openai/codex のソース、ローカルの claude.exe の文字列、ローカルに入っているプラグインを読んだ報告（以下、報告のまま）。認証付きの通信はしていない。
 
 ---

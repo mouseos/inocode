@@ -142,6 +142,15 @@ Claude でサインインしていれば claude.ai のコネクタ、ChatGPT で
 - MCP の道具が合わせて 100 個以上あるときは最初から渡さず、モデルが `tool_search` で探す。見つかった道具は次の要求から渡す（Codex と同じやり方）。
 - 設計と根拠：[docs/evidence/plugin-mechanism.md](docs/evidence/plugin-mechanism.md)。
 
+### プラグインを探して入れる
+
+モデルは `plugin_search` で Claude Code と Codex の公式カタログ（GitHub の `anthropics/claude-plugins-official` と `openai/plugins`）からプラグインを探し、`plugin_install` で入れる。入れる前に必ず本人の承認を待つ（`full` モードを除く）。
+
+- 入れ先は `~/.inocode/plugins/installed/<カタログ>/<名前>/`。
+- 入れたプラグインのスキルは、名前と説明と場所を要求ごとにモデルに見せる。MCP サーバーは `plugin_<プラグイン>_<サーバー>` として次の要求から使える。
+- コマンド、フック、エージェント定義、アカウント側のストアはまだ使わない。
+- 設計と根拠：[docs/evidence/plugin-mechanism.md](docs/evidence/plugin-mechanism.md)。
+
 ### 行き詰まったときの同僚
 
 `settings.json` に同僚のモデルを書くと、同じ呼び出しを 3 回したときや、探す・編集・実行のどれかだけを 7 手続けたときに、そのモデルに次の一手を聞き、作業中のモデルに伝える（助言の後 5 手は聞かない）。1 ターンで 2 回助言の後もまだ行き詰まれば、人に質問として回す。着手中のローカル issue（道具 `issue`）が 2 ターン続けて未完了なら、次のターンの始めに同僚に聞き、2 回の助言の後も未完了が続けば人に回す。書かなければ同僚はいない:

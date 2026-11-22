@@ -40,7 +40,7 @@ async fn a_deferred_connector_tool_is_found_and_called() {
                         cut -= 1;
                     }
                     line.truncate(cut);
-                    line.push_str("…");
+                    line.push('…');
                 }
                 println!("--- {seq}: {line}");
             }

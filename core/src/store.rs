@@ -414,8 +414,9 @@ struct Inner {
     writer: Mutex<Connection>,
     readers: Mutex<Vec<Connection>>,
     /// The MCP servers named beside the database, started at first use and
-    /// stopped when the last copy of the store is dropped.
-    mcp: tokio::sync::OnceCell<Arc<crate::mcp::Tools>>,
+    /// stopped when they are forgotten or the last copy of the store is
+    /// dropped.
+    mcp: tokio::sync::Mutex<Option<Arc<crate::mcp::Tools>>>,
     /// Questions of MCP servers waiting for the person's answer, by id, with
     /// the thread whose turn asked.
     elicitations: Mutex<HashMap<u64, (SessionId, tokio::sync::oneshot::Sender<serde_json::Value>)>>,
@@ -429,8 +430,14 @@ impl Store {
         self.inner.path.with_extension("files")
     }
 
-    pub(crate) fn mcp(&self) -> &tokio::sync::OnceCell<Arc<crate::mcp::Tools>> {
+    pub(crate) fn mcp(&self) -> &tokio::sync::Mutex<Option<Arc<crate::mcp::Tools>>> {
         &self.inner.mcp
+    }
+
+    /// Lets the MCP servers start anew at their next use, as after a plugin
+    /// is installed.
+    pub(crate) async fn forget_mcp(&self) {
+        *self.inner.mcp.lock().await = None;
     }
 
     /// Registers a question of an MCP server for the person: its id, and
@@ -497,7 +504,7 @@ impl Store {
                 path,
                 writer: Mutex::new(writer),
                 readers: Mutex::new(Vec::new()),
-                mcp: tokio::sync::OnceCell::new(),
+                mcp: tokio::sync::Mutex::new(None),
                 elicitations: Mutex::new(HashMap::new()),
                 next_elicitation: std::sync::atomic::AtomicU64::new(0),
             }),

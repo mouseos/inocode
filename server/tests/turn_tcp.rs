@@ -804,7 +804,7 @@ async fn the_plan_is_shown_after_the_history_with_every_request() {
         let requests = chats(&mock);
         assert!(requests[0].body["tools"]
             .as_array()
-            .is_some_and(|tools| tools.len() == 17));
+            .is_some_and(|tools| tools.len() == 19));
         let state = last_message(&requests[1]);
         assert_eq!(state["role"], "user");
         assert_eq!(
@@ -1081,7 +1081,7 @@ async fn tools_of_the_configured_mcp_servers_are_offered_and_called() {
         assert_eq!(tool_results(&events), ["5"]);
         let requests = chats(&mock);
         let tools = requests[0].body["tools"].as_array().expect("tools");
-        assert_eq!(tools.len(), 19);
+        assert_eq!(tools.len(), 21);
         let added = tools
             .iter()
             .find(|tool| tool["function"]["name"] == "mcp__calc__add")
@@ -1790,7 +1790,7 @@ async fn near_the_window_older_work_is_compacted_and_the_person_kept() {
             .expect("a summary request");
         assert_eq!(
             summary_request.body["tools"].as_array().map(Vec::len),
-            Some(17)
+            Some(19)
         );
         assert!(summary_request.body["messages"]
             .to_string()

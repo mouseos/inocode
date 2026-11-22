@@ -27,6 +27,7 @@ mod mcp;
 pub mod oauth;
 mod outline;
 mod picture;
+mod plugins;
 mod read;
 pub mod reasoning;
 mod review;
