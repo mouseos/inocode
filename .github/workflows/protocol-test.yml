@@ -2,6 +2,11 @@ name: protocol-test
 
 on:
   workflow_dispatch:
+    inputs:
+      live:
+        description: Also run the live provider tests, which spend the provider keys
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -50,6 +55,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     needs: protocol-test
+    if: inputs.live
     strategy:
       fail-fast: false
       # One system at a time: the three share one provider key, and concurrent runs hit its rate limit.
