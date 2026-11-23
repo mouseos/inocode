@@ -9,11 +9,11 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use image::{DynamicImage, ImageFormat, RgbImage};
-use nokhwa::pixel_format::RgbFormat;
+use nokhwa::pixel_format::{FormatDecoder, RgbFormat};
 use nokhwa::utils::{
     ApiBackend, CameraControl, CameraFormat, CameraIndex, ControlValueDescription,
     ControlValueSetter, FrameFormat, KnownCameraControl, KnownCameraControlFlag, RequestedFormat,
-    RequestedFormatType, Resolution,
+    RequestedFormatType,
 };
 use nokhwa::Camera;
 use serde::Deserialize;
@@ -166,20 +166,47 @@ fn open(arguments: &Arguments) -> Result<Camera, String> {
 
 fn open_index(index: CameraIndex, arguments: &Arguments) -> Result<Camera, String> {
     let requested = match (arguments.resolution, arguments.fps) {
-        (Some([width, height]), fps) => RequestedFormatType::Closest(CameraFormat::new(
-            Resolution::new(width, height),
-            FrameFormat::MJPEG,
-            fps.unwrap_or(30),
-        )),
+        (Some(_), _) => RequestedFormatType::None,
         (None, Some(fps)) => RequestedFormatType::HighestFrameRate(fps),
         (None, None) => RequestedFormatType::AbsoluteHighestResolution,
     };
-    Camera::with_backend(
+    let mut camera = Camera::with_backend(
         index,
         RequestedFormat::new::<RgbFormat>(requested),
         backend(),
     )
-    .map_err(|error| format!("cannot open the camera: {error}"))
+    .map_err(|error| format!("cannot open the camera: {error}"))?;
+    if let Some(resolution) = arguments.resolution {
+        let formats = camera
+            .compatible_camera_formats()
+            .map_err(|error| format!("cannot read the formats: {error}"))?;
+        let format = closest(&formats, resolution, arguments.fps.unwrap_or(30))
+            .ok_or("the camera offers no format that can be read")?;
+        camera
+            .set_camera_requset(RequestedFormat::new::<RgbFormat>(
+                RequestedFormatType::Exact(format),
+            ))
+            .map_err(|error| format!("cannot set the format {format}: {error}"))?;
+    }
+    Ok(camera)
+}
+
+/// The readable format nearest the resolution asked for, then nearest the
+/// frame rate, MJPEG first, as it takes the least of the connection.
+/// The capture library's own nearest match only looks at one pixel format.
+fn closest(formats: &[CameraFormat], [width, height]: [u32; 2], fps: u32) -> Option<CameraFormat> {
+    formats
+        .iter()
+        .filter(|format| RgbFormat::FORMATS.contains(&format.format()))
+        .min_by_key(|format| {
+            let distance = |have: u32, want: u32| (i64::from(have) - i64::from(want)).pow(2);
+            (
+                distance(format.width(), width) + distance(format.height(), height),
+                format.frame_rate().abs_diff(fps),
+                format.format() != FrameFormat::MJPEG,
+            )
+        })
+        .copied()
 }
 
 fn describe(arguments: &Arguments) -> Result<String, String> {
@@ -1249,6 +1276,22 @@ mod tests {
             ))
         );
         assert!(mode_setter(&controls, "focus", true).is_none());
+    }
+
+    #[test]
+    fn the_nearest_readable_format_is_taken() {
+        let format = |width, height, kind, fps| {
+            CameraFormat::new(nokhwa::utils::Resolution::new(width, height), kind, fps)
+        };
+        let formats = [
+            format(3840, 2160, FrameFormat::YUYV, 25),
+            format(640, 480, FrameFormat::YUYV, 30),
+            format(640, 480, FrameFormat::YUYV, 5),
+            format(1280, 720, FrameFormat::MJPEG, 30),
+        ];
+        assert_eq!(closest(&formats, [640, 480], 30), Some(formats[1]));
+        assert_eq!(closest(&formats, [1200, 700], 30), Some(formats[3]));
+        assert_eq!(closest(&[], [640, 480], 30), None);
     }
 
     #[test]
