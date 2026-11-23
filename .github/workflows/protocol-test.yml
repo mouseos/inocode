@@ -69,7 +69,11 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install -y "linux-modules-extra-$(uname -r)" v4l-utils
+          sudo apt-get install -y v4l-utils
+          uname -r
+          find "/lib/modules/$(uname -r)" -name 'vivid*' -o -name 'videobuf2*' -o -name 'v4l2-tpg*' -o -name 'videodev*' | head -20
+          apt-cache search "linux-modules.*$(uname -r)" || true
+          apt-cache search "linux-.*-azure" | grep -i -e modules -e headers -e source | head -20 || true
           sudo modprobe vivid n_devs=1 node_types=0x1
           sudo chmod a+rw /dev/video*
           v4l2-ctl --list-devices
