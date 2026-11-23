@@ -12,8 +12,8 @@ use image::{DynamicImage, ImageFormat, RgbImage};
 use nokhwa::pixel_format::RgbFormat;
 use nokhwa::utils::{
     ApiBackend, CameraControl, CameraFormat, CameraIndex, ControlValueDescription,
-    ControlValueSetter, FrameFormat, KnownCameraControl, RequestedFormat, RequestedFormatType,
-    Resolution,
+    ControlValueSetter, FrameFormat, KnownCameraControl, KnownCameraControlFlag, RequestedFormat,
+    RequestedFormatType, Resolution,
 };
 use nokhwa::Camera;
 use serde::Deserialize;
@@ -207,7 +207,11 @@ fn describe(arguments: &Arguments) -> Result<String, String> {
     let controls = camera
         .camera_controls()
         .map_err(|error| format!("cannot read the controls: {error}"))?;
-    let controls: Vec<String> = controls.iter().map(describe_control).collect();
+    let controls: Vec<String> = controls
+        .iter()
+        .filter(|control| !holds_a_mode(control))
+        .map(|control| describe_control(control, automatic_now(&controls, control)))
+        .collect();
     Ok(format!(
         "{}\nFormats (largest first):\n{}\nControls:\n{}",
         camera.info().human_name(),
@@ -217,7 +221,7 @@ fn describe(arguments: &Arguments) -> Result<String, String> {
 }
 
 /// A control's name, values and modes as the model reads them.
-fn describe_control(control: &CameraControl) -> String {
+fn describe_control(control: &CameraControl, automatic: Option<bool>) -> String {
     let values = match control.description() {
         ControlValueDescription::IntegerRange {
             min,
@@ -241,7 +245,15 @@ fn describe_control(control: &CameraControl) -> String {
         }
         other => format!("{other}"),
     };
-    let modes: Vec<String> = control.flag().iter().map(ToString::to_string).collect();
+    let mut modes: Vec<String> = control.flag().iter().map(ToString::to_string).collect();
+    if let Some(automatic) = automatic {
+        let flag = if automatic {
+            KnownCameraControlFlag::Automatic
+        } else {
+            KnownCameraControlFlag::Manual
+        };
+        modes.insert(0, flag.to_string());
+    }
     format!(
         "- {}: {values}{}",
         control_name(control),
@@ -256,6 +268,10 @@ fn describe_control(control: &CameraControl) -> String {
 /// The name a control is set by: the known ones by a fixed name, the others
 /// by the name the device gives.
 fn control_name(control: &CameraControl) -> String {
+    #[cfg(target_os = "linux")]
+    if let Some(name) = v4l2::name(control.control()) {
+        return name.into();
+    }
     match control.control() {
         KnownCameraControl::Other(_) => control.name().to_lowercase().replace(' ', "_"),
         known => known_name(known).to_string(),
@@ -348,7 +364,8 @@ fn grab(camera: &mut Camera) -> Result<RgbImage, String> {
 }
 
 /// The modes asked for (control, automatic): `"auto"` or `"manual"`, and
-/// on Windows the manual mode a value needs to take effect.
+/// the manual mode a value needs to take effect where the system keeps the
+/// mode apart from the value.
 fn modes(wanted: &Map<String, Value>) -> Result<Vec<(String, bool)>, String> {
     let mut modes = Vec::new();
     for (name, value) in wanted {
@@ -363,7 +380,7 @@ fn modes(wanted: &Map<String, Value>) -> Result<Vec<(String, bool)>, String> {
                     ))
                 }
             },
-            _ if cfg!(windows) && has_mode(&name) => modes.push((name, false)),
+            _ if value_needs_manual(&name) => modes.push((name, false)),
             _ => {}
         }
     }
@@ -371,12 +388,18 @@ fn modes(wanted: &Map<String, Value>) -> Result<Vec<(String, bool)>, String> {
 }
 
 #[cfg(windows)]
-fn has_mode(name: &str) -> bool {
+fn value_needs_manual(name: &str) -> bool {
     crate::camera_mode::has_mode(name)
 }
 
-#[cfg(not(windows))]
-fn has_mode(_name: &str) -> bool {
+#[cfg(target_os = "linux")]
+fn value_needs_manual(name: &str) -> bool {
+    v4l2::auto_control(name).is_some()
+}
+
+/// On macOS the control is the mode itself, so a value sets the mode.
+#[cfg(not(any(windows, target_os = "linux")))]
+fn value_needs_manual(_name: &str) -> bool {
     false
 }
 
@@ -391,20 +414,232 @@ fn apply_modes(index: &CameraIndex, modes: &[(String, bool)]) -> Result<(), Stri
 }
 
 #[cfg(not(windows))]
-fn apply_modes(_index: &CameraIndex, modes: &[(String, bool)]) -> Result<(), String> {
-    match modes.first() {
-        None => Ok(()),
-        Some((name, _)) => Err(format!(
-            "{name}: on this system an automatic mode is a control of its own; set the one \
-             controls lists"
-        )),
+fn apply_modes(_index: &CameraIndex, _modes: &[(String, bool)]) -> Result<(), String> {
+    Ok(())
+}
+
+/// Switches the modes asked for on the opened camera, where the system
+/// keeps a mode as a control of its own (Linux) or as the control itself
+/// (macOS). A mode only implied by a value is skipped when the camera has
+/// no such mode.
+#[cfg(windows)]
+fn switch_modes(
+    _camera: &mut Camera,
+    _modes: &[(String, bool)],
+    _wanted: &Map<String, Value>,
+) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn switch_modes(
+    camera: &mut Camera,
+    modes: &[(String, bool)],
+    wanted: &Map<String, Value>,
+) -> Result<(), String> {
+    for (name, automatic) in modes {
+        let asked = wanted
+            .iter()
+            .any(|(key, value)| key.to_lowercase() == *name && value.is_string());
+        let controls = camera
+            .camera_controls()
+            .map_err(|error| format!("cannot read the controls: {error}"))?;
+        let Some((control, setter)) = mode_setter(&controls, name, *automatic) else {
+            if asked {
+                return Err(format!("this camera has no automatic mode for {name}"));
+            }
+            continue;
+        };
+        let mode = if *automatic { "automatic" } else { "manual" };
+        camera
+            .set_camera_control(control, setter)
+            .map_err(|error| format!("cannot set {name} to {mode}: {error}"))?;
+    }
+    Ok(())
+}
+
+/// The control holding `name`'s mode and the value that sets it.
+#[cfg(target_os = "linux")]
+fn mode_setter(
+    controls: &[CameraControl],
+    name: &str,
+    automatic: bool,
+) -> Option<(KnownCameraControl, ControlValueSetter)> {
+    let id = v4l2::auto_control(name)?;
+    let control = controls
+        .iter()
+        .find(|control| control.control() == KnownCameraControl::Other(id.into()))?;
+    let setter = match control.description() {
+        ControlValueDescription::Boolean { .. } => ControlValueSetter::Boolean(automatic),
+        ControlValueDescription::IntegerRange { max, .. } if id == v4l2::EXPOSURE_AUTO => {
+            ControlValueSetter::Integer(v4l2::exposure_mode(automatic, *max))
+        }
+        _ => ControlValueSetter::Integer(i64::from(automatic)),
+    };
+    Some((control.control(), setter))
+}
+
+/// AVFoundation's modes: 0 locks the current value, 1 adjusts once, 2 keeps
+/// adjusting.
+#[cfg(target_os = "macos")]
+fn mode_setter(
+    controls: &[CameraControl],
+    name: &str,
+    automatic: bool,
+) -> Option<(KnownCameraControl, ControlValueSetter)> {
+    let known = match name {
+        "focus" => KnownCameraControl::Focus,
+        "exposure" => KnownCameraControl::Exposure,
+        "white_balance" => KnownCameraControl::WhiteBalance,
+        _ => return None,
+    };
+    let control = controls.iter().find(|control| control.control() == known)?;
+    let ControlValueDescription::Enum { possible, .. } = control.description() else {
+        return None;
+    };
+    let wanted: &[i64] = if automatic { &[2, 1] } else { &[0] };
+    let mode = wanted
+        .iter()
+        .copied()
+        .find(|mode| possible.contains(mode))?;
+    Some((known, ControlValueSetter::EnumValue(mode)))
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+fn mode_setter(
+    _controls: &[CameraControl],
+    _name: &str,
+    _automatic: bool,
+) -> Option<(KnownCameraControl, ControlValueSetter)> {
+    None
+}
+
+/// Whether the control's mode is automatic now, where the system keeps the
+/// mode as a control of its own; elsewhere the capture library's flags say.
+#[cfg(target_os = "linux")]
+fn automatic_now(controls: &[CameraControl], control: &CameraControl) -> Option<bool> {
+    let id = v4l2::auto_control(&control_name(control))?;
+    let mode = controls
+        .iter()
+        .find(|mode| mode.control() == KnownCameraControl::Other(id.into()))?;
+    Some(v4l2::is_automatic(id, &mode.value()))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn automatic_now(_controls: &[CameraControl], _control: &CameraControl) -> Option<bool> {
+    None
+}
+
+/// Whether a control only holds another's mode, shown as that one's mode.
+#[cfg(target_os = "linux")]
+fn holds_a_mode(control: &CameraControl) -> bool {
+    matches!(control.control(), KnownCameraControl::Other(id) if v4l2::is_auto_control(id))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn holds_a_mode(_control: &CameraControl) -> bool {
+    false
+}
+
+/// V4L2 keeps a control's automatic mode as a control of its own, and names
+/// the absolute pan, tilt, zoom, focus, iris and exposure apart from the
+/// relative ones (linux/v4l2-controls.h).
+#[cfg(target_os = "linux")]
+mod v4l2 {
+    use nokhwa::utils::{ControlValueSetter, KnownCameraControl};
+
+    const USER: u32 = 0x0098_0900;
+    const CAMERA: u32 = 0x009a_0900;
+    pub(super) const EXPOSURE_AUTO: u32 = CAMERA + 1;
+    const EXPOSURE_ABSOLUTE: u32 = CAMERA + 2;
+    const PAN_ABSOLUTE: u32 = CAMERA + 8;
+    const TILT_ABSOLUTE: u32 = CAMERA + 9;
+    const FOCUS_ABSOLUTE: u32 = CAMERA + 10;
+    const FOCUS_AUTO: u32 = CAMERA + 12;
+    const ZOOM_ABSOLUTE: u32 = CAMERA + 13;
+    const IRIS_ABSOLUTE: u32 = CAMERA + 17;
+    const AUTO_WHITE_BALANCE: u32 = USER + 12;
+    const AUTOGAIN: u32 = USER + 18;
+    const HUE_AUTO: u32 = USER + 25;
+    const AUTOBRIGHTNESS: u32 = USER + 32;
+    const AUTO_CONTROLS: [u32; 6] = [
+        EXPOSURE_AUTO,
+        FOCUS_AUTO,
+        AUTO_WHITE_BALANCE,
+        AUTOGAIN,
+        HUE_AUTO,
+        AUTOBRIGHTNESS,
+    ];
+
+    /// The control holding the automatic mode of the control `name`.
+    pub(super) fn auto_control(name: &str) -> Option<u32> {
+        Some(match name {
+            "exposure" => EXPOSURE_AUTO,
+            "focus" => FOCUS_AUTO,
+            "white_balance" => AUTO_WHITE_BALANCE,
+            "gain" => AUTOGAIN,
+            "hue" => HUE_AUTO,
+            "brightness" => AUTOBRIGHTNESS,
+            _ => return None,
+        })
+    }
+
+    pub(super) fn is_auto_control(id: u128) -> bool {
+        AUTO_CONTROLS
+            .iter()
+            .any(|&control| u128::from(control) == id)
+    }
+
+    /// The name a control is set by, the same as on the other systems: the
+    /// absolute ones by the plain name, the relative ones apart from them.
+    pub(super) fn name(control: KnownCameraControl) -> Option<&'static str> {
+        Some(match control {
+            KnownCameraControl::Pan => "pan_relative",
+            KnownCameraControl::Tilt => "tilt_relative",
+            KnownCameraControl::Zoom => "zoom_relative",
+            KnownCameraControl::Focus => "focus_relative",
+            KnownCameraControl::Iris => "iris_relative",
+            KnownCameraControl::Other(id) => match u32::try_from(id).ok()? {
+                EXPOSURE_ABSOLUTE => "exposure",
+                PAN_ABSOLUTE => "pan",
+                TILT_ABSOLUTE => "tilt",
+                FOCUS_ABSOLUTE => "focus",
+                ZOOM_ABSOLUTE => "zoom",
+                IRIS_ABSOLUTE => "iris",
+                _ => return None,
+            },
+            _ => return None,
+        })
+    }
+
+    /// The exposure mode: manual is 1; a menu reaching 3 offers aperture
+    /// priority, the automatic mode of UVC cameras, and the others the
+    /// fully automatic 0.
+    pub(super) fn exposure_mode(automatic: bool, max: i64) -> i64 {
+        match (automatic, max >= 3) {
+            (false, _) => 1,
+            (true, true) => 3,
+            (true, false) => 0,
+        }
+    }
+
+    /// Whether the mode control `id` with `value` is automatic.
+    pub(super) fn is_automatic(id: u32, value: &ControlValueSetter) -> bool {
+        match value {
+            ControlValueSetter::Boolean(on) => *on,
+            ControlValueSetter::Integer(mode) if id == EXPOSURE_AUTO => *mode != 1,
+            ControlValueSetter::Integer(on) => *on != 0,
+            _ => false,
+        }
     }
 }
 
 fn start(arguments: &Arguments) -> Result<(Camera, Vec<String>), String> {
     let index = index_of(arguments.device.as_ref())?;
-    apply_modes(&index, &modes(&arguments.controls)?)?;
+    let modes = modes(&arguments.controls)?;
+    apply_modes(&index, &modes)?;
     let mut camera = open_index(index, arguments)?;
+    switch_modes(&mut camera, &modes, &arguments.controls)?;
     let set = set_controls(&mut camera, &arguments.controls)?;
     camera
         .open_stream()
@@ -686,12 +921,149 @@ mod tests {
         let modes = modes(&wanted).expect("modes");
         assert!(modes.contains(&("focus".into(), true)));
         assert!(modes.contains(&("exposure".into(), false)));
-        // A value needs the manual mode on Windows, where the library keeps
-        // the mode a control has.
-        assert_eq!(modes.contains(&("gain".into(), false)), cfg!(windows));
+        // A value needs the manual mode where the system keeps the mode
+        // apart from the value; on macOS the control is the mode.
+        assert_eq!(
+            modes.contains(&("gain".into(), false)),
+            cfg!(any(windows, target_os = "linux"))
+        );
         let wrong: Map<String, Value> =
             serde_json::from_value(json!({"focus": "fast"})).expect("map");
         assert!(super::modes(&wrong).unwrap_err().contains("not fast"));
+    }
+
+    /// Sets `INOCODE_CAMERA_CONTROL` (gain when unset) of the camera
+    /// `INOCODE_CAMERA_DEVICE` to the value `INOCODE_CAMERA_VALUE` (77 when
+    /// unset), which turns its mode manual, then back to automatic, checking
+    /// the controls after each; run by hand, or in CI with a virtual camera.
+    #[test]
+    #[ignore = "changes the settings of the machine's camera"]
+    fn switches_a_mode_here() {
+        let name = std::env::var("INOCODE_CAMERA_CONTROL").unwrap_or_else(|_| "gain".into());
+        let value: i64 = std::env::var("INOCODE_CAMERA_VALUE")
+            .map_or(77, |value| value.parse().expect("a number"));
+        let folder = std::env::temp_dir().join("inocode-camera-mode");
+        let line = || {
+            let arguments: Arguments =
+                serde_json::from_value(json!({"action": "controls", "device": device()}))
+                    .expect("arguments");
+            let text = describe(&arguments).expect("controls");
+            println!("{text}");
+            text.lines()
+                .find(|line| line.starts_with(&format!("- {name}: ")))
+                .unwrap_or_else(|| panic!("no control {name}"))
+                .to_string()
+        };
+        line();
+        for controls in [json!({name.clone(): value}), json!({name.clone(): "auto"})] {
+            let arguments: Arguments = serde_json::from_value(json!({
+                "action": "photo", "device": device(), "resolution": [640, 480],
+                "controls": controls
+            }))
+            .expect("arguments");
+            let (text, _) = photo(&arguments, &folder).expect("photo");
+            println!("--- {controls}\n{text}");
+            let line = line();
+            if controls[&name].is_string() {
+                assert!(line.contains("Automatic"), "{line}");
+            } else {
+                assert!(line.starts_with(&format!("- {name}: {value} ")), "{line}");
+                assert!(line.contains("Manual"), "{line}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn control(id: u32, name: &str, description: ControlValueDescription) -> CameraControl {
+        CameraControl::new(
+            KnownCameraControl::Other(id.into()),
+            name.into(),
+            description,
+            Vec::new(),
+            true,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_modes_are_controls_of_their_own() {
+        let menu = ControlValueDescription::IntegerRange {
+            min: 0,
+            max: 3,
+            value: 3,
+            step: 1,
+            default: 3,
+        };
+        let switch = ControlValueDescription::Boolean {
+            value: true,
+            default: true,
+        };
+        let absolute = ControlValueDescription::IntegerRange {
+            min: 1,
+            max: 5000,
+            value: 156,
+            step: 1,
+            default: 156,
+        };
+        let controls = [
+            control(0x009a_0901, "Auto Exposure", menu),
+            control(0x009a_0902, "Exposure Time, Absolute", absolute),
+            control(0x0098_0912, "Gain, Automatic", switch),
+        ];
+        assert_eq!(control_name(&controls[1]), "exposure");
+        assert!(holds_a_mode(&controls[0]) && holds_a_mode(&controls[2]));
+        assert!(!holds_a_mode(&controls[1]));
+        assert_eq!(automatic_now(&controls, &controls[1]), Some(true));
+        let (_, manual) = mode_setter(&controls, "exposure", false).expect("exposure");
+        assert_eq!(manual, ControlValueSetter::Integer(1));
+        let (_, automatic) = mode_setter(&controls, "exposure", true).expect("exposure");
+        assert_eq!(automatic, ControlValueSetter::Integer(3));
+        let (id, gain) = mode_setter(&controls, "gain", false).expect("gain");
+        assert_eq!(id, KnownCameraControl::Other(0x0098_0912));
+        assert_eq!(gain, ControlValueSetter::Boolean(false));
+        assert!(mode_setter(&controls, "focus", true).is_none());
+        assert_eq!(
+            control_name(&CameraControl::new(
+                KnownCameraControl::Pan,
+                "Pan, Relative".into(),
+                ControlValueDescription::None,
+                Vec::new(),
+                true,
+            )),
+            "pan_relative"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_modes_are_the_controls_themselves() {
+        let controls = [CameraControl::new(
+            KnownCameraControl::Exposure,
+            "ExposureMode".into(),
+            ControlValueDescription::Enum {
+                value: 2,
+                possible: vec![0, 2],
+                default: 2,
+            },
+            Vec::new(),
+            true,
+        )];
+        assert_eq!(
+            mode_setter(&controls, "exposure", true),
+            Some((
+                KnownCameraControl::Exposure,
+                ControlValueSetter::EnumValue(2)
+            ))
+        );
+        assert_eq!(
+            mode_setter(&controls, "exposure", false),
+            Some((
+                KnownCameraControl::Exposure,
+                ControlValueSetter::EnumValue(0)
+            ))
+        );
+        assert!(mode_setter(&controls, "focus", true).is_none());
     }
 
     #[test]

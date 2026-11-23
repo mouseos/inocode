@@ -50,6 +50,41 @@ jobs:
         shell: bash
         run: cargo test --workspace --release
 
+  # The camera's automatic and manual modes on Linux, against the kernel's
+  # virtual camera (vivid), whose gain has an automatic mode as UVC cameras do.
+  virtual-camera:
+    name: camera modes on a virtual camera (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+
+      - name: Load the virtual camera
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y "linux-modules-extra-$(uname -r)" v4l-utils
+          sudo modprobe vivid n_devs=1 node_types=0x1
+          sudo chmod a+rw /dev/video*
+          v4l2-ctl --list-devices
+          v4l2-ctl -d /dev/video0 --list-ctrls
+
+      - name: Switch a mode and back
+        shell: bash
+        env:
+          INOCODE_CAMERA_DEVICE: "0"
+          INOCODE_CAMERA_CONTROL: gain
+          INOCODE_CAMERA_VALUE: "77"
+        run: |
+          cargo test --release -p inocode-core --lib camera::tests::lists_the_cameras_here -- --ignored --exact --nocapture
+          cargo test --release -p inocode-core --lib camera::tests::switches_a_mode_here -- --ignored --exact --nocapture
+
   live-api:
     name: live provider test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
