@@ -35,6 +35,15 @@ fn database() -> std::path::PathBuf {
     folder.join("inocode.db")
 }
 
+/// The state sent after the history, past its first line, the person's
+/// local time.
+fn after_the_time(state: &serde_json::Value) -> &str {
+    let state = state.as_str().expect("text");
+    let (time, rest) = state.split_once('\n').expect("the time and more");
+    assert!(time.starts_with("Now: "), "{time}");
+    rest
+}
+
 /// The reply-language line that ends every request.
 fn language_line() -> String {
     format!(
@@ -175,8 +184,9 @@ async fn a_turn_streams_stores_and_reports_why_it_ended() {
             .is_some_and(|text| text.contains(&language_line())));
         assert_eq!(sent[2]["content"], "hello");
         assert_eq!(sent[3]["content"], "again");
-        // The reply language is repeated after the history, and not stored.
-        assert_eq!(sent[4]["content"], language_line());
+        // The time and the reply language come after the history, and are
+        // not stored.
+        assert_eq!(after_the_time(&sent[4]["content"]), language_line());
     })
     .await;
 }
@@ -808,7 +818,7 @@ async fn the_plan_is_shown_after_the_history_with_every_request() {
         let state = last_message(&requests[1]);
         assert_eq!(state["role"], "user");
         assert_eq!(
-            state["content"],
+            after_the_time(&state["content"]),
             format!(
                 "Current plan:\n[x] write the parser\n[>] test it\n\n{}",
                 language_line()
@@ -1451,7 +1461,10 @@ async fn an_answer_cut_at_the_output_limit_is_resumed_three_times() {
         let sent = chats(&mock);
         assert_eq!(sent.len(), 3);
         let messages = sent[1].body["messages"].as_array().expect("messages");
-        assert_eq!(messages.last().unwrap()["content"], language_line());
+        assert_eq!(
+            after_the_time(&messages.last().unwrap()["content"]),
+            language_line()
+        );
         let resumed = &messages[messages.len() - 2];
         assert_eq!(resumed["role"], "user");
         assert!(resumed["content"]

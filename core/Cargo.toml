@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 dom_query = "0.29"
 dom_smoothie = "0.19"
 getrandom = "0.2"

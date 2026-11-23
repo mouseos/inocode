@@ -447,6 +447,15 @@ fn start(key: Key, folder: &Path, command: String, confined: bool) -> Result<Arc
     Ok(job)
 }
 
+/// The shell commands run in, as the model is told.
+#[cfg(windows)]
+pub(crate) const COMMAND_SHELL: &str =
+    "Windows PowerShell (powershell.exe); use PowerShell commands \
+    and syntax, not Unix ones";
+
+#[cfg(not(windows))]
+pub(crate) const COMMAND_SHELL: &str = "sh (sh -c); use POSIX shell syntax";
+
 #[cfg(windows)]
 fn shell_command(command: &str) -> Vec<String> {
     [

@@ -1,9 +1,9 @@
 # 日時・OS・シェル・作業フォルダをモデルに伝える
 
-- **対象と範囲：** モデルへの指示（`core/src/turn.rs` の `system_prompt`・`state`）に、いまの日時（時差つき）、OS、コマンドを動かすシェル（Windows は PowerShell、ほかは `sh`）、作業フォルダを入れること。まだ作っていない。
+- **対象と範囲：** モデルへの指示に、いまの日時（時差つき）、OS、コマンドを動かすシェル（Windows は PowerShell、ほかは `sh`）、作業フォルダを入れること。git の情報は含めない（承認の範囲外）。
 - **きっかけ（ユーザーの判断）：** 2026-11-23「日時、OSなどの基本情報は取れたほうがいいのでは？……powershellでunixコマンド実行する馬鹿が多いし時刻もおかしいの返す奴いる」。
 - **関連ソースコード：** `core/src/turn.rs`（`system_prompt`、`Thread::state`）、`core/src/shell.rs`（`shell_command`：Windows は `powershell.exe -NoLogo -NoProfile -Command`、ほかは `sh -c`）。シェルの説明文はどのシェルかを言っていない。
-- **根拠の状態：** UNSUPPORTED_PENDING（作るにはユーザーの承認が要る）。
+- **根拠の状態：** UNSUPPORTED_APPROVED。2026-11-23、根拠が弱い（日時）か無い（OS・シェル・作業フォルダ）ことを示したうえで「日時・OS・シェルをモデルに伝える機能は、根拠が弱いまま作りますか？」と尋ね、ユーザーが「作る」と答えた。
 
 ## 資料（論文の結果）
 
@@ -32,5 +32,7 @@
 
 ## 実装とテスト
 
-- 実装：なし。
-- 必要なユーザー承認：根拠が弱い（日時）か無い（OS・シェル・作業フォルダ）状態で作ってよいか。
+- OS（`std::env::consts::OS`・`ARCH`）、シェル（`core/src/shell.rs` の `COMMAND_SHELL`。Windows は PowerShell の書き方を使い Unix のコマンドを使わないよう、ほかは POSIX の書き方を使うよう書く）、作業フォルダは変わらないので、システムプロンプト（`system_prompt` の `environment`）に入れる。キャッシュされる先頭部分は変わらない。
+- 日時は要求のたびに変わるので、保存しない状態の部分（`Thread::state`、会話の後ろに毎回付く）の先頭に、人のコンピューターの現地時刻で「Now: 2026-11-23 14:05 Monday, UTC+09:00」の形で入れる。分まで。現地時刻と時差は `chrono`（`clock` のみ）で読む。
+- テスト：`the_model_is_told_the_system_shell_and_folder`、`the_time_names_the_day_and_the_offset`。
+- 未検証：入れたことで、シェルを取り違える失敗や日時の間違いが実際に減るか（本物のモデルでは未試行）。日付で答えが揺れる（Sanz-Guerrero et al.）影響。

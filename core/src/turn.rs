@@ -377,15 +377,18 @@ a video after setting them; taking pictures waits for the person.\n\
 - plugin_search finds plugins in the Claude Code and Codex catalogs; plugin_install \
 installs one after the person approves.";
 
-/// The system prompt: how to use the tools, the reply language, then the
-/// project's rules as written, never summarized.
-fn system_prompt(rules: Option<&str>, language: Option<&str>) -> String {
+/// The system prompt: how to use the tools, the system the commands run
+/// on, the reply language, then the project's rules as written, never
+/// summarized. The time changes, so it is sent with the state instead
+/// (docs/evidence/environment-context.md).
+fn system_prompt(rules: Option<&str>, language: Option<&str>, folder: Option<&Path>) -> String {
     let mut system = String::from(
         "You are a coding agent working on a user's project. When a method is shown to \
          work, save it with the method tool. Before investigating a device, format or \
          program from scratch, use recall to look for methods saved in earlier work.",
     );
     system.push_str(TOOL_GUIDE);
+    system.push_str(&environment(folder));
     if let Some(language) = language {
         system.push_str("\n\n");
         system.push_str(&crate::language::instruction(language));
@@ -396,6 +399,31 @@ fn system_prompt(rules: Option<&str>, language: Option<&str>) -> String {
         system.push_str("\n----- END RULES -----");
     }
     system
+}
+
+/// The system and shell the commands run on, and the project folder.
+fn environment(folder: Option<&Path>) -> String {
+    let mut text = format!(
+        "\n\nThe person's computer runs {} ({}). shell runs commands in {}.",
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        shell::COMMAND_SHELL
+    );
+    if let Some(folder) = folder {
+        text.push_str(&format!(
+            " The project folder, where commands run, is {}.",
+            folder.display()
+        ));
+    }
+    text
+}
+
+/// The person's local time, sent with each request.
+fn now(time: chrono::DateTime<chrono::FixedOffset>) -> String {
+    format!(
+        "Now: {} (the person's local time).",
+        time.format("%Y-%m-%d %H:%M %A, UTC%:z")
+    )
 }
 
 struct Thread<'a> {
@@ -587,7 +615,9 @@ impl Thread<'_> {
             .as_ref()
             .filter(|goal| goal.is_active())
             .map(crate::goal::Goal::render);
+        let now = now(chrono::Local::now().fixed_offset());
         let parts: Vec<&str> = [
+            Some(now.as_str()),
             goal.as_deref(),
             plan.as_deref(),
             jobs.as_deref(),
@@ -598,7 +628,7 @@ impl Thread<'_> {
         .into_iter()
         .flatten()
         .collect();
-        Ok((!parts.is_empty()).then(|| parts.join("\n")))
+        Ok(Some(parts.join("\n")))
     }
 
     /// Whether this turn's commands run confined.
@@ -1484,6 +1514,7 @@ async fn open<'a>(
     let language =
         crate::language::default(&store.files_folder().with_file_name("settings.json")).await;
     let goal = crate::goal::load(store, session).await?;
+    let system = system_prompt(rules.as_deref(), language.as_deref(), folder.as_deref());
     Ok(Thread {
         store,
         session,
@@ -1491,7 +1522,7 @@ async fn open<'a>(
         folder,
         cancel,
         conversation: Conversation {
-            system: Some(system_prompt(rules.as_deref(), language.as_deref())),
+            system: Some(system),
             messages,
         },
         seqs,
@@ -1714,11 +1745,11 @@ mod tests {
 
     #[test]
     fn the_rules_are_given_whole_inside_markers() {
-        let system = system_prompt(Some("- テストは全部実行する"), None);
+        let system = system_prompt(Some("- テストは全部実行する"), None, None);
         assert!(
             system.ends_with("----- RULES -----\n- テストは全部実行する\n----- END RULES -----")
         );
-        let bare = system_prompt(None, None);
+        let bare = system_prompt(None, None, None);
         assert!(bare.starts_with("You are a coding agent working on a user's project."));
         assert!(!bare.contains("RULES"));
     }
@@ -1734,14 +1765,34 @@ mod tests {
                 assert!(listed, "{} is not in the tool guide", spec.name);
             }
         }
-        assert!(system_prompt(None, None).contains(TOOL_GUIDE));
+        assert!(system_prompt(None, None, None).contains(TOOL_GUIDE));
+    }
+
+    #[test]
+    fn the_model_is_told_the_system_shell_and_folder() {
+        let folder = Path::new("project");
+        let system = system_prompt(None, None, Some(folder));
+        assert!(system.contains(&format!("runs {} (", std::env::consts::OS)));
+        assert!(system.contains(shell::COMMAND_SHELL));
+        assert!(system.contains(&format!("is {}.", folder.display())));
+        assert_eq!(cfg!(windows), shell::COMMAND_SHELL.contains("PowerShell"));
+        assert!(!system_prompt(None, None, None).contains("project folder"));
+    }
+
+    #[test]
+    fn the_time_names_the_day_and_the_offset() {
+        let time = chrono::DateTime::parse_from_rfc3339("2026-11-23T14:05:09+09:00").unwrap();
+        assert_eq!(
+            now(time),
+            "Now: 2026-11-23 14:05 Monday, UTC+09:00 (the person's local time)."
+        );
     }
 
     #[test]
     fn the_reply_language_comes_before_the_rules() {
-        let system = system_prompt(Some("- rule"), Some("ja-JP"));
+        let system = system_prompt(Some("- rule"), Some("ja-JP"), None);
         let language = system.find("in ja-JP").unwrap();
         assert!(language < system.find("----- RULES -----").unwrap());
-        assert!(!system_prompt(None, None).contains("Write your replies"));
+        assert!(!system_prompt(None, None, None).contains("Write your replies"));
     }
 }
