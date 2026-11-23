@@ -1647,6 +1647,7 @@ dependencies = [
  "tree-sitter-tags",
  "tree-sitter-typescript",
  "two-face",
+ "v4l",
  "vt100",
  "windows",
  "windows-sys 0.61.2",

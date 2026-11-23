@@ -41,6 +41,7 @@ zero-search = { git = "https://github.com/mouseos/ZeroSearch_MCP", rev = "728840
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
+v4l = "0.14"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [

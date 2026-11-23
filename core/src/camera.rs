@@ -204,9 +204,7 @@ fn describe(arguments: &Arguments) -> Result<String, String> {
             )
         })
         .collect();
-    let controls = camera
-        .camera_controls()
-        .map_err(|error| format!("cannot read the controls: {error}"))?;
+    let controls = controls_of(&camera)?;
     let controls: Vec<String> = controls
         .iter()
         .filter(|control| !holds_a_mode(control))
@@ -299,14 +297,59 @@ fn known_name(control: KnownCameraControl) -> &'static str {
     }
 }
 
+/// The controls of an opened camera. On Linux they are read here: the
+/// capture library stops at a control of a type it does not know, such as
+/// the region of interest of newer UVC cameras.
+#[cfg(target_os = "linux")]
+fn controls_of(camera: &Camera) -> Result<Vec<CameraControl>, String> {
+    v4l2::controls(device_number(camera)?)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn controls_of(camera: &Camera) -> Result<Vec<CameraControl>, String> {
+    camera
+        .camera_controls()
+        .map_err(|error| format!("cannot read the controls: {error}"))
+}
+
+#[cfg(target_os = "linux")]
+fn set_control(
+    camera: &mut Camera,
+    control: KnownCameraControl,
+    setter: ControlValueSetter,
+) -> Result<(), String> {
+    v4l2::set(device_number(camera)?, control, &setter)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn set_control(
+    camera: &mut Camera,
+    control: KnownCameraControl,
+    setter: ControlValueSetter,
+) -> Result<(), String> {
+    camera
+        .set_camera_control(control, setter)
+        .map_err(|error| error.to_string())
+}
+
+/// The number of the camera's `/dev/video` node.
+#[cfg(target_os = "linux")]
+fn device_number(camera: &Camera) -> Result<usize, String> {
+    match camera.info().index() {
+        CameraIndex::Index(index) => Ok(*index as usize),
+        CameraIndex::String(text) => text
+            .trim_start_matches("/dev/video")
+            .parse()
+            .map_err(|_| format!("cannot tell the device of {text}")),
+    }
+}
+
 /// Sets the controls asked for; what was set, or the first that failed.
 fn set_controls(camera: &mut Camera, wanted: &Map<String, Value>) -> Result<Vec<String>, String> {
     if wanted.is_empty() {
         return Ok(Vec::new());
     }
-    let controls = camera
-        .camera_controls()
-        .map_err(|error| format!("cannot read the controls: {error}"))?;
+    let controls = controls_of(camera)?;
     let mut set = Vec::new();
     for (name, value) in wanted {
         if value.is_string() {
@@ -336,8 +379,7 @@ fn set_controls(camera: &mut Camera, wanted: &Map<String, Value>) -> Result<Vec<
             (_, Value::Bool(on)) => ControlValueSetter::Integer(i64::from(*on)),
             _ => return Err(format!("{name} takes a number or true/false")),
         };
-        camera
-            .set_camera_control(control.control(), setter)
+        set_control(camera, control.control(), setter)
             .map_err(|error| format!("cannot set {name} to {value}: {error}"))?;
         set.push(format!("{name}={value}"));
     }
@@ -441,9 +483,7 @@ fn switch_modes(
         let asked = wanted
             .iter()
             .any(|(key, value)| key.to_lowercase() == *name && value.is_string());
-        let controls = camera
-            .camera_controls()
-            .map_err(|error| format!("cannot read the controls: {error}"))?;
+        let controls = controls_of(camera)?;
         let Some((control, setter)) = mode_setter(&controls, name, *automatic) else {
             if asked {
                 return Err(format!("this camera has no automatic mode for {name}"));
@@ -451,8 +491,7 @@ fn switch_modes(
             continue;
         };
         let mode = if *automatic { "automatic" } else { "manual" };
-        camera
-            .set_camera_control(control, setter)
+        set_control(camera, control, setter)
             .map_err(|error| format!("cannot set {name} to {mode}: {error}"))?;
     }
     Ok(())
@@ -546,7 +585,13 @@ fn holds_a_mode(_control: &CameraControl) -> bool {
 /// relative ones (linux/v4l2-controls.h).
 #[cfg(target_os = "linux")]
 mod v4l2 {
-    use nokhwa::utils::{ControlValueSetter, KnownCameraControl};
+    use nokhwa::utils::{
+        CameraControl, ControlValueDescription, ControlValueSetter, KnownCameraControl,
+        KnownCameraControlFlag,
+    };
+    use v4l::control::{Control, Value};
+    use v4l::v4l_sys::{v4l2_query_ext_ctrl, V4L2_CTRL_FLAG_NEXT_CTRL};
+    use v4l::Device;
 
     const USER: u32 = 0x0098_0900;
     const CAMERA: u32 = 0x009a_0900;
@@ -570,6 +615,146 @@ mod v4l2 {
         HUE_AUTO,
         AUTOBRIGHTNESS,
     ];
+
+    /// The controls the capture library names, by their V4L2 ids, as it
+    /// maps them.
+    const KNOWN: [(u32, KnownCameraControl); 15] = [
+        (USER, KnownCameraControl::Brightness),
+        (USER + 1, KnownCameraControl::Contrast),
+        (USER + 2, KnownCameraControl::Saturation),
+        (USER + 3, KnownCameraControl::Hue),
+        (USER + 16, KnownCameraControl::Gamma),
+        (USER + 17, KnownCameraControl::Exposure),
+        (USER + 19, KnownCameraControl::Gain),
+        (USER + 26, KnownCameraControl::WhiteBalance),
+        (USER + 27, KnownCameraControl::Sharpness),
+        (USER + 28, KnownCameraControl::BacklightComp),
+        (CAMERA + 4, KnownCameraControl::Pan),
+        (CAMERA + 5, KnownCameraControl::Tilt),
+        (CAMERA + 11, KnownCameraControl::Focus),
+        (CAMERA + 14, KnownCameraControl::Zoom),
+        (CAMERA + 18, KnownCameraControl::Iris),
+    ];
+
+    fn known(id: u32) -> KnownCameraControl {
+        KNOWN
+            .iter()
+            .find(|(known, _)| *known == id)
+            .map_or(KnownCameraControl::Other(id.into()), |(_, control)| {
+                *control
+            })
+    }
+
+    fn id(control: KnownCameraControl) -> Option<u32> {
+        match control {
+            KnownCameraControl::Other(id) => u32::try_from(id).ok(),
+            control => KNOWN
+                .iter()
+                .find(|(_, known)| *known == control)
+                .map(|(id, _)| *id),
+        }
+    }
+
+    /// The controls of `/dev/video<number>` that hold one number or one
+    /// switch; the others (buttons, strings, areas, arrays) are skipped.
+    pub(super) fn controls(number: usize) -> Result<Vec<CameraControl>, String> {
+        let device =
+            Device::new(number).map_err(|error| format!("cannot read the controls: {error}"))?;
+        let fd = device.handle().fd();
+        let mut controls = Vec::new();
+        // SAFETY: an all-zero v4l2_query_ext_ctrl is a valid query, and
+        // VIDIOC_QUERY_EXT_CTRL takes a pointer to one, which it fills.
+        let mut query: v4l2_query_ext_ctrl = unsafe { std::mem::zeroed() };
+        loop {
+            query.id |= V4L2_CTRL_FLAG_NEXT_CTRL;
+            let found = unsafe {
+                v4l::v4l2::ioctl(
+                    fd,
+                    v4l::v4l2::vidioc::VIDIOC_QUERY_EXT_CTRL,
+                    std::ptr::addr_of_mut!(query).cast(),
+                )
+            };
+            if found.is_err() {
+                break;
+            }
+            if let Some(control) = control(&device, &query) {
+                controls.push(control);
+            }
+        }
+        Ok(controls)
+    }
+
+    /// Integer 1, boolean 2, menu 3 and 64-bit integer 5: the types read
+    /// as one value (videodev2.h).
+    fn control(device: &Device, query: &v4l2_query_ext_ctrl) -> Option<CameraControl> {
+        if !matches!(query.type_, 1 | 2 | 3 | 5) {
+            return None;
+        }
+        let description = match device.control(query.id).ok()?.value {
+            Value::Boolean(value) => ControlValueDescription::Boolean {
+                value,
+                default: query.default_value != 0,
+            },
+            Value::Integer(value) => ControlValueDescription::IntegerRange {
+                min: query.minimum,
+                max: query.maximum,
+                value,
+                step: query.step as i64,
+                default: query.default_value,
+            },
+            _ => return None,
+        };
+        // V4L2_CTRL_FLAG_*: disabled 0x1, read only 0x4, inactive 0x10,
+        // write only 0x40, volatile 0x80.
+        let flags = [
+            (0x1 | 0x10, KnownCameraControlFlag::Disabled),
+            (0x4, KnownCameraControlFlag::ReadOnly),
+            (0x40, KnownCameraControlFlag::WriteOnly),
+            (0x80, KnownCameraControlFlag::Volatile),
+        ]
+        .into_iter()
+        .filter(|(bits, _)| query.flags & bits != 0)
+        .map(|(_, flag)| flag)
+        .collect();
+        // SAFETY: the driver ends the name with a zero within the array.
+        let name = unsafe { std::ffi::CStr::from_ptr(query.name.as_ptr()) }
+            .to_string_lossy()
+            .into_owned();
+        Some(CameraControl::new(
+            known(query.id),
+            name,
+            description,
+            flags,
+            query.flags & 0x10 == 0,
+        ))
+    }
+
+    /// Sets a control of `/dev/video<number>` and checks that the camera
+    /// kept the value.
+    pub(super) fn set(
+        number: usize,
+        control: KnownCameraControl,
+        setter: &ControlValueSetter,
+    ) -> Result<(), String> {
+        let id = id(control).ok_or("an unknown control")?;
+        let value = || match setter {
+            ControlValueSetter::Integer(value) => Ok(Value::Integer(*value)),
+            ControlValueSetter::Boolean(on) => Ok(Value::Boolean(*on)),
+            other => Err(format!("{other} is not a value this camera takes")),
+        };
+        let device = Device::new(number).map_err(|error| error.to_string())?;
+        device
+            .set_control(Control {
+                id,
+                value: value()?,
+            })
+            .map_err(|error| error.to_string())?;
+        let kept = device.control(id).map_err(|error| error.to_string())?.value;
+        if kept != value()? {
+            return Err(format!("the camera kept {kept:?}"));
+        }
+        Ok(())
+    }
 
     /// The control holding the automatic mode of the control `name`.
     pub(super) fn auto_control(name: &str) -> Option<u32> {
