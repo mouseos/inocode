@@ -74,6 +74,9 @@
 | [edit-write.md](edit-write.md) | edit・write の道具、空白を無視した照合、編集後の構文検査、効率化の候補 | 置換形式・完全一致・空白を無視した照合・構文検査は RESEARCH_SUPPORTED（査読前を含む）、細部は UNSUPPORTED_APPROVED | `core/src/edit.rs`、構文検査は `core/src/outline.rs` |
 | [environment-context.md](environment-context.md) | 日時・OS・シェル・作業フォルダをモデルに伝える | UNSUPPORTED_APPROVED | `core/src/turn.rs`、`core/src/shell.rs` |
 | [file-type-tool.md](file-type-tool.md) | ファイルのパスと種類（MIME）を返す道具 | UNSUPPORTED_PENDING | 未実装 |
+| [pdf-reading.md](pdf-reading.md) | PDF を読む | UNSUPPORTED_PENDING | 未実装 |
+| [git-context.md](git-context.md) | git の情報をモデルに伝える | UNSUPPORTED_PENDING | 未実装 |
+| [instruction-adherence.md](instruction-adherence.md) | 人が決めた約束をエージェントが破る理由と対策案 | UNSUPPORTED_PENDING | 未実装（分析のみ） |
 
 ## 状態の判定
 
