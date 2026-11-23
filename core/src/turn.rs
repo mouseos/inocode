@@ -487,6 +487,8 @@ struct Thread<'a> {
     /// then.
     goal_calls: u32,
     goal_mark: u64,
+    /// The project's git state when the turn started.
+    git: Option<String>,
 }
 
 impl Thread<'_> {
@@ -602,9 +604,9 @@ impl Thread<'_> {
         );
     }
 
-    /// The plan and the lessons, shown after the history with each request
-    /// and never stored, so they survive compaction and keep the cached
-    /// prefix intact.
+    /// The time, the git state, the plan and the lessons, shown after the
+    /// history with each request and never stored, so they survive
+    /// compaction and keep the cached prefix intact.
     async fn state(&self) -> Result<Option<String>, ErrorInfo> {
         let plan = agent_tools::render_plan(self.store, self.session).await?;
         let jobs = shell::render_jobs(&self.store.files_folder().join("logs"), self.session);
@@ -618,6 +620,7 @@ impl Thread<'_> {
         let now = now(chrono::Local::now().fixed_offset());
         let parts: Vec<&str> = [
             Some(now.as_str()),
+            self.git.as_deref(),
             goal.as_deref(),
             plan.as_deref(),
             jobs.as_deref(),
@@ -1515,6 +1518,10 @@ async fn open<'a>(
         crate::language::default(&store.files_folder().with_file_name("settings.json")).await;
     let goal = crate::goal::load(store, session).await?;
     let system = system_prompt(rules.as_deref(), language.as_deref(), folder.as_deref());
+    let git = match folder.as_deref() {
+        Some(folder) => crate::git::state(folder).await,
+        None => None,
+    };
     Ok(Thread {
         store,
         session,
@@ -1553,6 +1560,7 @@ async fn open<'a>(
         checker: None,
         goal_calls: 0,
         goal_mark: 0,
+        git,
     })
 }
 

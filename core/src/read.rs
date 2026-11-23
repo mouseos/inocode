@@ -28,7 +28,10 @@ pub(crate) fn spec() -> ToolSpec {
             picks which same-named definition and where in it to continue. An image \
             (png, jpg, gif, webp) is shown to you, shrunk to 1568 pixels on its long \
             edge; with `region` [x0, y0, x1, y1] in the image's own pixels, only that \
-            part is shown, at full detail, to read small text."
+            part is shown, at full detail, to read small text. A PDF gives the text of \
+            up to 20 pages from page `from`; with `page`, that one page is shown as an \
+            image with its text (`region` then in the image's pixels), for scans, \
+            figures and tables."
             .into(),
         parameters: json!({
             "type": "object",
@@ -38,6 +41,7 @@ pub(crate) fn spec() -> ToolSpec {
                 "name": {"type": "string"},
                 "from": {"type": "integer", "minimum": 1},
                 "lines": {"type": "integer", "minimum": 1, "maximum": WINDOW},
+                "page": {"type": "integer", "minimum": 1},
                 "region": {
                     "type": "array",
                     "items": {"type": "integer", "minimum": 0},
@@ -58,6 +62,8 @@ struct Arguments {
     from: Option<usize>,
     #[serde(default)]
     lines: Option<usize>,
+    #[serde(default)]
+    page: Option<usize>,
     #[serde(default)]
     region: Option<[u32; 4]>,
 }
@@ -80,6 +86,18 @@ pub(crate) async fn run(
             let (picture, format) = crate::picture::open(&path)?;
             crate::picture::prepare(&picture, format, region, &images, &source)
                 .map(|(image, line)| (line, Some(image)))
+        })
+        .await
+        .map_err(|error| format!("read failed: {error}"))?;
+    }
+    if crate::pdf::is_pdf(&path) {
+        let images = images.to_path_buf();
+        let source = arguments.path.clone();
+        let (from, page, region) = (arguments.from, arguments.page, arguments.region);
+        return tokio::task::spawn_blocking(move || match page {
+            Some(page) => crate::pdf::page(&path, page.max(1), region, &images, &source)
+                .map(|(line, image)| (line, Some(image))),
+            None => crate::pdf::text(&path, from.unwrap_or(1).max(1)).map(|text| (text, None)),
         })
         .await
         .map_err(|error| format!("read failed: {error}"))?;
