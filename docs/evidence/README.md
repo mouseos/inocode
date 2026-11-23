@@ -64,7 +64,7 @@
 | [goal-command.md](goal-command.md) | goal コマンド（目標の達成まで自動で続ける） | UNSUPPORTED_APPROVED | 実装済み（`core/src/goal.rs`、`goal/set`・`goal/read`・`goal/stop`） |
 | [plugin-mechanism.md](plugin-mechanism.md) | Claude・ChatGPT のサインインで使うコネクタとプラグイン（仕組み、実装） | UNSUPPORTED_APPROVED | コネクタは実装済み（`core/src/connectors.rs`、`core/src/mcp.rs`）。プラグインのストアと読み込みは作業中 |
 | [pageindex.md](pageindex.md) | PageIndex（目次の木をたどる検索） | UNSUPPORTED_PENDING | 採用しない（調査のみ） |
-| [image-input.md](image-input.md) | 画像をモデルに見せる（read で画像、縮小、切り抜き） | 機能は UNSUPPORTED_APPROVED、既定値は公式文書と研究による | 画像は実装済み（`core/src/picture.rs`）、カメラも実装済み（`core/src/camera.rs`、撮影は未試行） |
+| [image-input.md](image-input.md) | 画像をモデルに見せる（read で画像、縮小、切り抜き） | 機能は UNSUPPORTED_APPROVED、既定値は公式文書と研究による | 画像は実装済み（`core/src/picture.rs`）、カメラも実装済み（`core/src/camera.rs`、Windows の実物と Linux の仮想カメラで確認） |
 | [lsp-diagnostics.md](lsp-diagnostics.md) | 編集の後の型検査・LSP の診断 | UNSUPPORTED_PENDING | 未実装（適用できる研究なし） |
 | [ask-person.md](ask-person.md) | 人に質問するツール `ask`（フォームの形、ターンの終わりに返す） | UNSUPPORTED_APPROVED | 実装済み（`core/src/ask.rs`） |
 | [tool-guidance.md](tool-guidance.md) | システムプロンプトのツールの使い分け | 説明を詳しくする：RESEARCH_SUPPORTED。システムプロンプトに置く：UNSUPPORTED_APPROVED | 実装済み（`core/src/turn.rs` の `TOOL_GUIDE`） |
@@ -72,6 +72,8 @@
 | [reply-language.md](reply-language.md) | 返答の言語（OS の表示言語か設定ファイルの既定、会話の中の指定で変わる、指示の位置） | UNSUPPORTED_APPROVED | 実装済み（`core/src/language.rs`） |
 | [mcp-client.md](mcp-client.md) | MCP の受け口（stdio のサーバーの道具を `mcp__<サーバー>__<道具>` としてモデルに渡す） | UNSUPPORTED_APPROVED（仕様は MCP 2025-11-25） | `core/src/mcp.rs`。単体テストと、偽のサーバーを起動する結合テスト |
 | [edit-write.md](edit-write.md) | edit・write の道具、空白を無視した照合、編集後の構文検査、効率化の候補 | 置換形式・完全一致・空白を無視した照合・構文検査は RESEARCH_SUPPORTED（査読前を含む）、細部は UNSUPPORTED_APPROVED | `core/src/edit.rs`、構文検査は `core/src/outline.rs` |
+| [environment-context.md](environment-context.md) | 日時・OS・シェル・作業フォルダをモデルに伝える | UNSUPPORTED_PENDING | 未実装 |
+| [file-type-tool.md](file-type-tool.md) | ファイルのパスと種類（MIME）を返す道具 | UNSUPPORTED_PENDING | 未実装 |
 
 ## 状態の判定
 
