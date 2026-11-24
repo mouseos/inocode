@@ -78,6 +78,8 @@
 | [git-context.md](git-context.md) | git の情報をモデルに伝える | UNSUPPORTED_APPROVED | `core/src/git.rs`、`core/src/turn.rs` |
 | [instruction-adherence.md](instruction-adherence.md) | 人が決めた約束をエージェントが破る理由と対策案 | UNSUPPORTED_PENDING | 案 1 は promise-list.md で実装。ほかは未実装 |
 | [promise-list.md](promise-list.md) | 人が決めた約束の一覧を毎回付ける | RESEARCH_SUPPORTED（手当ての部分は UNSUPPORTED_APPROVED） | `core/src/promise.rs`、`core/src/turn.rs` |
+| [audio-recording.md](audio-recording.md) | 機器と形式を指定して音を録る | UNSUPPORTED_APPROVED | `core/src/audio.rs` |
+| [transcription.md](transcription.md) | 音のファイルを文字にする（Claude・ChatGPT・Google） | UNSUPPORTED_APPROVED | `core/src/transcribe.rs` |
 
 ## 状態の判定
 

@@ -375,6 +375,10 @@ later message.\n\
 on, and close it with the reason when it is done or will not be done.\n\
 - camera lists cameras and capture devices, shows their controls, and takes a photo or \
 a video after setting them; taking pictures waits for the person.\n\
+- audio lists the devices that record sound and records one to a wav or flac file in \
+the format asked for, after the person approves; transcribe turns speech in an audio \
+file into text through the person's Claude or ChatGPT sign-in, or Google's speech \
+service.\n\
 - Tools named mcp__<server>__<tool> come from the MCP servers the person set up.\n\
 - plugin_search finds plugins in the Claude Code and Codex catalogs; plugin_install \
 installs one after the person approves.";
@@ -761,6 +765,9 @@ impl Thread<'_> {
         if name == crate::camera::CAMERA && crate::camera::takes_pictures(arguments) {
             return Some("photos and videos are taken only with the person's approval".into());
         }
+        if name == crate::audio::AUDIO && crate::audio::records(arguments) {
+            return Some("sound is recorded only with the person's approval".into());
+        }
         if self.sandboxed() && command.as_ref().is_some_and(|c| c.outside_sandbox) {
             return Some("it asks to run outside the sandbox".into());
         }
@@ -801,6 +808,7 @@ impl Thread<'_> {
         // reviewer.
         if self.mode == Mode::Auto
             && name != crate::camera::CAMERA
+            && name != crate::audio::AUDIO
             && name != crate::plugins::INSTALL
         {
             if self.denials.0 >= DENIALS_IN_A_ROW || self.denials.1 >= DENIALS_PER_TURN {

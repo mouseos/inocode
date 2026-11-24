@@ -26,6 +26,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install the ALSA headers (Linux sound recording)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config
+
       - name: Install stable Rust
         shell: bash
         run: |
@@ -58,6 +65,13 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install the ALSA headers (Linux sound recording)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config
 
       - name: Install stable Rust
         shell: bash
@@ -103,6 +117,13 @@ jobs:
           - macos-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install the ALSA headers (Linux sound recording)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config
 
       - name: Install stable Rust
         shell: bash

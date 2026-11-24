@@ -7,6 +7,7 @@
 
 mod agent_tools;
 mod ask;
+mod audio;
 mod camera;
 #[cfg(windows)]
 mod camera_mode;
@@ -40,6 +41,7 @@ pub mod sandbox;
 mod shell;
 mod sse;
 pub mod store;
+mod transcribe;
 pub mod turn;
 mod usage;
 pub mod usage_log;

@@ -133,6 +133,8 @@ pub(crate) fn specs(sandboxed: bool) -> Vec<ToolSpec> {
         crate::explore::spec(),
         crate::ask::spec(),
         crate::camera::spec(),
+        crate::audio::spec(),
+        crate::transcribe::spec(),
         ToolSpec {
             name: ISSUE.into(),
             description: "Work with the project's local issues, which last across \
@@ -239,6 +241,25 @@ pub(crate) async fn run(context: &Context<'_>, name: &str, arguments: &str) -> O
                     context.shown.lock().expect("shown lock").extend(images);
                     text
                 })
+        }
+        crate::audio::AUDIO => {
+            let folder = context
+                .store
+                .files_folder()
+                .join("audio")
+                .join(format!("thread-{}", context.session.0));
+            crate::audio::run(arguments, context.folder, &folder).await
+        }
+        crate::transcribe::TRANSCRIBE => {
+            let files = context.store.files_folder();
+            crate::transcribe::run(
+                arguments,
+                context.folder,
+                &crate::connectors::store_beside(context.store),
+                &files.with_file_name("settings.json"),
+                &crate::transcribe::Hosts::default(),
+            )
+            .await
         }
         crate::plugins::SEARCH => crate::plugins::search(context.store, arguments).await,
         crate::plugins::INSTALL => crate::plugins::install(context.store, arguments).await,
