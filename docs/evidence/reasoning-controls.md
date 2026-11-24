@@ -41,4 +41,3 @@
   - Claude 4.7 以降と 5 系は既定では思考を返さない（display が omitted）。inocode は要約の指定が none でない限り `display` を付けて受け取る（上の Anthropic の項）。
 - **テスト：** `llm::tests::thinking_is_streamed_in_every_format`（3 つの形式で、思考と答えが別々に流れる）、`anthropic_events_reduce_to_text_stop_and_ignored`。
 - **未検証：** 本物のプロバイダーで、思考が届いた順に画面へ出ること。
-
