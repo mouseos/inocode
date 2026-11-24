@@ -678,4 +678,16 @@ mod tests {
         std::fs::write(&settings, r#"{"google_speech_key": " k1 "}"#).expect("write");
         assert_eq!(google_key(&settings).await.expect("key"), "k1");
     }
+
+    /// Sends the call in INOCODE_TRANSCRIBE_CALL (the tool's arguments) to
+    /// the real service, with the sign-ins and settings in ~/.inocode.
+    #[tokio::test]
+    #[ignore = "sends audio to a real service with the person's sign-in"]
+    async fn transcribes_here() {
+        let call = std::env::var("INOCODE_TRANSCRIBE_CALL").expect("INOCODE_TRANSCRIBE_CALL");
+        let accounts = crate::oauth::Store::default_path().expect("home");
+        let settings = accounts.with_file_name("settings.json");
+        let text = run(&call, None, &accounts, &settings, &Hosts::default()).await;
+        println!("{text:?}");
+    }
 }

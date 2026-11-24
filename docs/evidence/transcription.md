@@ -22,7 +22,7 @@
   - `TranscriptInterim`／`TranscriptText`：途中の文で、`data` に入る。
   - `TranscriptEndpoint`：その時点の文が確定した印。
   - 誤り：`TranscriptError`（`description`／`error_code`）と `error`（`message`）。
-- **未検証：** Claude Code は音を話す速さで送る。inocode はファイルを一度に送るが、それをサーバーが受け付けるかは確かめていない。
+- Claude Code は音を話す速さで送る。inocode はファイルを一度に送る。2026-11-24 の実測では、サーバーはこれを受け付けた（下の「本物での確認」）。
 
 ### ChatGPT（openai/codex のソース `codex-rs/backend-client/src/client.rs` の `transcribe_audio`）
 
@@ -68,4 +68,12 @@ Claude と Google には WAV を読み、全チャンネルの平均で 1 チャ
   - WAV を 16kHz・16 ビットにする。
   - ChatGPT へ送る multipart の形。
   - Google のキーが設定に無ければ断る。
-- **未検証：** 3 つのどの送り先とも、本物では試していない。試すには、人の承認を得て、短い WAV を各送り先へ 1 回ずつ送る。
+- 手で動かす試験：`transcribe::tests::transcribes_here`。`INOCODE_TRANSCRIBE_CALL` に道具の引数を入れる。`~/.inocode` のサインインと設定を使う。
+
+## 本物での確認（2026-11-24、ユーザーの承認「試す」）
+
+- 入力：Windows の読み上げ（Microsoft Haruka、ja-JP）で作った WAV。文は「今日はいい天気です。録音と文字起こしの試験をしています。」。
+- chatgpt：「今日はいい天気です録音と文字起こしの試験をしています。」（句点が 1 つ抜けた）。
+- claude（language=ja）：「今日はいい天気です。録音と文字起こしの試験をしています。」（元の文と同じ）。
+- 各送り先へ 1 回ずつ送った。認識の正確さを比べたものではない。
+- **未検証：** google（キーが設定されていないので送っていない）。

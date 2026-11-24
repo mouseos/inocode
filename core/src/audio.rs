@@ -675,4 +675,15 @@ mod tests {
     fn lists_the_devices_here() {
         println!("{}", list().expect("list"));
     }
+
+    /// Records the call in INOCODE_AUDIO_CALL (the tool's arguments) to the
+    /// file INOCODE_AUDIO_FILE with this computer's devices.
+    #[test]
+    #[ignore = "records sound with this computer's devices; needs the person's approval"]
+    fn records_here() {
+        let call = std::env::var("INOCODE_AUDIO_CALL").expect("INOCODE_AUDIO_CALL");
+        let file = std::env::var("INOCODE_AUDIO_FILE").expect("INOCODE_AUDIO_FILE");
+        let arguments: Arguments = serde_json::from_str(&call).expect("arguments");
+        println!("{}", record(&arguments, Path::new(&file)).expect("record"));
+    }
 }
