@@ -585,6 +585,7 @@ async fn run_turn(
     let (events, mut received) = mpsc::channel(SEND_QUEUE_CAPACITY);
     let relay = |event: TurnEvent| match event {
         TurnEvent::Delta(text) => EventPayload::delta(id, text),
+        TurnEvent::Thinking(text) => EventPayload::thinking(id, text),
         TurnEvent::Message { seq, message } => EventPayload::message(id, seq, &message),
         TurnEvent::Elicitation(elicitation) => EventPayload::elicitation(id, elicitation),
     };

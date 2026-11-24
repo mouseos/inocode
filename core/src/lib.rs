@@ -330,6 +330,14 @@ impl EventPayload {
         }
     }
 
+    /// The model's thinking as it streams.
+    pub fn thinking(id: u64, text: impl Into<String>) -> Self {
+        Self {
+            text: Some(text.into()),
+            ..Self::new(id, "thinking")
+        }
+    }
+
     pub fn elicitation(id: u64, elicitation: Value) -> Self {
         Self {
             elicitation: Some(elicitation),

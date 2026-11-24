@@ -24,3 +24,21 @@
     - DeepAI `glm-5.3-flash`：none・high とも思考 1 件（`reasoning_content`）、完了。`reasoning_effort` を受け付ける。
     - Logfare `logfare/auto`（既定 medium）：Anthropic 形式（旧方式 `budget_tokens`、思考は署名なし）・Responses・Chat すべて完了。
   - 未検証：GPT OAuth（使用量の上限）、Opus 5.5 の updates 表示と beta（許可されたモデルではない）、sonnet 5.5 の between_tools。
+
+## 思考を流れるまま見せる・言語は決めない
+
+- **ユーザーの判断：**「思考言語を強制しない。qwenごかが中国語で考えるし英語最善とも考えない。思考は受信して出すべき。」（2026-11-25）。UNSUPPORTED_APPROVED。
+- **思考の言語：** inocode は思考の言語を指示しない。指示するのは返事の言語だけ（`core/src/language.rs`）。
+  - 調べた研究：Qi et al. 2025（arXiv 2505.22888、EMNLP 2025 Findings）、EfficientXLang（arXiv 2507.00246）、Yong et al. 2025（arXiv 2505.05408、査読前）。
+  - 3 つとも公開モデルを数学・科学の問題で試したもので、Claude や GPT の結果は無い。どの言語が最もよいかの結論は出ていない。
+- **思考の表示：** プロバイダーが流す思考は、届いた順にクライアントへ送る。
+  - 送り方：`{"id": <要求 ID>, "event": "thinking", "text": <string>}`。
+  - 読むもの：
+    - Anthropic：`thinking_delta`。
+    - Chat Completions：`reasoning_content`／`reasoning`。
+    - Responses：`response.reasoning_summary_text.delta`、`response.reasoning_text.delta`。
+  - 保存されるのは、答えが終わったときの思考全体（`message` イベント）。流した断片は保存しない。
+  - Claude 4.7 以降と 5 系は既定では思考を返さない（display が omitted）。inocode は要約の指定が none でない限り `display` を付けて受け取る（上の Anthropic の項）。
+- **テスト：** `llm::tests::thinking_is_streamed_in_every_format`（3 つの形式で、思考と答えが別々に流れる）、`anthropic_events_reduce_to_text_stop_and_ignored`。
+- **未検証：** 本物のプロバイダーで、思考が届いた順に画面へ出ること。
+

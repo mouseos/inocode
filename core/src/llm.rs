@@ -1599,10 +1599,20 @@ fn snippet(body: &str) -> String {
 /// What one SSE `data` payload means for the answer.
 enum StreamItem {
     Text(String),
+    /// The model's thinking, as the provider shows it.
+    Thinking(String),
     /// Carries no answer text; keep reading.
     Skip,
     /// The provider ended the answer.
     Finish,
+}
+
+/// A piece of a streamed answer: its text, or the model's thinking as the
+/// provider shows it (docs/evidence/reasoning-controls.md).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Piece {
+    Text(String),
+    Thinking(String),
 }
 
 /// Text deltas of one completion, in generation order, plus the turn they
@@ -1679,6 +1689,18 @@ impl ChatStream {
     /// A body that ends before the provider signalled completion is an error,
     /// so a truncated answer is never reported as complete.
     pub async fn next(&mut self) -> Result<Option<String>, ErrorInfo> {
+        loop {
+            match self.next_piece().await? {
+                Some(Piece::Text(text)) => return Ok(Some(text)),
+                Some(Piece::Thinking(_)) => {}
+                None => return Ok(None),
+            }
+        }
+    }
+
+    /// Like [`Self::next`], with the thinking the provider shows as it
+    /// streams besides the answer text.
+    pub async fn next_piece(&mut self) -> Result<Option<Piece>, ErrorInfo> {
         let next = self.advance().await;
         self.failed |= next.is_err();
         next
@@ -1711,7 +1733,7 @@ impl ChatStream {
         body
     }
 
-    async fn advance(&mut self) -> Result<Option<String>, ErrorInfo> {
+    async fn advance(&mut self) -> Result<Option<Piece>, ErrorInfo> {
         if self.done {
             return Ok(None);
         }
@@ -1726,8 +1748,9 @@ impl ChatStream {
                 )? {
                     StreamItem::Text(text) => {
                         self.first_output.get_or_insert_with(Instant::now);
-                        return Ok(Some(text));
+                        return Ok(Some(Piece::Text(text)));
                     }
+                    StreamItem::Thinking(text) => return Ok(Some(Piece::Thinking(text))),
                     StreamItem::Skip => continue,
                     StreamItem::Finish => {
                         self.done = true;
@@ -1762,7 +1785,7 @@ impl ChatStream {
     }
 
     /// The outcome once the body is over and the parser has nothing left.
-    fn end_of_body(&self) -> Result<Option<String>, ErrorInfo> {
+    fn end_of_body(&self) -> Result<Option<Piece>, ErrorInfo> {
         match self.format {
             // Only a provider that signalled completion finished successfully.
             ProviderKind::OpenAi if self.signalled => Ok(None),
@@ -1792,20 +1815,22 @@ fn interpret(
     signalled: &mut bool,
     turn: &mut TurnBuilder,
 ) -> Result<StreamItem, ErrorInfo> {
-    let text = match format {
+    let piece = match format {
         ProviderKind::OpenAi => openai_delta(data, done, signalled, turn)?,
         ProviderKind::Anthropic => match anthropic_event(data, turn)? {
-            AnthropicEvent::Text(text) => Some(text),
+            AnthropicEvent::Text(text) => Some(Piece::Text(text)),
+            AnthropicEvent::Thinking(text) => Some(Piece::Thinking(text)),
             AnthropicEvent::Stop => return Ok(StreamItem::Finish),
             AnthropicEvent::Ignored => None,
         },
         ProviderKind::Responses => responses_delta(data, done, signalled, turn)?,
     };
-    Ok(match text {
-        Some(text) => {
+    Ok(match piece {
+        Some(Piece::Text(text)) => {
             turn.text(&text);
             StreamItem::Text(text)
         }
+        Some(Piece::Thinking(text)) => StreamItem::Thinking(text),
         None => StreamItem::Skip,
     })
 }
@@ -1825,7 +1850,7 @@ fn openai_delta(
     done: &mut bool,
     signalled: &mut bool,
     turn: &mut TurnBuilder,
-) -> Result<Option<String>, ErrorInfo> {
+) -> Result<Option<Piece>, ErrorInfo> {
     if data.trim() == "[DONE]" {
         *done = true;
         *signalled = true;
@@ -1864,6 +1889,7 @@ fn openai_delta(
         });
     }
     let delta = choice.and_then(|choice| choice.get("delta"));
+    let mut thinking = None;
     if let Some(delta) = delta {
         // DeepSeek-style `reasoning_content`, or OpenRouter-style `reasoning`.
         if let Some((field, text)) = ["reasoning_content", "reasoning"]
@@ -1872,6 +1898,7 @@ fn openai_delta(
             .filter(|(_, text)| !text.is_empty())
         {
             turn.chat_reasoning(field, text);
+            thinking = Some(text.to_string());
         }
         for (position, call) in delta
             .get("tool_calls")
@@ -1909,9 +1936,9 @@ fn openai_delta(
         .and_then(Value::as_str)
         .unwrap_or("");
     Ok(if content.is_empty() {
-        None
+        thinking.map(Piece::Thinking)
     } else {
-        Some(content.to_string())
+        Some(Piece::Text(content.to_string()))
     })
 }
 
@@ -1919,6 +1946,7 @@ fn openai_delta(
 #[derive(Debug)]
 enum AnthropicEvent {
     Text(String),
+    Thinking(String),
     Stop,
     Ignored,
 }
@@ -1978,7 +2006,10 @@ fn anthropic_event(data: &str, turn: &mut TurnBuilder) -> Result<AnthropicEvent,
                 Some("text_delta") if !field("text").is_empty() => {
                     return Ok(AnthropicEvent::Text(field("text").to_string()))
                 }
-                Some("thinking_delta") => turn.append(key, field("thinking")),
+                Some("thinking_delta") if !field("thinking").is_empty() => {
+                    turn.append(key, field("thinking"));
+                    return Ok(AnthropicEvent::Thinking(field("thinking").to_string()));
+                }
                 Some("signature_delta") => turn.sign(key, field("signature")),
                 Some("input_json_delta") => turn.append(key, field("partial_json")),
                 _ => {}
@@ -2050,7 +2081,7 @@ fn responses_delta(
     done: &mut bool,
     signalled: &mut bool,
     turn: &mut TurnBuilder,
-) -> Result<Option<String>, ErrorInfo> {
+) -> Result<Option<Piece>, ErrorInfo> {
     let value: Value = match serde_json::from_str(data) {
         Ok(value) => value,
         Err(_) => return Ok(None),
@@ -2065,8 +2096,14 @@ fn responses_delta(
             Ok(if text.is_empty() {
                 None
             } else {
-                Some(text.to_string())
+                Some(Piece::Text(text.to_string()))
             })
+        }
+        // Thinking shown as it streams; the finished reasoning item is what
+        // is kept.
+        Some("response.reasoning_summary_text.delta" | "response.reasoning_text.delta") => {
+            let text = value.get("delta").and_then(Value::as_str).unwrap_or("");
+            Ok((!text.is_empty()).then(|| Piece::Thinking(text.to_string())))
         }
         // Finished items carry the complete reasoning and call arguments, so
         // the argument deltas need not be joined.
@@ -2190,9 +2227,8 @@ mod tests {
                 &mut signalled,
                 &mut TurnBuilder::default(),
             )
-            .expect("delta")
-            .as_deref(),
-            Some("hello")
+            .expect("delta"),
+            Some(Piece::Text("hello".to_string()))
         );
         assert!(!done && !signalled);
         // Non-JSON data payloads (the terminal `data: [DONE]`, keepalives) are
@@ -2598,8 +2634,8 @@ mod tests {
 
         // Non-text deltas must not become answer text.
         let thinking = anthropic_event(r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"hmm"}}"#, &mut TurnBuilder::default())
-        .expect("ignored delta");
-        assert!(matches!(thinking, AnthropicEvent::Ignored));
+        .expect("thinking delta");
+        assert!(matches!(thinking, AnthropicEvent::Thinking(ref t) if t == "hmm"));
 
         let input_json = anthropic_event(r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"a\":1}"}}"#, &mut TurnBuilder::default())
         .expect("ignored delta");
@@ -2669,7 +2705,7 @@ mod tests {
             &mut TurnBuilder::default(),
         )
         .expect("no error");
-        assert_eq!(text.as_deref(), Some("こん"));
+        assert_eq!(text, Some(Piece::Text("こん".to_string())));
 
         openai_delta(
             r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
@@ -2703,21 +2739,58 @@ mod tests {
 
     /// Feeds `events` through the stream interpreter and returns the turn.
     fn assemble(format: ProviderKind, events: &[&str]) -> (String, Body) {
+        let (text, _, body) = assemble_thinking(format, events);
+        (text, body)
+    }
+
+    /// The streamed text, the streamed thinking, and the assembled turn.
+    fn assemble_thinking(format: ProviderKind, events: &[&str]) -> (String, String, Body) {
         let (mut done, mut signalled) = (false, false);
         let mut turn = TurnBuilder::default();
-        let mut text = String::new();
+        let (mut text, mut thinking) = (String::new(), String::new());
         for data in events {
-            if let StreamItem::Text(delta) =
-                interpret(format, data, &mut done, &mut signalled, &mut turn).expect("valid")
-            {
-                text.push_str(&delta);
+            match interpret(format, data, &mut done, &mut signalled, &mut turn).expect("valid") {
+                StreamItem::Text(delta) => text.push_str(&delta),
+                StreamItem::Thinking(delta) => thinking.push_str(&delta),
+                _ => {}
             }
         }
         let origin = Origin {
             format,
             model: "m".to_string(),
         };
-        (text, turn.finish(origin, false, true))
+        (text, thinking, turn.finish(origin, false, true))
+    }
+
+    #[test]
+    fn thinking_is_streamed_in_every_format() {
+        let (text, thinking, _) = assemble_thinking(
+            ProviderKind::OpenAi,
+            &[
+                r#"{"choices":[{"delta":{"reasoning_content":"one"}}]}"#,
+                r#"{"choices":[{"delta":{"reasoning":" two"}}]}"#,
+                r#"{"choices":[{"delta":{"content":"answer"}}]}"#,
+            ],
+        );
+        assert_eq!((text.as_str(), thinking.as_str()), ("answer", "one two"));
+        let (text, thinking, _) = assemble_thinking(
+            ProviderKind::Anthropic,
+            &[
+                r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#,
+                r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"hm"}}"#,
+                r#"{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ok"}}"#,
+            ],
+        );
+        assert_eq!((text.as_str(), thinking.as_str()), ("ok", "hm"));
+        let (text, thinking, _) = assemble_thinking(
+            ProviderKind::Responses,
+            &[
+                r#"{"type":"response.reasoning_summary_text.delta","delta":"plan"}"#,
+                r#"{"type":"response.reasoning_text.delta","delta":" more"}"#,
+                r#"{"type":"response.output_text.delta","delta":"done"}"#,
+            ],
+        );
+        assert_eq!((text.as_str(), thinking.as_str()), ("done", "plan more"));
     }
 
     fn parts_and_stop(body: Body) -> (Vec<AssistantPart>, StopReason) {

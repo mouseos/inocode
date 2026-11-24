@@ -40,6 +40,9 @@ what remains is long, split it into smaller pieces.";
 pub enum TurnEvent {
     /// Answer text as the model streams it.
     Delta(String),
+    /// The model's thinking as the provider streams it; the finished
+    /// thinking is in the stored message.
+    Thinking(String),
     /// A message now stored in the thread.
     Message { seq: i64, message: Message },
     /// A question of an MCP server for the person, answered with
@@ -1664,9 +1667,12 @@ async fn steps(
         let mut failure = None;
         loop {
             tokio::select! {
-                next = stream.next() => match next {
-                    Ok(Some(text)) => {
+                next = stream.next_piece() => match next {
+                    Ok(Some(crate::llm::Piece::Text(text))) => {
                         let _ = thread.events.send(TurnEvent::Delta(text)).await;
+                    }
+                    Ok(Some(crate::llm::Piece::Thinking(text))) => {
+                        let _ = thread.events.send(TurnEvent::Thinking(text)).await;
                     }
                     Ok(None) => break,
                     Err(error) => {
