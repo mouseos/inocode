@@ -54,8 +54,7 @@ pub(crate) fn spec() -> ToolSpec {
         name: TRANSCRIBE.into(),
         description: "Turn speech in an audio file into text. service claude uses the \
             person's Claude sign-in and chatgpt their ChatGPT sign-in; google uses the \
-            speech service of Chrome's speech recognition with the key in the setting \
-            google_speech_key. claude and google read wav files; chatgpt also takes mp3, \
+            speech service of Chrome's speech recognition. claude and google read wav files; chatgpt also takes mp3, \
             m4a, webm and ogg. language is a code such as ja or ja-JP (chatgpt detects \
             it). The audio is sent to that service."
             .into(),
@@ -366,25 +365,28 @@ fn multipart(boundary: &str, extension: &str, mime: &str, bytes: &[u8]) -> Vec<u
     body
 }
 
-/// The key for Google's speech service, from the settings file.
+/// The key Chrome's speech recognition is known to send, used by other
+/// open-source speech libraries as their default.
+const GOOGLE_KEY: &str = "AIzaSyBOti4mM-6x9WDnZIjIeyEU21OpBXqWBgw";
+
+/// The key for Google's speech service: `google_speech_key` in the
+/// settings file, else Chrome's.
 async fn google_key(settings: &Path) -> Result<String, String> {
-    let missing = || {
-        format!(
-            "google needs a key: set \"google_speech_key\" in {}",
-            settings.display()
-        )
+    let text = match tokio::fs::read_to_string(settings).await {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(GOOGLE_KEY.to_string());
+        }
+        Err(error) => return Err(format!("{}: {error}", settings.display())),
     };
-    let text = tokio::fs::read_to_string(settings)
-        .await
-        .map_err(|_| missing())?;
     let value: serde_json::Value =
         serde_json::from_str(&text).map_err(|error| format!("{}: {error}", settings.display()))?;
-    value["google_speech_key"]
+    Ok(value["google_speech_key"]
         .as_str()
         .map(str::trim)
         .filter(|key| !key.is_empty())
-        .map(str::to_string)
-        .ok_or_else(missing)
+        .unwrap_or(GOOGLE_KEY)
+        .to_string())
 }
 
 /// Google's full-duplex speech service, as Chrome's network speech
@@ -668,13 +670,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn google_needs_a_key_in_the_settings() {
+    async fn the_settings_key_comes_before_chromes() {
         let dir = tempfile::tempdir().expect("dir");
         let settings = dir.path().join("settings.json");
-        assert!(google_key(&settings)
-            .await
-            .unwrap_err()
-            .contains("google_speech_key"));
+        assert_eq!(google_key(&settings).await.expect("key"), GOOGLE_KEY);
+        std::fs::write(&settings, r#"{"language": "ja"}"#).expect("write");
+        assert_eq!(google_key(&settings).await.expect("key"), GOOGLE_KEY);
         std::fs::write(&settings, r#"{"google_speech_key": " k1 "}"#).expect("write");
         assert_eq!(google_key(&settings).await.expect("key"), "k1");
     }

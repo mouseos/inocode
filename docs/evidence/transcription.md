@@ -49,12 +49,14 @@
   - `status`（1）：0 以外なら誤り。
   - `result`（2）：`alternative`（1）→ `transcript`（1）、`final`（2）。
   - inocode は、確定（final）した結果の最初の候補だけを使う。
-- **キー：** Chrome に入っている Google のキーは、このリポジトリに入れない。人が自分で `~/.inocode/settings.json` の `google_speech_key` に書く。
+- **キー：**
+  - 既定は Chrome が送るものとして知られているキー（`transcribe.rs` の `GOOGLE_KEY`）。オープンソースの Python ライブラリ SpeechRecognition も、同じ値を既定にしている（`speech_recognition/recognizers/google.py`）。
+  - `~/.inocode/settings.json` に `google_speech_key` があれば、そちらを使う。
+  - 既定のキーを入れることはユーザーの指示による：「デフォルトで入れなさい。既知だ。」（2026-11-24）。
 - **人が負う危険（ユーザーは「自己責任」と承知）：**
   - Chromium の文書は、Chrome が使う Google の API の多くを Google 専用とし、派生した製品向けではないと書いている。キーは配ったり共有したりしないよう求めている（https://chromium.org/developers/how-tos/api-keys）。
   - Chromium の開発者は、この音声 API を Chrome の開発用と答えている（https://groups.google.com/a/chromium.org/g/chromium-dev/c/pdDDdYH2Hg4）。
   - 予告なく使えなくなることがある。
-- **未検証：** 本物のキーでの動き。
 
 ## 音の変換
 
@@ -67,7 +69,7 @@ Claude と Google には WAV を読み、全チャンネルの平均で 1 チャ
   - Claude のメッセージの並びから文を作る。誤りを返す。
   - WAV を 16kHz・16 ビットにする。
   - ChatGPT へ送る multipart の形。
-  - Google のキーが設定に無ければ断る。
+  - 設定に Google のキーがあればそれを使い、無ければ既定のキーを使う。
 - 手で動かす試験：`transcribe::tests::transcribes_here`。`INOCODE_TRANSCRIBE_CALL` に道具の引数を入れる。`~/.inocode` のサインインと設定を使う。
 
 ## 本物での確認（2026-11-24、ユーザーの承認「試す」）
@@ -76,4 +78,4 @@ Claude と Google には WAV を読み、全チャンネルの平均で 1 チャ
 - chatgpt：「今日はいい天気です録音と文字起こしの試験をしています。」（句点が 1 つ抜けた）。
 - claude（language=ja）：「今日はいい天気です。録音と文字起こしの試験をしています。」（元の文と同じ）。
 - 各送り先へ 1 回ずつ送った。認識の正確さを比べたものではない。
-- **未検証：** google（キーが設定されていないので送っていない）。
+- google（language=ja-JP、既定のキー）：「今日はいい天気です  録音と文字起こしの試験をしています」。確定した 2 つの結果を空白でつないでいる。句点は付かなかった。
