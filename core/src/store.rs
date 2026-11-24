@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use crate::conversation::{AssistantPart, Body, Message};
 use crate::ErrorInfo;
 
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 /// Tool results above this size are stored once in `blobs` and referenced.
 const BLOB_THRESHOLD: usize = 16 * 1024;
 /// Text indexed per message; the rest stays readable but unsearchable.
@@ -208,9 +208,21 @@ CREATE TABLE goals(
 );
 "#;
 
+/// The person's standing instructions in a thread
+/// (docs/evidence/promise-list.md), as JSON written by the harness, and the
+/// position of the message that last replaced them.
+const SCHEMA_V8: &str = r#"
+CREATE TABLE promises(
+    session_id INTEGER PRIMARY KEY REFERENCES sessions(id),
+    items TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    updated INTEGER NOT NULL
+);
+"#;
+
 /// Schema steps; step `i` brings the database to version `i + 1`.
-const MIGRATIONS: [&str; 7] = [
-    SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7,
+const MIGRATIONS: [&str; 8] = [
+    SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -665,6 +677,40 @@ impl Store {
                 "SELECT goal FROM goals WHERE session_id = ?1",
                 [session.0],
                 |row| row.get(0),
+            )
+            .optional()
+            .map_err(store_error)
+        })
+        .await
+    }
+
+    /// Replaces the person's standing instructions of `session` (JSON
+    /// written by the harness), as of the message at `seq`.
+    pub async fn set_promises(
+        &self,
+        session: SessionId,
+        items: String,
+        seq: i64,
+    ) -> Result<(), ErrorInfo> {
+        self.write(move |db| {
+            db.execute(
+                "INSERT INTO promises(session_id, items, seq, updated) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(session_id) DO UPDATE SET items = ?2, seq = ?3, updated = ?4",
+                params![session.0, items, seq, now()],
+            )
+            .map(drop)
+            .map_err(store_error)
+        })
+        .await
+    }
+
+    /// The standing instructions and the position they were last replaced at.
+    pub async fn promises(&self, session: SessionId) -> Result<Option<(String, i64)>, ErrorInfo> {
+        self.read(Duration::from_secs(5), move |db| {
+            db.query_row(
+                "SELECT items, seq FROM promises WHERE session_id = ?1",
+                [session.0],
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
             .map_err(store_error)

@@ -362,6 +362,8 @@ more, all of them or none; write writes a whole file.\n\
 - shell runs a command; job types into, waits for or stops a command that is still \
 running.\n\
 - plan keeps the work list that is shown to you with every request.\n\
+- promise keeps the person's standing instructions in their words, shown to you with \
+every request: what not to do, when to stop or ask, what may be changed.\n\
 - recall reads earlier messages of this thread word for word, also after they were \
 summarized, and searches past work and saved knowledge.\n\
 - lesson proposes a lesson for later work in this project; method saves a method \
@@ -604,11 +606,20 @@ impl Thread<'_> {
         );
     }
 
-    /// The time, the git state, the plan and the lessons, shown after the
-    /// history with each request and never stored, so they survive
-    /// compaction and keep the cached prefix intact.
+    /// The time, the git state, the plan, the person's standing
+    /// instructions and the lessons, shown after the history with each
+    /// request and never stored, so they survive compaction and keep the
+    /// cached prefix intact.
     async fn state(&self) -> Result<Option<String>, ErrorInfo> {
         let plan = agent_tools::render_plan(self.store, self.session).await?;
+        let latest = self
+            .seqs
+            .iter()
+            .zip(&self.conversation.messages)
+            .rev()
+            .find(|(_, message)| crate::promise::person_text(message).is_some())
+            .map(|(seq, _)| *seq);
+        let promises = crate::promise::render(self.store, self.session, latest).await?;
         let jobs = shell::render_jobs(&self.store.files_folder().join("logs"), self.session);
         let language = self.language.as_deref().map(crate::language::instruction);
         let skills = crate::plugins::render_skills(&crate::plugins::folder(self.store));
@@ -626,6 +637,7 @@ impl Thread<'_> {
             jobs.as_deref(),
             self.lessons.as_deref(),
             skills.as_deref(),
+            promises.as_deref(),
             language.as_deref(),
         ]
         .into_iter()

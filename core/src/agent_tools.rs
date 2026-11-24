@@ -125,6 +125,7 @@ pub(crate) fn specs(sandboxed: bool) -> Vec<ToolSpec> {
                 }
             }),
         },
+        crate::promise::spec(),
         web_search::spec(),
         read::spec(),
         fetch::spec(),
@@ -208,6 +209,7 @@ pub(crate) async fn run(context: &Context<'_>, name: &str, arguments: &str) -> O
         LESSON => lesson(context, arguments).await,
         METHOD => method(context, arguments).await,
         ISSUE => issue(context, arguments).await,
+        crate::promise::PROMISE => crate::promise::run(context, arguments).await,
         web_search::SEARCH => web_search::run(arguments).await,
         read::READ => {
             let images = context

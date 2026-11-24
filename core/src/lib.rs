@@ -30,6 +30,7 @@ mod outline;
 mod pdf;
 mod picture;
 mod plugins;
+mod promise;
 mod read;
 pub mod reasoning;
 mod review;

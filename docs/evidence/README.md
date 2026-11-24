@@ -76,7 +76,8 @@
 | [file-type-tool.md](file-type-tool.md) | ファイルのパスと種類（MIME）を返す道具 | UNSUPPORTED_PENDING | 未実装 |
 | [pdf-reading.md](pdf-reading.md) | PDF を読む | UNSUPPORTED_APPROVED | `core/src/pdf.rs`、`core/src/read.rs` |
 | [git-context.md](git-context.md) | git の情報をモデルに伝える | UNSUPPORTED_APPROVED | `core/src/git.rs`、`core/src/turn.rs` |
-| [instruction-adherence.md](instruction-adherence.md) | 人が決めた約束をエージェントが破る理由と対策案 | UNSUPPORTED_PENDING | 未実装（分析のみ） |
+| [instruction-adherence.md](instruction-adherence.md) | 人が決めた約束をエージェントが破る理由と対策案 | UNSUPPORTED_PENDING | 案 1 は promise-list.md で実装。ほかは未実装 |
+| [promise-list.md](promise-list.md) | 人が決めた約束の一覧を毎回付ける | RESEARCH_SUPPORTED（手当ての部分は UNSUPPORTED_APPROVED） | `core/src/promise.rs`、`core/src/turn.rs` |
 
 ## 状態の判定
 
