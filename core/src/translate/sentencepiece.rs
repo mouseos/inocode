@@ -480,7 +480,7 @@ fn utf8(bytes: &[u8]) -> Result<String, String> {
     String::from_utf8(bytes.to_vec()).map_err(|error| error.to_string())
 }
 
-enum Value<'a> {
+pub(super) enum Value<'a> {
     Varint(u64),
     Fixed32(u32),
     Fixed64,
@@ -488,12 +488,12 @@ enum Value<'a> {
 }
 
 /// The fields of a protobuf message, in order.
-struct Fields<'a> {
+pub(super) struct Fields<'a> {
     data: &'a [u8],
 }
 
 impl<'a> Fields<'a> {
-    fn new(data: &'a [u8]) -> Self {
+    pub(super) fn new(data: &'a [u8]) -> Self {
         Self { data }
     }
 

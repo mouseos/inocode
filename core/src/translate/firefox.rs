@@ -155,7 +155,7 @@ impl Pair {
 
 /// `text` cut into sentences and the whitespace around them; a sentence
 /// ends at 。！？, a newline, or . ! ? before whitespace.
-fn sentences(text: &str) -> Vec<(&str, bool)> {
+pub(super) fn sentences(text: &str) -> Vec<(&str, bool)> {
     let mut out = Vec::new();
     let mut start = 0;
     let mut chars = text.char_indices().peekable();
@@ -215,7 +215,7 @@ fn version(text: &str) -> Option<(u64, u64)> {
 }
 
 /// A file name that is safe to write in the cache folder.
-fn safe_name(name: &str) -> bool {
+pub(super) fn safe_name(name: &str) -> bool {
     !name.is_empty()
         && !name.starts_with('.')
         && name
@@ -304,7 +304,7 @@ fn plan(records: &[Value], from: &str, to: &str) -> Option<Vec<(String, String, 
     ])
 }
 
-fn sha256(data: &[u8]) -> String {
+pub(super) fn sha256(data: &[u8]) -> String {
     Sha256::digest(data)
         .iter()
         .map(|byte| format!("{byte:02x}"))
@@ -332,7 +332,7 @@ fn unpack(file: &File, compressed: &[u8]) -> Result<Vec<u8>, String> {
 
 /// Writes `data` to `path` through a temporary file, so the file is
 /// either whole or missing.
-async fn write_whole(path: &Path, data: &[u8]) -> Result<(), String> {
+pub(super) async fn write_whole(path: &Path, data: &[u8]) -> Result<(), String> {
     static COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let count = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let temporary = path.with_extension(format!("{}-{count}.tmp", std::process::id()));
@@ -347,7 +347,7 @@ async fn write_whole(path: &Path, data: &[u8]) -> Result<(), String> {
 }
 
 /// The body of `response`, at most `limit` bytes.
-async fn body(mut response: reqwest::Response, limit: u64) -> Result<Vec<u8>, String> {
+pub(super) async fn body(mut response: reqwest::Response, limit: u64) -> Result<Vec<u8>, String> {
     let status = response.status();
     let url = response.url().clone();
     if !status.is_success() {
@@ -615,7 +615,7 @@ fn attachment(base: &reqwest::Url, location: &str) -> Result<reqwest::Url, Strin
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use serde_json::json;
 
@@ -846,7 +846,7 @@ mod tests {
 
     /// The memory the process uses now and at most, in bytes.
     #[cfg(windows)]
-    fn memory() -> Option<(usize, usize)> {
+    pub(crate) fn memory() -> Option<(usize, usize)> {
         #[repr(C)]
         #[derive(Default)]
         struct Counters {
@@ -870,7 +870,7 @@ mod tests {
     }
 
     #[cfg(not(windows))]
-    fn memory() -> Option<(usize, usize)> {
+    pub(crate) fn memory() -> Option<(usize, usize)> {
         None
     }
 

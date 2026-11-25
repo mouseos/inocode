@@ -2,7 +2,7 @@
 
 - **対象と範囲：** 文章を別の言語に訳す共通部品。思考に限らず、ほかの場所からも使う。今回つなぐのは、モデルの思考を人の言語に訳して出すところだけ。
   - 計画：Notion「軽量翻訳エンジンと将来の多言語対応」（2026-11-25 版）。オフライン方式（Firefox・Chromium のモデル）とオンライン方式（Google・Edge のページ翻訳）の両方。
-- **関連ソースコード：** `core/src/translate.rs`（共通部品）、`core/src/translate/firefox.rs`（Firefox のモデルの取得・保存・訳）、`core/src/translate/marian.rs`（モデルとショートリストの読み込み、推論）、`core/src/translate/sentencepiece.rs`（文の分割と復元）、`core/src/turn.rs`（思考へのつなぎ）、`core/src/lib.rs`（`thinking_translation` イベント、`Core::set_translation`）、`server/src/lib.rs`（`settings/translation`）。
+- **関連ソースコード：** `core/src/translate.rs`（共通部品）、`core/src/translate/firefox.rs`（Firefox のモデルの取得・保存・訳）、`core/src/translate/marian.rs`（モデルとショートリストの読み込み、推論）、`core/src/translate/sentencepiece.rs`（文の分割と復元）、`core/src/translate/chromium.rs`（Chrome の言語パックの取得・確認・保存・訳）、`core/src/translate/tflite.rs`（TFLite モデルの読み込みと実行）、`core/src/turn.rs`（思考へのつなぎ）、`core/src/lib.rs`（`thinking_translation` イベント、`Core::set_translation`）、`server/src/lib.rs`（`settings/translation`）。
 - **根拠の状態：** UNSUPPORTED_APPROVED。ユーザーの指示（2026-11-25）：「推論過程などげんごがゆーざーしようのものとちがうと読みにくい。……推論過程の翻訳を実装して。オンオフはすぐできるように。他の場でもこの機能は使用予定なのでthinking翻訳限定でコードを組まないこと」。訳して読みやすくなるという学術的な裏付けは調べていない。
 
 ## オンライン方式（確かめた事実）
@@ -50,11 +50,11 @@
 
 - `settings.json`（データベースの隣）の `translation`：
   - `thinking`：思考を訳すか（既定 false）。
-  - `service`：`google`（既定）、`edge`、`firefox`。既定を Google にしたのは、コードを含む文の訳が自然だったため（下の実測、2 文での比較で、精度の測定ではない）。
+  - `service`：`google`（既定）、`edge`、`firefox`、`chromium`。既定を Google にしたのは、コードを含む文の訳が自然だったため（下の実測、2 文での比較で、精度の測定ではない）。
   - `to`：訳す先の言語（例：`ja`）。無ければ `language` の設定が言語の記号（`ja-JP` など）ならその言語、そうでなければシステムの表示言語。
   - `google_key`：Google の鍵の差し替え。
 - 設定はターンの始めに読む。プロトコルの `settings/translation`（例：`{"thinking": false}`）で書き換えると、次のターンから効く。
-- `settings/translation` で `firefox` の思考の翻訳がオンになったときは、英語から訳す先へのモデルをその場で裏で取りに行く。初回の取得には数秒かかり、最初のターンの訳がそれを待って打ち切られないようにするため。
+- `settings/translation` で `firefox` か `chromium` の思考の翻訳がオンになったときは、英語から訳す先へのモデルをその場で裏で取りに行く。初回の取得には数秒かかり、最初のターンの訳がそれを待って打ち切られないようにするため。
 - 訳はプロトコルのイベント `thinking_translation`（`text`、訳せなかったときは `error`）で届く。原文の `thinking` イベントもそのまま届く。
 
 ## テスト
@@ -129,8 +129,81 @@ Firefox がページ翻訳に使うモデル（Bergamot / Marian）を Mozilla �
 - 原文の言語を文字の種類で決めるやり方の当たり外れ。英語以外のラテン文字の言語（ドイツ語など）は英語として扱われる。
 - 一覧の内容が変わったとき（版 4 など）は使えなくなる。手元に置いたモデルは新しい版が出ても取り直さない。
 
+## オフライン方式：Chrome の言語パック（Chromium 方式）
+
+Chrome が組み込みの翻訳 API（Translator API）のために取ってくる言語パック（TranslateKit）を、Chrome と同じ配布元から一度だけ取ってきて手元に置き、その中のモデルを inocode の中で Rust だけで動かす。Google のネイティブライブラリ（libtranslatekit）は取得も読み込みもしない。C/C++ のコードは使わない。設定は `service: "chromium"`。訳す文章は外に出ない。
+
+- **ユーザーの承認：** 「私が責任取るので続行」（2026-11-25）。Google の利用規約は、ソフトウェアを Google のサービスの一部としてだけ使うことを認め、法律が認める場合を除いて複製や解析（リバースエンジニアリング）を禁じている、と伝えたうえでの返答。この方式はその規約に反するおそれがある。学術的な裏付けは調べていない。状態は UNSUPPORTED_APPROVED。
+- 参照した Chromium のソース：main ブランチ（2026-11-25 に取得。リビジョンは記録していない＝不明）。
+  - `components/on_device_translation/public/language_pack.h`・`language_pack.cc`：https://source.chromium.org/chromium/chromium/src/+/main:components/on_device_translation/public/
+  - `components/component_updater/component_updater_url_constants.cc`、`docs/updater/protocol_4.md`：https://source.chromium.org/chromium/chromium/src/+/main:docs/updater/protocol_4.md
+  - `components/crx_file/`（CRX3 の形式、`id_util`）：https://source.chromium.org/chromium/chromium/src/+/main:components/crx_file/
+
+### 確かめた事実（2026-11-25）
+
+- 取得先：`POST https://update.googleapis.com/service/update2/json`（`component_updater_url_constants.cc`）。Omaha プロトコル 4.0。見出し `Content-Type: application/json`、`X-Goog-Update-Interactivity: fg`、`X-Goog-Update-Updater: chrome-<版>`、`X-Goog-Update-AppId: <id>`。鍵や署名付きの要求（CUP）は要らなかった。
+- 本文の `acceptformat` を `crx3,download` だけにすると、答えは `"updatecheck":{"status":"error-inexpressible"}` になった。Chrome と同じ `crx3,download,puff,run,xz,zucc` なら、取得の手順（pipeline）が返る（curl で確かめた）。`os.version` と `hw` は無くても返った。
+- 答えは `)]}'` で始まる JSON。アプリごとに `status`、`updatecheck.nextversion`、`updatecheck.pipelines`。手順のうち「`download`（`size`、`out.sha256`、`urls`）→ `crx3`」の 2 段のものがファイル全体の取得。ほかに差分（`puff`）や `xz` の手順がある。URL は `dl.google.com`、`edgedl.me.gvt1.com`、`www.google.com/dl` の http と https。
+- 部品の id：パックの公開鍵の SHA-256 の先頭 16 バイトを 16 進で書き、0〜f を a〜p に置き換えたもの（`crx_file::id_util::GenerateIdFromHash`）。en-ja は `hnccddhebmkigcfihhnmiiihcnaogoel`、en-zh（簡体字）は `boeedobmjjddfgncfnmnehcemjbfpfbk`。
+- パックは 38 個。どれも英語ともう 1 言語の組（`language_pack.h` の `LanguagePackKey`、鍵の SHA-256 は `kTranslateKit*Config.public_key_sha`）。表は `chromium.rs` の `PACKS` に写した。英語以外どうしは英語を経由する（`language_pack.cc` の「Currently we always translate via English」）。
+- en-ja のパック：版 2024.9.9.1、56,490,050 バイト、CRX3（`Cr24`、版 3、見出しの長さ、見出しの protobuf、その後ろが zip）。見出しには RSA の証明が 2 つ（2048 ビットの鍵と、SHA-256 が上の値に一致する 4096 ビットの鍵）と ECDSA（P-256）の証明が 1 つ、`signed_header_data` の `crx_id` は鍵の SHA-256 の先頭 16 バイト。4096 ビットの鍵の署名（RSA PKCS#1 v1.5、SHA-256、署名する中身は `"CRX3 SignedData\0"`＋見出しの長さ（u32 LE）＋見出し＋zip）が合うことを、手で動かす試験で確かめた。
+- zip の中身：`en_ja_nmt/` と `ja_en_nmt/`（両方向）、それぞれ `encoder_0.tflite`（23,278,704 バイト）、`decoder_step_0.tflite`（14,574,968）、`decoder_init_0.tflite`（13,048）、`src_spm_model.model`・`tgt_spm_model.model`（SentencePiece）、同名の `.vocab`（文字の一覧）、`translation_model.pb`（320 バイト）、`processor_spec.pb`。ほかに `en_ja_dictionary/dictionary.bin`（先頭 `BD00`、中身は不明）、`_metadata/verified_contents.json`、`manifest.json`。
+- `translation_model.pb`（形式は公開されていない。en-ja での値）：1＝`en`、2＝`ja`、6.3＝{1: 2, 2: {1: 1, 2: 2, 3: 3.0, 5: 5.0, 6: 1, 7: 2, 8: -1, 9: 0.0, 10: 1.0}}、6.4＝{1: 1, 2: 4, 3: 72, 6: 1}、6.5＝モデル名とファイル名の組（`decoder_init_0`、`decoder_step_0`、`encoder_0`）、6.6・6.7＝原文側・訳側の SentencePiece のファイル名。
+- `processor_spec.pb`：en→ja は手順 `b2a`、`lc`、`add_period_10` と、その設定 `PreprocAddPeriod/add_period_10:max_sent_len=10:skip_in_training=true:use_wpm_tokens=false:mode=annotate`、`PreprocB2A/b2a:mode=tokenize`、`PreprocLowercaser/lc:activate_languages`。ja→en は `b2a` と `lc` だけ。これらの名前を説明する公開資料は見つからなかった（Web 検索、2026-11-25）。
+- SentencePiece：unigram、語彙 8000、`<unk>`=0、`<s>`=1、`</s>`=2、バイトへの分解あり、独自の正規化表あり。英語の原文側の語彙には大文字の片が無い（大文字を含む行はバイトの片 `<0x..>` だけ）。ja→en の訳側（英語）の語彙には `▁I`、`▁The` など大文字の片がある。
+- TFLite のファイル：flatbuffer（`TFL3`）、暗号化なし、組み込みの演算だけ。3 つ合わせて使う演算は 33 種（RESHAPE、SHAPE、STRIDED_SLICE、PACK、RANGE、CAST、EXPAND_DIMS、MUL、COS、SIN、CONCATENATION、PAD、TRANSPOSE、GREATER、TILE、GATHER、DEQUANTIZE、ADD、MEAN、SUB、SQUARED_DIFFERENCE、RSQRT、FILL、FULLY_CONNECTED、FLOOR_DIV、BATCH_MATMUL、SELECT、SOFTMAX、SELECT_V2、SPLIT、LOGISTIC、TANH、LOG_SOFTMAX）。形は実行時に決まる（`shape_signature` に -1）。
+- 量子化：重みは int8（テンソルごとの倍率 1 つ、ゼロ点 0）。FULLY_CONNECTED はすべて int8 の重みと float の入力の組（hybrid）で、`asymmetric_quantize_inputs` が真。埋め込みは int8 の表を GATHER してから DEQUANTIZE。
+- 形と名前：エンコーダーの入力は `src_ids`（int32、[文の数, 長さ]）と `src_paddings`（float、同じ形）、出力は `src_encs`（[文の数, 長さ, 512]）。デコーダーの開始（`beam_search_init`）は `num_hyps`、`src_enc_paddings`、`src_encs` を受け、`atten_probs`、`src_encs`、`beam_state__atten_context` を返す。1 歩（`beam_search_step`）は `step_ids`（[候補の数, 1]）、`atten_init__source_vecs`・`source_contexts`・`source_padding`、`beam_state__rnn_state_{0,1}_{m,c}` と `beam_state__atten_context` を受け、`log_probs`（[候補の数, 8000]、対数確率）と次の状態を返す。名前の `MTDecoderV1` は Lingvo の `lingvo/tasks/mt/decoder.py` と同じ（エンコーダーは 6 層・幅 512 の Transformer、デコーダーは 2 層の LSTM と注意）。探索の繰り返しはモデルの外にある。
+
+### inocode の決め事
+
+- 要求：Chrome の版は `143.0.7499.170` に固定。`@os`・`arch`・`os.platform`・`os.arch` は動いている OS（`std::env::consts`）から決める。`hw` と `os.version` は送らない（無くても答えが返り、送る情報を減らすため）。
+- 取得：答えのうち「download → crx3」の手順だけを使い、https の URL だけを順に試す（30 秒・600 秒で打ち切り、答えは 1 MB、パックは答えに載った大きさ（上限 300 MB）まで）。大きさと SHA-256 が答えと一致し、CRX3 の印と版、`crx_id`、鍵の SHA-256 が `PACKS` の値と一致し、その鍵の RSA 署名が合うときだけ使う。署名の確かめには Rust だけの `rsa` クレートを使う。2048 ビットの鍵と ECDSA の証明は確かめない。
+- 展開：`<…>_nmt/` の直下にある `.tflite`・`.model`・`.pb` だけを取り出す（`.vocab`、辞書、`_metadata` などは捨てる）。ほかの階層、`..`、先頭が `.` の名前は取り出さない。zip64 と暗号化は断る。CRC-32 と大きさを確かめる。展開は `flate2`（Rust の実装）。各ファイルは一時ファイルに書いて名前を変え、全部書いてから最後に `pack.json`（版、各ファイルの大きさと SHA-256）を書く。
+- 置き場：`translation-models/chromium/en-<言語>/`。`pack.json` があり各ファイルの大きさが合えば、ネットにはつながない。パックには両方向が入っているので、en→ja を取れば ja→en も使える。
+- 方向の選び方：各 `_nmt` フォルダの `translation_model.pb` の 1・2 番（言語）で選ぶ。フォルダ名には頼らない。
+- 計算：TFLite の演算を 1 つずつ、ファイルに書かれた順と配線のとおりに実行する汎用の解釈器を書いた（`tflite.rs`）。各演算は TFLite の参照実装の計算に合わせた。hybrid の FULLY_CONNECTED は TFLite の `EvalHybrid` と同じく、入力を行ごとに int8 に量子化し（`asymmetric_quantize_inputs` が真なら `AsymmetricQuantizeFloats`、偽なら `SymmetricQuantizeFloats` と同じ式）、int8 どうしの積を int32 で足してから倍率を掛ける。ほかは float32 で計算する。知らない演算や型を含むファイルは読み込みの時点で断る。大きな FULLY_CONNECTED（積和が約 100 万回以上）は出力を最大 8 スレッドに分ける。
+- 前処理：
+  - `lc`：原文を小文字にする（英語の原文側の語彙に大文字が無いため）。訳の中の英字と数字の並びが、原文に大文字を含む形で現れる語と大文字小文字を無視して同じなら、原文の書き方に戻す（例「Open the GitHub settings」→「GitHub 設定を開きます」）。Chrome が大文字をどう戻すかは分からず、これは inocode の判断。
+  - `add_period_10`：空白で区切った語が 10 個以下で、終わりに句読点が無い文には、原文の末尾に「.」を足し、訳の末尾の「。」「.」「．」を 1 つ取る。設定の名前と値から推した意味で、Chrome の動きとは確かめていない。
+  - `b2a`：意味が分からないので何もしない。SentencePiece の正規化表が同じことをしている可能性はあるが、確かめていない。
+- 探索：ビーム幅 4（6.4 の 2 番）、長さの上限は max(72（6.4 の 3 番）, 原文の片の数×2)。72 だけだと長い文が切れるため、2 倍の部分は inocode の判断。点数は対数確率の和で、長さによる補正はしない（6.3.2 の 9 番が 0.0 で、Lingvo の `length_normalization` にあたると見た）。終わりの記号 `</s>` は、その対数確率がその歩で最も高い片より 5.0（6.3.2 の 5 番、Lingvo の `valid_eos_max_logit_delta` にあたると見た）以内のときだけ選べる。`<unk>` と `<s>` は選ばない。終わった候補の最高点が、続いている候補の最高点以上になったら止める（点数は減る一方なので、それ以上良い訳は出ない）。6.3.2 の 3 番（3.0）は Lingvo の `beam_size`（点数の幅による切り捨て）かもしれないが確かめておらず、使わない。最初の歩の入力は `<s>`（6.3.2 の 1 番）、原文の終わりに `</s>` を付ける。
+- 1 文ずつ訳す（文の数＝1）。文の区切りと 128 片を超える文の分け方は Firefox 方式と同じ。原文の言語の決め方と、英語以外どうしの英語経由も Firefox 方式と同じ。訳す先の `zh`・`zh-CN` は簡体字、`zh-TW`・`zh-HK` は繁体字のパック、`he` は `iw`、`nb` は `no` のパックを使う。
+- コードは Edge・Firefox 方式と同じく、コードの前後の文を別々に訳してコードを挟み直す。
+- 読み込んだ方向は `Translator` の中に持ち、計算は `spawn_blocking` で行う。`settings/translation` で `chromium` の思考の翻訳がオンになったときも、Firefox 方式と同じく裏でパックを取りに行く。
+- 依存を 2 つ足した：`rsa` 0.9（署名の確認）、`flate2` 1（zip の展開。すでに他のクレート経由で入っていた）。どちらも Rust の実装。
+
+### 本物での確認（2026-11-25、Windows 11、release ビルド）
+
+- `translate::chromium::tests::english_to_japanese_is_fetched_once_and_kept`（手で動かす）：空のフォルダに en-ja を取得し、署名の確認・展開・読み込みまで 2.05 秒。`pack.json` と、`en_ja_nmt/`・`ja_en_nmt/` のそれぞれ 7 ファイル（`.tflite` 3 つ、`.model` 2 つ、`.pb` 2 つ）がそろい、`.tmp` は残らなかった。次に更新サーバーを応答の無い `http://127.0.0.1:9` にした別の `Chromium` で en→ja と ja→en が読み込めること（ネットを使わない）、取っていない en→de は誤りになることを確かめた。
+- `translate::chromium::tests::english_and_japanese_are_translated_here`（手で動かす、読み込みと訳は送り先 `http://127.0.0.1:9`、つまりネット無し）：
+  - 読み込み：en→ja 19 ms、ja→en 19 ms。プロセスの作業セットは読み込み前 19.5 MB、両方向の読み込み後 101.6 MB、訳した後 103.7 MB。ピーク 152.2 MB は同じプロセスで先に行った取得のとき（CRX 全体と展開したファイルが一時的にメモリにある）。
+  - 「I should check the configuration file before running the tests.」→「テストを実行する前に、構成ファイルを確認する必要があります。」（84 ms）
+  - 「The user wants a summary of the changes in this pull request.」→「ユーザーは、このプル リクエストの変更点の概要を求めています。」（76 ms）
+  - 「Let me look at how the server handles requests that time out.」→「サーバーがそのタイムアウトをどのように処理するかを見てみましょう。」（85 ms）。「requests」が訳から落ちている。
+  - 「This function returns an error when the file does not exist. Then the caller retries three times.」→「この関数は、ファイルが存在しない場合にエラーを返します。 その後、発信者は 3 回再試行します。」（185 ms）。「caller」を「発信者」と訳している。
+  - 「Open the GitHub settings」→「GitHub 設定を開きます」（56 ms。句点を足して訳し、取った）
+  - 「テストを実行する前に設定ファイルを確認します。」→「Check the configuration file before running the test.」（58 ms）
+  - 「ユーザーはこのプルリクエストの変更点の要約を求めている。」→「Users are asking for a summary of the changes in this pull request.」（79 ms）
+  - 「サーバーがタイムアウトしたリクエストをどう扱うか見てみよう。」→「Let's see how the server handles requests that have timed out.」（86 ms）
+- `translate::tests::translates_here`（`INOCODE_TRANSLATE_SERVICE=chromium`）：「I should check `src/main.rs` before running the tests.」→「確認する必要があります `src/main.rs` テストを実行する前に。」、「The user wants a & b <now>.」→「ユーザーは A & B <Now> を求めています。」。コードの前後を別々に訳すため、Edge・Firefox 方式と同じく文が不自然になる。
+- 模擬（ネットもモデルも使わない）：`translate::chromium::tests`（部品の id、更新サーバーの答えの読み方、CRX3 の読み方と鍵・id の照合、zip から取り出すファイルの制限と CRC、`translation_model.pb`・`processor_spec.pb` の読み方、大文字の戻し方）、`translate::tflite::tests`（各演算を小さなテンソルで、hybrid の FULLY_CONNECTED を float の結果と比べて、手で組んだ小さな TFLite ファイルの読み込みと実行、知らない演算や壊れたファイルを断ること）。
+
+### Chromium 方式で未検証のこと
+
+- Chrome 自身の訳と同じになるか（Chrome を動かして比べていない）。訳の質の測定はしていない。上の例のとおり誤訳がある。
+- `b2a`、`add_period_10`、`lc` の後の大文字の戻し方について、Chrome（libtranslatekit）が実際にすること。`translation_model.pb` の各番号の意味（上は値からの推定）。辞書 `dictionary.bin` の使い道（使っていない）。
+- en-ja 以外のパック（zh など）は動かしていない。フォルダ名・言語の書き方・演算の種類が違えば読み込みで誤りになる。英語経由（ja→zh など）も動かしていない。
+- 2048 ビットの鍵と ECDSA の証明は確かめていない。
+- 更新サーバーが、実在の Chrome でない要求（版を名乗るだけで CUP 署名なし）をこの先も受けるか。手元のパックは新しい版が出ても取り直さない。
+- debug ビルドでの速さ（測っていない）。
+
+## 思考の翻訳を Chromium のモデルで（本物での確認、2026-11-25）
+
+- `thinking_is_translated_while_turned_on`（`INOCODE_TRANSLATE_SERVICE=chromium`、Claude OAuth `claude-haiku-5-5`（high）、release ビルド、言語パックは試験の中で初めて取得）：思考 34 件、訳 4 件。オフ後のターンは訳 0 件。全体 8.62 秒。
+- 訳の例：「9:47 に 2 時間 38 分が 12:25 になると、日本語で答えます。 算術がチェックアウトされるので、ここにはツールは必要ありません。」（"checks out" を直訳している）。
+
 ## 未実装・未検証
 
-- Chromium のモデルによるオフライン方式は未実装。調べた事実と、ユーザーの承認「私が責任取るので続行」（2026-11-25。Google の利用規約が Chrome の外での利用や解析を認めていない点を伝えたうえでの返答）は、実装とあわせてこの文書に書く。
 - オンライン方式の速さ・精度の測定はしていない。
 - 動いているターンの途中でのオンオフは効かない（次のターンから）。

@@ -640,7 +640,12 @@ impl Core {
         let settings = translate::update(&path, patch)
             .await
             .map_err(|error| ErrorInfo::new("invalid_params", error))?;
-        if settings.thinking && settings.service == translate::Service::Firefox {
+        if settings.thinking
+            && matches!(
+                settings.service,
+                translate::Service::Firefox | translate::Service::Chromium
+            )
+        {
             // Models take seconds to fetch the first time; fetching them now
             // keeps the first turn's thinking from waiting on it.
             let language = language::default(&path).await;

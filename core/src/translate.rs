@@ -1,12 +1,15 @@
 //! Translation of text into another language, for any part of inocode that
 //! shows text in the person's language: the services the browsers' page
-//! translation uses or Firefox's models run here offline, code left as
-//! written, and text that streams in translated in order as it comes.
+//! translation uses or Firefox's and Chrome's models run here offline, code
+//! left as written, and text that streams in translated in order as it
+//! comes.
 //! Wire facts and the choices made: docs/evidence/translation.md.
 
+mod chromium;
 mod firefox;
 mod marian;
 mod sentencepiece;
+mod tflite;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -29,6 +32,7 @@ pub enum Service {
     Edge,
     Google,
     Firefox,
+    Chromium,
 }
 
 impl Service {
@@ -37,6 +41,7 @@ impl Service {
             "edge" => Some(Self::Edge),
             "google" => Some(Self::Google),
             "firefox" => Some(Self::Firefox),
+            "chromium" => Some(Self::Chromium),
             _ => None,
         }
     }
@@ -46,6 +51,7 @@ impl Service {
             Self::Edge => "edge",
             Self::Google => "google",
             Self::Firefox => "firefox",
+            Self::Chromium => "chromium",
         }
     }
 }
@@ -57,6 +63,8 @@ pub struct Hosts {
     pub google: String,
     /// The Remote Settings server Firefox's models are listed on.
     pub firefox: String,
+    /// The component update server Chrome's language packs come from.
+    pub chromium: String,
 }
 
 impl Default for Hosts {
@@ -65,6 +73,7 @@ impl Default for Hosts {
             edge: "https://edge.microsoft.com/translate/translatetext".into(),
             google: "https://translate-pa.googleapis.com/v1/translateHtml".into(),
             firefox: firefox::SETTINGS.into(),
+            chromium: chromium::UPDATE.into(),
         }
     }
 }
@@ -77,10 +86,13 @@ pub struct Translator {
     client: reqwest::Client,
     /// Firefox's models, kept on disk and, once loaded, in memory.
     firefox: firefox::Firefox,
+    /// Chrome's language packs, kept on disk and, once loaded, in memory.
+    chromium: chromium::Chromium,
 }
 
 impl Translator {
-    /// `models` is the folder Firefox's models are kept in.
+    /// `models` is the folder Firefox's models are kept in; Chrome's packs
+    /// go in its `chromium` folder.
     pub fn new(
         service: Service,
         google_key: Option<String>,
@@ -95,6 +107,11 @@ impl Translator {
         Self {
             service,
             google_key: google_key.unwrap_or_else(|| GOOGLE_KEY.to_string()),
+            chromium: chromium::Chromium::new(
+                models.join("chromium"),
+                hosts.chromium.clone(),
+                client.clone(),
+            ),
             firefox: firefox::Firefox::new(models, hosts.firefox.clone(), client.clone()),
             hosts,
             client,
@@ -103,12 +120,13 @@ impl Translator {
 
     /// Each of `texts` in the language `to` (a tag such as `ja`), in the
     /// same order; code in backticks is left as written.
-    /// Gets ready to translate from `from` to `to`: Firefox's models are
-    /// fetched now rather than with the first text; the services need
-    /// nothing.
+    /// Gets ready to translate from `from` to `to`: Firefox's models and
+    /// Chrome's packs are fetched now rather than with the first text; the
+    /// services need nothing.
     pub async fn prepare(&self, from: &str, to: &str) -> Result<(), ErrorInfo> {
         match self.service {
             Service::Firefox => self.firefox.prepare(from, to).await,
+            Service::Chromium => self.chromium.prepare(from, to).await,
             Service::Edge | Service::Google => Ok(()),
         }
     }
@@ -133,7 +151,9 @@ impl Translator {
             .collect();
         if !sent.is_empty() {
             let translated = match self.service {
-                Service::Edge | Service::Firefox => self.around_code(&sent, to).await?,
+                Service::Edge | Service::Firefox | Service::Chromium => {
+                    self.around_code(&sent, to).await?
+                }
                 Service::Google => self.with_code_marked(&sent, to).await?,
             };
             let mut translated = translated.into_iter();
@@ -188,6 +208,7 @@ impl Translator {
             match self.service {
                 Service::Edge => self.edge(&sent, to).await?,
                 Service::Firefox => self.firefox.translate(&sent, to).await?,
+                Service::Chromium => self.chromium.translate(&sent, to).await?,
                 Service::Google => {
                     let escaped: Vec<String> = sent.iter().map(|text| escape(text)).collect();
                     let answers = self.google(&escaped, to).await?;
@@ -809,6 +830,8 @@ mod tests {
         assert!(Settings::from_value(&json!({"translation": {"service": "deepl"}})).is_err());
         let firefox = Settings::from_value(&json!({"translation": {"service": "firefox"}}));
         assert_eq!(firefox.unwrap().service, Service::Firefox);
+        let chromium = Settings::from_value(&json!({"translation": {"service": "chromium"}}));
+        assert_eq!(chromium.unwrap().service, Service::Chromium);
         assert!(Settings::from_value(&json!({"translation": {"thinking": "yes"}})).is_err());
         assert!(Settings::from_value(&json!({"translation": 3})).is_err());
     }
@@ -920,6 +943,7 @@ mod tests {
                 edge: edge.to_string(),
                 google: String::new(),
                 firefox: String::new(),
+                chromium: String::new(),
             },
             PathBuf::new(),
         );
@@ -969,8 +993,8 @@ mod tests {
     }
 
     /// Translates through the real services: `INOCODE_TRANSLATE_SERVICE`
-    /// (`edge`, `google` or `firefox`, which keeps its models in the
-    /// temporary folder).
+    /// (`edge`, `google`, or `firefox` or `chromium`, which keep their
+    /// models in the temporary folder).
     #[tokio::test]
     #[ignore = "sends text to a translation service; run by hand"]
     async fn translates_here() {
