@@ -4,10 +4,8 @@
 use serde_json::{json, Map, Value};
 
 use crate::oauth::AuthKind;
-use crate::{ErrorInfo, ProviderKind, DEFAULT_MAX_TOKENS as BASE_MAX_TOKENS};
+use crate::{ProviderKind, DEFAULT_MAX_TOKENS as BASE_MAX_TOKENS};
 
-const EFFORT_ENV: &str = "INOCODE_LLM_REASONING";
-const SUMMARY_ENV: &str = "INOCODE_LLM_REASONING_SUMMARY";
 /// Room kept for the answer beyond the thinking budget.
 const ANSWER_HEADROOM: u32 = 8192;
 const LEGACY_CEILING: u32 = 32_000;
@@ -87,6 +85,15 @@ impl Summary {
             _ => return None,
         })
     }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Concise => "concise",
+            Self::Detailed => "detailed",
+            Self::None => "none",
+        }
+    }
 }
 
 /// Every effort, for models whose provider publishes no list.
@@ -118,29 +125,6 @@ impl Default for Reasoning {
             effort: None,
             summary: Summary::Auto,
         }
-    }
-}
-
-impl Reasoning {
-    pub fn from_env() -> Result<Self, ErrorInfo> {
-        let mut reasoning = Self::default();
-        if let Ok(text) = std::env::var(EFFORT_ENV) {
-            reasoning.effort = Some(Effort::parse(&text).ok_or_else(|| {
-                ErrorInfo::new(
-                    "provider_config",
-                    format!("{EFFORT_ENV} must be none, minimal, low, medium, high, xhigh, max, or ultra"),
-                )
-            })?);
-        }
-        if let Ok(text) = std::env::var(SUMMARY_ENV) {
-            reasoning.summary = Summary::parse(&text).ok_or_else(|| {
-                ErrorInfo::new(
-                    "provider_config",
-                    format!("{SUMMARY_ENV} must be auto, concise, detailed, or none"),
-                )
-            })?;
-        }
-        Ok(reasoning)
     }
 }
 

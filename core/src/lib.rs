@@ -38,6 +38,8 @@ mod review;
 pub mod rules;
 mod rules_import;
 pub mod sandbox;
+pub mod secret;
+pub mod settings;
 mod shell;
 mod sse;
 pub mod store;
@@ -56,7 +58,7 @@ pub use llm::{
 };
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -160,6 +162,15 @@ impl Request {
             rules: self.allowed_rules()?,
             calls,
         })
+    }
+
+    /// Whether a `turn/start` request names its `mode`; one that does not
+    /// takes the mode its thread chose.
+    pub fn names_mode(&self) -> bool {
+        self.params
+            .as_ref()
+            .and_then(|params| params.get("mode"))
+            .is_some_and(|mode| !mode.is_null())
     }
 
     /// The earlier message of the thread a `turn/start` prompt replies to
@@ -420,35 +431,136 @@ impl EventPayload {
     }
 }
 
-/// The provider a [`Core`] answers `chat` with.
+/// Where a [`Core`]'s clients come from.
 enum Provider {
-    /// No provider configured: `chat` reports `provider_unconfigured`.
-    Unconfigured,
-    /// Configuration was attempted and failed; the error is reported as is.
-    Unavailable(ErrorInfo),
-    Ready(Box<Llm>),
+    /// Made from `settings.json` beside the store and the credential store.
+    Settings,
+    /// One client for every choice that names no configured provider, for
+    /// tests and embedders that bring their own.
+    Fixed(Arc<Llm>),
+}
+
+/// A turn that runs: where its steering input goes, and where a new model
+/// chosen for its thread goes.
+struct Running {
+    steer: mpsc::UnboundedSender<String>,
+    model: watch::Sender<Arc<Llm>>,
+}
+
+/// What [`Core::begin_turn`] claimed for [`Core::run_turn`].
+pub struct Claim {
+    steer: mpsc::UnboundedReceiver<String>,
+    model: watch::Receiver<Arc<Llm>>,
+}
+
+/// What a thread chose to run on, as stored; an absent field follows
+/// `default` in the settings.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct ThreadChoice {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    summary: Option<String>,
+    /// The approval mode of a `turn/start` that names none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mode: Option<String>,
+}
+
+/// A provider, model and reasoning to make a client for.
+#[derive(Debug, Clone, Default)]
+struct Choice {
+    provider: Option<String>,
+    model: Option<String>,
+    effort: Option<String>,
+    summary: Option<String>,
+    /// The colleague written in the older form: its `provider` may be a kind
+    /// name, and `base_url` replaces the provider's.
+    legacy_base_url: Option<String>,
+    legacy: bool,
+}
+
+impl Choice {
+    /// The thread's choice over the settings' `default`. A model chosen in
+    /// `default` belongs to `default`'s provider, so it is dropped when the
+    /// thread chose another provider.
+    fn of(thread: &ThreadChoice, default: &settings::Selection) -> Self {
+        let same_provider = thread.provider.is_none() || thread.provider == default.provider;
+        Self {
+            provider: thread.provider.clone().or_else(|| default.provider.clone()),
+            model: thread
+                .model
+                .clone()
+                .or_else(|| default.model.clone().filter(|_| same_provider)),
+            effort: thread.effort.clone().or_else(|| default.effort.clone()),
+            summary: thread.summary.clone().or_else(|| default.summary.clone()),
+            ..Self::default()
+        }
+    }
+
+    /// The choice of a helper `role` in a conversation that chose `self`.
+    fn role(&self, role: &settings::Role) -> Self {
+        if role.provider.is_some() {
+            Self {
+                provider: role.provider.clone(),
+                model: role.model.clone(),
+                effort: role.effort.clone(),
+                summary: self.summary.clone(),
+                ..Self::default()
+            }
+        } else {
+            Self {
+                provider: self.provider.clone(),
+                model: role.model.clone().or_else(|| self.model.clone()),
+                effort: role.effort.clone().or_else(|| self.effort.clone()),
+                summary: self.summary.clone(),
+                ..Self::default()
+            }
+        }
+    }
 }
 
 /// Request processor.
 ///
-/// Holds no per-connection state, so one instance serves every connection. The
-/// immediate methods (`ping`, `echo`) exercise the request path; `chat` streams
-/// a completion from the configured provider.
+/// Holds no per-connection state, so one instance serves every connection.
+/// Each conversation runs on the provider and model it chose; the clients
+/// are made from the settings when first needed and kept.
 pub struct Core {
     provider: Provider,
     store: Option<Store>,
-    /// Where steering input goes, for each thread with a running turn.
-    turns: Mutex<HashMap<SessionId, mpsc::UnboundedSender<String>>>,
+    turns: Mutex<HashMap<SessionId, Running>>,
+    /// The credential store; `None` is [`oauth::Store::default_path`].
+    credentials: Option<std::path::PathBuf>,
+    /// Clients by everything that made them, so a changed provider gets a
+    /// new one and an unchanged one keeps its connections and check-in.
+    clients: Mutex<HashMap<String, Arc<Llm>>>,
+}
+
+impl Default for Core {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Core {
-    /// Core without a provider: `chat` reports `provider_unconfigured`.
-    pub fn without_llm() -> Self {
-        Self::with_provider(Provider::Unconfigured)
+    /// Core that makes its clients from the settings beside its store.
+    pub fn new() -> Self {
+        Self::with_provider(Provider::Settings)
     }
 
+    /// Core without a store, so without settings: `chat` reports
+    /// `provider_unconfigured`.
+    pub fn without_llm() -> Self {
+        Self::new()
+    }
+
+    /// Core that answers every choice naming no configured provider with
+    /// `llm`, or with `llm`'s provider for another model.
     pub fn with_llm(llm: Llm) -> Self {
-        Self::with_provider(Provider::Ready(Box::new(llm)))
+        Self::with_provider(Provider::Fixed(Arc::new(llm)))
     }
 
     fn with_provider(provider: Provider) -> Self {
@@ -456,21 +568,260 @@ impl Core {
             provider,
             store: None,
             turns: Mutex::new(HashMap::new()),
+            credentials: None,
+            clients: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Keeps threads in `store`.
+    /// Keeps threads in `store`; the settings are the `settings.json`
+    /// beside it.
     pub fn with_store(mut self, store: Store) -> Self {
         self.store = Some(store);
         self
     }
 
-    /// Core configured from the environment, or from the recorded failure.
-    pub fn from_env() -> Self {
-        match Llm::from_env() {
-            Ok(llm) => Self::with_llm(llm),
-            Err(error) => Self::with_provider(Provider::Unavailable(error)),
+    /// Reads credentials from the store at `path` instead of the default.
+    pub fn with_credentials(mut self, path: std::path::PathBuf) -> Self {
+        self.credentials = Some(path);
+        self
+    }
+
+    /// The settings file beside the database.
+    pub fn settings_path(&self) -> Result<std::path::PathBuf, ErrorInfo> {
+        Ok(self.store()?.files_folder().with_file_name("settings.json"))
+    }
+
+    /// The settings; the empty settings for a core without a store.
+    async fn settings(&self) -> Result<settings::Settings, ErrorInfo> {
+        match &self.store {
+            Some(store) => {
+                settings::Settings::load(&store.files_folder().with_file_name("settings.json"))
+                    .await
+                    .map_err(|error| ErrorInfo::new("settings_invalid", error))
+            }
+            None => Ok(settings::Settings::default()),
         }
+    }
+
+    fn credentials_path(&self) -> Result<std::path::PathBuf, ErrorInfo> {
+        match &self.credentials {
+            Some(path) => Ok(path.clone()),
+            None => oauth::Store::default_path()
+                .map_err(|error| ErrorInfo::new("provider_config", error)),
+        }
+    }
+
+    /// The client for `choice`, made once and kept.
+    fn client(
+        &self,
+        settings: &settings::Settings,
+        choice: &Choice,
+    ) -> Result<Arc<Llm>, ErrorInfo> {
+        let id = match (&self.provider, &choice.provider) {
+            (_, Some(id)) => id,
+            (Provider::Fixed(llm), None) => {
+                return match choice.model.as_deref() {
+                    Some(model) if model != llm.model() => llm.sibling(model),
+                    _ => Ok(llm.clone()),
+                }
+            }
+            (Provider::Settings, None) => return Err(unconfigured()),
+        };
+        let mut provider = match settings.provider(id) {
+            Some(provider) => provider.clone(),
+            None => match settings::Kind::parse(id).filter(|_| choice.legacy) {
+                Some(kind) => settings::Provider::new(kind),
+                None => {
+                    return Err(ErrorInfo::new(
+                        "provider_config",
+                        format!("unknown provider {id}"),
+                    ))
+                }
+            },
+        };
+        if provider.disabled {
+            return Err(ErrorInfo::new(
+                "provider_disabled",
+                format!("the provider {id} is turned off"),
+            ));
+        }
+        if let Some(base_url) = &choice.legacy_base_url {
+            provider.base_url = Some(base_url.clone());
+        }
+        let model = choice
+            .model
+            .clone()
+            .unwrap_or_else(|| provider.default_model().to_string());
+        let effort = choice
+            .effort
+            .clone()
+            .or_else(|| provider.reasoning.effort.clone());
+        let summary = choice
+            .summary
+            .clone()
+            .or_else(|| provider.reasoning.summary.clone());
+        let key = serde_json::to_string(&(id, &provider, &model, &effort, &summary))
+            .map_err(|error| ErrorInfo::new("internal", error.to_string()))?;
+        if let Some(client) = self.clients_lock().get(&key) {
+            return Ok(client.clone());
+        }
+        let reasoning = reasoning::Reasoning {
+            effort: match effort.as_deref() {
+                Some(text) => Some(reasoning::Effort::parse(text).ok_or_else(|| {
+                    ErrorInfo::new("invalid_params", format!("unknown effort {text:?}"))
+                })?),
+                None => None,
+            },
+            summary: match summary.as_deref() {
+                Some(text) => reasoning::Summary::parse(text).ok_or_else(|| {
+                    ErrorInfo::new("invalid_params", format!("unknown summary {text:?}"))
+                })?,
+                None => reasoning::Summary::Auto,
+            },
+        };
+        let api_key = if provider.kind.uses_api_key() {
+            self.api_key(id)?
+        } else {
+            String::new()
+        };
+        let config = LlmConfig::for_provider(
+            &provider,
+            &model,
+            api_key,
+            reasoning,
+            self.credentials.clone(),
+        );
+        let client =
+            Arc::new(Llm::new(config)?.with_codex_client_version(provider.client_version.clone()));
+        Ok(self.clients_lock().entry(key).or_insert(client).clone())
+    }
+
+    fn clients_lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Arc<Llm>>> {
+        self.clients
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
+
+    /// The stored API key of the static-key provider `id`.
+    fn api_key(&self, id: &str) -> Result<String, ErrorInfo> {
+        let store = oauth::Store::load(self.credentials_path()?)
+            .map_err(|error| ErrorInfo::new("provider_config", error))?;
+        store
+            .credential(&settings::api_key_name(id))
+            .and_then(|credential| credential.api_key.clone())
+            .filter(|key| !key.trim().is_empty())
+            .ok_or_else(|| {
+                ErrorInfo::new(
+                    "provider_unconfigured",
+                    format!(
+                        "no API key is stored for the provider {id}; run `inocode-server key set {id}`"
+                    ),
+                )
+            })
+    }
+
+    async fn thread_choice(&self, thread: SessionId) -> Result<ThreadChoice, ErrorInfo> {
+        match self.store()?.thread_settings(thread).await? {
+            Some(text) => serde_json::from_str(&text)
+                .map_err(|error| ErrorInfo::new("store", format!("thread settings: {error}"))),
+            None => Ok(ThreadChoice::default()),
+        }
+    }
+
+    /// The conversation's client of `thread`.
+    async fn thread_client(&self, thread: SessionId) -> Result<Arc<Llm>, ErrorInfo> {
+        let settings = self.settings().await?;
+        let choice = Choice::of(&self.thread_choice(thread).await?, &settings.default);
+        self.client(&settings, &choice)
+    }
+
+    /// The client of the settings' `default`, for requests outside a thread.
+    async fn default_client(&self) -> Result<Arc<Llm>, ErrorInfo> {
+        let settings = self.settings().await?;
+        let choice = Choice::of(&ThreadChoice::default(), &settings.default);
+        self.client(&settings, &choice)
+    }
+
+    /// The client of a helper role; `None` where the conversation's own
+    /// model `main` does the work.
+    fn role_client(
+        &self,
+        settings: &settings::Settings,
+        conversation: &Choice,
+        role: Option<&settings::Role>,
+        main: &Arc<Llm>,
+    ) -> Result<Option<Arc<Llm>>, ErrorInfo> {
+        let Some(role) = role else {
+            return Ok(None);
+        };
+        let client = self.client(settings, &conversation.role(role))?;
+        Ok((!Arc::ptr_eq(&client, main)).then_some(client))
+    }
+
+    /// The helper models of a turn of the conversation that chose
+    /// `conversation`, around its model `main`.
+    async fn helpers(
+        &self,
+        conversation: &Choice,
+        mode: turn::Mode,
+        main: watch::Receiver<Arc<Llm>>,
+    ) -> Result<turn::Models, ErrorInfo> {
+        let settings = self.settings().await?;
+        let current = main.borrow().clone();
+        let roles = &settings.roles;
+        let reviewer = match mode {
+            turn::Mode::Auto => {
+                self.role_client(&settings, conversation, roles.review.as_ref(), &current)?
+            }
+            _ => None,
+        };
+        let colleague = match &roles.colleague {
+            Some(role) => Some(self.client(&settings, &conversation.role(role))?),
+            None => {
+                let path = self.settings_path()?;
+                let legacy = colleague::configured(&path).await.map_err(|error| {
+                    ErrorInfo::new("colleague_config", format!("{}: {error}", path.display()))
+                })?;
+                match legacy {
+                    Some(legacy) => {
+                        let choice = match legacy.provider {
+                            Some(provider) => Choice {
+                                provider: Some(provider),
+                                model: Some(legacy.model),
+                                legacy_base_url: legacy.base_url,
+                                legacy: true,
+                                ..Choice::default()
+                            },
+                            None => Choice {
+                                provider: conversation.provider.clone(),
+                                model: Some(legacy.model),
+                                ..Choice::default()
+                            },
+                        };
+                        Some(self.client(&settings, &choice)?)
+                    }
+                    None => None,
+                }
+            }
+        };
+        Ok(turn::Models {
+            reviewer,
+            compactor: self.role_client(
+                &settings,
+                conversation,
+                roles.compact.as_ref(),
+                &current,
+            )?,
+            explorer: self.role_client(
+                &settings,
+                conversation,
+                roles.explore.as_ref(),
+                &current,
+            )?,
+            checker: self.role_client(&settings, conversation, roles.check.as_ref(), &current)?,
+            colleague,
+            main,
+        })
     }
 
     /// Runs an immediate request and returns the response to send back.
@@ -493,27 +844,9 @@ impl Core {
         Response { id: Some(id), body }
     }
 
-    /// Starts a streaming completion for `prompt`.
+    /// Starts a streaming completion for `prompt` on the default model.
     pub async fn chat(&self, prompt: &str) -> Result<ChatStream, ErrorInfo> {
-        match &self.provider {
-            Provider::Ready(llm) => llm.chat(prompt).await,
-            Provider::Unavailable(error) => Err(error.clone()),
-            Provider::Unconfigured => Err(ErrorInfo::new(
-                "provider_unconfigured",
-                "no LLM provider is configured",
-            )),
-        }
-    }
-
-    fn llm(&self) -> Result<&Llm, ErrorInfo> {
-        match &self.provider {
-            Provider::Ready(llm) => Ok(llm.as_ref()),
-            Provider::Unavailable(error) => Err(error.clone()),
-            Provider::Unconfigured => Err(ErrorInfo::new(
-                "provider_unconfigured",
-                "no LLM provider is configured",
-            )),
-        }
+        self.default_client().await?.chat(prompt).await
     }
 
     fn store(&self) -> Result<&Store, ErrorInfo> {
@@ -529,7 +862,23 @@ impl Core {
             Some(key) => Some(store.project(key).await?),
             None => None,
         };
-        store.start_session(project, "").await
+        let default = self.settings().await?.default;
+        let thread = store.start_session(project, "").await?;
+        // The thread keeps the default of its start, so a later change of
+        // the default does not move a conversation to another model.
+        if default != settings::Selection::default() {
+            let chosen = ThreadChoice {
+                provider: default.provider,
+                model: default.model,
+                effort: default.effort,
+                summary: default.summary,
+                mode: None,
+            };
+            let text = serde_json::to_string(&chosen)
+                .map_err(|error| ErrorInfo::new("internal", error.to_string()))?;
+            store.set_thread_settings(thread, text).await?;
+        }
+        Ok(thread)
     }
 
     /// Up to `limit` messages of `thread` before `before` (the latest when
@@ -596,16 +945,13 @@ impl Core {
         Ok(Some(goal))
     }
 
-    /// Claims `thread` for a new turn and returns where its steering input
-    /// arrives. One turn runs per thread; [`Self::end_turn`] releases it.
-    pub async fn begin_turn(
-        &self,
-        thread: SessionId,
-    ) -> Result<mpsc::UnboundedReceiver<String>, ErrorInfo> {
-        self.llm()?;
+    /// Claims `thread` for a new turn and makes its model. One turn runs
+    /// per thread; [`Self::end_turn`] releases it.
+    pub async fn begin_turn(&self, thread: SessionId) -> Result<Claim, ErrorInfo> {
         if !self.store()?.session_exists(thread).await? {
             return Err(unknown_thread());
         }
+        let model = self.thread_client(thread).await?;
         let mut turns = self.turns.lock().map_err(|_| poisoned_turns())?;
         if turns.contains_key(&thread) {
             return Err(ErrorInfo::new(
@@ -613,9 +959,16 @@ impl Core {
                 "a turn is already running in this thread",
             ));
         }
-        let (sender, receiver) = mpsc::unbounded_channel();
-        turns.insert(thread, sender);
-        Ok(receiver)
+        let (steer_sender, steer) = mpsc::unbounded_channel();
+        let (model_sender, model) = watch::channel(model);
+        turns.insert(
+            thread,
+            Running {
+                steer: steer_sender,
+                model: model_sender,
+            },
+        );
+        Ok(Claim { steer, model })
     }
 
     pub fn end_turn(&self, thread: SessionId) {
@@ -629,17 +982,220 @@ impl Core {
         self.turns
             .lock()
             .ok()
-            .and_then(|turns| turns.get(&thread).map(|sender| sender.send(text).is_ok()))
+            .and_then(|turns| {
+                turns
+                    .get(&thread)
+                    .map(|running| running.steer.send(text).is_ok())
+            })
             .unwrap_or(false)
+    }
+
+    /// The approval mode `thread` chose for turns that name none.
+    pub async fn thread_mode(&self, thread: SessionId) -> Result<Option<turn::Mode>, ErrorInfo> {
+        Ok(self
+            .thread_choice(thread)
+            .await?
+            .mode
+            .as_deref()
+            .and_then(turn::Mode::parse))
+    }
+
+    /// What `thread` runs on: the provider, model, effort, summary and
+    /// approval mode, with what it did not choose filled in from `default`.
+    pub async fn thread_settings(&self, thread: SessionId) -> Result<Value, ErrorInfo> {
+        if !self.store()?.session_exists(thread).await? {
+            return Err(unknown_thread());
+        }
+        let settings = self.settings().await?;
+        let chosen = self.thread_choice(thread).await?;
+        let choice = Choice::of(&chosen, &settings.default);
+        let model = match self.client(&settings, &choice) {
+            Ok(client) => Some(client.model().to_string()),
+            Err(_) => choice.model.clone(),
+        };
+        Ok(json!({
+            "thread_id": thread.0,
+            "provider": choice.provider,
+            "model": model,
+            "effort": choice.effort,
+            "summary": choice.summary,
+            "mode": chosen.mode.unwrap_or_else(|| turn::Mode::default().as_str().to_string()),
+        }))
+    }
+
+    /// Changes what `thread` runs on: the fields of `patch` among
+    /// `provider`, `model`, `effort`, `summary` and `mode`, `null` returning
+    /// a field to `default`. A new provider without a model gets the
+    /// provider's default model. A running turn uses the new model from its
+    /// next request on.
+    pub async fn set_thread_settings(
+        &self,
+        thread: SessionId,
+        patch: &Value,
+    ) -> Result<Value, ErrorInfo> {
+        let invalid = |message: String| ErrorInfo::new("invalid_params", message);
+        let patch = patch
+            .as_object()
+            .ok_or_else(|| invalid("the settings are not an object".into()))?;
+        if !self.store()?.session_exists(thread).await? {
+            return Err(unknown_thread());
+        }
+        let settings = self.settings().await?;
+        let mut chosen = self.thread_choice(thread).await?;
+        for (name, value) in patch.iter().filter(|(name, _)| *name != "thread_id") {
+            let text = match value {
+                Value::Null => None,
+                Value::String(text) if !text.trim().is_empty() => Some(text.trim().to_string()),
+                _ => return Err(invalid(format!("\"{name}\" must be a string or null"))),
+            };
+            match name.as_str() {
+                "provider" => {
+                    if let Some(id) = &text {
+                        if settings.provider(id).is_none() {
+                            return Err(invalid(format!("unknown provider {id}")));
+                        }
+                    }
+                    if !patch.contains_key("model") {
+                        chosen.model = None;
+                    }
+                    chosen.provider = text;
+                }
+                "model" => chosen.model = text,
+                "effort" => {
+                    if let Some(effort) = &text {
+                        reasoning::Effort::parse(effort)
+                            .ok_or_else(|| invalid(format!("unknown effort {effort:?}")))?;
+                    }
+                    chosen.effort = text;
+                }
+                "summary" => {
+                    if let Some(summary) = &text {
+                        reasoning::Summary::parse(summary)
+                            .ok_or_else(|| invalid(format!("unknown summary {summary:?}")))?;
+                    }
+                    chosen.summary = text;
+                }
+                "mode" => {
+                    if let Some(mode) = &text {
+                        turn::Mode::parse(mode).ok_or_else(|| {
+                            invalid(
+                                "\"mode\" must be \"ask\", \"on-request\", \"auto\" or \"full\""
+                                    .into(),
+                            )
+                        })?;
+                    }
+                    chosen.mode = text;
+                }
+                other => return Err(invalid(format!("\"{other}\" is not a thread setting"))),
+            }
+        }
+        // Made before the choice is kept, so a choice that cannot run (no
+        // key, a turned-off provider) is refused instead of stored.
+        let client = match Choice::of(&chosen, &settings.default) {
+            choice if choice.provider.is_some() || matches!(self.provider, Provider::Fixed(_)) => {
+                Some(self.client(&settings, &choice)?)
+            }
+            _ => None,
+        };
+        let text = serde_json::to_string(&chosen)
+            .map_err(|error| ErrorInfo::new("internal", error.to_string()))?;
+        self.store()?.set_thread_settings(thread, text).await?;
+        if let Some(client) = client {
+            if let Ok(turns) = self.turns.lock() {
+                if let Some(running) = turns.get(&thread) {
+                    running.model.send_replace(client);
+                }
+            }
+        }
+        self.thread_settings(thread).await
+    }
+
+    /// The providers of the settings, each with whether its credential is
+    /// stored, and the `default` choice.
+    pub async fn providers(&self) -> Result<Value, ErrorInfo> {
+        let settings = self.settings().await?;
+        let credentials = oauth::Store::load(self.credentials_path()?).ok();
+        let providers: Vec<Value> = settings
+            .providers
+            .iter()
+            .flatten()
+            .map(|(id, provider)| provider_view(id, provider, credentials.as_ref()))
+            .collect();
+        Ok(json!({ "providers": providers, "default": settings.default }))
+    }
+
+    /// Adds the provider `{id, kind, ...}` of `params`.
+    pub async fn add_provider(&self, params: &Value) -> Result<Value, ErrorInfo> {
+        let (id, fields) = provider_params(params)?;
+        let provider: settings::Provider = serde_json::from_value(Value::Object(fields))
+            .map_err(|error| ErrorInfo::new("invalid_params", error.to_string()))?;
+        let path = self.settings_path()?;
+        settings::add_provider(&path, &id, &provider)
+            .await
+            .map_err(|error| ErrorInfo::new("invalid_params", error))?;
+        self.provider_result(&id).await
+    }
+
+    /// Changes the fields `params` names of the provider `id`; `null`
+    /// returns a field to the kind's default.
+    pub async fn update_provider(&self, params: &Value) -> Result<Value, ErrorInfo> {
+        let (id, fields) = provider_params(params)?;
+        let path = self.settings_path()?;
+        settings::update_provider(&path, &id, &Value::Object(fields))
+            .await
+            .map_err(|error| ErrorInfo::new("invalid_params", error))?;
+        self.provider_result(&id).await
+    }
+
+    /// Removes the provider `id`, unless `default` or a role chooses it.
+    pub async fn remove_provider(&self, params: &Value) -> Result<Value, ErrorInfo> {
+        let (id, _) = provider_params(params)?;
+        let path = self.settings_path()?;
+        match settings::remove_provider(&path, &id).await {
+            Ok(()) => Ok(json!({ "removed": id })),
+            Err(settings::RemoveError::InUse(uses)) => Err(ErrorInfo::new(
+                "provider_in_use",
+                format!(
+                    "the provider {id} is chosen in {}; choose another provider there first",
+                    uses.join(", ")
+                ),
+            )),
+            Err(settings::RemoveError::Invalid(error)) => {
+                Err(ErrorInfo::new("invalid_params", error))
+            }
+        }
+    }
+
+    async fn provider_result(&self, id: &str) -> Result<Value, ErrorInfo> {
+        let settings = self.settings().await?;
+        let provider = settings
+            .provider(id)
+            .ok_or_else(|| ErrorInfo::new("internal", "the provider was not kept"))?;
+        let credentials = oauth::Store::load(self.credentials_path()?).ok();
+        Ok(json!({ "provider": provider_view(id, provider, credentials.as_ref()) }))
+    }
+
+    /// The `default`, `roles` and `server` sections.
+    pub async fn get_settings(&self) -> Result<Value, ErrorInfo> {
+        self.store()?;
+        Ok(sections_view(&self.settings().await?))
+    }
+
+    /// Merges `patch` into the `default`, `roles` and `server` sections.
+    pub async fn set_settings(&self, patch: &Value) -> Result<Value, ErrorInfo> {
+        let settings = settings::set_sections(&self.settings_path()?, patch)
+            .await
+            .map_err(|error| ErrorInfo::new("invalid_params", error))?;
+        Ok(sections_view(&settings))
     }
 
     /// The configured provider's models with their prices, benchmark scores
     /// and measured speed (docs/evidence/model-catalog.md).
     pub async fn model_catalog(&self) -> Result<catalog::Catalog, ErrorInfo> {
-        let llm = self.llm()?;
         let store = self.store()?;
+        let llm = self.default_client().await?;
         let models = llm.models().await?;
-        Ok(catalog::build(llm, store, models).await)
+        Ok(catalog::build(&llm, store, models).await)
     }
 
     /// Writes `patch` into the translation settings beside the database
@@ -766,49 +1322,165 @@ impl Core {
         prompt: String,
         reply_to: Option<i64>,
         approvals: turn::Approvals,
-        steer: mpsc::UnboundedReceiver<String>,
+        claim: Claim,
         cancel: watch::Receiver<bool>,
         events: mpsc::Sender<TurnEvent>,
     ) -> Outcome {
-        match (self.llm(), self.store()) {
-            (Ok(llm), Ok(store)) => {
-                let prompt = turn::Prompt {
-                    text: prompt,
-                    reply_to,
-                };
-                turn::run(llm, store, thread, prompt, approvals, steer, cancel, events).await
+        let failed = |error| Outcome {
+            ending: turn::Ending::Failed(error),
+            usage: Default::default(),
+            held: Vec::new(),
+            questions: Vec::new(),
+        };
+        let store = match self.store() {
+            Ok(store) => store,
+            Err(error) => return failed(error),
+        };
+        let conversation = match (self.settings().await, self.thread_choice(thread).await) {
+            (Ok(settings), Ok(chosen)) => Choice::of(&chosen, &settings.default),
+            (Err(error), _) | (_, Err(error)) => return failed(error),
+        };
+        let models = match self
+            .helpers(&conversation, approvals.mode, claim.model)
+            .await
+        {
+            Ok(models) => models,
+            Err(error) => return failed(error),
+        };
+        let prompt = turn::Prompt {
+            text: prompt,
+            reply_to,
+        };
+        turn::run(
+            models,
+            store,
+            thread,
+            prompt,
+            approvals,
+            claim.steer,
+            cancel,
+            events,
+        )
+        .await
+    }
+
+    /// Lists the models of the provider `provider`, or of the provider of
+    /// `thread`, or of the default one: the settings' list when it has one,
+    /// else what the provider advertises.
+    pub async fn models(
+        &self,
+        provider: Option<&str>,
+        thread: Option<SessionId>,
+    ) -> Result<Vec<ModelInfo>, ErrorInfo> {
+        let settings = self.settings().await?;
+        let choice = match (provider, thread) {
+            (Some(id), _) => {
+                if settings.provider(id).is_none() {
+                    return Err(ErrorInfo::new(
+                        "invalid_params",
+                        format!("unknown provider {id}"),
+                    ));
+                }
+                Choice {
+                    provider: Some(id.to_string()),
+                    ..Choice::default()
+                }
             }
-            (Err(error), _) | (_, Err(error)) => Outcome {
-                ending: turn::Ending::Failed(error),
-                usage: Default::default(),
-                held: Vec::new(),
-                questions: Vec::new(),
-            },
+            (None, Some(thread)) => {
+                Choice::of(&self.thread_choice(thread).await?, &settings.default)
+            }
+            (None, None) => Choice::of(&ThreadChoice::default(), &settings.default),
+        };
+        let listed = choice
+            .provider
+            .as_deref()
+            .and_then(|id| settings.provider(id))
+            .and_then(|provider| provider.models.as_ref());
+        if let Some(models) = listed {
+            return Ok(models.iter().map(|id| listed_model(id)).collect());
         }
+        self.client(&settings, &choice)?.models().await
     }
 
-    /// Lists the models the configured provider advertises.
-    pub async fn models(&self) -> Result<Vec<ModelInfo>, ErrorInfo> {
-        match &self.provider {
-            Provider::Ready(llm) => llm.models().await,
-            Provider::Unavailable(error) => Err(error.clone()),
-            Provider::Unconfigured => Err(ErrorInfo::new(
-                "provider_unconfigured",
-                "no LLM provider is configured",
-            )),
-        }
-    }
-
-    /// The configured account's usage.
+    /// The default account's usage.
     pub async fn usage(&self) -> Result<Usage, ErrorInfo> {
-        match &self.provider {
-            Provider::Ready(llm) => llm.usage().await,
-            Provider::Unavailable(error) => Err(error.clone()),
-            Provider::Unconfigured => Err(ErrorInfo::new(
-                "provider_unconfigured",
-                "no LLM provider is configured",
-            )),
-        }
+        self.default_client().await?.usage().await
+    }
+}
+
+fn unconfigured() -> ErrorInfo {
+    ErrorInfo::new(
+        "provider_unconfigured",
+        "no LLM provider is configured; add one with providers/add, or sign in with \
+         `inocode-server login` or store a key with `inocode-server key set`",
+    )
+}
+
+/// The `id` of a `providers/*` request and its other fields.
+fn provider_params(params: &Value) -> Result<(String, serde_json::Map<String, Value>), ErrorInfo> {
+    let mut fields = params
+        .as_object()
+        .cloned()
+        .ok_or_else(|| ErrorInfo::new("invalid_params", "the params are not an object"))?;
+    match fields.remove("id") {
+        Some(Value::String(id)) if !id.trim().is_empty() => Ok((id.trim().to_string(), fields)),
+        _ => Err(ErrorInfo::new(
+            "invalid_params",
+            "requires an \"id\" string",
+        )),
+    }
+}
+
+/// A provider as `providers/*` shows it: its settings, the endpoint and
+/// model it uses when they name none, and whether its credential is stored
+/// (`null` when the credential store cannot be read).
+fn provider_view(
+    id: &str,
+    provider: &settings::Provider,
+    credentials: Option<&oauth::Store>,
+) -> Value {
+    let mut view = serde_json::to_value(provider).unwrap_or_else(|_| json!({}));
+    let name = if provider.kind.uses_api_key() {
+        settings::api_key_name(id)
+    } else {
+        provider.kind.auth().store_name().to_string()
+    };
+    if let Some(view) = view.as_object_mut() {
+        view.insert("id".into(), json!(id));
+        view.insert("effective_base_url".into(), json!(provider.base_url()));
+        view.insert(
+            "effective_default_model".into(),
+            json!(provider.default_model()),
+        );
+        view.insert(
+            "credential".into(),
+            json!(credentials.map(|store| store.credential(&name).is_some())),
+        );
+    }
+    view
+}
+
+fn sections_view(settings: &settings::Settings) -> Value {
+    json!({
+        "default": settings.default,
+        "roles": settings.roles,
+        "server": settings.server,
+    })
+}
+
+/// A model the settings list by name, with nothing else known about it.
+fn listed_model(id: &str) -> ModelInfo {
+    ModelInfo {
+        id: id.to_string(),
+        display_name: None,
+        owned_by: None,
+        reasoning_levels: None,
+        default_reasoning: None,
+        context_window: None,
+        max_output: None,
+        speed_tiers: None,
+        access_programs: None,
+        theos_per_request: None,
     }
 }
 

@@ -3,12 +3,14 @@
 //! shell refused as commands of another system, and the answer. Run once
 //! with a build that tells the model its system, shell and time and once
 //! with one that does not, to compare (docs/evidence/environment-context.md).
-//! Against the provider configured in the environment; ignored because it
-//! needs network access and a signed-in account.
+//! Against the provider the test-only `INOCODE_TEST_*` variables name
+//! (support::live_core); ignored because it needs network access and a
+//! signed-in account.
+
+mod support;
 
 use inocode_core::conversation::{AssistantPart, Body};
-use inocode_core::store::Store;
-use inocode_core::{turn, Core};
+use inocode_core::turn;
 use tokio::sync::{mpsc, watch};
 
 const TASKS: [&str; 6] = [
@@ -53,15 +55,14 @@ async fn requests_that_need_the_system_and_the_date() {
     let runs: usize = std::env::var("INOCODE_BENCH_RUNS").map_or(3, |runs| runs.parse().unwrap());
     let root = std::env::temp_dir().join(format!("inocode-live-env-{}", std::process::id()));
     let project = project(&root);
-    let store = Store::open(&root.join("inocode.db")).await.expect("store");
-    let core = Core::from_env().with_store(store);
+    let core = support::live_core(&root.join("inocode.db"), None).await;
     for run in 0..runs {
         for (task, prompt) in TASKS.iter().enumerate() {
             let thread = core
                 .start_thread(Some(&project.to_string_lossy()))
                 .await
                 .expect("thread");
-            let steer = core.begin_turn(thread).await.expect("turn");
+            let claim = core.begin_turn(thread).await.expect("turn");
             let (_cancel_sender, cancel) = watch::channel(false);
             let (events, mut received) = mpsc::channel(1024);
             let collector = tokio::spawn(async move {
@@ -107,7 +108,7 @@ async fn requests_that_need_the_system_and_the_date() {
                         mode: turn::Mode::Full,
                         ..Default::default()
                     },
-                    steer,
+                    claim,
                     cancel,
                     events,
                 )

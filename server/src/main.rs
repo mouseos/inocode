@@ -1,62 +1,169 @@
 //! Runs the server as a standalone process on the loopback interface.
 //!
-//! The port defaults to 8787 and can be overridden with the `INOCODE_PORT`
-//! environment variable. The listening address is always `127.0.0.1`, so the
-//! server is not reachable from the network. The provider is configured from
-//! `LOGFARE_API_KEY` and, optionally, `INOCODE_LLM_BASE_URL` and
-//! `INOCODE_LLM_MODEL`; without a key the server still starts and answers
-//! `ping` and `echo`, while `chat` reports that no provider is configured.
+//! Configuration lives in `~/.inocode/settings.json`, beside the thread
+//! database (docs/evidence/account-pool.md): the providers, the default
+//! model, the helper roles and the server's port and sandbox. `--port N`
+//! and `--sandbox on|off` override the `server` section for one run. The
+//! listening address is always `127.0.0.1`, so the server is not reachable
+//! from the network. Without a usable provider the server still starts and
+//! answers `ping` and `echo`, while `chat` reports that no provider is
+//! configured.
 //!
-//! `login claude|gpt|muse-code|deepai` runs the interactive subscription/OAuth login
-//! instead of serving, storing the credential at `~/.inocode/auth.json`.
-//! `models` lists the models the configured provider advertises; `usage`
-//! prints the account's usage (rate-limit windows or the DeepAI Theos
-//! allowance).
+//! `login claude|gpt|muse-code|deepai` runs the interactive subscription/OAuth
+//! login instead of serving, storing the credential in the credential store
+//! and adding the provider to the settings. `key set <provider-id>` stores
+//! the API key of a static-key provider, read from standard input. `models
+//! [provider-id]` lists a provider's models; `usage` prints the default
+//! account's usage (rate-limit windows or the DeepAI Theos allowance).
 //!
 //! Shell commands are confined to writing in the project folder and a
-//! temporary folder; `INOCODE_SANDBOX=off` turns that off. `sandbox-run` is
-//! the confinement runner the server starts itself as, not a user command.
+//! temporary folder unless the settings or `--sandbox off` turn that off.
+//! `sandbox-run` is the confinement runner the server starts itself as, not
+//! a user command.
 
 use std::env;
 use std::io;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use inocode_core::deepai;
 use inocode_core::oauth::{self, FlowEndpoints, MuseEndpoints, Store};
 use inocode_core::sandbox;
-use inocode_core::{Core, Llm, LlmConfig};
+use inocode_core::settings::{self, Kind};
+use inocode_core::Core;
 use tokio::net::TcpListener;
 
 const DEFAULT_PORT: u16 = 8787;
+
+/// What the command line asked for besides the command.
+#[derive(Default)]
+struct Flags {
+    port: Option<u16>,
+    sandbox: Option<bool>,
+}
 
 fn main() -> io::Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some(sandbox::RUNNER_ARGUMENT) {
         std::process::exit(sandbox::run(&args[1..]));
     }
-    sandbox::configure(env::var("INOCODE_SANDBOX").as_deref() != Ok("off"), None);
+    let (words, flags) = split_flags(args)?;
+    let server = server_settings().unwrap_or_else(|error| {
+        eprintln!("settings: {error}");
+        settings::Server::default()
+    });
+    sandbox::configure(flags.sandbox.or(server.sandbox).unwrap_or(true), None);
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(command(args.into_iter()))
+        .block_on(command(words, flags.port.or(server.port)))
 }
 
-async fn command(mut args: impl Iterator<Item = String>) -> io::Result<()> {
-    match args.next().as_deref() {
-        Some("login") => login_command(args.next().as_deref(), args.next().as_deref()).await,
-        Some("models") => models_command().await,
+fn invalid(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, message.into())
+}
+
+fn split_flags(args: Vec<String>) -> io::Result<(Vec<String>, Flags)> {
+    let mut words = Vec::new();
+    let mut flags = Flags::default();
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--port" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| invalid("--port needs a number"))?;
+                flags.port = Some(
+                    value
+                        .parse()
+                        .ok()
+                        .filter(|port| *port != 0)
+                        .ok_or_else(|| invalid("--port must be a port number from 1 to 65535"))?,
+                );
+            }
+            "--sandbox" => {
+                flags.sandbox = match args.next().as_deref() {
+                    Some("on") => Some(true),
+                    Some("off") => Some(false),
+                    _ => return Err(invalid("--sandbox must be followed by on or off")),
+                };
+            }
+            _ => words.push(arg),
+        }
+    }
+    Ok((words, flags))
+}
+
+/// `~/.inocode`, which holds the credential store, the database and the
+/// settings.
+fn home_folder() -> io::Result<PathBuf> {
+    let auth = Store::default_path().map_err(io::Error::other)?;
+    Ok(auth
+        .parent()
+        .ok_or_else(|| io::Error::other("no folder for the credential store"))?
+        .to_path_buf())
+}
+
+fn settings_path() -> io::Result<PathBuf> {
+    Ok(home_folder()?.join("settings.json"))
+}
+
+fn server_settings() -> io::Result<settings::Server> {
+    let value = settings::read_blocking(&settings_path()?).map_err(io::Error::other)?;
+    Ok(settings::Settings::from_value(&value)
+        .map_err(|error| io::Error::other(format!("settings.json: {error}")))?
+        .server)
+}
+
+async fn command(words: Vec<String>, port: Option<u16>) -> io::Result<()> {
+    let mut words = words.into_iter();
+    match words.next().as_deref() {
+        Some("login") => login_command(words.next().as_deref(), words.next().as_deref()).await,
+        Some("key") => match (words.next().as_deref(), words.next()) {
+            (Some("set"), Some(provider)) => key_command(&provider).await,
+            _ => Err(invalid("usage: inocode-server key set <provider-id>")),
+        },
+        Some("models") => models_command(words.next().as_deref()).await,
         Some("usage") => usage_command().await,
-        _ => serve().await,
+        None | Some("serve") => serve(port.unwrap_or(DEFAULT_PORT)).await,
+        Some(other) => Err(invalid(format!(
+            "unknown command \"{other}\"; expected serve, login, key set, models or usage"
+        ))),
     }
 }
 
-/// Lists the models the configured provider advertises. Prints model ids
-/// only; credentials are never displayed.
-async fn models_command() -> io::Result<()> {
-    let llm = Llm::new(LlmConfig::from_env().map_err(|error| io::Error::other(error.message))?)
+/// The core the commands share: the thread store and the settings beside
+/// it in `~/.inocode`.
+async fn open_core() -> io::Result<Core> {
+    let folder = home_folder()?;
+    std::fs::create_dir_all(&folder)?;
+    let store = inocode_core::store::Store::open(folder.join("inocode.db"))
+        .await
         .map_err(|error| io::Error::other(error.message))?;
-    let models = llm
-        .models()
+    Ok(Core::new().with_store(store))
+}
+
+/// Gives the settings their providers the first time, from the stored
+/// credentials.
+async fn prepare_settings() -> io::Result<()> {
+    let credentials =
+        Store::load(Store::default_path().map_err(io::Error::other)?).map_err(io::Error::other)?;
+    if settings::create_defaults(&settings_path()?, &credentials)
+        .await
+        .map_err(io::Error::other)?
+    {
+        println!("providers added to {:?}", settings_path()?);
+    }
+    Ok(())
+}
+
+/// Lists the models of `provider`, or of the default provider. Prints
+/// model ids only; credentials are never displayed.
+async fn models_command(provider: Option<&str>) -> io::Result<()> {
+    prepare_settings().await?;
+    let models = open_core()
+        .await?
+        .models(provider, None)
         .await
         .map_err(|error| io::Error::other(error.message))?;
     for model in &models {
@@ -69,12 +176,12 @@ async fn models_command() -> io::Result<()> {
     Ok(())
 }
 
-/// Prints the configured account's usage as JSON. Credentials are never
+/// Prints the default account's usage as JSON. Credentials are never
 /// displayed.
 async fn usage_command() -> io::Result<()> {
-    let llm = Llm::new(LlmConfig::from_env().map_err(|error| io::Error::other(error.message))?)
-        .map_err(|error| io::Error::other(error.message))?;
-    let usage = llm
+    prepare_settings().await?;
+    let usage = open_core()
+        .await?
         .usage()
         .await
         .map_err(|error| io::Error::other(error.message))?;
@@ -85,39 +192,60 @@ async fn usage_command() -> io::Result<()> {
     Ok(())
 }
 
-async fn serve() -> io::Result<()> {
-    let port = match env::var("INOCODE_PORT") {
-        Ok(value) => value.parse().map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "INOCODE_PORT must be a port number",
-            )
-        })?,
-        Err(_) => DEFAULT_PORT,
-    };
+async fn serve(port: u16) -> io::Result<()> {
     let listener = TcpListener::bind(("127.0.0.1", port)).await?;
     println!("inocode-server listening on {}", listener.local_addr()?);
-    let mut core = Core::from_env();
-    match thread_store_path() {
-        Ok(path) => match inocode_core::store::Store::open(&path).await {
-            Ok(store) => core = core.with_store(store),
-            Err(error) => eprintln!("threads unavailable: {}", error.message),
-        },
-        Err(error) => eprintln!("threads unavailable: {error}"),
+    if let Err(error) = prepare_settings().await {
+        eprintln!("settings: {error}");
     }
-    let core = Arc::new(core);
-    inocode_server::run(listener, core, async {
+    let core = match open_core().await {
+        Ok(core) => core,
+        Err(error) => {
+            eprintln!("threads unavailable: {error}");
+            Core::new()
+        }
+    };
+    inocode_server::run(listener, Arc::new(core), async {
         let _ = tokio::signal::ctrl_c().await;
     })
     .await
 }
 
-/// `~/.inocode/inocode.db`, beside `auth.json`.
-fn thread_store_path() -> Result<std::path::PathBuf, String> {
-    let auth = Store::default_path()?;
-    let directory = auth.parent().ok_or("no directory for the thread store")?;
-    std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
-    Ok(directory.join("inocode.db"))
+/// Stores the API key of the provider `provider`, typed without echo or
+/// piped in. The key is never printed.
+async fn key_command(provider: &str) -> io::Result<()> {
+    let settings = settings::Settings::load(&settings_path()?)
+        .await
+        .map_err(io::Error::other)?;
+    if let Some(configured) = settings.provider(provider) {
+        if !configured.kind.uses_api_key() {
+            return Err(invalid(format!(
+                "the provider {provider} signs in with `inocode-server login`; it has no API key"
+            )));
+        }
+    }
+    println!("API key for {provider}:");
+    let key = inocode_core::secret::read_line_hidden()?;
+    let key = key.trim();
+    if key.is_empty() {
+        return Err(invalid("no key was given"));
+    }
+    let mut store =
+        Store::load(Store::default_path().map_err(io::Error::other)?).map_err(io::Error::other)?;
+    store
+        .update(&settings::api_key_name(provider), |credential| {
+            credential.api_key = Some(key.to_string());
+        })
+        .map_err(io::Error::other)?;
+    println!("key for {provider} stored in {:?}", store.path());
+    if settings.provider(provider).is_none() {
+        println!(
+            "no provider {provider} is configured yet; add it with providers/add \
+             (or restart the server once, which adds \"{}\" when its key is stored)",
+            settings::LOGFARE
+        );
+    }
+    Ok(())
 }
 
 /// Runs one login flow and stores its credential. Tokens and keys are never
@@ -125,7 +253,7 @@ fn thread_store_path() -> Result<std::path::PathBuf, String> {
 async fn login_command(provider: Option<&str>, option: Option<&str>) -> io::Result<()> {
     let mut store =
         Store::load(Store::default_path().map_err(io::Error::other)?).map_err(io::Error::other)?;
-    let (name, credential) = match provider {
+    let (kind, credential) = match provider {
         Some("claude") => {
             let code_mode = option == Some("--code");
             let endpoints = FlowEndpoints::anthropic();
@@ -142,7 +270,7 @@ async fn login_command(provider: Option<&str>, option: Option<&str>) -> io::Resu
                 None
             };
             (
-                "claude-oauth",
+                Kind::ClaudeOauth,
                 oauth::claude_login_finish(&endpoints, start, pasted)
                     .await
                     .map_err(login_error)?,
@@ -153,14 +281,14 @@ async fn login_command(provider: Option<&str>, option: Option<&str>) -> io::Resu
             let start = oauth::gpt_login_start(&endpoints);
             println!("Open this URL and approve access:\n{}", start.url);
             (
-                "gpt-oauth",
+                Kind::GptOauth,
                 oauth::gpt_login_finish(&endpoints, start, None)
                     .await
                     .map_err(login_error)?,
             )
         }
         Some("muse-code" | "muse") => (
-            "muse-code",
+            Kind::MuseCode,
             oauth::login_muse(&MuseEndpoints::default())
                 .await
                 .map_err(login_error)?,
@@ -174,29 +302,32 @@ async fn login_command(provider: Option<&str>, option: Option<&str>) -> io::Resu
                 start.url
             );
             (
-                "deepai",
+                Kind::DeepAi,
                 deepai::sign_in_finish(&endpoints, start)
                     .await
                     .map_err(login_error)?,
             )
         }
         Some(other) => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "unknown login target \"{other}\"; expected claude, gpt, muse-code, or deepai"
-                ),
-            ));
+            return Err(invalid(format!(
+                "unknown login target \"{other}\"; expected claude, gpt, muse-code, or deepai"
+            )));
         }
         None => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
+            return Err(invalid(
                 "usage: inocode-server login claude|gpt|muse-code|deepai",
             ));
         }
     };
+    let name = kind.auth().store_name();
     store.save(name, credential).map_err(io::Error::other)?;
     println!("credential for {name} stored in {:?}", store.path());
+    if settings::add_signed_in(&settings_path()?, kind)
+        .await
+        .map_err(io::Error::other)?
+    {
+        println!("provider {} added to {:?}", kind.name(), settings_path()?);
+    }
     Ok(())
 }
 

@@ -1,11 +1,12 @@
 //! A turn that has to find a plugin in the Claude Code and Codex catalogs and
 //! ask to install it, then a turn in which the person approves the held
-//! install, against the provider configured in the environment
-//! (`INOCODE_LLM_PROVIDER`, `INOCODE_LLM_MODEL`, …). Ignored because it needs
-//! network access and a signed-in account; run it by hand.
+//! install, against the provider the test-only `INOCODE_TEST_*` variables
+//! name (support::live_core). Ignored because it needs network access and a
+//! signed-in account; run it by hand.
+
+mod support;
 
 use inocode_core::store::SessionId;
-use inocode_core::store::Store;
 use inocode_core::{turn, Core};
 use tokio::sync::{mpsc, watch};
 
@@ -15,7 +16,7 @@ async fn run(
     prompt: &str,
     approvals: turn::Approvals,
 ) -> turn::Outcome {
-    let steer = core.begin_turn(thread).await.expect("turn");
+    let claim = core.begin_turn(thread).await.expect("turn");
     let (_cancel_sender, cancel) = watch::channel(false);
     let (events, mut received) = mpsc::channel(1024);
     let printer = tokio::spawn(async move {
@@ -40,7 +41,7 @@ async fn run(
             prompt.to_string(),
             None,
             approvals,
-            steer,
+            claim,
             cancel,
             events,
         )
@@ -62,8 +63,7 @@ async fn a_plugin_is_found_and_installed_after_approval() {
     let root = std::env::temp_dir().join(format!("inocode-live-plugins-{}", std::process::id()));
     let project = root.join("project");
     std::fs::create_dir_all(&project).expect("project");
-    let store = Store::open(&root.join("inocode.db")).await.expect("store");
-    let core = Core::from_env().with_store(store);
+    let core = support::live_core(&root.join("inocode.db"), None).await;
     let thread = core
         .start_thread(Some(&project.to_string_lossy()))
         .await

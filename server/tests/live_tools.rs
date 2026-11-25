@@ -1,6 +1,6 @@
-//! Live tool-calling round trip against the provider configured in the
-//! environment (`INOCODE_LLM_PROVIDER`, `INOCODE_LLM_MODEL`, …). Ignored
-//! because it needs network access and a credential; run it by hand.
+//! Live tool-calling round trip against the provider the test-only
+//! `INOCODE_TEST_*` variables name (support::live_llm). Ignored because it
+//! needs network access and a credential; run it by hand.
 
 use inocode_core::conversation::{
     AssistantPart, Body, Conversation, Message, Speaker, StopReason, ToolSpec,
@@ -30,7 +30,7 @@ async fn turn(llm: &Llm, conversation: &Conversation, tools: &[ToolSpec]) -> (St
 #[tokio::test]
 #[ignore = "requires a provider credential; run by hand"]
 async fn a_tool_call_and_its_result_round_trip() {
-    let llm = Llm::from_env().expect("provider");
+    let llm = support::live_llm();
     let tools = [ToolSpec {
         name: "get_weather".to_string(),
         description: "Returns the current weather for a city.".to_string(),
@@ -118,7 +118,7 @@ async fn a_tool_call_and_its_result_round_trip() {
 #[tokio::test]
 #[ignore = "requires a provider credential; run by hand"]
 async fn thinking_streams_before_the_answer() {
-    let llm = Llm::from_env().expect("provider");
+    let llm = support::live_llm();
     let conversation = Conversation {
         system: None,
         messages: vec![message(
@@ -246,10 +246,7 @@ async fn live_server(
 ) {
     let root = std::env::temp_dir().join(format!("inocode-live-{label}-{}", std::process::id()));
     std::fs::create_dir_all(&root).expect("folder");
-    let store = inocode_core::store::Store::open(&root.join("inocode.db"))
-        .await
-        .expect("store");
-    let core = std::sync::Arc::new(inocode_core::Core::from_env().with_store(store));
+    let core = std::sync::Arc::new(support::live_core(&root.join("inocode.db"), None).await);
     let (addr, stop, handle) = support::start_server(core).await;
     let mut client = support::connect(addr).await;
     let response = support::call(&mut client, 1, json!({"id": 1, "method": "thread/start"})).await;
@@ -417,7 +414,7 @@ async fn gemba_score(llm: &Llm, source: &str, translation: &str) -> Option<f64> 
 #[ignore = "requires a provider credential and sends the thinking to translation services; run by hand"]
 async fn thinking_translations_are_scored() {
     use inocode_core::translate::{Chunker, Hosts, Service, Translator};
-    let llm = Llm::from_env().expect("provider");
+    let llm = support::live_llm();
     let services: Vec<Service> = std::env::var("INOCODE_TRANSLATE_SERVICES")
         .unwrap_or_else(|_| "google,edge,firefox,chromium".into())
         .split(',')

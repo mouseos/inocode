@@ -1,9 +1,10 @@
-//! Goal runs against the provider configured in the environment
-//! (`INOCODE_LLM_PROVIDER`, `INOCODE_LLM_MODEL`, …). Ignored because they
-//! need network access and a credential; run them by hand.
+//! Goal runs against the provider the test-only `INOCODE_TEST_*` variables
+//! name (support::live_core). Ignored because they need network access and
+//! a credential; run them by hand.
 
-use inocode_core::store::Store;
-use inocode_core::{turn, Core};
+mod support;
+
+use inocode_core::turn;
 use tokio::sync::{mpsc, watch};
 
 /// Runs one turn on `objective` in a project holding numbers.txt with
@@ -15,8 +16,7 @@ async fn run_goal(label: &str, numbers: &str, objective: &str) {
     std::fs::write(project.join("numbers.txt"), numbers).expect("numbers");
     // Commands run through the server's helper, not through this test binary.
     inocode_core::sandbox::configure(true, Some(env!("CARGO_BIN_EXE_inocode-server").into()));
-    let store = Store::open(folder.join("inocode.db")).await.expect("store");
-    let core = Core::from_env().with_store(store);
+    let core = support::live_core(&folder.join("inocode.db"), None).await;
 
     let thread = core
         .start_thread(Some(&project.to_string_lossy()))
@@ -26,7 +26,7 @@ async fn run_goal(label: &str, numbers: &str, objective: &str) {
         .await
         .expect("goal");
 
-    let steer = core.begin_turn(thread).await.expect("turn");
+    let claim = core.begin_turn(thread).await.expect("turn");
     let (_cancel_sender, cancel) = watch::channel(false);
     let (events, mut received) = mpsc::channel(1024);
     let printer = tokio::spawn(async move {
@@ -45,7 +45,7 @@ async fn run_goal(label: &str, numbers: &str, objective: &str) {
             "Work on the goal.".to_string(),
             None,
             turn::Approvals::default(),
-            steer,
+            claim,
             cancel,
             events,
         )

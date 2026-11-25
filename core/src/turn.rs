@@ -141,6 +141,15 @@ impl Mode {
             _ => None,
         }
     }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::OnRequest => "on-request",
+            Self::Auto => "auto",
+            Self::Full => "full",
+        }
+    }
 }
 
 /// What the person allowed for one turn: its mode, the `ask` rules
@@ -157,13 +166,21 @@ pub struct Approvals {
 /// to the person instead (the counts of Claude Code and DeepAI Code).
 const DENIALS_IN_A_ROW: u32 = 3;
 const DENIALS_PER_TURN: u32 = 20;
-/// Names a model to review calls in the `auto` mode instead of the turn's.
-const REVIEW_MODEL_ENV: &str = "INOCODE_REVIEW_MODEL";
-const COMPACT_MODEL_ENV: &str = "INOCODE_COMPACT_MODEL";
-const EXPLORE_MODEL_ENV: &str = "INOCODE_EXPLORE_MODEL";
-/// Names a model to check goals instead of the turn's
-/// (docs/evidence/goal-command.md).
-const CHECK_MODEL_ENV: &str = "INOCODE_CHECK_MODEL";
+
+/// The models of a turn. `main` is the conversation's model: a change of
+/// the thread's settings sends a new one, used from the next request on.
+/// A helper role that is `None` is done by the conversation's model.
+pub struct Models {
+    pub main: watch::Receiver<std::sync::Arc<Llm>>,
+    /// Reviews calls in the `auto` mode.
+    pub reviewer: Option<std::sync::Arc<Llm>>,
+    pub compactor: Option<std::sync::Arc<Llm>>,
+    pub explorer: Option<std::sync::Arc<Llm>>,
+    /// Checks goals; the colleague when `None` and there is one
+    /// (docs/evidence/goal-command.md).
+    pub checker: Option<std::sync::Arc<Llm>>,
+    pub colleague: Option<std::sync::Arc<Llm>>,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Outcome {
@@ -509,7 +526,7 @@ struct Thread<'a> {
 struct ThinkingTranslation {
     settings: PathBuf,
     language: Option<String>,
-    /// [`crate::translate::settings_written`] when the settings were read.
+    /// [`crate::settings::written`] when the settings were read.
     read_at: u64,
     /// The translator and language the thinking is translated into, when
     /// that is turned on.
@@ -518,7 +535,7 @@ struct ThinkingTranslation {
 
 impl ThinkingTranslation {
     async fn read(settings: PathBuf, language: Option<String>) -> Self {
-        let read_at = crate::translate::settings_written();
+        let read_at = crate::settings::written();
         let current = thinking_translator(&settings, language.as_deref()).await;
         Self {
             settings,
@@ -531,10 +548,10 @@ impl ThinkingTranslation {
     /// Reads the settings again when this process wrote them since; `true`
     /// when it did.
     async fn refresh(&mut self) -> bool {
-        if crate::translate::settings_written() == self.read_at {
+        if crate::settings::written() == self.read_at {
             return false;
         }
-        self.read_at = crate::translate::settings_written();
+        self.read_at = crate::settings::written();
         self.current = thinking_translator(&self.settings, self.language.as_deref()).await;
         true
     }
@@ -1438,7 +1455,7 @@ fn person(text: String) -> Body {
 /// the person.
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
-    llm: &Llm,
+    models: Models,
     store: &Store,
     session: SessionId,
     prompt: Prompt,
@@ -1448,21 +1465,7 @@ pub async fn run(
     events: mpsc::Sender<TurnEvent>,
 ) -> Outcome {
     let mut usage = TurnUsage::default();
-    let models = reviewer(llm, approvals.mode).and_then(|reviewer| {
-        let compactor = compactor(llm)?;
-        Ok((reviewer, compactor, explorer(llm)?))
-    });
-    let (reviewer, compactor, explorer) = match models {
-        Ok(models) => models,
-        Err(error) => {
-            return Outcome {
-                ending: Ending::Failed(error),
-                usage,
-                held: Vec::new(),
-                questions: Vec::new(),
-            }
-        }
-    };
+    let llm = models.main.borrow().clone();
     let mut thread = match open(
         store,
         session,
@@ -1474,31 +1477,11 @@ pub async fn run(
     .await
     {
         Ok(mut thread) => {
-            thread.reviewer = reviewer;
-            thread.compactor = compactor;
-            thread.explorer = explorer;
-            match colleague(llm, store).await {
-                Ok(colleague) => thread.colleague = colleague,
-                Err(error) => {
-                    return Outcome {
-                        ending: Ending::Failed(error),
-                        usage,
-                        held: Vec::new(),
-                        questions: Vec::new(),
-                    }
-                }
-            }
-            match other_model(llm, CHECK_MODEL_ENV) {
-                Ok(checker) => thread.checker = checker.or_else(|| thread.colleague.clone()),
-                Err(error) => {
-                    return Outcome {
-                        ending: Ending::Failed(error),
-                        usage,
-                        held: Vec::new(),
-                        questions: Vec::new(),
-                    }
-                }
-            }
+            thread.reviewer = models.reviewer;
+            thread.compactor = models.compactor;
+            thread.explorer = models.explorer;
+            thread.checker = models.checker.or_else(|| models.colleague.clone());
+            thread.colleague = models.colleague;
             if let Some(window) = llm.context_window().await {
                 thread.shorten_people(window);
             }
@@ -1513,8 +1496,9 @@ pub async fn run(
             }
         }
     };
+    drop(llm);
     let ending = steps(
-        llm,
+        models.main,
         &mut thread,
         prompt,
         &mut steer,
@@ -1543,61 +1527,6 @@ pub async fn run(
         usage,
         held: thread.held,
         questions,
-    }
-}
-
-/// The model that reviews calls in the `auto` mode when it is not the
-/// turn's own: the one `INOCODE_REVIEW_MODEL` names, on the same provider.
-fn reviewer(llm: &Llm, mode: Mode) -> Result<Option<std::sync::Arc<Llm>>, ErrorInfo> {
-    if mode != Mode::Auto {
-        return Ok(None);
-    }
-    match std::env::var(REVIEW_MODEL_ENV) {
-        Ok(model) if !model.trim().is_empty() => llm.sibling(model.trim()).map(Some),
-        _ => Ok(None),
-    }
-}
-
-/// The model that writes compaction summaries when it is not the turn's
-/// own: the one `INOCODE_COMPACT_MODEL` names, on the same provider.
-fn compactor(llm: &Llm) -> Result<Option<std::sync::Arc<Llm>>, ErrorInfo> {
-    other_model(llm, COMPACT_MODEL_ENV)
-}
-
-/// The model that answers `explore` when it is not the turn's own: the one
-/// `INOCODE_EXPLORE_MODEL` names, on the same provider.
-fn explorer(llm: &Llm) -> Result<Option<std::sync::Arc<Llm>>, ErrorInfo> {
-    other_model(llm, EXPLORE_MODEL_ENV)
-}
-
-/// The colleague named in `settings.json` beside the database, if any.
-async fn colleague(llm: &Llm, store: &Store) -> Result<Option<std::sync::Arc<Llm>>, ErrorInfo> {
-    let settings = store.files_folder().with_file_name("settings.json");
-    let configured = crate::colleague::configured(&settings)
-        .await
-        .map_err(|error| {
-            ErrorInfo::new(
-                "colleague_config",
-                format!("{}: {error}", settings.display()),
-            )
-        })?;
-    configured
-        .map(|colleague| {
-            llm.other(
-                colleague.provider.as_deref(),
-                &colleague.model,
-                colleague.base_url.as_deref(),
-            )
-        })
-        .transpose()
-}
-
-fn other_model(llm: &Llm, variable: &str) -> Result<Option<std::sync::Arc<Llm>>, ErrorInfo> {
-    match std::env::var(variable) {
-        Ok(model) if !model.trim().is_empty() && model.trim() != llm.model() => {
-            llm.sibling(model.trim()).map(Some)
-        }
-        _ => Ok(None),
     }
 }
 
@@ -1677,7 +1606,7 @@ async fn open<'a>(
 }
 
 async fn steps(
-    llm: &Llm,
+    main: watch::Receiver<std::sync::Arc<Llm>>,
     thread: &mut Thread<'_>,
     prompt: Prompt,
     steer: &mut mpsc::UnboundedReceiver<String>,
@@ -1715,6 +1644,8 @@ async fn steps(
     }
     let mut cuts = 0;
     loop {
+        let llm = main.borrow().clone();
+        let llm = llm.as_ref();
         // MCP tools found by a search are offered from the next request on.
         let mut tools = harness.clone();
         tools.extend(crate::mcp::specs(thread.store, &thread.conversation.messages).await);
