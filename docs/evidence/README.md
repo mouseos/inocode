@@ -80,7 +80,10 @@
 | [promise-list.md](promise-list.md) | 人が決めた約束の一覧を毎回付ける | RESEARCH_SUPPORTED（手当ての部分は UNSUPPORTED_APPROVED） | `core/src/promise.rs`、`core/src/turn.rs` |
 | [audio-recording.md](audio-recording.md) | 機器と形式を指定して音を録る | UNSUPPORTED_APPROVED | `core/src/audio.rs` |
 | [transcription.md](transcription.md) | 音のファイルを文字にする（Claude・ChatGPT・Google） | UNSUPPORTED_APPROVED | `core/src/transcribe.rs` |
-| [translation.md](translation.md) | 翻訳の共通部品（Google・Edge）と思考の翻訳 | UNSUPPORTED_APPROVED | `core/src/translate.rs` |
+| [translation.md](translation.md) | 翻訳の共通部品（Google・Edge・Firefox・Chromium）と思考の翻訳 | UNSUPPORTED_APPROVED | `core/src/translate.rs`、`core/src/translate/` |
+| [slash-commands.md](slash-commands.md) | スラッシュコマンドの仕組みと組み込みコマンドの一覧（定義の案、確認待ち） | UNSUPPORTED_APPROVED | 未実装 |
+| [account-pool.md](account-pool.md) | プロバイダ・モデル・アカウントの登録とアカウントのプール、認証情報の保存、環境変数をやめる | UNSUPPORTED_APPROVED | 未実装 |
+| [effort-estimates.md](effort-estimates.md) | 作業の時間とトークンの見積もり（過去の実測から） | RESEARCH_SUPPORTED（作業中の出し直し、査読前）／UNSUPPORTED_APPROVED | 未実装 |
 
 ## 状態の判定
 
