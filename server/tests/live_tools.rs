@@ -8,6 +8,8 @@ use inocode_core::conversation::{
 use inocode_core::Llm;
 use serde_json::{json, Value};
 
+mod support;
+
 fn message(id: usize, body: Body) -> Message {
     Message {
         id: id.to_string(),
@@ -158,4 +160,58 @@ async fn thinking_streams_before_the_answer() {
     assert!(parts
         .iter()
         .any(|part| matches!(part, AssistantPart::Reasoning { text, .. } if !text.is_empty())));
+}
+
+/// Over the protocol, a turn's `thinking` events reach the client before its
+/// `delta` events.
+#[tokio::test]
+#[ignore = "requires a provider credential; run by hand"]
+async fn thinking_reaches_the_client_before_the_answer() {
+    support::with_timeout_of(support::LIVE_TIMEOUT, async {
+        let root = std::env::temp_dir().join(format!("inocode-live-think-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("folder");
+        let store = inocode_core::store::Store::open(&root.join("inocode.db"))
+            .await
+            .expect("store");
+        let core = std::sync::Arc::new(inocode_core::Core::from_env().with_store(store));
+        let (addr, _stop, _handle) = support::start_server(core).await;
+        let mut client = support::connect(addr).await;
+        let response = support::call(&mut client, 1, json!({"id": 1, "method": "thread/start"})).await;
+        let thread = response["result"]["thread_id"].as_i64().expect("thread id");
+        client
+            .1
+            .write_json(
+                2,
+                &json!({"id": 2, "method": "turn/start", "params": {"thread_id": thread,
+                    "prompt": "A train leaves at 9:47 and the trip takes 2 hours 38 minutes.                                When does it arrive? Think it through, then give the time."}}),
+            )
+            .await
+            .expect("send");
+        let (mut thinking, mut text, mut thinking_after_text) = (String::new(), String::new(), false);
+        let mut events = (0, 0);
+        let ending = loop {
+            let event = support::next_message(&mut client, 2).await;
+            match event["event"].as_str().unwrap_or_default() {
+                "thinking" => {
+                    thinking_after_text |= !text.is_empty();
+                    thinking.push_str(event["text"].as_str().unwrap_or_default());
+                    events.0 += 1;
+                }
+                "delta" => {
+                    text.push_str(event["text"].as_str().unwrap_or_default());
+                    events.1 += 1;
+                }
+                kind @ ("completed" | "failed" | "cancelled") => break (kind.to_string(), event),
+                _ => {}
+            }
+        };
+        let _ = std::fs::remove_dir_all(&root);
+        println!("thinking events: {}, delta events: {}", events.0, events.1);
+        println!("thinking: {}", thinking.chars().take(300).collect::<String>());
+        println!("answer: {text}");
+        assert_eq!(ending.0, "completed", "{}", ending.1);
+        assert!(!thinking.is_empty(), "no thinking event reached the client");
+        assert!(!thinking_after_text, "thinking came after the answer");
+    })
+    .await;
 }

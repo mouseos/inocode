@@ -43,4 +43,9 @@
 - **本物での確認（2026-11-25、ユーザーの承認「やって」）：** 手で動かす試験 `server/tests/live_tools.rs` の `thinking_streams_before_the_answer`（思考の断片が答えより先に流れ、保存された答えに思考が残ること）。
   - Claude OAuth `claude-haiku-5-5`（high）：思考 15 片、答え 18 片。思考は全部答えより前。答えは 12:25 で正しい。
   - DeepAI `glm-5.3-flash`（high）：思考 199 片、答え 14 片。思考は全部答えより前。答えは 12:25 で正しい。
-- **未検証：** Responses 形式（GPT OAuth）での本物の流れ。サーバーからクライアントへの `thinking` イベントの本物での受け渡し（模擬では未試験。中継は `server/src/lib.rs` の 1 行）。
+  - GPT OAuth `gpt-6-luna`（Responses 形式、high、要約 auto）：思考 1 片（要約の見出し「**Calculating the time**」）、答え 8 片。思考は答えより前。答えは 12:25 で正しい。
+- **本物での確認、サーバーからクライアントまで（2026-11-25、ユーザーの指示「みけんしょうを残して止まるな」）：** 手で動かす試験 `server/tests/live_tools.rs` の `thinking_reaches_the_client_before_the_answer`（本物のサーバーを立て、TCP で `turn/start` を送り、`thinking` イベントが `delta` より先に届き、ターンが completed で終わること）。
+  - Claude OAuth `claude-haiku-5-5`（high）：`thinking` 36 件、`delta` 30 件。思考は全部答えより前。答えは 12:25 で正しい。
+  - GPT OAuth `gpt-6-luna`（high）：`thinking` 1 件（要約の見出し）、`delta` 9 件。答えは 12:25 で正しい。
+  - Responses 形式で届く思考は要約で、細かく分かれず見出し 1 行だけのことがある（今回 2 回とも 1 片）。
+- **未検証：** 画面（GUI・CLI の表示側）での見せ方。inocode にはまだ表示側がなく、確かめたのはプロトコルのイベントまで。
