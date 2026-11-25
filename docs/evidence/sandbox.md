@@ -1,6 +1,6 @@
 # シェルの命令を OS のサンドボックスに閉じ込める
 
-- **対象と範囲：** `shell` の道具で実行する命令が書き込める場所を、プロジェクトのフォルダーとスレッド専用の一時フォルダー（ログのフォルダーの `tmp`）に限る。Linux・macOS・Windows。範囲外：読み取り・ネットワーク・ほかのプロセスの制限、inocode 自身の edit・write（サーバーの中で動く）、写しと巻き戻し、命令の文字列による判定。
+- **対象と範囲：** `shell` の道具で実行する命令が書き込める場所を、プロジェクトのフォルダーとスレッド専用の一時フォルダー（ログのフォルダーの `tmp`）に限る。Linux・macOS・Windows。読み取りは、inocode 自身のフォルダー（`~/.inocode`、認証情報とサーバーの合言葉がある）だけを、OS が許す範囲で禁じる（`server-auth.md`。Windows はラベル、Linux は bwrap のときだけ、macOS はプロファイル）。範囲外：そのほかの読み取り・ネットワーク・ほかのプロセスの制限、inocode 自身の edit・write（サーバーの中で動く）、写しと巻き戻し、命令の文字列による判定。
 - **関連コード：** `core/src/sandbox/`（`mod.rs` が共通の入口、OS ごとに `linux.rs`・`macos.rs`・`windows.rs`）、`core/src/shell.rs`（命令を `sandbox::confine` に通す）、`server/src/main.rs`（`sandbox-run` で自分を実行役として起動、`INOCODE_SANDBOX=off`）。
 - **根拠の状態：** UNSUPPORTED_APPROVED
 - **ユーザーの承認：** 2026-11-19、DSH のサンドボックスを MIT の表示つきで移植する案に「承認。違うOSの機能はできれば並列に作って早く仕上げて」。
@@ -12,6 +12,7 @@
   - Linux：bwrap が使えればそれで、なければ Landlock（実行役が自分に Landlock をかけてから命令を起動する）。
   - macOS：Seatbelt（`sandbox-exec` とプロファイル）。
   - Windows：書き込み制限トークン（WRITE_RESTRICTED）と、書き込める場所への ACL の付与。実行役がそのトークンで命令を起動する。
+- 閉じ込めるかどうかは、設定の `server.sandbox` を `settings/set` で変えると、それ以後に始める命令から効く（`--sandbox` で起動したときはコマンドラインが勝つ）。
 - 閉じ込められないときは命令を実行しない（DSH と同じ）。`INOCODE_SANDBOX=off` で閉じ込めをやめられる。
 - 実行役の失敗は `inocode-sandbox:` で始まる文を出し、終了コード 127 で終わる。
 

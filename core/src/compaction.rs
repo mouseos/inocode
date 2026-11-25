@@ -467,6 +467,21 @@ pub(crate) async fn compact(
     input: u64,
     window: u64,
 ) -> Option<(Body, Vec<RequestRecord>)> {
+    compact_reporting(llm, summarizer, system, messages, tools, input, window)
+        .await
+        .map(|(body, usages, _)| (body, usages))
+}
+
+/// [`compact`], with why no summary could be written when it could not.
+pub(crate) async fn compact_reporting(
+    llm: &Llm,
+    summarizer: Option<&Llm>,
+    system: Option<String>,
+    messages: &[(i64, Message)],
+    tools: &[ToolSpec],
+    input: u64,
+    window: u64,
+) -> Option<(Body, Vec<RequestRecord>, Option<String>)> {
     let start = cut(messages, input, window)?;
     let replaced = &messages[..start];
     let up_to = replaced
@@ -493,20 +508,30 @@ pub(crate) async fn compact(
         llm, summarizer, system, messages, replaced, tools, input, window,
     )
     .await;
-    let summary = match written {
-        Ok(text) if !text.is_empty() => format!(
-            "Summary of earlier work (messages up to #{up_to} are summarized here; recall \
-             with from_seq reads them word for word):\n{text}"
+    let (summary, failure) = match written {
+        Ok(text) if !text.is_empty() => (
+            format!(
+                "Summary of earlier work (messages up to #{up_to} are summarized here; recall \
+                 with from_seq reads them word for word):\n{text}"
+            ),
+            None,
         ),
-        Ok(_) => format!(
-            "No summary of earlier work could be written (the answer was empty); the calls \
-             above are recorded, and recall with from_seq reads messages up to #{up_to} word \
-             for word."
+        Ok(_) => (
+            format!(
+                "No summary of earlier work could be written (the answer was empty); the \
+                 calls above are recorded, and recall with from_seq reads messages up to \
+                 #{up_to} word for word."
+            ),
+            Some("the summary was empty".to_string()),
         ),
-        Err(error) => format!(
-            "No summary of earlier work could be written ({}); the calls above are \
-             recorded, and recall with from_seq reads messages up to #{up_to} word for word.",
-            error.message
+        Err(error) => (
+            format!(
+                "No summary of earlier work could be written ({}); the calls above are \
+                 recorded, and recall with from_seq reads messages up to #{up_to} word for \
+                 word.",
+                error.message
+            ),
+            Some(error.message),
         ),
     };
     Some((
@@ -515,6 +540,7 @@ pub(crate) async fn compact(
             parts: vec![record, summary],
         },
         usages,
+        failure,
     ))
 }
 

@@ -334,6 +334,9 @@ pub struct EventPayload {
     /// What a `command/run` that starts a turn did before the turn.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
+    /// What went wrong beside a turn's work without ending it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warnings: Option<Vec<String>>,
 }
 
 fn translation_service(name: &str) -> Result<translate::Service, ErrorInfo> {
@@ -399,18 +402,13 @@ impl EventPayload {
     }
 
     /// The end of a turn that was neither interrupted nor failed.
-    pub fn turn_completed(
-        id: u64,
-        reason: &'static str,
-        usage: turn::TurnUsage,
-        held: Vec<turn::Held>,
-        questions: Vec<turn::Asked>,
-    ) -> Self {
+    pub fn turn_completed(id: u64, reason: &'static str, outcome: turn::Outcome) -> Self {
         Self {
             reason: Some(reason),
-            usage: Some(usage),
-            held: Some(held),
-            questions: Some(questions),
+            usage: Some(outcome.usage),
+            held: Some(outcome.held),
+            questions: Some(outcome.questions),
+            warnings: (!outcome.warnings.is_empty()).then_some(outcome.warnings),
             ..Self::new(id, "completed")
         }
     }
@@ -443,6 +441,7 @@ impl EventPayload {
             held: None,
             questions: None,
             result: None,
+            warnings: None,
         }
     }
 }
@@ -456,12 +455,13 @@ enum Provider {
     Fixed(Arc<Llm>),
 }
 
-/// A turn that runs: where its steering input goes, and where a new model
-/// chosen for its thread goes.
+/// A turn that runs: where its steering input goes, where a new model
+/// chosen for its thread goes, and how any connection interrupts it.
 struct Running {
     steer: mpsc::UnboundedSender<String>,
     model: watch::Sender<Arc<Llm>>,
     mode: watch::Sender<Option<turn::Mode>>,
+    cancel: watch::Sender<bool>,
 }
 
 /// What [`Core::begin_turn`] claimed for [`Core::run_turn`].
@@ -469,14 +469,27 @@ pub struct Claim {
     steer: mpsc::UnboundedReceiver<String>,
     model: watch::Receiver<Arc<Llm>>,
     mode: watch::Receiver<Option<turn::Mode>>,
+    cancel: watch::Receiver<bool>,
 }
 
 /// What the latest turn of a thread left for the person: the calls held
-/// for approval and the questions asked. Kept while the server runs.
+/// for approval and the questions asked. Kept in the store, so a restart
+/// does not lose them.
 #[derive(Debug, Clone, Default)]
 struct Waiting {
     held: Vec<turn::Held>,
     questions: Vec<turn::Asked>,
+}
+
+/// How the server process was started, for `settings/get` to tell the
+/// values in effect from those in the file.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Started {
+    /// The port it listens on.
+    pub port: Option<u16>,
+    /// `--sandbox on|off` given on the command line, which the file's
+    /// `server.sandbox` does not override.
+    pub sandbox_flag: Option<bool>,
 }
 
 /// What a thread chose to run on, as stored; an absent field follows
@@ -503,10 +516,6 @@ struct Choice {
     model: Option<String>,
     effort: Option<String>,
     summary: Option<String>,
-    /// The colleague written in the older form: its `provider` may be a kind
-    /// name, and `base_url` replaces the provider's.
-    legacy_base_url: Option<String>,
-    legacy: bool,
 }
 
 impl Choice {
@@ -523,7 +532,6 @@ impl Choice {
                 .or_else(|| default.model.clone().filter(|_| same_provider)),
             effort: thread.effort.clone().or_else(|| default.effort.clone()),
             summary: thread.summary.clone().or_else(|| default.summary.clone()),
-            ..Self::default()
         }
     }
 
@@ -535,7 +543,6 @@ impl Choice {
                 model: role.model.clone(),
                 effort: role.effort.clone(),
                 summary: self.summary.clone(),
-                ..Self::default()
             }
         } else {
             Self {
@@ -543,7 +550,6 @@ impl Choice {
                 model: role.model.clone().or_else(|| self.model.clone()),
                 effort: role.effort.clone().or_else(|| self.effort.clone()),
                 summary: self.summary.clone(),
-                ..Self::default()
             }
         }
     }
@@ -563,7 +569,7 @@ pub struct Core {
     /// Clients by everything that made them, so a changed provider gets a
     /// new one and an unchanged one keeps its connections and check-in.
     clients: Mutex<HashMap<String, Arc<Llm>>>,
-    waiting: Mutex<HashMap<SessionId, Waiting>>,
+    started: Started,
 }
 
 impl Default for Core {
@@ -597,8 +603,14 @@ impl Core {
             turns: Mutex::new(HashMap::new()),
             credentials: None,
             clients: Mutex::new(HashMap::new()),
-            waiting: Mutex::new(HashMap::new()),
+            started: Started::default(),
         }
+    }
+
+    /// Records how the server process was started.
+    pub fn with_started(mut self, started: Started) -> Self {
+        self.started = started;
+        self
     }
 
     /// Keeps threads in `store`; the settings are the `settings.json`
@@ -631,6 +643,15 @@ impl Core {
         }
     }
 
+    /// The settings file, once its present content is known to be valid:
+    /// a file that is broken already is reported as `settings_invalid`, not
+    /// as an error in the change asked for.
+    async fn writable_settings(&self) -> Result<std::path::PathBuf, ErrorInfo> {
+        self.store()?;
+        self.settings().await?;
+        self.settings_path()
+    }
+
     fn credentials_path(&self) -> Result<std::path::PathBuf, ErrorInfo> {
         match &self.credentials {
             Some(path) => Ok(path.clone()),
@@ -655,26 +676,20 @@ impl Core {
             }
             (Provider::Settings, None) => return Err(unconfigured()),
         };
-        let mut provider = match settings.provider(id) {
+        let provider = match settings.provider(id) {
             Some(provider) => provider.clone(),
-            None => match settings::Kind::parse(id).filter(|_| choice.legacy) {
-                Some(kind) => settings::Provider::new(kind),
-                None => {
-                    return Err(ErrorInfo::new(
-                        "provider_config",
-                        format!("unknown provider {id}"),
-                    ))
-                }
-            },
+            None => {
+                return Err(ErrorInfo::new(
+                    "provider_config",
+                    format!("unknown provider {id}"),
+                ))
+            }
         };
         if provider.disabled {
             return Err(ErrorInfo::new(
                 "provider_disabled",
                 format!("the provider {id} is turned off"),
             ));
-        }
-        if let Some(base_url) = &choice.legacy_base_url {
-            provider.base_url = Some(base_url.clone());
         }
         let model = choice
             .model
@@ -688,8 +703,33 @@ impl Core {
             .summary
             .clone()
             .or_else(|| provider.reasoning.summary.clone());
-        let key = serde_json::to_string(&(id, &provider, &model, &effort, &summary))
-            .map_err(|error| ErrorInfo::new("internal", error.to_string()))?;
+        // Read for every client asked for, so a key changed with `key set`
+        // is used from the next request on; the cache keeps it by a digest.
+        let api_key = if provider.kind.uses_api_key() {
+            self.api_key(id)?
+        } else {
+            String::new()
+        };
+        let key_digest = {
+            use sha2::Digest;
+            let digest = sha2::Sha256::digest(api_key.as_bytes());
+            digest
+                .iter()
+                .take(8)
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        let idle = settings.server.stream_idle();
+        let key = serde_json::to_string(&(
+            id,
+            &provider,
+            &model,
+            &effort,
+            &summary,
+            &key_digest,
+            idle.as_secs(),
+        ))
+        .map_err(|error| ErrorInfo::new("internal", error.to_string()))?;
         if let Some(client) = self.clients_lock().get(&key) {
             return Ok(client.clone());
         }
@@ -707,11 +747,6 @@ impl Core {
                 None => reasoning::Summary::Auto,
             },
         };
-        let api_key = if provider.kind.uses_api_key() {
-            self.api_key(id)?
-        } else {
-            String::new()
-        };
         let config = LlmConfig::for_provider(
             &provider,
             &model,
@@ -719,8 +754,11 @@ impl Core {
             reasoning,
             self.credentials.clone(),
         );
-        let client =
-            Arc::new(Llm::new(config)?.with_codex_client_version(provider.client_version.clone()));
+        let client = Arc::new(
+            Llm::new(config)?
+                .with_codex_client_version(provider.client_version.clone())
+                .with_stream_idle(idle)?,
+        );
         Ok(self.clients_lock().entry(key).or_insert(client).clone())
     }
 
@@ -791,47 +829,19 @@ impl Core {
     async fn helpers(
         &self,
         conversation: &Choice,
-        mode: turn::Mode,
         main: watch::Receiver<Arc<Llm>>,
         chosen_mode: watch::Receiver<Option<turn::Mode>>,
     ) -> Result<turn::Models, ErrorInfo> {
         let settings = self.settings().await?;
         let current = main.borrow().clone();
         let roles = &settings.roles;
-        let reviewer = match mode {
-            turn::Mode::Auto => {
-                self.role_client(&settings, conversation, roles.review.as_ref(), &current)?
-            }
-            _ => None,
-        };
+        // Made whatever the mode, since the person may switch to `auto`
+        // while the turn runs.
+        let reviewer =
+            self.role_client(&settings, conversation, roles.review.as_ref(), &current)?;
         let colleague = match &roles.colleague {
             Some(role) => Some(self.client(&settings, &conversation.role(role))?),
-            None => {
-                let path = self.settings_path()?;
-                let legacy = colleague::configured(&path).await.map_err(|error| {
-                    ErrorInfo::new("colleague_config", format!("{}: {error}", path.display()))
-                })?;
-                match legacy {
-                    Some(legacy) => {
-                        let choice = match legacy.provider {
-                            Some(provider) => Choice {
-                                provider: Some(provider),
-                                model: Some(legacy.model),
-                                legacy_base_url: legacy.base_url,
-                                legacy: true,
-                                ..Choice::default()
-                            },
-                            None => Choice {
-                                provider: conversation.provider.clone(),
-                                model: Some(legacy.model),
-                                ..Choice::default()
-                            },
-                        };
-                        Some(self.client(&settings, &choice)?)
-                    }
-                    None => None,
-                }
-            }
+            None => None,
         };
         Ok(turn::Models {
             reviewer,
@@ -877,6 +887,11 @@ impl Core {
     /// Starts a streaming completion for `prompt` on the default model.
     pub async fn chat(&self, prompt: &str) -> Result<ChatStream, ErrorInfo> {
         self.default_client().await?.chat(prompt).await
+    }
+
+    /// The thread store, when one is open.
+    pub fn thread_store(&self) -> Option<&Store> {
+        self.store.as_ref()
     }
 
     fn store(&self) -> Result<&Store, ErrorInfo> {
@@ -992,15 +1007,36 @@ impl Core {
         let (steer_sender, steer) = mpsc::unbounded_channel();
         let (model_sender, model) = watch::channel(model);
         let (mode_sender, mode) = watch::channel(None);
+        let (cancel_sender, cancel) = watch::channel(false);
         turns.insert(
             thread,
             Running {
                 steer: steer_sender,
                 model: model_sender,
                 mode: mode_sender,
+                cancel: cancel_sender,
             },
         );
-        Ok(Claim { steer, model, mode })
+        Ok(Claim {
+            steer,
+            model,
+            mode,
+            cancel,
+        })
+    }
+
+    /// Interrupts the running turn of `thread`, whichever connection started
+    /// it; `false` when none runs.
+    pub fn interrupt(&self, thread: SessionId) -> bool {
+        self.turns
+            .lock()
+            .ok()
+            .and_then(|turns| {
+                turns
+                    .get(&thread)
+                    .map(|running| running.cancel.send(true).is_ok())
+            })
+            .unwrap_or(false)
     }
 
     /// Whether a turn of `thread` runs.
@@ -1172,7 +1208,7 @@ impl Core {
         let (id, fields) = provider_params(params)?;
         let provider: settings::Provider = serde_json::from_value(Value::Object(fields))
             .map_err(|error| ErrorInfo::new("invalid_params", error.to_string()))?;
-        let path = self.settings_path()?;
+        let path = self.writable_settings().await?;
         settings::add_provider(&path, &id, &provider)
             .await
             .map_err(|error| ErrorInfo::new("invalid_params", error))?;
@@ -1183,19 +1219,51 @@ impl Core {
     /// returns a field to the kind's default.
     pub async fn update_provider(&self, params: &Value) -> Result<Value, ErrorInfo> {
         let (id, fields) = provider_params(params)?;
-        let path = self.settings_path()?;
+        let path = self.writable_settings().await?;
         settings::update_provider(&path, &id, &Value::Object(fields))
             .await
             .map_err(|error| ErrorInfo::new("invalid_params", error))?;
         self.provider_result(&id).await
     }
 
-    /// Removes the provider `id`, unless `default` or a role chooses it.
+    /// Removes the provider `id`, unless `default`, a role or a thread
+    /// chooses it, and its stored API key with it.
     pub async fn remove_provider(&self, params: &Value) -> Result<Value, ErrorInfo> {
         let (id, _) = provider_params(params)?;
-        let path = self.settings_path()?;
+        let path = self.writable_settings().await?;
+        let threads = self.store()?.threads_choosing(&id).await?;
+        if !threads.is_empty() {
+            let listed: Vec<String> = threads.iter().map(i64::to_string).collect();
+            return Err(ErrorInfo::new(
+                "provider_in_use",
+                format!(
+                    "the provider {id} is chosen by the threads {}; choose another provider \
+                     there first (thread/settings)",
+                    listed.join(", ")
+                ),
+            ));
+        }
+        let kind = self
+            .settings()
+            .await?
+            .provider(&id)
+            .map(|provider| provider.kind);
         match settings::remove_provider(&path, &id).await {
-            Ok(()) => Ok(json!({ "removed": id })),
+            Ok(()) => {
+                // A provider added later under the same id must not find
+                // this one's key.
+                if kind.is_some_and(settings::Kind::uses_api_key) {
+                    let mut store = oauth::Store::load(self.credentials_path()?)
+                        .map_err(|error| ErrorInfo::new("provider_config", error))?;
+                    let name = settings::api_key_name(&id);
+                    if store.credential(&name).is_some() {
+                        store
+                            .update(&name, |credential| credential.api_key = None)
+                            .map_err(|error| ErrorInfo::new("provider_config", error))?;
+                    }
+                }
+                Ok(json!({ "removed": id }))
+            }
             Err(settings::RemoveError::InUse(uses)) => Err(ErrorInfo::new(
                 "provider_in_use",
                 format!(
@@ -1218,18 +1286,58 @@ impl Core {
         Ok(json!({ "provider": provider_view(id, provider, credentials.as_ref()) }))
     }
 
-    /// The `default`, `roles` and `server` sections.
+    /// The `default`, `roles` and `server` sections as written, the server
+    /// values in effect, and which written values wait for a restart.
     pub async fn get_settings(&self) -> Result<Value, ErrorInfo> {
         self.store()?;
-        Ok(sections_view(&self.settings().await?))
+        Ok(self.sections_view(&self.settings().await?))
     }
 
-    /// Merges `patch` into the `default`, `roles` and `server` sections.
+    /// Merges `patch` into the `default`, `roles` and `server` sections. A
+    /// change of `server.sandbox` applies to the commands started from now
+    /// on, unless `--sandbox` was given at the start.
     pub async fn set_settings(&self, patch: &Value) -> Result<Value, ErrorInfo> {
-        let settings = settings::set_sections(&self.settings_path()?, patch)
+        let settings = settings::set_sections(&self.writable_settings().await?, patch)
             .await
             .map_err(|error| ErrorInfo::new("invalid_params", error))?;
-        Ok(sections_view(&settings))
+        let sandbox_changed = patch
+            .get("server")
+            .and_then(|server| server.get("sandbox"))
+            .is_some();
+        if sandbox_changed && self.started.sandbox_flag.is_none() {
+            sandbox::set_enabled(settings.server.sandbox.unwrap_or(true));
+        }
+        Ok(self.sections_view(&settings))
+    }
+
+    fn sections_view(&self, settings: &settings::Settings) -> Value {
+        let file = &settings.server;
+        let mut waiting = Vec::new();
+        if let Some(port) = self.started.port {
+            if file.port.unwrap_or(settings::DEFAULT_PORT) != port {
+                waiting.push("port");
+            }
+        }
+        if file
+            .credential_store()
+            .is_ok_and(|mode| mode != secrets::mode())
+        {
+            waiting.push("credentials");
+        }
+        json!({
+            "default": settings.default,
+            "roles": settings.roles,
+            "server": settings.server,
+            "effective": {
+                "port": self.started.port,
+                "sandbox": sandbox::enabled(),
+                "sandbox_from_command_line": self.started.sandbox_flag.is_some(),
+                "credentials": secrets::mode().as_str(),
+                "stream_idle_seconds": file.stream_idle().as_secs(),
+            },
+            "restart_required": !waiting.is_empty(),
+            "restart_for": waiting,
+        })
     }
 
     /// The configured provider's models with their prices, benchmark scores
@@ -1323,7 +1431,7 @@ impl Core {
             .as_bool()
             .ok_or_else(|| ErrorInfo::new("invalid_params", "\"hidden\" must be true or false"))?;
         let provider = settings::set_model_hidden(
-            &self.settings_path()?,
+            &self.writable_settings().await?,
             text("provider")?,
             text("model")?,
             hidden,
@@ -1466,6 +1574,7 @@ impl Core {
             usage: Default::default(),
             held: Vec::new(),
             questions: Vec::new(),
+            warnings: Vec::new(),
         };
         let store = match self.store() {
             Ok(store) => store,
@@ -1475,10 +1584,7 @@ impl Core {
             (Ok(settings), Ok(chosen)) => Choice::of(&chosen, &settings.default),
             (Err(error), _) | (_, Err(error)) => return failed(error),
         };
-        let models = match self
-            .helpers(&conversation, approvals.mode, claim.model, claim.mode)
-            .await
-        {
+        let models = match self.helpers(&conversation, claim.model, claim.mode).await {
             Ok(models) => models,
             Err(error) => return failed(error),
         };
@@ -1486,32 +1592,112 @@ impl Core {
             text: prompt,
             reply_to,
         };
-        let outcome = turn::run(
+        // The turn stops on its connection's cancel or on `turn/interrupt`
+        // from any connection.
+        let (stop, stopped) = watch::channel(false);
+        let mut from_connection = cancel;
+        let mut from_thread = claim.cancel;
+        let forward = tokio::spawn(async move {
+            tokio::select! {
+                () = turn::cancelled(&mut from_connection) => {}
+                () = turn::cancelled(&mut from_thread) => {}
+            }
+            let _ = stop.send(true);
+        });
+        let mut outcome = turn::run(
             models,
             store,
             thread,
             prompt,
             approvals,
             claim.steer,
-            cancel,
+            stopped,
             events,
         )
         .await;
+        forward.abort();
         let waiting = Waiting {
             held: outcome.held.clone(),
             questions: outcome.questions.clone(),
         };
-        self.waiting
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .insert(thread, waiting);
+        if let Err(error) = self.set_waiting(thread, &waiting).await {
+            outcome.warnings.push(format!(
+                "the held calls and questions were not saved, so /approve and /answer may not \
+                 find them: {}",
+                error.message
+            ));
+        }
         outcome
+    }
+
+    async fn set_waiting(&self, thread: SessionId, waiting: &Waiting) -> Result<(), ErrorInfo> {
+        let text = |value: Result<String, serde_json::Error>| {
+            value.map_err(|error| ErrorInfo::new("internal", error.to_string()))
+        };
+        self.store()?
+            .set_waiting(
+                thread,
+                text(serde_json::to_string(&waiting.held))?,
+                text(serde_json::to_string(&waiting.questions))?,
+            )
+            .await
+    }
+
+    /// What the latest turn of `thread` left for the person.
+    async fn waiting(&self, thread: SessionId) -> Result<Waiting, ErrorInfo> {
+        let Some((held, questions)) = self.store()?.waiting(thread).await? else {
+            return Ok(Waiting::default());
+        };
+        let parse = |error: serde_json::Error| {
+            ErrorInfo::new("store", format!("the waiting calls and questions: {error}"))
+        };
+        Ok(Waiting {
+            held: serde_json::from_str(&held).map_err(parse)?,
+            questions: serde_json::from_str(&questions).map_err(parse)?,
+        })
+    }
+
+    /// Logs a finished `chat` request like a turn's.
+    pub async fn log_chat(&self, stream: &ChatStream) {
+        let Some(store) = &self.store else {
+            return;
+        };
+        if let Err(error) = store.log_unthreaded(&[stream.record("chat")]).await {
+            eprintln!(
+                "inocode: the chat request was not logged: {}",
+                error.message
+            );
+        }
     }
 
     /// Lists the models of the provider `provider`, or of the provider of
     /// `thread`, or of the default one: the settings' list when it has one,
-    /// else what the provider advertises.
+    /// else what the provider advertises. The models the settings hide are
+    /// left out unless `include_hidden`.
     pub async fn models(
+        &self,
+        provider: Option<&str>,
+        thread: Option<SessionId>,
+        include_hidden: bool,
+    ) -> Result<Vec<ModelInfo>, ErrorInfo> {
+        let mut models = self.all_models(provider, thread).await?;
+        if !include_hidden {
+            let settings = self.settings().await?;
+            let id = match (provider, thread) {
+                (Some(id), _) => Some(id.to_string()),
+                (None, Some(thread)) => {
+                    Choice::of(&self.thread_choice(thread).await?, &settings.default).provider
+                }
+                (None, None) => settings.default.provider.clone(),
+            };
+            if let Some(entry) = id.as_deref().and_then(|id| settings.provider(id)) {
+                models.retain(|model| !entry.hidden_models.contains(&model.id));
+            }
+        }
+        Ok(models)
+    }
+
+    async fn all_models(
         &self,
         provider: Option<&str>,
         thread: Option<SessionId>,
@@ -1596,20 +1782,16 @@ fn provider_view(
             "effective_default_model".into(),
             json!(provider.default_model()),
         );
-        view.insert(
-            "credential".into(),
-            json!(credentials.map(|store| store.credential(&name).is_some())),
-        );
+        let stored = |store: &oauth::Store| match store.credential(&name) {
+            Some(credential) if provider.kind.uses_api_key() => credential
+                .api_key
+                .as_ref()
+                .is_some_and(|key| !key.trim().is_empty()),
+            found => found.is_some(),
+        };
+        view.insert("credential".into(), json!(credentials.map(stored)));
     }
     view
-}
-
-fn sections_view(settings: &settings::Settings) -> Value {
-    json!({
-        "default": settings.default,
-        "roles": settings.roles,
-        "server": settings.server,
-    })
 }
 
 /// A model the settings list by name, with nothing else known about it.

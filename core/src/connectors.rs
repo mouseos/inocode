@@ -95,9 +95,22 @@ pub(crate) struct Server {
     pub headers: Vec<(String, String)>,
 }
 
-/// Whether the store at `store` holds a sign-in for `account`.
+/// Whether the store at `store` holds a sign-in for `account` that the
+/// settings beside it use: once the settings list providers, one of the
+/// account's kind must be listed and not turned off.
 fn signed_in(store: &Path, account: Account) -> bool {
-    crate::oauth::Store::load(store.to_path_buf())
+    let settings = crate::settings::read_blocking(&store.with_file_name("settings.json"))
+        .and_then(|value| crate::settings::Settings::from_value(&value));
+    let used = match settings {
+        Ok(settings) => match &settings.providers {
+            Some(providers) => providers
+                .values()
+                .any(|provider| provider.kind.auth() == account.auth() && !provider.disabled),
+            None => true,
+        },
+        Err(_) => false,
+    };
+    used && crate::oauth::Store::load(store.to_path_buf())
         .map(|loaded| loaded.credential(account.auth().store_name()).is_some())
         .unwrap_or(false)
 }
@@ -240,4 +253,45 @@ fn session_id() -> String {
 /// default (`~/.inocode/auth.json` beside `~/.inocode/inocode.db`).
 pub(crate) fn store_beside(threads: &crate::store::Store) -> PathBuf {
     threads.files_folder().with_file_name("auth.json")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn connectors_follow_the_providers_the_settings_use() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("auth.json");
+        crate::oauth::Store::load(store.clone())
+            .unwrap()
+            .update(AuthKind::GptOauth.store_name(), |credential| {
+                credential.access = "token".into()
+            })
+            .unwrap();
+        let settings = dir.path().join("settings.json");
+        let names = || async {
+            servers(&store, &Hosts::default())
+                .await
+                .into_iter()
+                .map(|server| server.name)
+                .collect::<Vec<_>>()
+        };
+        // Before the settings list providers, the sign-in is enough.
+        assert_eq!(names().await, ["codex_apps"]);
+        std::fs::write(
+            &settings,
+            r#"{"providers": {"gpt": {"kind": "gpt-oauth", "disabled": true}}}"#,
+        )
+        .unwrap();
+        assert!(names().await.is_empty(), "a turned-off provider");
+        std::fs::write(&settings, r#"{"providers": {}}"#).unwrap();
+        assert!(names().await.is_empty(), "a removed provider");
+        std::fs::write(
+            &settings,
+            r#"{"providers": {"gpt": {"kind": "gpt-oauth"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(names().await, ["codex_apps"]);
+    }
 }

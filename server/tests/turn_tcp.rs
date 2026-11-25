@@ -494,12 +494,13 @@ async fn questions_are_reported_when_the_turn_ends_and_answered_by_a_reply() {
     .await;
 }
 
-/// A core whose settings name `colleague`, on the mock's provider.
+/// A core whose settings name `colleague` as `roles.colleague`, on the
+/// mock's provider.
 async fn core_with_colleague(mock: &MockApi, colleague: Value) -> Arc<Core> {
     let database = database();
     std::fs::write(
         database.with_file_name("settings.json"),
-        json!({"language": LANGUAGE, "colleague": colleague}).to_string(),
+        json!({"language": LANGUAGE, "roles": {"colleague": colleague}}).to_string(),
     )
     .expect("settings");
     let llm = Llm::new(LlmConfig {
@@ -786,10 +787,17 @@ async fn a_new_thread_starts_with_the_unfinished_issues() {
 async fn a_colleague_that_cannot_be_set_up_fails_the_turn() {
     with_timeout(async {
         let mock = scripted(Vec::new()).await;
-        let core = core_with_colleague(&mock, json!({"model": "m", "provider": "nonsense"})).await;
+        let database = database();
+        let store = Store::open(&database).await.expect("store");
+        let core = Arc::new(Core::with_llm(llm_for(&mock)).with_store(store));
         let (addr, _stop, _handle) = start_server(core).await;
         let mut client = connect(addr).await;
         let thread = thread(&mut client).await;
+        std::fs::write(
+            database.with_file_name("settings.json"),
+            json!({"roles": {"colleague": {"model": "m", "provider": "nonsense"}}}).to_string(),
+        )
+        .expect("settings");
         let events = turn(&mut client, 2, thread, "hello").await;
         let last = events.last().unwrap();
         assert_eq!(last["event"], "failed");
@@ -2815,6 +2823,334 @@ async fn translation_models_are_listed_and_removed_over_the_protocol() {
         .await;
         let to = languages["result"]["to"].as_array().expect("languages");
         assert!(to.iter().any(|language| language == "ja"), "{languages}");
+    })
+    .await;
+}
+
+fn llm_for(mock: &MockApi) -> Llm {
+    Llm::new(LlmConfig {
+        provider: ProviderKind::OpenAi,
+        auth: inocode_core::oauth::AuthKind::ApiKey,
+        base_url: mock.base_url.clone(),
+        model: "test-model".to_string(),
+        api_key: "test-key".to_string(),
+        auth_store_path: None,
+        reasoning: Default::default(),
+    })
+    .expect("client")
+}
+
+/// Waits until the turn of `thread` no longer runs: steering is refused.
+async fn until_idle(client: &mut Client, id: u64, thread: i64) {
+    loop {
+        let steered = call(
+            client,
+            id,
+            json!({"id": id, "method": "turn/steer",
+                   "params": {"thread_id": thread, "prompt": "are you there"}}),
+        )
+        .await;
+        if steered["result"]["accepted"] == false {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test]
+async fn any_connection_interrupts_a_turn_whose_connection_closed() {
+    with_timeout(async {
+        let mock = start_mock(|_: &MockRequest| {
+            let mut chunks: Vec<Vec<u8>> = (0..500).map(|_| sse_delta("x")).collect();
+            chunks.push(sse_done());
+            MockReply::stream(chunks).with_delay(Duration::from_millis(20))
+        })
+        .await;
+        let (addr, _stop, _handle) = start_server(core_for(&mock).await).await;
+        let mut first = connect(addr).await;
+        let thread = thread(&mut first).await;
+        first
+            .1
+            .write_json(
+                2,
+                &json!({"id": 2, "method": "turn/start",
+                        "params": {"thread_id": thread, "prompt": "long"}}),
+            )
+            .await
+            .expect("send");
+        while next_message(&mut first, 2).await["event"] != "delta" {}
+        drop(first);
+
+        let mut other = connect(addr).await;
+        let idle = call(
+            &mut other,
+            3,
+            json!({"id": 3, "method": "turn/interrupt", "params": {"thread_id": thread + 1000}}),
+        )
+        .await;
+        assert_eq!(idle["result"]["interrupted"], false, "{idle}");
+        let interrupted = call(
+            &mut other,
+            4,
+            json!({"id": 4, "method": "turn/interrupt", "params": {"thread_id": thread}}),
+        )
+        .await;
+        assert_eq!(interrupted["result"]["interrupted"], true, "{interrupted}");
+        until_idle(&mut other, 5, thread).await;
+        let read = call(
+            &mut other,
+            6,
+            json!({"id": 6, "method": "thread/read", "params": {"thread_id": thread}}),
+        )
+        .await;
+        let messages = read["result"]["messages"].as_array().expect("messages");
+        assert_eq!(messages[1]["message"]["body"]["stop"], "aborted", "{read}");
+
+        let stopped = call(
+            &mut other,
+            7,
+            json!({"id": 7, "method": "command/run",
+                   "params": {"thread_id": thread, "text": "/stop"}}),
+        )
+        .await;
+        assert_eq!(stopped["result"]["interrupted"], false, "{stopped}");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_provider_that_goes_silent_ends_the_turn_with_an_error() {
+    with_timeout(async {
+        let mock = start_mock(|_: &MockRequest| {
+            MockReply::stream(vec![sse_delta("a"), finish("stop"), sse_done()])
+                .with_delay(Duration::from_secs(3))
+        })
+        .await;
+        let llm = llm_for(&mock)
+            .with_stream_idle(Duration::from_millis(500))
+            .expect("client");
+        let store = Store::open(database()).await.expect("store");
+        let core = Arc::new(Core::with_llm(llm).with_store(store));
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client).await;
+        let events = turn(&mut client, 2, thread, "hello").await;
+        let last = events.last().unwrap();
+        assert_eq!(last["event"], "failed", "{events:?}");
+        assert_eq!(last["error"]["code"], "provider_idle", "{last}");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn held_calls_outlive_a_restart_and_approve_runs_only_that_call() {
+    with_timeout(async {
+        let deploy = json!({"items": [{"step": "deploy to prod", "status": "pending"}]});
+        let wipe = json!({"items": [{"step": "wipe prod", "status": "pending"}]});
+        let mock = scripted(vec![
+            tool_turn("a1", "plan", deploy.clone()),
+            text_turn("Waiting for approval."),
+            tool_turn("a2", "plan", deploy),
+            tool_turn("a3", "plan", wipe),
+            text_turn("Deployed."),
+        ])
+        .await;
+        let database = database();
+        let store = Store::open(&database).await.expect("store");
+        let ask = store
+            .add_rule(None, "Ask before anything touches prod.")
+            .await
+            .expect("rule");
+        store
+            .propose_enforcement(
+                ask,
+                inocode_core::rules::Enforcement {
+                    tool: "plan".into(),
+                    patterns: vec!["prod".into()],
+                    action: inocode_core::rules::Action::Ask,
+                },
+            )
+            .await
+            .expect("propose");
+        store.approve_enforcement(ask).await.expect("approve");
+        let core = Arc::new(Core::with_llm(llm_for(&mock)).with_store(store));
+        let (addr, stop, handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client).await;
+        let events = turn(&mut client, 2, thread, "ship it").await;
+        assert_eq!(events.last().unwrap()["held"][0]["tool"], "plan");
+        drop(client);
+        stop.send(()).expect("stop");
+        handle.await.expect("server").expect("clean stop");
+
+        // A new server on the same database still has the held call.
+        let store = Store::open(&database).await.expect("store again");
+        let core = Arc::new(Core::with_llm(llm_for(&mock)).with_store(store));
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let listed = call(
+            &mut client,
+            3,
+            json!({"id": 3, "method": "command/run",
+                   "params": {"thread_id": thread, "text": "/approve"}}),
+        )
+        .await;
+        assert_eq!(listed["result"]["held"][0]["tool"], "plan", "{listed}");
+
+        client
+            .1
+            .write_json(
+                4,
+                &json!({"id": 4, "method": "command/run",
+                        "params": {"thread_id": thread, "text": "/approve 1"}}),
+            )
+            .await
+            .expect("send");
+        let mut events = Vec::new();
+        loop {
+            let event = next_message(&mut client, 4).await;
+            let end = matches!(
+                event["event"].as_str(),
+                Some("completed" | "failed" | "cancelled")
+            );
+            events.push(event);
+            if end {
+                break;
+            }
+        }
+        let results = tool_results(&events);
+        assert!(results[0].starts_with("Plan updated"), "{results:?}");
+        // The approval was for that call alone, not for its rule.
+        assert!(
+            results[1].starts_with("Held for the person's approval"),
+            "{results:?}"
+        );
+        let last = events.last().unwrap();
+        assert_eq!(last["held"].as_array().map(Vec::len), Some(1), "{last}");
+        assert!(last["held"][0]["arguments"]
+            .as_str()
+            .unwrap()
+            .contains("wipe prod"));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_goal_stopped_while_checked_stays_stopped_and_late_steering_is_answered() {
+    with_timeout(async {
+        let count = AtomicUsize::new(0);
+        let mock = start_mock(move |request: &MockRequest| {
+            if request.method == "GET" {
+                return MockReply::status(404, "{}");
+            }
+            match count.fetch_add(1, Ordering::SeqCst) {
+                0 => MockReply::stream(text_turn("It is done.")),
+                // The checker answers slowly, so the goal is stopped and
+                // steering sent while it decides.
+                1 => MockReply::stream(verdict_turn("achieved", "out.txt holds ok"))
+                    .with_head_delay(Duration::from_millis(1500)),
+                _ => MockReply::stream(text_turn("Noted.")),
+            }
+        })
+        .await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client).await;
+        call(
+            &mut client,
+            2,
+            json!({"id": 2, "method": "goal/set", "params": {
+                "thread_id": thread, "objective": "out.txt holds ok"}}),
+        )
+        .await;
+        client
+            .1
+            .write_json(
+                3,
+                &json!({"id": 3, "method": "turn/start",
+                        "params": {"thread_id": thread, "prompt": "go"}}),
+            )
+            .await
+            .expect("send");
+        let mut other = connect(addr).await;
+        while chats(&mock).len() < 2 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let stopped = call(
+            &mut other,
+            4,
+            json!({"id": 4, "method": "goal/stop", "params": {"thread_id": thread}}),
+        )
+        .await;
+        assert_eq!(stopped["result"]["goal"]["state"], "stopped", "{stopped}");
+        let steered = call(
+            &mut other,
+            5,
+            json!({"id": 5, "method": "turn/steer",
+                   "params": {"thread_id": thread, "prompt": "also note this"}}),
+        )
+        .await;
+        assert_eq!(steered["result"]["accepted"], true, "{steered}");
+        let mut last = Value::Null;
+        while !matches!(
+            last["event"].as_str(),
+            Some("completed" | "failed" | "cancelled")
+        ) {
+            last = next_message(&mut client, 3).await;
+        }
+        assert_eq!(last["reason"], "completed", "{last}");
+        let read = call(
+            &mut other,
+            6,
+            json!({"id": 6, "method": "goal/read", "params": {"thread_id": thread}}),
+        )
+        .await;
+        assert_eq!(read["result"]["goal"]["state"], "stopped", "{read}");
+        let chats = chats(&mock);
+        assert_eq!(chats.len(), 3, "the steering got its own request");
+        assert!(chats[2].body["messages"]
+            .to_string()
+            .contains("also note this"));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_goal_is_stopped_when_a_step_uses_up_its_budget() {
+    with_timeout(async {
+        let read = vec![
+            call_chunk("r1", "read", &json!({"path": "a.txt"})),
+            finish("tool_calls"),
+            usage_chunk(5_000),
+            sse_done(),
+        ];
+        let mock = scripted(vec![read]).await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client).await;
+        call(
+            &mut client,
+            2,
+            json!({"id": 2, "method": "goal/set", "params": {
+                "thread_id": thread, "objective": "out.txt holds ok", "tokens": 1000}}),
+        )
+        .await;
+        let events = turn(&mut client, 3, thread, "go").await;
+        assert_eq!(events.last().unwrap()["reason"], "completed");
+        assert_eq!(chats(&mock).len(), 1, "no request after the budget");
+        let goal = call(
+            &mut client,
+            4,
+            json!({"id": 4, "method": "goal/read", "params": {"thread_id": thread}}),
+        )
+        .await;
+        assert_eq!(goal["result"]["goal"]["state"], "stopped", "{goal}");
+        assert!(goal["result"]["goal"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("budget"));
     })
     .await;
 }

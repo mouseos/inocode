@@ -16,6 +16,8 @@ pub(crate) const SCORES_URL: &str = "https://api.llmbenchmark.ai/v1/scores";
 const PRICES_TTL: Duration = Duration::from_secs(24 * 3_600);
 const SCORES_TTL: Duration = Duration::from_secs(12 * 3_600);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a source that failed is not asked again.
+const RETRY_AFTER_FAILURE: Duration = Duration::from_secs(15 * 60);
 const MAX_BODY: usize = 64 * 1024 * 1024;
 
 /// Which benchmark metrics answer which use, as the earlier InoCode chose
@@ -141,7 +143,10 @@ pub(crate) fn sources() -> Vec<Value> {
 }
 
 /// A copy of `url` kept in `folder` as `key`, fetched again once older
-/// than `ttl`; an old copy is used, marked stale, when the fetch fails.
+/// than `ttl`; an old copy is used, marked stale, when the fetch fails. A
+/// failed fetch is noted in the copy and not tried again for
+/// [`RETRY_AFTER_FAILURE`], so a source that is down does not make every
+/// listing wait for its time-out.
 pub(crate) async fn cached(
     client: &reqwest::Client,
     folder: &Path,
@@ -156,25 +161,43 @@ pub(crate) async fn cached(
     let kept: Option<Value> = std::fs::read(&path)
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok());
-    let fetched_at = kept
-        .as_ref()
-        .and_then(|kept| kept.get("fetched_at"))
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    if kept.is_some() && now.saturating_sub(fetched_at) < ttl.as_secs() {
-        return (kept.and_then(|kept| kept.get("data").cloned()), false);
+    let field = |name: &str| {
+        kept.as_ref()
+            .and_then(|kept| kept.get(name))
+            .and_then(Value::as_u64)
+    };
+    let fetched_at = field("fetched_at").unwrap_or(0);
+    let kept_data = || {
+        kept.as_ref()
+            .and_then(|kept| kept.get("data"))
+            .filter(|data| !data.is_null())
+            .cloned()
+    };
+    if kept_data().is_some() && now.saturating_sub(fetched_at) < ttl.as_secs() {
+        return (kept_data(), false);
     }
+    if field("failed_at")
+        .is_some_and(|failed| now.saturating_sub(failed) < RETRY_AFTER_FAILURE.as_secs())
+    {
+        return (kept_data(), true);
+    }
+    let write = |copy: Value| {
+        let _ = std::fs::create_dir_all(folder);
+        let temporary = folder.join(format!("{key}.json.{}.tmp", std::process::id()));
+        if std::fs::write(&temporary, copy.to_string()).is_ok() {
+            let _ = std::fs::rename(&temporary, &path);
+        }
+    };
     match fetch(client, url).await {
         Some(data) => {
-            let copy = json!({"fetched_at": now, "data": data});
-            let _ = std::fs::create_dir_all(folder);
-            let temporary = folder.join(format!("{key}.json.tmp"));
-            if std::fs::write(&temporary, copy.to_string()).is_ok() {
-                let _ = std::fs::rename(&temporary, &path);
-            }
+            write(json!({"fetched_at": now, "data": data}));
             (Some(data), false)
         }
-        None => (kept.and_then(|kept| kept.get("data").cloned()), true),
+        None => {
+            let data = kept_data();
+            write(json!({"fetched_at": fetched_at, "data": data, "failed_at": now}));
+            (data, true)
+        }
     }
 }
 
@@ -243,8 +266,8 @@ pub(crate) fn price(catalog: &Value, id: &str) -> Option<Price> {
     let wanted = [normalized(id), normalized(without_date(id))];
     for provider in providers_of(id) {
         let Some(models) = catalog
-            .get(provider)?
-            .get("models")
+            .get(provider)
+            .and_then(|listed| listed.get("models"))
             .and_then(Value::as_object)
         else {
             continue;
@@ -468,6 +491,41 @@ mod tests {
         );
         assert_eq!(price(&catalog, "claude-free"), None);
         assert_eq!(price(&catalog, "unknown-model"), None);
+    }
+
+    #[test]
+    fn a_price_is_looked_for_under_every_name_of_the_provider() {
+        // `zai` and `z-ai` are missing; the price is under `zhipuai`.
+        let catalog = json!({
+            "zhipuai": {"models": {"glm-5.3": {"cost": {"input": 0.6, "output": 2.2}}}}
+        });
+        let glm = price(&catalog, "glm-5.3").expect("found under the third name");
+        assert_eq!(glm.matched, "zhipuai/glm-5.3");
+    }
+
+    #[tokio::test]
+    async fn a_failed_fetch_is_not_tried_again_for_a_while() {
+        let dir = tempfile::tempdir().expect("dir");
+        let client = reqwest::Client::new();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let url = format!("http://{}/", listener.local_addr().expect("address"));
+        drop(listener);
+        let (data, stale) = cached(&client, dir.path(), "prices", &url, PRICES_TTL).await;
+        assert_eq!((data, stale), (None, true));
+        let copy: Value =
+            serde_json::from_slice(&std::fs::read(dir.path().join("prices.json")).unwrap())
+                .unwrap();
+        assert!(copy["failed_at"].as_u64().is_some(), "{copy}");
+
+        // A source that answers now is still not asked within the pause.
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let answering = format!("http://{}/", server.local_addr().unwrap());
+        let asked = tokio::spawn(async move { server.accept().await.is_ok() });
+        let (data, stale) = cached(&client, dir.path(), "prices", &answering, PRICES_TTL).await;
+        assert_eq!((data, stale), (None, true));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!asked.is_finished(), "the source was asked again");
+        asked.abort();
     }
 
     #[test]

@@ -7,7 +7,11 @@
 //! listening address is always `127.0.0.1`, so the server is not reachable
 //! from the network. Without a usable provider the server still starts and
 //! answers `ping` and `echo`, while `chat` reports that no provider is
-//! configured.
+//! configured. A settings file or database that cannot be read stops the
+//! start with its error, and so does a second server on the same database.
+//!
+//! Each start writes a new random token to `~/.inocode/server-token`; every
+//! connection must send it first (docs/evidence/server-auth.md).
 //!
 //! `login claude|gpt|muse-code|deepai` runs the interactive subscription/OAuth
 //! login instead of serving, storing the credential in the credential store
@@ -33,8 +37,6 @@ use inocode_core::settings::{self, Kind};
 use inocode_core::Core;
 use tokio::net::TcpListener;
 
-const DEFAULT_PORT: u16 = 8787;
-
 /// What the command line asked for besides the command.
 #[derive(Default)]
 struct Flags {
@@ -48,10 +50,9 @@ fn main() -> io::Result<()> {
         std::process::exit(sandbox::run(&args[1..]));
     }
     let (words, flags) = split_flags(args)?;
-    let server = server_settings().unwrap_or_else(|error| {
-        eprintln!("settings: {error}");
-        settings::Server::default()
-    });
+    // A file that cannot be read is not replaced by the defaults: they could
+    // choose another credential store or turn the sandbox on or off.
+    let server = server_settings()?;
     sandbox::configure(flags.sandbox.or(server.sandbox).unwrap_or(true), None);
     match server.credential_store() {
         Ok(mode) => inocode_core::secrets::set_mode(mode),
@@ -65,7 +66,7 @@ fn main() -> io::Result<()> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(command(words, flags.port.or(server.port)))
+        .block_on(command(words, flags.port.or(server.port), flags.sandbox))
 }
 
 /// Opens the credential store once, asking for its passphrase at the
@@ -143,13 +144,19 @@ fn settings_path() -> io::Result<PathBuf> {
 }
 
 fn server_settings() -> io::Result<settings::Server> {
-    let value = settings::read_blocking(&settings_path()?).map_err(io::Error::other)?;
+    let path = settings_path()?;
+    let invalid = |error: String| invalid(format!("{}: {error}", path.display()));
+    let value = settings::read_blocking(&path).map_err(invalid)?;
     Ok(settings::Settings::from_value(&value)
-        .map_err(|error| io::Error::other(format!("settings.json: {error}")))?
+        .map_err(invalid)?
         .server)
 }
 
-async fn command(words: Vec<String>, port: Option<u16>) -> io::Result<()> {
+async fn command(
+    words: Vec<String>,
+    port: Option<u16>,
+    sandbox_flag: Option<bool>,
+) -> io::Result<()> {
     let mut words = words.into_iter();
     match words.next().as_deref() {
         Some("login") => login_command(words.next().as_deref(), words.next().as_deref()).await,
@@ -159,7 +166,7 @@ async fn command(words: Vec<String>, port: Option<u16>) -> io::Result<()> {
         },
         Some("models") => models_command(words.next().as_deref()).await,
         Some("usage") => usage_command().await,
-        None | Some("serve") => serve(port.unwrap_or(DEFAULT_PORT)).await,
+        None | Some("serve") => serve(port.unwrap_or(settings::DEFAULT_PORT), sandbox_flag).await,
         Some(other) => Err(invalid(format!(
             "unknown command \"{other}\"; expected serve, login, key set, models or usage"
         ))),
@@ -197,7 +204,7 @@ async fn models_command(provider: Option<&str>) -> io::Result<()> {
     prepare_settings().await?;
     let models = open_core()
         .await?
-        .models(provider, None)
+        .models(provider, None, false)
         .await
         .map_err(|error| io::Error::other(error.message))?;
     for model in &models {
@@ -226,23 +233,91 @@ async fn usage_command() -> io::Result<()> {
     Ok(())
 }
 
-async fn serve(port: u16) -> io::Result<()> {
-    let listener = TcpListener::bind(("127.0.0.1", port)).await?;
-    println!("inocode-server listening on {}", listener.local_addr()?);
-    if let Err(error) = prepare_settings().await {
-        eprintln!("settings: {error}");
+async fn serve(port: u16, sandbox_flag: Option<bool>) -> io::Result<()> {
+    let folder = home_folder()?;
+    std::fs::create_dir_all(&folder)?;
+    // One server per database: turns, held calls and the settings are kept
+    // by one process. Held until the process ends.
+    let _database_lock = lock_database(&folder.join("inocode.db.lock"))?;
+    prepare_settings().await?;
+    let core = open_core()
+        .await
+        .map_err(|error| io::Error::other(format!("the thread database: {error}")))?;
+    if let Some(store) = core.thread_store() {
+        store
+            .expire_elicitations()
+            .await
+            .map_err(|error| io::Error::other(error.message))?;
     }
-    let core = match open_core().await {
-        Ok(core) => core,
-        Err(error) => {
-            eprintln!("threads unavailable: {error}");
-            Core::new()
-        }
-    };
-    inocode_server::run(listener, Arc::new(core), async {
+    // Commands confined by the sandbox may not read the credentials or the
+    // token, where the OS lets that be enforced.
+    if let Err(error) = sandbox::hide(&folder) {
+        eprintln!(
+            "sandbox: {} stays readable by commands: {error}",
+            folder.display()
+        );
+    }
+    let listener = TcpListener::bind(("127.0.0.1", port)).await?;
+    let address = listener.local_addr()?;
+    let token = write_token(&folder.join(TOKEN_FILE))?;
+    let core = core.with_started(inocode_core::Started {
+        port: Some(address.port()),
+        sandbox_flag,
+    });
+    println!(
+        "inocode-server listening on {address}; clients authenticate with the token in {}",
+        folder.join(TOKEN_FILE).display()
+    );
+    inocode_server::run(listener, Arc::new(core), token, async {
         let _ = tokio::signal::ctrl_c().await;
     })
     .await
+}
+
+/// The file the token of this start is written to, beside the settings.
+const TOKEN_FILE: &str = "server-token";
+
+/// Takes the lock that keeps a second server off the same database.
+fn lock_database(path: &std::path::Path) -> io::Result<std::fs::File> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => Err(io::Error::other(format!(
+            "another inocode-server uses this database ({} is locked)",
+            path.display()
+        ))),
+        Err(std::fs::TryLockError::Error(error)) => Err(error),
+    }
+}
+
+/// Makes a new random token and writes it to `path`, readable only by this
+/// user (the user profile's permissions on Windows), replacing the token of
+/// an earlier start.
+fn write_token(path: &std::path::Path) -> io::Result<String> {
+    let mut bytes = [0u8; 32];
+    getrandom::getrandom(&mut bytes).map_err(io::Error::other)?;
+    let token: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    {
+        use std::io::Write;
+        let mut file = options.open(&temporary)?;
+        file.write_all(token.as_bytes())?;
+        file.sync_all()?;
+    }
+    std::fs::rename(&temporary, path)?;
+    Ok(token)
 }
 
 /// Stores the API key of the provider `provider`, typed without echo or
@@ -275,8 +350,7 @@ async fn key_command(provider: &str) -> io::Result<()> {
     if settings.provider(provider).is_none() {
         println!(
             "no provider {provider} is configured yet; add it with providers/add \
-             (or restart the server once, which adds \"{}\" when its key is stored)",
-            settings::LOGFARE
+             {{\"id\": \"{provider}\", \"kind\": \"openai\" | \"anthropic\" | \"responses\"}}"
         );
     }
     Ok(())

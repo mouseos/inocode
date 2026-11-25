@@ -20,7 +20,8 @@ use std::ptr::{addr_of, null, null_mut};
 
 use sha2::{Digest, Sha256};
 use windows_sys::Win32::Foundation::{
-    CloseHandle, LocalFree, SetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, WAIT_OBJECT_0,
+    CloseHandle, LocalFree, SetHandleInformation, ERROR_ACCESS_DENIED, HANDLE, HANDLE_FLAG_INHERIT,
+    WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertStringSidToSidW, GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW,
@@ -30,12 +31,12 @@ use windows_sys::Win32::Security::Authorization::{
 use windows_sys::Win32::Security::{
     AddMandatoryAce, CopySid, CreateRestrictedToken, CreateWellKnownSid, EqualSid, GetAce,
     GetLengthSid, GetTokenInformation, InitializeAcl, SetTokenInformation, TokenDefaultDacl,
-    TokenGroups, TokenIntegrityLevel, TokenUser, WinLowLabelSid, WinWorldSid, ACE_HEADER, ACL,
-    ACL_REVISION, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, DISABLE_MAX_PRIVILEGE,
-    LABEL_SECURITY_INFORMATION, PSID, SECURITY_MAX_SID_SIZE, SID_AND_ATTRIBUTES,
-    SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY,
-    TOKEN_DEFAULT_DACL, TOKEN_DUPLICATE, TOKEN_GROUPS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
-    TOKEN_USER, WELL_KNOWN_SID_TYPE, WRITE_RESTRICTED,
+    TokenGroups, TokenIntegrityLevel, TokenUser, WinLowLabelSid, WinMediumLabelSid, WinWorldSid,
+    ACE_HEADER, ACL, ACL_REVISION, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION,
+    DISABLE_MAX_PRIVILEGE, INHERITED_ACE, LABEL_SECURITY_INFORMATION, PSID, SECURITY_MAX_SID_SIZE,
+    SID_AND_ATTRIBUTES, SUB_CONTAINERS_AND_OBJECTS_INHERIT, TOKEN_ADJUST_DEFAULT,
+    TOKEN_ASSIGN_PRIMARY, TOKEN_DEFAULT_DACL, TOKEN_DUPLICATE, TOKEN_GROUPS, TOKEN_MANDATORY_LABEL,
+    TOKEN_QUERY, TOKEN_USER, WELL_KNOWN_SID_TYPE, WRITE_RESTRICTED,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     DELETE, FILE_ALL_ACCESS, FILE_DELETE_CHILD, FILE_GENERIC_WRITE, WRITE_OWNER,
@@ -50,7 +51,8 @@ use windows_sys::Win32::System::JobObjects::{
 };
 use windows_sys::Win32::System::SystemServices::{
     ACCESS_ALLOWED_ACE_TYPE, ACCESS_DENIED_ACE_TYPE, SE_GROUP_INTEGRITY, SE_GROUP_LOGON_ID,
-    SYSTEM_MANDATORY_LABEL_ACE_TYPE, SYSTEM_MANDATORY_LABEL_NO_WRITE_UP,
+    SYSTEM_MANDATORY_LABEL_ACE_TYPE, SYSTEM_MANDATORY_LABEL_NO_READ_UP,
+    SYSTEM_MANDATORY_LABEL_NO_WRITE_UP,
 };
 use windows_sys::Win32::System::Threading::{
     CreateProcessAsUserW, GetCurrentProcess, GetExitCodeProcess, OpenProcessToken, ResumeThread,
@@ -301,25 +303,196 @@ fn has_exact_ace(acl: *const ACL, kind: u32, flags: u32, mask: u32, sid: PSID) -
 
 /// An ACL holding one inheritable Low no-write-up mandatory label.
 fn low_label_acl(low: PSID) -> Result<Vec<u64>, String> {
-    let length = (8 + 8 + unsafe { GetLengthSid(low) } + 3) & !3;
+    label_acl(low, SYSTEM_MANDATORY_LABEL_NO_WRITE_UP)
+}
+
+/// An ACL holding one inheritable mandatory label of `level` with `policy`.
+fn label_acl(level: PSID, policy: u32) -> Result<Vec<u64>, String> {
+    let length = (8 + 8 + unsafe { GetLengthSid(level) } + 3) & !3;
     let mut buffer = vec![0u64; (length as usize).div_ceil(8)];
     let acl = buffer.as_mut_ptr() as *mut ACL;
     if unsafe { InitializeAcl(acl, length, ACL_REVISION) } == 0 {
-        return Err(last_error("InitializeAcl", "Low mandatory label"));
+        return Err(last_error("InitializeAcl", "mandatory label"));
     }
     if unsafe {
         AddMandatoryAce(
             acl,
             ACL_REVISION,
             SUB_CONTAINERS_AND_OBJECTS_INHERIT,
-            SYSTEM_MANDATORY_LABEL_NO_WRITE_UP,
-            low,
+            policy,
+            level,
         )
     } == 0
     {
-        return Err(last_error("AddMandatoryAce", "Low mandatory label"));
+        return Err(last_error("AddMandatoryAce", "mandatory label"));
     }
     Ok(buffer)
+}
+
+/// The label that keeps Low-integrity processes, which confined commands
+/// are, from reading or writing `folder` and what it holds. Files made in it
+/// later inherit the label; those already there are labelled one by one,
+/// since setting a folder's label does not reach them. A folder inside that
+/// carries its own label (a command's Low temporary folder) is left as it
+/// is. Nothing is written when `folder` already has the label.
+pub(super) fn hide(folder: &Path) -> Result<(), String> {
+    let medium = well_known_sid(WinMediumLabelSid)?;
+    let policy = SYSTEM_MANDATORY_LABEL_NO_WRITE_UP | SYSTEM_MANDATORY_LABEL_NO_READ_UP;
+    if label_state(folder, medium.ptr(), policy)?.0 {
+        return Ok(());
+    }
+    let label = label_acl(medium.ptr(), policy)?;
+    set_label(folder, &label)?;
+    label_inside(folder, &label, medium.ptr(), policy)
+}
+
+fn label_inside(folder: &Path, label: &[u64], medium: PSID, policy: u32) -> Result<(), String> {
+    let entries = std::fs::read_dir(folder)
+        .map_err(|error| format!("could not list {}: {error}", folder.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("{}: {error}", folder.display()))?;
+        let path = entry.path();
+        if label_state(&path, medium, policy)?.1 {
+            continue;
+        }
+        set_label(&path, label)?;
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            label_inside(&path, label, medium, policy)?;
+        }
+    }
+    Ok(())
+}
+
+/// Whether `path` carries exactly the hiding label, and whether it carries
+/// a mandatory label of its own (not inherited).
+fn label_state(path: &Path, medium: PSID, policy: u32) -> Result<(bool, bool), String> {
+    let name = wide(path);
+    let mut sacl: *mut ACL = null_mut();
+    let mut descriptor: *mut c_void = null_mut();
+    let code = unsafe {
+        GetNamedSecurityInfoW(
+            name.as_ptr(),
+            SE_FILE_OBJECT,
+            LABEL_SECURITY_INFORMATION,
+            null_mut(),
+            null_mut(),
+            null_mut(),
+            &mut sacl,
+            &mut descriptor,
+        )
+    };
+    if code != 0 {
+        return Err(win32_error(
+            "GetNamedSecurityInfoW",
+            code,
+            &path.display().to_string(),
+        ));
+    }
+    let _descriptor = Local(descriptor);
+    if sacl.is_null() {
+        return Ok((false, false));
+    }
+    let exact = has_exact_ace(
+        sacl,
+        SYSTEM_MANDATORY_LABEL_ACE_TYPE,
+        SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+        policy,
+        medium,
+    );
+    let count = unsafe { (*sacl).AceCount };
+    let own = (0..u32::from(count)).any(|index| {
+        let mut ace: *mut c_void = null_mut();
+        if unsafe { GetAce(sacl, index, &mut ace) } == 0 {
+            return false;
+        }
+        let header = unsafe { &*(ace as *const ACE_HEADER) };
+        u32::from(header.AceType) == SYSTEM_MANDATORY_LABEL_ACE_TYPE
+            && u32::from(header.AceFlags) & INHERITED_ACE == 0
+    });
+    Ok((exact, own))
+}
+
+fn set_label(path: &Path, label: &[u64]) -> Result<(), String> {
+    let name = wide(path);
+    let set = || unsafe {
+        SetNamedSecurityInfoW(
+            name.as_ptr(),
+            SE_FILE_OBJECT,
+            LABEL_SECURITY_INFORMATION,
+            null_mut(),
+            null_mut(),
+            null(),
+            label.as_ptr() as *const ACL,
+        )
+    };
+    let mut code = set();
+    if code == ERROR_ACCESS_DENIED {
+        // As in `grant_write`: what the user owns but holds only Modify on
+        // needs `WRITE_OWNER` granted before it can be labelled.
+        grant_write_owner(path)?;
+        code = set();
+    }
+    if code != 0 {
+        return Err(win32_error(
+            "SetNamedSecurityInfoW",
+            code,
+            &path.display().to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Grants this process's user `WRITE_OWNER` on `folder` itself.
+fn grant_write_owner(folder: &Path) -> Result<(), String> {
+    let context = folder.display().to_string();
+    let mut current: HANDLE = null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut current) } == 0 {
+        return Err(last_error("OpenProcessToken", "this process"));
+    }
+    let current = Handle(current);
+    let user = user_sid(current.0)?;
+    let name = wide(folder);
+    let mut dacl: *mut ACL = null_mut();
+    let mut descriptor: *mut c_void = null_mut();
+    let code = unsafe {
+        GetNamedSecurityInfoW(
+            name.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            null_mut(),
+            null_mut(),
+            &mut dacl,
+            null_mut(),
+            &mut descriptor,
+        )
+    };
+    if code != 0 {
+        return Err(win32_error("GetNamedSecurityInfoW", code, &context));
+    }
+    let _descriptor = Local(descriptor);
+    let entries = [explicit_access(user.ptr(), GRANT_ACCESS, WRITE_OWNER, 0)];
+    let mut merged: *mut ACL = null_mut();
+    let code =
+        unsafe { SetEntriesInAclW(entries.len() as u32, entries.as_ptr(), dacl, &mut merged) };
+    if code != 0 {
+        return Err(win32_error("SetEntriesInAclW", code, &context));
+    }
+    let merged = Local(merged.cast());
+    let code = unsafe {
+        SetNamedSecurityInfoW(
+            name.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            null_mut(),
+            null_mut(),
+            merged.0 as *const ACL,
+            null(),
+        )
+    };
+    if code != 0 {
+        return Err(win32_error("SetNamedSecurityInfoW", code, &context));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]

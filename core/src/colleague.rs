@@ -4,9 +4,7 @@
 //! sources: docs/evidence/colleague-review.md.
 
 use std::collections::HashMap;
-use std::path::Path;
 
-use serde::Deserialize;
 use tokio::sync::watch;
 
 use crate::conversation::{AssistantPart, Body, Conversation, Message, Speaker};
@@ -44,28 +42,6 @@ the last advice, that advice if any, and a hint about the sign. Recommend the ag
 next step: one short, concrete recommendation grounded in what the steps show, not a new \
 long plan. If the steps show it is on track, say so in one line. Copy paths, names, \
 numbers and error text exactly. No greetings, politeness, preamble or closing.";
-
-/// The colleague as `settings.json` names it.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub(crate) struct Settings {
-    pub model: String,
-    #[serde(default)]
-    pub provider: Option<String>,
-    #[serde(default)]
-    pub base_url: Option<String>,
-}
-
-/// The colleague of `settings.json` beside the database; `None` when none
-/// is set up.
-pub(crate) async fn configured(settings: &Path) -> Result<Option<Settings>, String> {
-    let value = crate::settings::read(settings).await?;
-    match value.get("colleague") {
-        None | Some(serde_json::Value::Null) => Ok(None),
-        Some(colleague) => serde_json::from_value::<Settings>(colleague.clone())
-            .map(Some)
-            .map_err(|error| format!("\"colleague\": {error}")),
-    }
-}
 
 /// A sign that the work is stuck.
 #[derive(Debug, Clone, PartialEq, Eq)]

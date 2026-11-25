@@ -220,3 +220,76 @@ async fn without_a_summary_the_call_record_stands_in_and_the_work_goes_on() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn a_compact_command_without_a_summary_fails_and_leaves_the_thread_as_it_was() {
+    with_timeout(async {
+        let step = AtomicUsize::new(0);
+        let mock = start_mock(move |request: &MockRequest| {
+            if request.method == "GET" {
+                return models();
+            }
+            if is_summary_request(request) {
+                return MockReply::status(500, r#"{"error":{"message":"overloaded"}}"#);
+            }
+            // The same steps without usage reports, so the turn itself does
+            // not compact and `/compact` has an older part to replace.
+            match step.fetch_add(1, Ordering::SeqCst) {
+                index @ 0..=2 => MockReply::stream(vec![
+                    call_chunk(
+                        &format!("c{index}"),
+                        &format!("STEP {index} {}", "x".repeat(1_900)),
+                    ),
+                    finish("tool_calls"),
+                    sse_done(),
+                ]),
+                _ => MockReply::stream(vec![sse_delta("done"), finish("stop"), sse_done()]),
+            }
+        })
+        .await;
+        let (addr, _stop, _handle) = start_server(core_for(&mock).await).await;
+        let mut client = connect(addr).await;
+        let response = call(&mut client, 1, json!({"id": 1, "method": "thread/start"})).await;
+        let thread = response["result"]["thread_id"].as_i64().expect("thread");
+        client
+            .1
+            .write_json(
+                2,
+                &json!({"id": 2, "method": "turn/start",
+                        "params": {"thread_id": thread, "prompt": "do the work"}}),
+            )
+            .await
+            .expect("send");
+        while !matches!(
+            next_message(&mut client, 2).await["event"].as_str(),
+            Some("completed" | "failed")
+        ) {}
+        let count = |read: &Value| read["result"]["messages"].as_array().map(Vec::len);
+        let before = call(
+            &mut client,
+            3,
+            json!({"id": 3, "method": "thread/read", "params": {"thread_id": thread}}),
+        )
+        .await;
+
+        let compacted = call(
+            &mut client,
+            4,
+            json!({"id": 4, "method": "command/run",
+                   "params": {"thread_id": thread, "text": "/compact"}}),
+        )
+        .await;
+        assert_eq!(
+            compacted["error"]["code"], "compaction_failed",
+            "{compacted}"
+        );
+        let after = call(
+            &mut client,
+            5,
+            json!({"id": 5, "method": "thread/read", "params": {"thread_id": thread}}),
+        )
+        .await;
+        assert_eq!(count(&after), count(&before), "nothing was added");
+    })
+    .await;
+}

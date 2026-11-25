@@ -28,6 +28,7 @@
 
 - `cargo test`（Windows 11）で単体 17 件 + TCP 統合 14 件が成功。debug と release の両方で実行。
 - `FrameWriter::write_json` はカウント付きライターで直列化するため、上限を超える JSON ペイロードは上限分を超えてバッファリングされることなく `PayloadTooLarge` で拒否される。上限ちょうどの値は送信できる。`FrameReader` 側の上限検査は変更なしで維持。
+- サーバーの答えが上限を超えたときは、何も書かずに接続を切るのではなく、その代わりに誤りを送って接続を続ける：要求への答えなら `{"id", "error": {"code": "frame_too_large"}}`、イベントなら `{"id", "event": "dropped", "error": {"code": "frame_too_large"}}`。クライアントから上限を超えるフレームが来たときは、ストリーム 0 に `frame_too_large` の誤りを送ってから接続を閉じる（残りを読まないので続けられない）。試験：`server/tests/server_tcp.rs` の `an_answer_over_the_frame_limit_is_replaced_by_an_error`・`a_request_over_the_frame_limit_is_answered_before_the_close`。
 - `cargo clippy --all-targets` 警告なし、`cargo fmt --check` 差分なし、`cargo doc --no-deps` 警告なし。
 - 統合テストは実際の `TcpListener`/`TcpStream`（ループバック）で、本番と同じライブラリのみを使用する。
 

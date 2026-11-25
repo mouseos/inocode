@@ -245,8 +245,9 @@ fn deepai_verdict(answer: &Value) -> Verdict {
 pub(crate) type Reviewed = (Verdict, Option<Option<RequestRecord>>);
 
 /// Reviews `tool` with `arguments`, the latest call in `conversation`.
-/// `llm` is the provider in use and `reviewer` the model asked when the
-/// provider has no review service of its own.
+/// `llm` is the provider in use and `reviewer` the model asked; a DeepAI
+/// provider's own review service is used only when no other reviewer was
+/// chosen (`reviewer` is `llm`).
 pub(crate) async fn review(
     llm: &Llm,
     reviewer: &Llm,
@@ -256,7 +257,7 @@ pub(crate) async fn review(
     tool: &str,
     arguments: &str,
 ) -> Reviewed {
-    if llm.is_deepai() {
+    if llm.is_deepai() && std::ptr::eq(llm, reviewer) {
         let body = deepai_body(conversation, folder, tool, arguments);
         if body.to_string().len() > DEEPAI_MAX_BODY {
             return (

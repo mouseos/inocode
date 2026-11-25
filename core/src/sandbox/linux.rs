@@ -43,6 +43,11 @@ pub(super) fn confine(
         confined.push("bwrap".to_string());
         confined.extend(BWRAP_BASE.map(String::from));
         confined.extend(["--tmpfs".to_string(), "/tmp".to_string()]);
+        // An empty folder over inocode's own; the roots inside it are bound
+        // back after it.
+        if let Some(hidden) = super::hidden() {
+            confined.extend(["--tmpfs".to_string(), canonical(hidden)?]);
+        }
         for root in [&folder, &temp] {
             confined.extend(["--bind".to_string(), root.clone(), root.clone()]);
         }

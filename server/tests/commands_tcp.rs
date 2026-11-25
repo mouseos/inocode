@@ -366,8 +366,25 @@ async fn threads_are_listed_renamed_forked_exported_and_deleted() {
             .as_array()
             .is_some_and(|hits| hits.len() >= 2));
 
+        // Files kept for the thread beside the database go with it.
+        let files = database.with_extension("files");
+        let logs = files.join("logs").join(format!("thread-{forked}"));
+        std::fs::create_dir_all(&logs).expect("logs");
+        std::fs::write(logs.join("job-1.log"), "output").expect("log");
+        std::fs::create_dir_all(files.join("messages")).expect("messages");
+        let saved = files.join("messages").join(format!("{forked}-1.txt"));
+        std::fs::write(&saved, "a long message").expect("message");
+        let kept = files.join("messages").join(format!("{first}-1.txt"));
+        std::fs::write(&kept, "another thread's").expect("message");
+
         let deleted = command(&mut client, 10, forked, "/delete confirm").await;
         assert_eq!(deleted["result"]["deleted"], forked);
+        assert_eq!(
+            deleted["result"]["files_not_removed"],
+            json!([]),
+            "{deleted}"
+        );
+        assert!(!logs.exists() && !saved.exists() && kept.exists());
         let gone = call(
             &mut client,
             11,
@@ -382,10 +399,11 @@ async fn threads_are_listed_renamed_forked_exported_and_deleted() {
             .expect("hits")
             .iter()
             .all(|hit| hit["thread_id"] == first));
+        // The deleted thread was the latest; its id is not given again.
         let new = command(&mut client, 13, first, "/new").await;
         assert!(new["result"]["thread_id"]
             .as_i64()
-            .is_some_and(|id| id != first));
+            .is_some_and(|id| id > forked));
         let resume = command(&mut client, 14, first, "/resume").await;
         assert_eq!(
             resume["result"]["threads"].as_array().map(Vec::len),

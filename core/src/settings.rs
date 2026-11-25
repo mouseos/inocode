@@ -24,13 +24,76 @@ static WRITTEN: AtomicU64 = AtomicU64::new(0);
 /// edits made at once cannot both start from the same file.
 static WRITING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// How many times this process wrote the settings.
+/// The settings files this process read or wrote (a server has one), whose
+/// times of change [`written`] includes; the oldest go past [`WATCHED_MAX`].
+static WATCHED: std::sync::Mutex<Vec<std::path::PathBuf>> = std::sync::Mutex::new(Vec::new());
+const WATCHED_MAX: usize = 64;
+
+/// How long a write waits for another process's write of the same file.
+const LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// A stamp that changes whenever the settings are written, by this process
+/// or by another one (a command line `login` or `key set` beside a running
+/// server): compared with an earlier stamp, it tells whether to read them
+/// again.
 pub(crate) fn written() -> u64 {
-    WRITTEN.load(Ordering::SeqCst)
+    let watched = WATCHED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    let modified = watched.iter().fold(0u64, |stamp, path| {
+        let nanos = std::fs::metadata(path)
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |since| since.as_nanos() as u64);
+        stamp.rotate_left(13) ^ nanos
+    });
+    WRITTEN
+        .load(Ordering::SeqCst)
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ modified
+}
+
+fn watch(path: &Path) {
+    let mut watched = WATCHED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !watched.iter().any(|kept| kept == path) {
+        if watched.len() >= WATCHED_MAX {
+            watched.remove(0);
+        }
+        watched.push(path.to_path_buf());
+    }
+}
+
+/// Holds the lock that orders the writes of `path` across processes.
+async fn lock_across_processes(path: &Path) -> Result<std::fs::File, String> {
+    let lock = crate::secrets::open_lock_file(&crate::secrets::sibling(path, ".lock"))?;
+    let deadline = tokio::time::Instant::now() + LOCK_WAIT;
+    loop {
+        match lock.try_lock() {
+            Ok(()) => return Ok(lock),
+            Err(std::fs::TryLockError::WouldBlock) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(format!(
+                    "another program kept {} locked for {} seconds",
+                    path.display(),
+                    LOCK_WAIT.as_secs()
+                ))
+            }
+            Err(std::fs::TryLockError::Error(error)) => {
+                return Err(format!("cannot lock {}: {error}", path.display()))
+            }
+        }
+    }
 }
 
 /// The whole file as JSON; an empty object when it is missing.
 pub(crate) async fn read(path: &Path) -> Result<Value, String> {
+    watch(path);
     match tokio::fs::read_to_string(path).await {
         Ok(text) => parse(&text),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(json!({})),
@@ -63,6 +126,12 @@ pub(crate) async fn update<T>(
     edit: impl FnOnce(&mut Map<String, Value>) -> Result<T, String>,
 ) -> Result<T, String> {
     let _writing = WRITING.lock().await;
+    if let Some(folder) = path.parent() {
+        tokio::fs::create_dir_all(folder)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    let _locked = lock_across_processes(path).await?;
     let mut value = read(path).await?;
     let file = value.as_object_mut().expect("read gives an object");
     let result = edit(file)?;
@@ -384,9 +453,28 @@ pub struct Server {
     /// `encrypted-file` or `plaintext` (docs/evidence/account-pool.md).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credentials: Option<String>,
+    /// Seconds a model's answer may send nothing before the request fails;
+    /// [`DEFAULT_STREAM_IDLE_SECONDS`] when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_idle_seconds: Option<u64>,
 }
 
+/// The loopback port when the settings and the command line name none.
+pub const DEFAULT_PORT: u16 = 8787;
+
+/// How long a model's answer may stay silent by default. Providers send
+/// pings or progress much more often while they work, so a longer silence
+/// is a stalled connection.
+pub const DEFAULT_STREAM_IDLE_SECONDS: u64 = 300;
+
 impl Server {
+    pub fn stream_idle(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(
+            self.stream_idle_seconds
+                .unwrap_or(DEFAULT_STREAM_IDLE_SECONDS),
+        )
+    }
+
     /// The credential store mode the settings choose.
     pub fn credential_store(&self) -> Result<crate::secrets::StoreMode, String> {
         self.credentials.as_deref().map_or(
@@ -423,6 +511,16 @@ impl Settings {
         let file = value
             .as_object()
             .ok_or("the settings file is not an object")?;
+        if file
+            .get("colleague")
+            .is_some_and(|colleague| !colleague.is_null())
+        {
+            return Err(
+                "\"colleague\" is no longer read: name the colleague's provider and \
+                        model in \"roles.colleague\", and remove \"colleague\""
+                    .into(),
+            );
+        }
         let providers = match file.get("providers") {
             None | Some(Value::Null) => None,
             Some(value) => Some(
@@ -479,6 +577,13 @@ impl Settings {
         }
         if self.server.port == Some(0) {
             return Err("\"server.port\" must be from 1 to 65535".into());
+        }
+        if self
+            .server
+            .stream_idle_seconds
+            .is_some_and(|seconds| !(1..=86_400).contains(&seconds))
+        {
+            return Err("\"server.stream_idle_seconds\" must be from 1 to 86400".into());
         }
         Ok(())
     }
@@ -810,6 +915,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn another_process_writing_is_waited_for_and_its_change_is_noticed() {
+        let folder = folder("across");
+        let path = folder.join("settings.json");
+        std::fs::write(&path, r#"{"language": "Japanese"}"#).unwrap();
+        read(&path).await.unwrap();
+
+        // Another program holds the lock while it writes.
+        let lock =
+            crate::secrets::open_lock_file(&crate::secrets::sibling(&path, ".lock")).unwrap();
+        lock.lock().unwrap();
+        let writing = tokio::spawn({
+            let path = path.clone();
+            async move {
+                set_sections(&path, &json!({"server": {"port": 9000}}))
+                    .await
+                    .map(|_| ())
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(!writing.is_finished(), "the write waits for the lock");
+        let before = written();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&path, r#"{"language": "English"}"#).unwrap();
+        assert_ne!(written(), before, "a change by another process is noticed");
+        lock.unlock().unwrap();
+        writing.await.unwrap().unwrap();
+        let file: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            file["language"], "English",
+            "the other program's change is kept"
+        );
+        assert_eq!(file["server"]["port"], 9000);
+    }
+
+    #[tokio::test]
     async fn providers_are_added_changed_and_removed_keeping_other_sections() {
         let folder = folder("crud");
         let path = folder.join("settings.json");
@@ -822,7 +962,7 @@ mod tests {
         add_provider(&path, "local", &Provider::new(Kind::OpenAi))
             .await
             .unwrap();
-        assert!(written() > before);
+        assert_ne!(written(), before);
         assert!(
             add_provider(&path, "local", &Provider::new(Kind::Anthropic))
                 .await

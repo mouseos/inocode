@@ -465,11 +465,19 @@ async fn the_default_roles_and_server_sections_are_read_and_changed() {
         let mut client = connect(addr).await;
 
         let read = request(&mut client, 1, "settings/get", json!({})).await;
+        let sections = |result: &Value| {
+            json!({"default": result["default"], "roles": result["roles"], "server": result["server"]})
+        };
         assert_eq!(
-            read["result"],
+            sections(&read["result"]),
             json!({"default": {"provider": "mock"}, "roles": {}, "server": {}}),
             "{read}"
         );
+        assert_eq!(read["result"]["effective"]["stream_idle_seconds"], 300);
+        // The test process keeps credentials in plain files while the file
+        // names no store (auto): that waits for a restart.
+        assert_eq!(read["result"]["restart_for"], json!(["credentials"]), "{read}");
+        assert_eq!(read["result"]["restart_required"], true, "{read}");
         let set = request(
             &mut client,
             2,
@@ -482,7 +490,7 @@ async fn the_default_roles_and_server_sections_are_read_and_changed() {
         )
         .await;
         assert_eq!(
-            set["result"],
+            sections(&set["result"]),
             json!({
                 "default": {"provider": "mock", "model": "model-b", "effort": "low"},
                 "roles": {"compact": {"model": "model-a"}, "colleague": {"provider": "mock"}},
@@ -490,6 +498,18 @@ async fn the_default_roles_and_server_sections_are_read_and_changed() {
             }),
             "{set}"
         );
+        // The sandbox follows at once; the core of this test was given no
+        // port, so a written port is not compared.
+        assert_eq!(set["result"]["effective"]["sandbox"], false, "{set}");
+        let back = request(
+            &mut client,
+            3,
+            "settings/set",
+            json!({"server": {"sandbox": null, "stream_idle_seconds": 60}}),
+        )
+        .await;
+        assert_eq!(back["result"]["effective"]["sandbox"], true, "{back}");
+        assert_eq!(back["result"]["effective"]["stream_idle_seconds"], 60);
         for (index, patch) in [
             json!({"providers": {}}),
             json!({"default": {"provider": "nobody"}}),
@@ -508,6 +528,118 @@ async fn the_default_roles_and_server_sections_are_read_and_changed() {
                 .unwrap();
         assert_eq!(file["language"], "Japanese", "other sections are kept");
         assert_eq!(file["server"]["port"], 9100);
+
+        // A file broken already is not reported as a wrong change.
+        std::fs::write(folder.join("settings.json"), "{ not json").unwrap();
+        let broken = request(
+            &mut client,
+            20,
+            "settings/set",
+            json!({"default": {"model": "model-a"}}),
+        )
+        .await;
+        assert_eq!(broken["error"]["code"], "settings_invalid", "{broken}");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_key_set_while_the_server_runs_is_used_from_the_next_request() {
+    with_timeout(async {
+        let folder = folder();
+        let mock = mock(0, Vec::new()).await;
+        let core = core_with(&folder, mock_settings(&mock)).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = request(&mut client, 1, "thread/start", json!({})).await["result"]
+            ["thread_id"]
+            .as_i64()
+            .unwrap();
+        turn(
+            &mut client,
+            2,
+            json!({"thread_id": thread, "prompt": "one"}),
+        )
+        .await;
+        let mut store =
+            inocode_core::oauth::Store::load(folder.join("auth.json")).expect("credentials");
+        store
+            .update(
+                &inocode_core::settings::api_key_name("mock"),
+                |credential| credential.api_key = Some("new-key".into()),
+            )
+            .expect("key");
+        turn(
+            &mut client,
+            3,
+            json!({"thread_id": thread, "prompt": "two"}),
+        )
+        .await;
+        let keys: Vec<Option<String>> = mock
+            .requests()
+            .iter()
+            .filter(|request| request.method == "POST")
+            .map(|request| request.authorization.clone())
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                Some("Bearer test-key".to_string()),
+                Some("Bearer new-key".to_string())
+            ]
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_provider_a_thread_chose_is_kept_and_a_removed_one_takes_its_key_along() {
+    with_timeout(async {
+        let folder = folder();
+        let mock = mock(0, Vec::new()).await;
+        let mut settings = mock_settings(&mock);
+        settings["providers"]["second"] = json!({"kind": "openai", "base_url": mock.base_url});
+        let core = core_with(&folder, settings).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = request(&mut client, 1, "thread/start", json!({})).await["result"]
+            ["thread_id"]
+            .as_i64()
+            .unwrap();
+        request(
+            &mut client,
+            2,
+            "thread/settings",
+            json!({"thread_id": thread, "provider": "second"}),
+        )
+        .await;
+        let in_use = request(&mut client, 3, "providers/remove", json!({"id": "second"})).await;
+        assert_eq!(in_use["error"]["code"], "provider_in_use", "{in_use}");
+        assert!(in_use["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains(&thread.to_string()));
+
+        request(
+            &mut client,
+            4,
+            "thread/settings",
+            json!({"thread_id": thread, "provider": null}),
+        )
+        .await;
+        let removed = request(&mut client, 5, "providers/remove", json!({"id": "second"})).await;
+        assert_eq!(removed["result"]["removed"], "second", "{removed}");
+        let again = request(
+            &mut client,
+            6,
+            "providers/add",
+            json!({"id": "second", "kind": "openai", "base_url": mock.base_url}),
+        )
+        .await;
+        assert_eq!(
+            again["result"]["provider"]["credential"], false,
+            "the old key went with the old provider: {again}"
+        );
     })
     .await;
 }
@@ -555,6 +687,31 @@ async fn providers_and_models_are_hidden_from_the_lists_and_shown_again() {
         )
         .await;
         assert_eq!(hidden["result"]["hidden_models"], json!(["y"]), "{hidden}");
+        // Every list for choosing leaves it out, unless asked for it.
+        let listed = request(
+            &mut client,
+            10,
+            "models/list",
+            json!({"provider": "listed"}),
+        )
+        .await;
+        let ids = |answer: &Value| -> Vec<Value> {
+            answer["result"]["models"]
+                .as_array()
+                .expect("models")
+                .iter()
+                .map(|model| model["id"].clone())
+                .collect()
+        };
+        assert_eq!(ids(&listed), [json!("x")], "{listed}");
+        let all = request(
+            &mut client,
+            11,
+            "models/list",
+            json!({"provider": "listed", "include_hidden": true}),
+        )
+        .await;
+        assert_eq!(ids(&all), [json!("x"), json!("y")], "{all}");
         let provider = request(
             &mut client,
             2,
@@ -590,6 +747,110 @@ async fn providers_and_models_are_hidden_from_the_lists_and_shown_again() {
         )
         .await;
         assert_eq!(refused["error"]["code"], "invalid_params", "{refused}");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn switching_to_auto_during_a_turn_uses_the_reviewer_the_settings_name() {
+    with_timeout(async {
+        let count = AtomicUsize::new(0);
+        let mock = start_mock(move |request: &MockRequest| {
+            if request.method == "GET" {
+                return MockReply::status(200, &json!({"data": [{"id": "model-a"}]}).to_string());
+            }
+            if request.body["model"] == "reviewer-model" {
+                return MockReply::stream(vec![
+                    sse_delta("<block>yes</block><reason>it deletes files</reason>"),
+                    finish("stop"),
+                    sse_done(),
+                ]);
+            }
+            let call = |id: &str, name: &str, arguments: Value| {
+                let payload = json!({ "choices": [{ "delta": { "tool_calls": [{
+                    "index": 0, "id": id, "type": "function",
+                    "function": {"name": name, "arguments": arguments.to_string()}
+                }] } }] });
+                MockReply::stream(vec![
+                    format!("data: {payload}\n\n").into_bytes(),
+                    finish("tool_calls"),
+                    sse_done(),
+                ])
+            };
+            match count.fetch_add(1, Ordering::SeqCst) {
+                // Answers late, so the mode is changed while the turn waits;
+                // the change applies from the next request.
+                0 => call(
+                    "p1",
+                    "plan",
+                    json!({"items": [{"step": "clean", "status": "in_progress"}]}),
+                )
+                .with_head_delay(Duration::from_millis(1500)),
+                1 => call("s1", "shell", json!({"command": "rm -rf build"})),
+                _ => MockReply::stream(vec![sse_delta("ok"), finish("stop"), sse_done()]),
+            }
+        })
+        .await;
+        let mut settings = mock_settings(&mock);
+        settings["roles"] = json!({"review": {"model": "reviewer-model"}});
+        let core = core_with(&folder(), settings).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = request(&mut client, 1, "thread/start", json!({})).await["result"]
+            ["thread_id"]
+            .as_i64()
+            .unwrap();
+        client
+            .1
+            .write_json(
+                2,
+                &json!({"id": 2, "method": "turn/start",
+                        "params": {"thread_id": thread, "prompt": "clean", "mode": "on-request"}}),
+            )
+            .await
+            .expect("send");
+        let mut other = connect(addr).await;
+        let changed = request(
+            &mut other,
+            3,
+            "thread/settings",
+            json!({"thread_id": thread, "mode": "auto"}),
+        )
+        .await;
+        assert_eq!(changed["result"]["mode"], "auto", "{changed}");
+        let mut events = Vec::new();
+        loop {
+            let event = next_message(&mut client, 2).await;
+            let end = matches!(
+                event["event"].as_str(),
+                Some("completed" | "failed" | "cancelled")
+            );
+            events.push(event);
+            if end {
+                break;
+            }
+        }
+        let reviewed: Vec<String> = mock
+            .requests()
+            .iter()
+            .filter(|request| request.method == "POST")
+            .map(|request| {
+                request.body["model"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect();
+        assert!(
+            reviewed.contains(&"reviewer-model".to_string()),
+            "the reviewer of the settings was asked: {reviewed:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| event.to_string().contains("Denied by the reviewer")),
+            "{events:?}"
+        );
     })
     .await;
 }

@@ -17,7 +17,7 @@ use crate::conversation::{AssistantPart, Body, Message};
 pub use crate::store_threads::{SessionUsage, ThreadSummary};
 use crate::ErrorInfo;
 
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 /// Tool results above this size are stored once in `blobs` and referenced.
 const BLOB_THRESHOLD: usize = 16 * 1024;
 /// Text indexed per message; the rest stays readable but unsearchable.
@@ -231,10 +231,45 @@ CREATE TABLE thread_settings(
 );
 "#;
 
+/// Thread ids that are never given twice, even after the latest thread was
+/// deleted: `sessions` predates `AUTOINCREMENT`, so its ids come from this
+/// table's sequence, started above every id in use. What the latest turn of
+/// a thread left for the person (its held calls and questions), and the
+/// questions of MCP servers, kept so a restart does not lose them.
+const SCHEMA_V10: &str = r#"
+CREATE TABLE session_ids(id INTEGER PRIMARY KEY AUTOINCREMENT);
+INSERT INTO session_ids(id) SELECT MAX(id) FROM sessions HAVING MAX(id) IS NOT NULL;
+DELETE FROM session_ids;
+CREATE TABLE waiting(
+    session_id INTEGER PRIMARY KEY REFERENCES sessions(id),
+    held TEXT NOT NULL,
+    questions TEXT NOT NULL,
+    updated INTEGER NOT NULL
+);
+CREATE TABLE elicitations(
+    id INTEGER PRIMARY KEY,
+    session_id INTEGER NOT NULL,
+    question TEXT NOT NULL,
+    expired INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX elicitations_session ON elicitations(session_id);
+"#;
+
 /// Schema steps; step `i` brings the database to version `i + 1`.
-const MIGRATIONS: [&str; 9] = [
+const MIGRATIONS: [&str; 10] = [
     SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9,
+    SCHEMA_V10,
 ];
+
+/// A thread id never given before (`SCHEMA_V10`).
+pub(crate) fn new_session_id(db: &Connection) -> Result<i64, ErrorInfo> {
+    db.execute("INSERT INTO session_ids DEFAULT VALUES", [])
+        .map_err(store_error)?;
+    let id = db.last_insert_rowid();
+    db.execute("DELETE FROM session_ids WHERE id = ?1", [id])
+        .map_err(store_error)?;
+    Ok(id)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ProjectId(pub i64);
@@ -499,15 +534,143 @@ impl Store {
     }
 
     pub(crate) fn describe_elicitation(&self, id: u64, question: serde_json::Value) {
-        if let Some(waiting) = self
+        let session = match self
             .inner
             .elicitations
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .get_mut(&id)
         {
-            waiting.question = question;
-        }
+            Some(waiting) => {
+                waiting.question = question.clone();
+                waiting.session
+            }
+            None => return,
+        };
+        let question = question.to_string();
+        self.in_background(move |db| {
+            db.execute(
+                "INSERT OR REPLACE INTO elicitations(id, session_id, question, expired)
+                 VALUES (?1, ?2, ?3, 0)",
+                params![id as i64, session.0, question],
+            )
+        });
+    }
+
+    /// Runs a small write of the questions of MCP servers without waiting
+    /// for it: their callers are not async. Its failure only costs the
+    /// question's listing after a restart, so it is reported, not returned.
+    fn in_background(
+        &self,
+        work: impl FnOnce(&Connection) -> rusqlite::Result<usize> + Send + 'static,
+    ) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let store = self.clone();
+        runtime.spawn(async move {
+            if let Err(error) = store.write(move |db| work(db).map_err(store_error)).await {
+                eprintln!(
+                    "inocode: a question of an MCP server was not saved: {}",
+                    error.message
+                );
+            }
+        });
+    }
+
+    /// Marks the questions of MCP servers saved by an earlier run as
+    /// expired: the turns that waited for them ended with that run.
+    pub async fn expire_elicitations(&self) -> Result<(), ErrorInfo> {
+        self.write(|db| {
+            db.execute("UPDATE elicitations SET expired = 1 WHERE expired = 0", [])
+                .map(|_| ())
+                .map_err(store_error)
+        })
+        .await
+    }
+
+    /// The questions of MCP servers of `session` that expired with an
+    /// earlier run of the server, oldest first.
+    pub(crate) async fn expired_elicitations(
+        &self,
+        session: SessionId,
+    ) -> Result<Vec<(u64, serde_json::Value)>, ErrorInfo> {
+        self.read(Duration::from_secs(5), move |db| {
+            let mut statement = db
+                .prepare_cached(
+                    "SELECT id, question FROM elicitations
+                     WHERE session_id = ?1 AND expired = 1 ORDER BY id",
+                )
+                .map_err(store_error)?;
+            let rows = statement
+                .query_map([session.0], |row| {
+                    Ok((row.get::<_, i64>(0)? as u64, row.get::<_, String>(1)?))
+                })
+                .map_err(store_error)?;
+            let mut found = Vec::new();
+            for row in rows {
+                let (id, question) = row.map_err(store_error)?;
+                found.push((id, serde_json::from_str(&question).unwrap_or_default()));
+            }
+            Ok(found)
+        })
+        .await
+    }
+
+    /// Removes the expired question `id` of `session`; whether there was one.
+    pub(crate) async fn drop_expired_elicitation(
+        &self,
+        session: SessionId,
+        id: u64,
+    ) -> Result<bool, ErrorInfo> {
+        self.write(move |db| {
+            db.execute(
+                "DELETE FROM elicitations WHERE id = ?1 AND session_id = ?2 AND expired = 1",
+                params![id as i64, session.0],
+            )
+            .map(|deleted| deleted == 1)
+            .map_err(store_error)
+        })
+        .await
+    }
+
+    /// What the latest turn of `session` left for the person, as JSON: the
+    /// held calls and the questions.
+    pub(crate) async fn set_waiting(
+        &self,
+        session: SessionId,
+        held: String,
+        questions: String,
+    ) -> Result<(), ErrorInfo> {
+        self.write(move |db| {
+            db.execute(
+                "INSERT INTO waiting(session_id, held, questions, updated)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(session_id) DO UPDATE SET
+                     held = excluded.held, questions = excluded.questions,
+                     updated = excluded.updated",
+                params![session.0, held, questions, now()],
+            )
+            .map(|_| ())
+            .map_err(store_error)
+        })
+        .await
+    }
+
+    pub(crate) async fn waiting(
+        &self,
+        session: SessionId,
+    ) -> Result<Option<(String, String)>, ErrorInfo> {
+        self.read(Duration::from_secs(5), move |db| {
+            db.query_row(
+                "SELECT held, questions FROM waiting WHERE session_id = ?1",
+                [session.0],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(store_error)
+        })
+        .await
     }
 
     /// The questions of MCP servers that `session`'s turn waits on, oldest
@@ -534,6 +697,13 @@ impl Store {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .remove(&id);
+        self.forget_saved_elicitation(id);
+    }
+
+    fn forget_saved_elicitation(&self, id: u64) {
+        self.in_background(move |db| {
+            db.execute("DELETE FROM elicitations WHERE id = ?1", [id as i64])
+        });
     }
 
     /// Hands the person's answer to the question `id` of `session`; whether
@@ -554,16 +724,25 @@ impl Store {
             _ => return false,
         }
         let asked = waiting.remove(&id).expect("checked above");
+        drop(waiting);
+        self.forget_saved_elicitation(id);
         asked.answer.send(answer).is_ok()
     }
 
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, ErrorInfo> {
         let path = path.as_ref().to_path_buf();
         let opened = path.clone();
-        let writer = blocking(move || {
+        let (writer, last_elicitation) = blocking(move || {
             let mut connection = connect(&opened)?;
             migrate(&mut connection)?;
-            Ok(connection)
+            // Ids go on after the saved questions, so an expired question is
+            // never mistaken for a new one.
+            let last: i64 = connection
+                .query_row("SELECT COALESCE(MAX(id), 0) FROM elicitations", [], |row| {
+                    row.get(0)
+                })
+                .map_err(store_error)?;
+            Ok((connection, last.max(0) as u64))
         })
         .await?;
         Ok(Self {
@@ -573,7 +752,7 @@ impl Store {
                 readers: Mutex::new(Vec::new()),
                 mcp: tokio::sync::Mutex::new(None),
                 elicitations: Mutex::new(HashMap::new()),
-                next_elicitation: std::sync::atomic::AtomicU64::new(0),
+                next_elicitation: std::sync::atomic::AtomicU64::new(last_elicitation),
             }),
         })
     }
@@ -645,12 +824,15 @@ impl Store {
     ) -> Result<SessionId, ErrorInfo> {
         let title = title.to_string();
         self.write(move |db| {
-            db.execute(
-                "INSERT INTO sessions(project_id, title, created) VALUES (?1, ?2, ?3)",
-                params![project.map(|p| p.0), title, now()],
+            let tx = db.transaction().map_err(store_error)?;
+            let id = new_session_id(&tx)?;
+            tx.execute(
+                "INSERT INTO sessions(id, project_id, title, created) VALUES (?1, ?2, ?3, ?4)",
+                params![id, project.map(|p| p.0), title, now()],
             )
             .map_err(store_error)?;
-            Ok(SessionId(db.last_insert_rowid()))
+            tx.commit().map_err(store_error)?;
+            Ok(SessionId(id))
         })
         .await
     }
@@ -1706,6 +1888,81 @@ mod tests {
         Store::open(dir.path().join("inocode.db"))
             .await
             .expect("open")
+    }
+
+    #[test]
+    fn thread_ids_are_never_given_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("inocode.db");
+        // A database from before the sequence, whose latest thread is 5.
+        {
+            let mut db = connect(&path).unwrap();
+            for (step, sql) in MIGRATIONS.iter().take(9).enumerate() {
+                let tx = db.transaction().unwrap();
+                tx.execute_batch(sql).unwrap();
+                tx.pragma_update(None, "user_version", step as i64 + 1)
+                    .unwrap();
+                tx.commit().unwrap();
+            }
+            for id in [1, 2, 5] {
+                db.execute(
+                    "INSERT INTO sessions(id, title, created) VALUES (?1, '', 0)",
+                    [id],
+                )
+                .unwrap();
+            }
+        }
+        run(async {
+            let store = Store::open(&path).await.unwrap();
+            let next = store.start_session(None, "").await.unwrap();
+            assert_eq!(next, SessionId(6));
+            assert!(store.delete_session(next).await.unwrap());
+            let after = store.start_session(None, "").await.unwrap();
+            assert_eq!(after, SessionId(7), "the deleted latest id is not reused");
+            let fork = store.fork_session(after).await.unwrap();
+            assert_eq!(fork, SessionId(8));
+
+            let fresh = tempfile::tempdir().unwrap();
+            let new = Store::open(fresh.path().join("inocode.db")).await.unwrap();
+            let one = new.start_session(None, "").await.unwrap();
+            new.delete_session(one).await.unwrap();
+            assert_eq!(new.start_session(None, "").await.unwrap(), SessionId(2));
+        });
+    }
+
+    #[test]
+    fn what_a_turn_left_waiting_and_the_questions_of_mcp_servers_outlive_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        run(async {
+            let store = store(&dir).await;
+            let thread = store.start_session(None, "").await.unwrap();
+            store
+                .set_waiting(thread, "[1]".into(), "[2]".into())
+                .await
+                .unwrap();
+            let (id, _answer) = store.wait_elicitation(thread);
+            store.describe_elicitation(id, serde_json::json!({"message": "Which?"}));
+            // The saving runs beside the caller.
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            drop(store);
+
+            let store = Store::open(dir.path().join("inocode.db")).await.unwrap();
+            assert_eq!(
+                store.waiting(thread).await.unwrap(),
+                Some(("[1]".to_string(), "[2]".to_string()))
+            );
+            assert!(store.expired_elicitations(thread).await.unwrap().is_empty());
+            store.expire_elicitations().await.unwrap();
+            let expired = store.expired_elicitations(thread).await.unwrap();
+            assert_eq!(expired, [(id, serde_json::json!({"message": "Which?"}))]);
+            let (next, _) = store.wait_elicitation(thread);
+            assert!(next > id, "a new question never takes an expired one's id");
+            assert!(store.drop_expired_elicitation(thread, id).await.unwrap());
+            assert!(store.expired_elicitations(thread).await.unwrap().is_empty());
+
+            assert!(store.delete_session(thread).await.unwrap());
+            assert_eq!(store.waiting(thread).await.unwrap(), None);
+        });
     }
 
     fn user(text: &str) -> Message {

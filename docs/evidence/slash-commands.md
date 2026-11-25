@@ -187,26 +187,27 @@
 | `/resume [会話]` | 会話の一覧（50 件）、または 1 つの概要。切り替えは UI が行う |
 | `/rename 〈名前〉` | `sessions.title` を書き換える |
 | `/fork` | メッセージ（保存時刻ごと）、計画、約束、モデルの選択を新しい会話へ写す。目標は写さない |
-| `/delete confirm` | 会話・メッセージ（検索の索引からも）・計画・目標・約束・モデルの選択を消す。モデルへの要求の記録（統計用）と、共有されうる大きな中身は残す |
-| `/compact` | `compaction::compact` を今すぐ呼ぶ。会話がモデルの文脈の窓を満たしているとみなし（実際の見積もりの方が大きければそちら）、古い部分を要約に替え、最近の部分を残す。結果を返し、ターンとしては流さない |
+| `/delete confirm` | 会話・メッセージ（検索の索引からも）・計画・目標・約束・モデルの選択・承認待ちと質問を消し、その会話のシェルの命令を止め、データベースの横のその会話のファイル（命令のログ、画像、音、取得したページ、保存した長い発言）を消す。消せなかったファイルは `files_not_removed` に出す。モデルへの要求の記録（統計用）と課題の出来事は、会話との結び付きを外して残す。共有されうる大きな中身は残す。会話の番号は二度と使わない（データベースの版 10 の `session_ids`） |
+| `/compact` | `compaction::compact` を今すぐ呼ぶ。会話がモデルの文脈の窓を満たしているとみなし（実際の見積もりの方が大きければそちら）、古い部分を要約に替え、最近の部分を残す。結果を返し、ターンとしては流さない。要約が書けなかったときは `compaction_failed` の誤りを返し、会話は変えない（ターンの中の自動の圧縮は、要約の代わりに呼び出しの記録を残して続ける）。圧縮の間の `turn/steer` は受け付けない（`accepted: false`） |
 | `/export [markdown・json] [パス]` | 文字として返す。パスを付けるとファイルに書く（相対パスはプロジェクトのフォルダから） |
 | `/history 〈語〉` | `search_history`（全プロジェクト、20 件） |
-| `/goal 〈目標〉`・`status`・`stop` | `goal/set` の後、目標の文でターンを始める。何も付けなければ `status` |
+| `/goal 〈目標〉`・`status`・`stop` | `goal/set` の後、目標の文でターンを始める。目標の前に `--check "命令"`・`--rounds 回数`・`--tokens 数` を書くと、`goal/set` の `check`・`rounds`・`tokens` になる。何も付けなければ `status` |
+| `/stop` | この会話の走っているターンを止める（`turn/interrupt` と同じ。どの接続からでも）。いつでも使える |
 | `/plan` | `plan` の道具の記録 |
 | `/promise`・`remove 〈番号〉`・`clear` | `promise` の道具の記録 |
 | `/issues`・`done 〈番号〉 [理由]`・`drop 〈番号〉 [理由]` | 課題の一覧、done・wontfix で閉じる（記録者は人） |
 | `/notes`・`search`・`show`・`edit`・`tag`・`vote`・`retire` | 手法メモ（`lesson`・`method`）。`edit` は新しいメモを作って古いものを `supersede` で置き換える（古いものは履歴として残る） |
 | `/rules`・`import`・`off 〈番号〉` | ルールの一覧（強さ付き）、`AGENTS.md` を `import_rules` で取り込む、使わない印 |
-| `/colleague` | 同僚の設定（`roles.colleague`、無ければ古い `colleague` 欄）と、この会話の同僚の助言 |
+| `/colleague` | 同僚の設定（`roles.colleague`）と、この会話の同僚の助言 |
 | `/mode [モード]` | 会話の設定の `mode` |
-| `/approve`・`/deny [番号・all]` | 最後のターンが保留した呼び出しの一覧。番号を付けると、承認（`approve` にその呼び出しと規則を入れたターン）または拒否を伝えるターンを始める |
-| `/answer [番号 答え]` | 最後のターンの `ask` の質問と、走っているターンが待つ MCP の質問の一覧。`ask` には `reply_to` 付きのターンで答え、MCP には JSON の内容・`decline`・`cancel` で答える |
+| `/approve`・`/deny [番号・all]` | 最後のターンが保留した呼び出しの一覧。番号を付けると、承認（`approve` にその呼び出しだけを入れたターン。その呼び出しが当たった規則は許さないので、同じ規則に当たる別の呼び出しはまた保留になる）または拒否を伝えるターンを始める。一覧はデータベースから読み、次のターンが終わるまで残る（ターンが始められなかったときも消えない） |
+| `/answer [番号 答え]` | 最後のターンの `ask` の質問と、走っているターンが待つ MCP の質問の一覧（サーバーを起動し直す前の MCP の質問は `expired: true` で出し、答えると `expired` の誤りを返して消す）。`ask` には `reply_to` 付きのターンで答え、MCP には JSON の内容・`decline`・`cancel` で答える |
 | `/sandbox` | 有効か、会話のモード、閉じ込めるか、書ける場所 |
 | `/model [プロバイダ/モデル・モデル・default]`・`/effort [深さ・default]` | 会話の設定 |
 | `/roles [役 モデル・default]` | `settings/set` の `roles` |
 | `/providers`・`add 〈id〉 〈種類〉`・`set 〈id〉 〈欄〉 〈値〉`・`remove 〈id〉` | `providers/*` |
 | `/models [プロバイダ]` | `models/catalog` |
-| `/usage`・`/stats [日数]` | `usage`・`stats/models` |
+| `/usage`・`/stats [日数]` | `usage`・`stats/models`。`/stats` の時刻はサーバーの時間帯で数える |
 | `/status` | 会話の概要、モデルとモード、走っているか、この会話の要求のトークンの合計、目標 |
 | `/translate`・`thinking`・`answer`・`service`・`to`・`models [remove …]`・`languages [方式]` | `settings/translation`・`translation/*` |
 | `/devices` | `camera`・`audio` の道具の `list` |
