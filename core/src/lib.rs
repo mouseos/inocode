@@ -50,8 +50,8 @@ mod web_search;
 pub use usage::{Usage, UsageWindow};
 
 pub use llm::{
-    ChatStream, JsonOutput, Llm, LlmConfig, ModelInfo, ProviderKind, RequestRecord, TokenUsage,
-    DEFAULT_BASE_URL, DEFAULT_MAX_TOKENS, DEFAULT_MODEL,
+    ChatStream, JsonOutput, Llm, LlmConfig, ModelInfo, Piece, ProviderKind, RequestRecord,
+    TokenUsage, DEFAULT_BASE_URL, DEFAULT_MAX_TOKENS, DEFAULT_MODEL,
 };
 
 use std::collections::HashMap;

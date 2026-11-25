@@ -40,4 +40,7 @@
   - 保存されるのは、答えが終わったときの思考全体（`message` イベント）。流した断片は保存しない。
   - Claude 4.7 以降と 5 系は既定では思考を返さない（display が omitted）。inocode は要約の指定が none でない限り `display` を付けて受け取る（上の Anthropic の項）。
 - **テスト：** `llm::tests::thinking_is_streamed_in_every_format`（3 つの形式で、思考と答えが別々に流れる）、`anthropic_events_reduce_to_text_stop_and_ignored`。
-- **未検証：** 本物のプロバイダーで、思考が届いた順に画面へ出ること。
+- **本物での確認（2026-11-25、ユーザーの承認「やって」）：** 手で動かす試験 `server/tests/live_tools.rs` の `thinking_streams_before_the_answer`（思考の断片が答えより先に流れ、保存された答えに思考が残ること）。
+  - Claude OAuth `claude-haiku-5-5`（high）：思考 15 片、答え 18 片。思考は全部答えより前。答えは 12:25 で正しい。
+  - DeepAI `glm-5.3-flash`（high）：思考 199 片、答え 14 片。思考は全部答えより前。答えは 12:25 で正しい。
+- **未検証：** Responses 形式（GPT OAuth）での本物の流れ。サーバーからクライアントへの `thinking` イベントの本物での受け渡し（模擬では未試験。中継は `server/src/lib.rs` の 1 行）。

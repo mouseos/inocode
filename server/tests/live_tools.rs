@@ -110,3 +110,52 @@ async fn a_tool_call_and_its_result_round_trip() {
     assert_eq!(*stop, StopReason::Completed);
     assert!(!text.trim().is_empty(), "no answer after the tool result");
 }
+
+/// The thinking the provider shows streams as its own pieces, before the
+/// answer, and the stored turn keeps it whole.
+#[tokio::test]
+#[ignore = "requires a provider credential; run by hand"]
+async fn thinking_streams_before_the_answer() {
+    let llm = Llm::from_env().expect("provider");
+    let conversation = Conversation {
+        system: None,
+        messages: vec![message(
+            0,
+            Body::User {
+                from: Speaker::Person,
+                parts: vec!["A train leaves at 9:47 and the trip takes 2 hours 38 minutes.                     When does it arrive? Think it through, then give the time."
+                    .to_string()],
+            },
+        )],
+    };
+    let mut stream = llm.converse(&conversation, &[]).await.expect("start");
+    let (mut thinking, mut text, mut thinking_after_text) = (String::new(), String::new(), false);
+    let mut pieces = (0, 0);
+    while let Some(piece) = stream.next_piece().await.expect("stream") {
+        match piece {
+            inocode_core::Piece::Thinking(delta) => {
+                thinking_after_text |= !text.is_empty();
+                thinking.push_str(&delta);
+                pieces.0 += 1;
+            }
+            inocode_core::Piece::Text(delta) => {
+                text.push_str(&delta);
+                pieces.1 += 1;
+            }
+        }
+    }
+    println!("thinking pieces: {}, text pieces: {}", pieces.0, pieces.1);
+    println!(
+        "thinking: {}",
+        thinking.chars().take(300).collect::<String>()
+    );
+    println!("answer: {text}");
+    assert!(!thinking.is_empty(), "no thinking was streamed");
+    assert!(!thinking_after_text, "thinking came after the answer");
+    let Body::Assistant { parts, .. } = stream.assistant() else {
+        panic!("not an assistant turn");
+    };
+    assert!(parts
+        .iter()
+        .any(|part| matches!(part, AssistantPart::Reasoning { text, .. } if !text.is_empty())));
+}
