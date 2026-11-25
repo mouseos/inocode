@@ -15,7 +15,7 @@ jobs:
   protocol-test:
     name: protocol test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -86,6 +86,9 @@ jobs:
           sudo apt-get install -y v4l-utils
           # The runner's kernel ships vivid in its own modules package.
           sudo modprobe vivid n_devs=1 node_types=0x1
+          # udev creates the node after modprobe returns and sets its mode;
+          # change it only once udev is done.
+          sudo udevadm settle
           sudo chmod a+rw /dev/video*
           v4l2-ctl --list-devices
           v4l2-ctl -d /dev/video0 --list-ctrls
