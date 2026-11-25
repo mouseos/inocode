@@ -213,7 +213,15 @@ impl Store {
                 account_id: credential.account_id.clone(),
             })
             .collect();
-        accounts.sort_by(|a, b| (a.info.added_ms, &a.id).cmp(&(b.info.added_ms, &b.id)));
+        // Accounts added in the same millisecond: `default` is always the
+        // first of a kind, so it stays first.
+        let order = |account: &Account| {
+            (
+                account.info.added_ms,
+                account.id != crate::secrets::DEFAULT_ACCOUNT,
+            )
+        };
+        accounts.sort_by(|a, b| (order(a), &a.id).cmp(&(order(b), &b.id)));
         accounts
     }
 
