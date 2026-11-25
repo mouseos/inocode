@@ -1,6 +1,7 @@
-//! What the account pool keeps across restarts (`SCHEMA_V11`): each
-//! thread's account of a provider and the quota cooldowns of accounts
-//! (docs/evidence/account-pool.md).
+//! What the account pool keeps across restarts (`SCHEMA_V11`,
+//! `SCHEMA_V12`): each thread's account of a provider, the quota cooldowns
+//! of accounts and of their quota groups, and which thread a fork came
+//! from (docs/evidence/account-pool.md).
 
 use std::time::Duration;
 
@@ -27,6 +28,9 @@ pub struct PoolBinding {
 pub struct PoolCooldown {
     pub kind: String,
     pub account: String,
+    /// The quota group refused (`crate::pool::quota_scope`); `None` for
+    /// the whole account.
+    pub scope: Option<String>,
     pub until_ms: u64,
     pub avoid_until_ms: u64,
     pub since_ms: u64,
@@ -137,13 +141,17 @@ impl Store {
         .await
     }
 
-    /// The cooldowns or quota avoidances still running at `now_ms`.
+    /// The cooldowns or quota avoidances still running at `now_ms`, of
+    /// whole accounts and of their quota groups.
     pub async fn pool_cooldowns(&self, now_ms: u64) -> Result<Vec<PoolCooldown>, ErrorInfo> {
         self.read(BUDGET, move |db| {
             let mut statement = db
                 .prepare(
-                    "SELECT kind, account, until, avoid_until, since, source, status
-                     FROM pool_cooldowns WHERE MAX(until, avoid_until) > ?1",
+                    "SELECT kind, account, NULL, until, avoid_until, since, source, status
+                     FROM pool_cooldowns WHERE MAX(until, avoid_until) > ?1
+                     UNION ALL
+                     SELECT kind, account, scope, until, avoid_until, since, source, status
+                     FROM pool_scoped_cooldowns WHERE MAX(until, avoid_until) > ?1",
                 )
                 .map_err(store_error)?;
             let rows = statement
@@ -151,11 +159,12 @@ impl Store {
                     Ok(PoolCooldown {
                         kind: row.get(0)?,
                         account: row.get(1)?,
-                        until_ms: row.get::<_, i64>(2)? as u64,
-                        avoid_until_ms: row.get::<_, i64>(3)? as u64,
-                        since_ms: row.get::<_, i64>(4)? as u64,
-                        source: row.get(5)?,
-                        status: row.get::<_, i64>(6)? as u16,
+                        scope: row.get(2)?,
+                        until_ms: row.get::<_, i64>(3)? as u64,
+                        avoid_until_ms: row.get::<_, i64>(4)? as u64,
+                        since_ms: row.get::<_, i64>(5)? as u64,
+                        source: row.get(6)?,
+                        status: row.get::<_, i64>(7)? as u16,
                     })
                 })
                 .map_err(store_error)?;
@@ -166,20 +175,63 @@ impl Store {
 
     pub async fn set_pool_cooldown(&self, cooldown: PoolCooldown) -> Result<(), ErrorInfo> {
         self.write(move |db| {
+            let values = params![
+                cooldown.kind,
+                cooldown.account,
+                cooldown.until_ms as i64,
+                cooldown.avoid_until_ms as i64,
+                cooldown.since_ms as i64,
+                cooldown.source,
+                i64::from(cooldown.status),
+                cooldown.scope,
+            ];
+            let sql = match cooldown.scope {
+                None => {
+                    "INSERT INTO pool_cooldowns(kind, account, until, avoid_until, since, source,
+                         status)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                     ON CONFLICT(kind, account) DO UPDATE
+                     SET until = ?3, avoid_until = ?4, since = ?5, source = ?6, status = ?7"
+                }
+                Some(_) => {
+                    "INSERT INTO pool_scoped_cooldowns(kind, account, until, avoid_until, since,
+                         source, status, scope)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                     ON CONFLICT(kind, account, scope) DO UPDATE
+                     SET until = ?3, avoid_until = ?4, since = ?5, source = ?6, status = ?7"
+                }
+            };
+            let values: Vec<&dyn rusqlite::ToSql> = match &cooldown.scope {
+                None => values[..7].to_vec(),
+                Some(_) => values.to_vec(),
+            };
+            db.execute(sql, values.as_slice())
+                .map(drop)
+                .map_err(store_error)
+        })
+        .await
+    }
+
+    /// Removes the cooldown of one quota group of an account, or with no
+    /// `scope` every cooldown of the account.
+    pub async fn delete_pool_cooldown(
+        &self,
+        kind: String,
+        account: String,
+        scope: Option<String>,
+    ) -> Result<(), ErrorInfo> {
+        self.write(move |db| {
+            if scope.is_none() {
+                db.execute(
+                    "DELETE FROM pool_cooldowns WHERE kind = ?1 AND account = ?2",
+                    params![kind, account],
+                )
+                .map_err(store_error)?;
+            }
             db.execute(
-                "INSERT INTO pool_cooldowns(kind, account, until, avoid_until, since, source, status)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                 ON CONFLICT(kind, account) DO UPDATE
-                 SET until = ?3, avoid_until = ?4, since = ?5, source = ?6, status = ?7",
-                params![
-                    cooldown.kind,
-                    cooldown.account,
-                    cooldown.until_ms as i64,
-                    cooldown.avoid_until_ms as i64,
-                    cooldown.since_ms as i64,
-                    cooldown.source,
-                    i64::from(cooldown.status)
-                ],
+                "DELETE FROM pool_scoped_cooldowns
+                 WHERE kind = ?1 AND account = ?2 AND (?3 IS NULL OR scope = ?3)",
+                params![kind, account, scope],
             )
             .map(drop)
             .map_err(store_error)
@@ -187,18 +239,16 @@ impl Store {
         .await
     }
 
-    pub async fn delete_pool_cooldown(
-        &self,
-        kind: String,
-        account: String,
-    ) -> Result<(), ErrorInfo> {
-        self.write(move |db| {
-            db.execute(
-                "DELETE FROM pool_cooldowns WHERE kind = ?1 AND account = ?2",
-                params![kind, account],
-            )
-            .map(drop)
-            .map_err(store_error)
+    /// The thread each forked thread was made from.
+    pub async fn thread_lineage(&self) -> Result<Vec<(i64, i64)>, ErrorInfo> {
+        self.read(BUDGET, move |db| {
+            let mut statement = db
+                .prepare("SELECT session_id, parent FROM thread_lineage")
+                .map_err(store_error)?;
+            let rows = statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .map_err(store_error)?;
+            rows.collect::<Result<_, _>>().map_err(store_error)
         })
         .await
     }
@@ -265,6 +315,7 @@ mod tests {
                 let cooldown = PoolCooldown {
                     kind: "claude-oauth".into(),
                     account: "x".into(),
+                    scope: None,
                     until_ms: 500,
                     avoid_until_ms: 900,
                     since_ms: 100,
@@ -275,10 +326,83 @@ mod tests {
                 assert_eq!(store.pool_cooldowns(800).await.unwrap(), vec![cooldown]);
                 assert!(store.pool_cooldowns(900).await.unwrap().is_empty());
                 store
-                    .delete_pool_cooldown("claude-oauth".into(), "x".into())
+                    .delete_pool_cooldown("claude-oauth".into(), "x".into(), None)
                     .await
                     .unwrap();
                 assert!(store.pool_cooldowns(0).await.unwrap().is_empty());
+            });
+    }
+
+    #[test]
+    fn a_quota_group_cooldown_is_kept_apart_from_the_account() {
+        let dir = tempfile::tempdir().expect("dir");
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let store = Store::open(dir.path().join("s.db")).await.expect("open");
+                let cooldown = |scope: Option<&str>, until_ms: u64| PoolCooldown {
+                    kind: "gpt-oauth".into(),
+                    account: "x".into(),
+                    scope: scope.map(str::to_string),
+                    until_ms,
+                    avoid_until_ms: until_ms,
+                    since_ms: 1,
+                    source: "reset".into(),
+                    status: 429,
+                };
+                for row in [
+                    cooldown(None, 500),
+                    cooldown(Some("reserve"), 600),
+                    cooldown(Some("shared"), 700),
+                ] {
+                    store.set_pool_cooldown(row).await.unwrap();
+                }
+                store
+                    .set_pool_cooldown(cooldown(Some("shared"), 800))
+                    .await
+                    .unwrap();
+                let mut kept = store.pool_cooldowns(0).await.unwrap();
+                kept.sort_by_key(|row| row.until_ms);
+                assert_eq!(
+                    kept,
+                    vec![
+                        cooldown(None, 500),
+                        cooldown(Some("reserve"), 600),
+                        cooldown(Some("shared"), 800)
+                    ]
+                );
+                store
+                    .delete_pool_cooldown("gpt-oauth".into(), "x".into(), Some("reserve".into()))
+                    .await
+                    .unwrap();
+                assert_eq!(store.pool_cooldowns(0).await.unwrap().len(), 2);
+                store
+                    .delete_pool_cooldown("gpt-oauth".into(), "x".into(), None)
+                    .await
+                    .unwrap();
+                assert!(store.pool_cooldowns(0).await.unwrap().is_empty());
+            });
+    }
+
+    #[test]
+    fn a_fork_remembers_its_parent() {
+        let dir = tempfile::tempdir().expect("dir");
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let store = Store::open(dir.path().join("l.db")).await.expect("open");
+                let parent = store.start_session(None, "").await.expect("session");
+                let fork = store.fork_session(parent).await.expect("fork");
+                assert_eq!(
+                    store.thread_lineage().await.unwrap(),
+                    vec![(fork.0, parent.0)]
+                );
+                store.delete_session(fork).await.expect("delete");
+                assert!(store.thread_lineage().await.unwrap().is_empty());
             });
     }
 }

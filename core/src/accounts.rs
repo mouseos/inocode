@@ -134,21 +134,26 @@ pub async fn complete_login(
     })
 }
 
-/// The sign-in kind `name` means, and the settings' provider it names:
-/// a provider id first, then a kind name (`claude-oauth`, ...), then the
-/// names the CLI `login` takes (`claude`, `gpt`, `muse`).
-fn resolve(settings: &settings::Settings, name: &str) -> Result<(Kind, Option<String>), ErrorInfo> {
+/// What a `provider` parameter names: the kind, the settings' provider if
+/// it names one, and the credential store's name of the accounts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Target {
+    kind: Kind,
+    provider: Option<String>,
+    store: String,
+}
+
+/// The accounts `name` means: a provider id of the settings first (a
+/// static-key provider's accounts are its keys), then a sign-in kind name
+/// (`claude-oauth`, ...), then the names the CLI `login` takes (`claude`,
+/// `gpt`, `muse`).
+fn resolve(settings: &settings::Settings, name: &str) -> Result<Target, ErrorInfo> {
     if let Some(provider) = settings.provider(name) {
-        if provider.kind.uses_api_key() {
-            return Err(ErrorInfo::new(
-                "invalid_params",
-                format!(
-                    "the provider {name} uses an API key and has no accounts; \
-                     store its key with `inocode-server key set {name}`"
-                ),
-            ));
-        }
-        return Ok((provider.kind, Some(name.to_string())));
+        return Ok(Target {
+            kind: provider.kind,
+            provider: Some(name.to_string()),
+            store: settings::account_store(name, provider.kind),
+        });
     }
     let kind = match name.trim().to_ascii_lowercase().as_str() {
         "claude" => Some(Kind::ClaudeOauth),
@@ -156,11 +161,16 @@ fn resolve(settings: &settings::Settings, name: &str) -> Result<(Kind, Option<St
         "muse" => Some(Kind::MuseCode),
         other => Kind::parse(other).filter(|kind| !kind.uses_api_key()),
     };
-    kind.map(|kind| (kind, None)).ok_or_else(|| {
+    kind.map(|kind| Target {
+        kind,
+        provider: None,
+        store: kind.auth().store_name().to_string(),
+    })
+    .ok_or_else(|| {
         ErrorInfo::new(
             "invalid_params",
             format!(
-                "{name} is neither a sign-in provider of the settings nor one of \
+                "{name} is neither a provider of the settings nor one of \
                  claude-oauth, gpt-oauth, muse-code and deepai"
             ),
         )
@@ -168,7 +178,7 @@ fn resolve(settings: &settings::Settings, name: &str) -> Result<(Kind, Option<St
 }
 
 /// The account of `accounts` named `name`: its id, else its alias.
-fn find(accounts: &[Account], kind: Kind, name: &str) -> Result<String, ErrorInfo> {
+fn find(accounts: &[Account], target: &Target, name: &str) -> Result<String, ErrorInfo> {
     let by_alias = || {
         accounts.iter().find(|account| {
             account
@@ -188,12 +198,11 @@ fn find(accounts: &[Account], kind: Kind, name: &str) -> Result<String, ErrorInf
                 "account_unknown",
                 format!(
                     "{} has no account {name}; /accounts list shows them",
-                    kind.name()
+                    target.provider.as_deref().unwrap_or(target.kind.name())
                 ),
             )
         })
 }
-
 /// A new alias: 1 to 64 characters without control characters, not the
 /// alias or id of another account of the kind, so it names one account.
 fn check_alias(accounts: &[Account], account: &str, alias: &str) -> Result<(), ErrorInfo> {
@@ -217,24 +226,21 @@ fn check_alias(accounts: &[Account], account: &str, alias: &str) -> Result<(), E
     Ok(())
 }
 
-fn account_view(
-    account: &Account,
-    kind: Kind,
-    provider: Option<&str>,
-    active: Option<&str>,
-) -> Value {
+fn account_view(account: &Account, target: &Target, active: Option<&str>) -> Value {
     json!({
         "id": account.id,
         "alias": account.info.alias,
-        "provider": provider,
-        "kind": kind.name(),
+        "provider": target.provider,
+        "kind": target.kind.name(),
         "paused": account.info.paused,
         "needs_reauth": account.info.needs_reauth,
         "added": account.info.added_ms,
         "email": account.email,
         "account_id": account.account_id,
+        "plan": account.plan,
         "priority": account.info.priority.unwrap_or(0),
         "auto_switch_threshold": account.info.auto_switch_threshold,
+        "credits": account.info.credits,
         "active": active == Some(account.id.as_str()),
     })
 }
@@ -290,27 +296,35 @@ impl Core {
         Store::load(self.credentials_path()?).map_err(store_error)
     }
 
-    /// `accounts/list {provider?}`: the accounts of every sign-in provider
-    /// of the settings, and of every sign-in kind with stored accounts that
-    /// no provider uses (`provider: null`), or of one provider or kind.
-    /// `active` marks the account the provider's requests use now.
+    /// `accounts/list {provider?}`: the accounts (the keys of a static-key
+    /// provider) of every provider of the settings, and of every sign-in
+    /// kind with stored accounts that no provider uses (`provider: null`),
+    /// or of one provider or kind. `active` marks the account the
+    /// provider's requests use now.
     pub async fn accounts_list(&self, params: &Value) -> Result<Value, ErrorInfo> {
         let settings = self.settings().await?;
         let store = self.credentials_store()?;
-        let targets: Vec<(Kind, Option<String>)> = match params.get("provider") {
+        let targets: Vec<Target> = match params.get("provider") {
             Some(Value::String(name)) => vec![resolve(&settings, name)?],
             None | Some(Value::Null) => {
-                let mut targets: Vec<(Kind, Option<String>)> = settings
+                let mut targets: Vec<Target> = settings
                     .providers
                     .iter()
                     .flatten()
-                    .filter(|(_, provider)| !provider.kind.uses_api_key())
-                    .map(|(id, provider)| (provider.kind, Some(id.clone())))
+                    .map(|(id, provider)| Target {
+                        kind: provider.kind,
+                        provider: Some(id.clone()),
+                        store: settings::account_store(id, provider.kind),
+                    })
                     .collect();
                 for kind in Kind::ALL.into_iter().filter(|kind| !kind.uses_api_key()) {
-                    let used = targets.iter().any(|(used, _)| *used == kind);
+                    let used = targets.iter().any(|used| used.kind == kind);
                     if !used && !store.accounts(kind.auth().store_name()).is_empty() {
-                        targets.push((kind, None));
+                        targets.push(Target {
+                            kind,
+                            provider: None,
+                            store: kind.auth().store_name().to_string(),
+                        });
                     }
                 }
                 targets
@@ -323,32 +337,33 @@ impl Core {
             }
         };
         let mut views = Vec::new();
-        for (kind, provider) in targets {
-            let accounts = store.accounts(kind.auth().store_name());
-            let active = self
-                .current_account(&settings, kind, provider.as_deref(), &accounts)
-                .await;
-            views.extend(accounts.iter().map(|account| {
-                account_view(account, kind, provider.as_deref(), active.as_deref())
-            }));
+        for target in targets {
+            let accounts = store.accounts(&target.store);
+            let active = self.current_account(&settings, &target, &accounts).await;
+            views.extend(
+                accounts
+                    .iter()
+                    .map(|account| account_view(account, &target, active.as_deref())),
+            );
         }
         Ok(json!({ "accounts": views }))
     }
 
-    /// The account a new conversation on `provider` would use now (the
-    /// pool's choice); without a provider, the kind's only usable account.
+    /// The account a new conversation on the target's provider would use
+    /// now (the pool's choice); without a provider, the kind's only usable
+    /// account.
     async fn current_account(
         &self,
         settings: &settings::Settings,
-        kind: Kind,
-        provider: Option<&str>,
+        target: &Target,
         accounts: &[Account],
     ) -> Option<String> {
-        let name = kind.auth().store_name();
-        let Some((id, configured)) =
-            provider.and_then(|id| settings.provider(id).map(|configured| (id, configured)))
+        let Some((id, configured)) = target
+            .provider
+            .as_deref()
+            .and_then(|id| settings.provider(id).map(|configured| (id, configured)))
         else {
-            return oauth::choose_account(name, accounts, None).ok();
+            return oauth::choose_account(&target.store, accounts, None).ok();
         };
         let route = self.route(id, configured);
         if let Some(pinned) = &route.pinned {
@@ -356,52 +371,53 @@ impl Core {
                 return None;
             }
         }
-        let members: Vec<pool::Member> = accounts.iter().map(pool::Member::of).collect();
-        self.pool.peek(&route.ctx(&members, pool::now_ms())).await
+        let members: Vec<pool::Member> = accounts
+            .iter()
+            .filter(|account| !configured.kind.uses_api_key() || account.has_key)
+            .map(pool::Member::of)
+            .collect();
+        let model = configured.default_model();
+        self.pool
+            .peek(&route.ctx(&members, model, pool::now_ms()))
+            .await
     }
 
-    /// The kind `params.provider` names, the account `params.account` names
-    /// among its accounts, and the provider of the settings, if any.
-    async fn named_account(
-        &self,
-        params: &Value,
-    ) -> Result<(Kind, Option<String>, String, Store), ErrorInfo> {
+    /// What `params.provider` names, the account `params.account` names
+    /// among its accounts, and the credential store.
+    async fn named_account(&self, params: &Value) -> Result<(Target, String, Store), ErrorInfo> {
         let settings = self.settings().await?;
-        let (kind, provider) = resolve(&settings, string(params, "provider")?)?;
+        let target = resolve(&settings, string(params, "provider")?)?;
         let store = self.credentials_store()?;
-        let accounts = store.accounts(kind.auth().store_name());
-        let account = find(&accounts, kind, string(params, "account")?)?;
-        Ok((kind, provider, account, store))
+        let accounts = store.accounts(&target.store);
+        let account = find(&accounts, &target, string(params, "account")?)?;
+        Ok((target, account, store))
     }
 
     /// The view of one account after a change.
     async fn account_result(
         &self,
-        kind: Kind,
-        provider: Option<&str>,
+        target: &Target,
         account: &str,
         store: &Store,
     ) -> Result<Value, ErrorInfo> {
-        let accounts = store.accounts(kind.auth().store_name());
+        let accounts = store.accounts(&target.store);
         let settings = self.settings().await?;
-        let active = self
-            .current_account(&settings, kind, provider, &accounts)
-            .await;
+        let active = self.current_account(&settings, target, &accounts).await;
         let found = accounts
             .iter()
             .find(|candidate| candidate.id == account)
             .ok_or_else(|| ErrorInfo::new("internal", "the account was not kept"))?;
-        Ok(json!({ "account": account_view(found, kind, provider, active.as_deref()) }))
+        Ok(json!({ "account": account_view(found, target, active.as_deref()) }))
     }
 
     /// `accounts/rename {provider, account, alias}`; a `null` or empty
     /// alias removes it.
     pub async fn rename_account(&self, params: &Value) -> Result<Value, ErrorInfo> {
-        let (kind, provider, account, mut store) = self.named_account(params).await?;
+        let (target, account, mut store) = self.named_account(params).await?;
         let alias = match params.get("alias") {
             Some(Value::String(alias)) if !alias.trim().is_empty() => {
                 let alias = alias.trim().to_string();
-                check_alias(&store.accounts(kind.auth().store_name()), &account, &alias)?;
+                check_alias(&store.accounts(&target.store), &account, &alias)?;
                 Some(alias)
             }
             Some(Value::String(_)) | Some(Value::Null) => None,
@@ -413,12 +429,9 @@ impl Core {
             }
         };
         store
-            .edit_info(kind.auth().store_name(), &account, |info| {
-                info.alias = alias
-            })
+            .edit_info(&target.store, &account, |info| info.alias = alias)
             .map_err(store_error)?;
-        self.account_result(kind, provider.as_deref(), &account, &store)
-            .await
+        self.account_result(&target, &account, &store).await
     }
 
     /// `accounts/pause {provider, account, paused}`.
@@ -427,35 +440,77 @@ impl Core {
             .get("paused")
             .and_then(Value::as_bool)
             .ok_or_else(|| ErrorInfo::new("invalid_params", "requires a \"paused\" boolean"))?;
-        let (kind, provider, account, mut store) = self.named_account(params).await?;
+        let (target, account, mut store) = self.named_account(params).await?;
         store
-            .edit_info(kind.auth().store_name(), &account, |info| {
-                info.paused = paused
-            })
+            .edit_info(&target.store, &account, |info| info.paused = paused)
             .map_err(store_error)?;
-        self.account_result(kind, provider.as_deref(), &account, &store)
-            .await
+        self.account_result(&target, &account, &store).await
     }
 
-    /// `accounts/remove {provider, account}`: the account and its secret,
-    /// and any provider's choice of it.
+    /// `accounts/remove {provider, account}`: the account (or key) and its
+    /// secret, and any provider's choice of it.
     pub async fn remove_account(&self, params: &Value) -> Result<Value, ErrorInfo> {
-        let (kind, _, account, mut store) = self.named_account(params).await?;
+        let (target, account, mut store) = self.named_account(params).await?;
         store
-            .remove_account(kind.auth().store_name(), &account)
+            .remove_account(&target.store, &account)
             .map_err(store_error)?;
-        self.pool.forget(kind.auth().store_name(), &account).await;
+        self.pool.forget(&target.store, &account).await;
         if self.store.is_some() {
-            settings::forget_account(&self.writable_settings().await?, kind, &account)
+            settings::forget_account(&self.writable_settings().await?, &target.store, &account)
                 .await
                 .map_err(|error| ErrorInfo::new("settings_invalid", error))?;
         }
-        Ok(json!({ "removed": account, "kind": kind.name() }))
+        Ok(json!({ "removed": account, "kind": target.kind.name() }))
     }
 
-    /// `accounts/priority {provider, account, priority?, auto_switch_threshold?}`:
-    /// the account's pool tier (-100 to 100) and its own usage threshold
-    /// (0 to 100); `null` returns either to the default.
+    /// `accounts/add_key {provider, key, alias?}`: stores another API key of
+    /// the static-key provider `provider` as an account of its pool, or
+    /// replaces the key of the account `alias` names. Without `alias` it is
+    /// the provider's default key, as `inocode-server key set` stores it.
+    pub async fn add_key(&self, params: &Value) -> Result<Value, ErrorInfo> {
+        let settings = self.settings().await?;
+        let target = resolve(&settings, string(params, "provider")?)?;
+        if !target.kind.uses_api_key() || target.provider.is_none() {
+            return Err(ErrorInfo::new(
+                "invalid_params",
+                format!(
+                    "{} signs in instead of using an API key; use accounts/login/start",
+                    target.kind.name()
+                ),
+            ));
+        }
+        let key = string(params, "key")?.trim().to_string();
+        let alias = match params.get("alias") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(alias)) if !alias.trim().is_empty() => Some(alias.trim()),
+            Some(_) => {
+                return Err(ErrorInfo::new(
+                    "invalid_params",
+                    "\"alias\" must be a non-empty string or null",
+                ))
+            }
+        };
+        let mut store = self.credentials_store()?;
+        let accounts = store.accounts(&target.store);
+        if let Some(alias) = alias {
+            if find(&accounts, &target, alias).is_err() {
+                check_alias(&accounts, "", alias)?;
+            }
+        }
+        let stored = store
+            .set_key(&target.store, alias, &key)
+            .map_err(store_error)?;
+        let mut view = self
+            .account_result(&target, &stored.account, &store)
+            .await?;
+        view["added"] = json!(stored.added);
+        Ok(view)
+    }
+
+    /// `accounts/priority {provider, account, priority?, auto_switch_threshold?,
+    /// credits?}`: the account's pool tier (-100 to 100), its own usage
+    /// threshold (0 to 100), and whether it may serve from ChatGPT credits
+    /// once a window is full; `null` returns any to the default.
     pub async fn set_account_priority(&self, params: &Value) -> Result<Value, ErrorInfo> {
         let priority = bounded(
             params,
@@ -463,48 +518,58 @@ impl Core {
             i64::from(pool::MIN_PRIORITY)..=i64::from(pool::MAX_PRIORITY),
         )?;
         let threshold = bounded(params, "auto_switch_threshold", 0..=100)?;
-        if priority.is_none() && threshold.is_none() {
+        let credits = match params.get("credits") {
+            None => None,
+            Some(Value::Null) => Some(false),
+            Some(Value::Bool(credits)) => Some(*credits),
+            Some(_) => {
+                return Err(ErrorInfo::new(
+                    "invalid_params",
+                    "\"credits\" must be a boolean or null",
+                ))
+            }
+        };
+        if priority.is_none() && threshold.is_none() && credits.is_none() {
             return Err(ErrorInfo::new(
                 "invalid_params",
-                "requires \"priority\" or \"auto_switch_threshold\"",
+                "requires \"priority\", \"auto_switch_threshold\" or \"credits\"",
             ));
         }
-        let (kind, provider, account, mut store) = self.named_account(params).await?;
+        let (target, account, mut store) = self.named_account(params).await?;
         store
-            .edit_info(kind.auth().store_name(), &account, |info| {
+            .edit_info(&target.store, &account, |info| {
                 if let Some(priority) = priority {
                     info.priority = priority.map(|p| p as i32).filter(|p| *p != 0);
                 }
                 if let Some(threshold) = threshold {
                     info.auto_switch_threshold = threshold.map(|t| t as u32);
                 }
+                if let Some(credits) = credits {
+                    info.credits = credits;
+                }
             })
             .map_err(store_error)?;
-        self.account_result(kind, provider.as_deref(), &account, &store)
-            .await
+        self.account_result(&target, &account, &store).await
     }
 
     /// `accounts/clear_cooldown {provider, account}`: the pool may use the
     /// account again at once after a quota refusal.
     pub async fn clear_account_cooldown(&self, params: &Value) -> Result<Value, ErrorInfo> {
-        let (kind, _, account, _) = self.named_account(params).await?;
-        let cleared = self
-            .pool
-            .clear_cooldown(kind.auth().store_name(), &account)
-            .await;
+        let (target, account, _) = self.named_account(params).await?;
+        let cleared = self.pool.clear_cooldown(&target.store, &account).await;
         Ok(json!({ "account": account, "cleared": cleared }))
     }
 
-    /// The sign-in provider of the settings `params.provider` names.
+    /// The provider of the settings `params.provider` names.
     async fn pool_provider(
         &self,
         params: &Value,
     ) -> Result<(settings::Settings, String), ErrorInfo> {
         let settings = self.settings().await?;
         let name = string(params, "provider")?;
-        match resolve(&settings, name)? {
-            (_, Some(id)) => Ok((settings, id)),
-            (_, None) => Err(ErrorInfo::new(
+        match resolve(&settings, name)?.provider {
+            Some(id) => Ok((settings, id)),
+            None => Err(ErrorInfo::new(
                 "invalid_params",
                 format!(
                     "{name} is not a provider of the settings; the pool belongs to a provider \
@@ -521,16 +586,19 @@ impl Core {
         pool_view(&settings, &id)
     }
 
-    /// `pool/set {provider, strategy?, sticky_limit?, auto_switch_threshold?,
-    /// failover_threshold?, cache_affinity?}`; `null` returns a field to its
-    /// default.
+    /// `pool/set {provider, <pool field>?...}`; `null` returns a field to
+    /// its default.
     pub async fn pool_set(&self, params: &Value) -> Result<Value, ErrorInfo> {
-        const FIELDS: [&str; 5] = [
+        const FIELDS: [&str; 9] = [
             "strategy",
             "sticky_limit",
             "auto_switch_threshold",
             "failover_threshold",
             "cache_affinity",
+            "excluded_plans",
+            "start_idle_windows",
+            "priority_failback",
+            "host_circuit_threshold",
         ];
         let (settings, id) = self.pool_provider(params).await?;
         let fields = params.as_object().into_iter().flatten();
@@ -594,9 +662,11 @@ impl Core {
         Ok(json!({ "cleared": cleared }))
     }
 
-    /// `pool/status {provider?}`: per sign-in provider of the settings, the
-    /// pool's settings and per account its usage score, cooldown, why it is
-    /// not used, the threads bound to it and its last error.
+    /// `pool/status {provider?}`: per provider of the settings, the pool's
+    /// settings, its host's reachability, and per account (or key) its
+    /// usage score, cooldowns, why it is not used, the threads bound to it
+    /// and its last error, seen from a request of the provider's default
+    /// model.
     pub async fn pool_status(&self, params: &Value) -> Result<Value, ErrorInfo> {
         let settings = self.settings().await?;
         let ids: Vec<String> = match params.get("provider") {
@@ -604,7 +674,6 @@ impl Core {
                 .providers
                 .iter()
                 .flatten()
-                .filter(|(_, provider)| !provider.kind.uses_api_key())
                 .map(|(id, _)| id.clone())
                 .collect(),
             Some(_) => vec![self.pool_provider(params).await?.1],
@@ -616,10 +685,14 @@ impl Core {
                 continue;
             };
             let route = self.route(&id, configured);
-            let accounts = store.accounts(route.kind);
+            let accounts: Vec<Account> = store
+                .accounts(&route.kind)
+                .into_iter()
+                .filter(|account| !configured.kind.uses_api_key() || account.has_key)
+                .collect();
             let members: Vec<pool::Member> = accounts.iter().map(pool::Member::of).collect();
-            let ctx = route.ctx(&members, pool::now_ms());
-            providers.push(self.pool.status(&ctx, &accounts).await);
+            let ctx = route.ctx(&members, configured.default_model(), pool::now_ms());
+            providers.push(self.pool.status(&ctx, &accounts, &route.host).await);
         }
         Ok(json!({ "providers": providers }))
     }
@@ -629,8 +702,8 @@ impl Core {
     /// `account: null` leaves the choice to the pool.
     pub async fn use_account(&self, params: &Value) -> Result<Value, ErrorInfo> {
         let settings = self.settings().await?;
-        let (kind, provider) = resolve(&settings, string(params, "provider")?)?;
-        let provider = provider.ok_or_else(|| {
+        let target = resolve(&settings, string(params, "provider")?)?;
+        let provider = target.provider.clone().ok_or_else(|| {
             ErrorInfo::new(
                 "invalid_params",
                 "accounts/use needs the id of a provider of the settings; providers/list shows them",
@@ -640,8 +713,8 @@ impl Core {
             Some(Value::Null) => None,
             _ => {
                 let store = self.credentials_store()?;
-                let accounts = store.accounts(kind.auth().store_name());
-                Some(find(&accounts, kind, string(params, "account")?)?)
+                let accounts = store.accounts(&target.store);
+                Some(find(&accounts, &target, string(params, "account")?)?)
             }
         };
         settings::update_provider(
@@ -653,7 +726,6 @@ impl Core {
         .map_err(|error| ErrorInfo::new("invalid_params", error))?;
         Ok(json!({ "provider": provider, "active_account": account }))
     }
-
     /// `accounts/login/start {provider, mode?}`: starts a sign-in and
     /// returns what the person must do. `mode` is `callback` (the browser
     /// returns to a local port; the default for Claude, ChatGPT and DeepAI),
@@ -662,7 +734,17 @@ impl Core {
     /// the person enters a code at Meta's page).
     pub async fn login_start(&self, params: &Value) -> Result<Value, ErrorInfo> {
         let settings = self.settings().await?;
-        let (kind, provider) = resolve(&settings, string(params, "provider")?)?;
+        let Target { kind, provider, .. } = resolve(&settings, string(params, "provider")?)?;
+        if kind.uses_api_key() {
+            return Err(ErrorInfo::new(
+                "invalid_params",
+                format!(
+                    "the provider {} uses API keys; store one with accounts/add_key \
+                     or `inocode-server key set`",
+                    provider.as_deref().unwrap_or(kind.name())
+                ),
+            ));
+        }
         let mode = match params.get("mode") {
             None | Some(Value::Null) => None,
             Some(Value::String(mode)) => Some(mode.as_str()),
@@ -899,22 +981,26 @@ mod tests {
             },
             email: None,
             account_id: None,
+            plan: None,
+            has_key: false,
+        }
+    }
+
+    fn claude() -> Target {
+        Target {
+            kind: Kind::ClaudeOauth,
+            provider: None,
+            store: "claude-oauth".into(),
         }
     }
 
     #[test]
     fn an_account_is_found_by_id_then_by_alias() {
         let accounts = [account("default", Some("work")), account("ab12cd34", None)];
+        assert_eq!(find(&accounts, &claude(), "ab12cd34").unwrap(), "ab12cd34");
+        assert_eq!(find(&accounts, &claude(), "Work").unwrap(), "default");
         assert_eq!(
-            find(&accounts, Kind::ClaudeOauth, "ab12cd34").unwrap(),
-            "ab12cd34"
-        );
-        assert_eq!(
-            find(&accounts, Kind::ClaudeOauth, "Work").unwrap(),
-            "default"
-        );
-        assert_eq!(
-            find(&accounts, Kind::ClaudeOauth, "home").unwrap_err().code,
+            find(&accounts, &claude(), "home").unwrap_err().code,
             "account_unknown"
         );
     }
@@ -941,18 +1027,24 @@ mod tests {
         .unwrap();
         assert_eq!(
             resolve(&settings, "work").unwrap(),
-            (Kind::ClaudeOauth, Some("work".into()))
+            Target {
+                kind: Kind::ClaudeOauth,
+                provider: Some("work".into()),
+                store: "claude-oauth".into(),
+            }
         );
+        assert_eq!(resolve(&settings, "claude").unwrap(), claude());
+        assert_eq!(resolve(&settings, "deepai").unwrap().kind, Kind::DeepAi);
         assert_eq!(
-            resolve(&settings, "claude").unwrap(),
-            (Kind::ClaudeOauth, None)
+            resolve(&settings, "logfare").unwrap(),
+            Target {
+                kind: Kind::OpenAi,
+                provider: Some("logfare".into()),
+                store: "api-key/logfare".into(),
+            },
+            "a static-key provider's accounts are its keys"
         );
-        assert_eq!(resolve(&settings, "deepai").unwrap(), (Kind::DeepAi, None));
-        assert!(
-            resolve(&settings, "logfare").is_err(),
-            "an API key provider"
-        );
-        assert!(resolve(&settings, "openai").is_err());
+        assert!(resolve(&settings, "openai").is_err(), "no provider of it");
         assert!(resolve(&settings, "nothing").is_err());
     }
 }

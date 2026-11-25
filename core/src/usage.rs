@@ -20,6 +20,39 @@ pub struct Usage {
     /// DeepAI's daily Theos allowance.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub theos: Option<TheosAllowance>,
+    /// The ChatGPT credits, for the account pool only.
+    #[serde(skip)]
+    pub credits: Option<Credits>,
+}
+
+/// What a ChatGPT usage read says of the account's credits (`credits`:
+/// `has_credits`, `unlimited`, `overage_limit_reached`, `balance`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Credits {
+    pub has_credits: Option<bool>,
+    pub unlimited: Option<bool>,
+    pub overage_limit_reached: Option<bool>,
+    pub balance: Option<f64>,
+}
+
+impl Credits {
+    /// The `credits` object of a usage answer; `None` when it says nothing.
+    fn of(value: &Value) -> Option<Self> {
+        let flag = |name: &str| value.get(name).and_then(Value::as_bool);
+        let balance = match value.get("balance") {
+            Some(Value::String(text)) => text.trim().parse::<f64>().ok(),
+            Some(Value::Number(number)) => number.as_f64(),
+            _ => None,
+        }
+        .filter(|balance| balance.is_finite() && *balance >= 0.0);
+        let credits = Self {
+            has_credits: flag("has_credits"),
+            unlimited: flag("unlimited"),
+            overage_limit_reached: flag("overage_limit_reached"),
+            balance,
+        };
+        (credits != Self::default()).then_some(credits)
+    }
 }
 
 /// One rate-limit window.
@@ -86,6 +119,7 @@ pub(crate) fn from_wham(value: &Value) -> Result<Usage, ErrorInfo> {
             .map(str::to_string),
         windows,
         theos: None,
+        credits: value.get("credits").and_then(Credits::of),
     })
 }
 
@@ -146,6 +180,7 @@ pub(crate) fn from_anthropic(value: &Value) -> Result<Usage, ErrorInfo> {
         plan: None,
         windows,
         theos: None,
+        credits: None,
     })
 }
 
@@ -163,6 +198,7 @@ pub(crate) fn from_muse(value: &Value) -> Result<Usage, ErrorInfo> {
             plan,
             windows: Vec::new(),
             theos: None,
+            credits: None,
         });
     }
     let usage = value.get("subs_usage").filter(|usage| usage.is_object());
@@ -199,6 +235,7 @@ pub(crate) fn from_muse(value: &Value) -> Result<Usage, ErrorInfo> {
         plan,
         windows,
         theos: None,
+        credits: None,
     })
 }
 
@@ -232,7 +269,26 @@ mod tests {
         assert_eq!(usage.windows[0].resets_at.as_deref(), Some("1794894516"));
         assert_eq!(usage.windows[0].window_seconds, Some(18000));
         assert_eq!(usage.windows[1].used_percent, Some(100.0), "clamped");
+        assert_eq!(usage.credits, None);
         assert!(from_wham(&json!({"rate_limit": {}})).is_err());
+        let funded = from_wham(&json!({
+            "rate_limit": {"primary_window": {"used_percent": 100}},
+            "credits": {"has_credits": true, "unlimited": false, "balance": "12.5"}
+        }))
+        .expect("usage");
+        assert_eq!(
+            funded.credits,
+            Some(Credits {
+                has_credits: Some(true),
+                unlimited: Some(false),
+                overage_limit_reached: None,
+                balance: Some(12.5),
+            })
+        );
+        assert!(
+            !serde_json::to_string(&funded).unwrap().contains("credits"),
+            "for the pool only"
+        );
     }
 
     #[test]

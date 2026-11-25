@@ -20,6 +20,7 @@ use crate::store::{PoolBinding, PoolCooldown, SessionId, Store};
 
 pub const MAX_STICKY_LIMIT: u32 = 100;
 pub const MAX_FAILOVER_THRESHOLD: u32 = 20;
+pub const MAX_HOST_CIRCUIT_THRESHOLD: u32 = 20;
 pub const MIN_PRIORITY: i32 = -100;
 pub const MAX_PRIORITY: i32 = 100;
 
@@ -55,6 +56,38 @@ const MAX_BINDINGS: usize = 2048;
 const TOUCH_WRITE: u64 = MINUTE;
 
 const USAGE_REFRESH: u64 = 10 * MINUTE;
+/// How fresh usage must be for a bound thread to move back to a higher
+/// tier, and how often it is read while that may happen.
+const FAILBACK_REFRESH: u64 = 5 * MINUTE;
+
+/// A static key's cooldown is at most this, and a refused key (401) waits
+/// this long: an undated refusal of a key is a guess.
+const MAX_KEY_COOLDOWN: u64 = 10 * MINUTE;
+/// The cooldown of an account the provider refused for its subscription
+/// or billing (an Anthropic 403 that names it).
+const ACCOUNT_REFUSAL_COOLDOWN: u64 = 10 * MINUTE;
+/// An Anthropic 429 that names no window is retried on the same account
+/// after this.
+const SHORT_RETRY: u64 = 100;
+/// A rate pause up to this long is waited out on the same account.
+const MAX_INLINE_THROTTLE: u64 = SECOND;
+/// A model family's refusal keeps the account from that family at most
+/// this long without a newer answer.
+const FAMILY_REFUSAL_MAX_AGE: u64 = 30 * MINUTE;
+/// How long an account's refusal of a model keeps it last for that model.
+const MODEL_DENIAL: u64 = 6 * HOUR;
+
+const IDLE_WINDOW_SECONDS: u64 = 5 * 60 * 60;
+const IDLE_WINDOW_TOLERANCE: u64 = MINUTE;
+const IDLE_WINDOW_FRESHNESS: u64 = 5 * MINUTE;
+
+const MAX_SIBLINGS: usize = 8;
+
+const HOST_FAILURE_WINDOW: u64 = 10 * MINUTE;
+const HOST_CIRCUIT_COOLDOWN: u64 = 30 * SECOND;
+const MAX_HOSTS: usize = 128;
+/// ChatGPT credits read longer ago than this are not counted on.
+const CREDITS_FRESHNESS: u64 = 5 * MINUTE;
 
 /// The score of an account whose usage has not been seen: above every
 /// measured one, so it never looks emptier than a measured account, and
@@ -124,13 +157,18 @@ impl Strategy {
 }
 
 /// A provider's pool settings with the defaults filled in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rules {
     pub strategy: Strategy,
     pub sticky_limit: u32,
     pub auto_switch_threshold: u32,
     pub failover_threshold: u32,
     pub cache_affinity: bool,
+    /// Lowercase plan names the pool does not choose by itself.
+    pub excluded_plans: Vec<String>,
+    pub start_idle_windows: bool,
+    pub priority_failback: bool,
+    pub host_circuit_threshold: u32,
 }
 
 impl Default for Rules {
@@ -141,6 +179,10 @@ impl Default for Rules {
             auto_switch_threshold: DEFAULT_AUTO_SWITCH_THRESHOLD,
             failover_threshold: DEFAULT_FAILOVER_THRESHOLD,
             cache_affinity: true,
+            excluded_plans: Vec::new(),
+            start_idle_windows: false,
+            priority_failback: false,
+            host_circuit_threshold: 0,
         }
     }
 }
@@ -165,6 +207,21 @@ impl Rules {
                 .failover_threshold
                 .unwrap_or(defaults.failover_threshold),
             cache_affinity: config.cache_affinity.unwrap_or(defaults.cache_affinity),
+            excluded_plans: config
+                .excluded_plans
+                .iter()
+                .flatten()
+                .map(|plan| plan.trim().to_lowercase())
+                .collect(),
+            start_idle_windows: config
+                .start_idle_windows
+                .unwrap_or(defaults.start_idle_windows),
+            priority_failback: config
+                .priority_failback
+                .unwrap_or(defaults.priority_failback),
+            host_circuit_threshold: config
+                .host_circuit_threshold
+                .unwrap_or(defaults.host_circuit_threshold),
         }
     }
 
@@ -175,6 +232,10 @@ impl Rules {
             "auto_switch_threshold": self.auto_switch_threshold,
             "failover_threshold": self.failover_threshold,
             "cache_affinity": self.cache_affinity,
+            "excluded_plans": self.excluded_plans,
+            "start_idle_windows": self.start_idle_windows,
+            "priority_failback": self.priority_failback,
+            "host_circuit_threshold": self.host_circuit_threshold,
         })
     }
 }
@@ -189,12 +250,24 @@ pub(crate) struct Quota {
     pub weekly_reset_ms: Option<u64>,
     pub monthly: Option<f64>,
     pub monthly_reset_ms: Option<u64>,
+    /// The short window's stated length, when known.
+    pub short_seconds: Option<u64>,
+    /// Windows of one model family (Anthropic `7d_oi`: Fable), percent used.
+    pub families: std::collections::BTreeMap<String, f64>,
+    /// The plan the usage read names.
+    pub plan: Option<String>,
+    /// The ChatGPT credits and when they were read.
+    pub credits: Option<(crate::usage::Credits, u64)>,
     pub updated_ms: u64,
 }
 
 impl Quota {
     fn is_empty(&self) -> bool {
-        self.short.is_none() && self.weekly.is_none() && self.monthly.is_none()
+        self.short.is_none()
+            && self.weekly.is_none()
+            && self.monthly.is_none()
+            && self.families.is_empty()
+            && self.credits.is_none()
     }
 
     /// Takes the windows `newer` reports; the others keep what was known.
@@ -203,6 +276,16 @@ impl Quota {
             self.short = newer.short;
             self.short_reset_ms = newer.short_reset_ms;
             self.short_observed_ms = newer.short_observed_ms;
+            self.short_seconds = newer.short_seconds.or(self.short_seconds);
+        }
+        for (family, percent) in &newer.families {
+            self.families.insert(family.clone(), *percent);
+        }
+        if newer.plan.is_some() {
+            self.plan = newer.plan.clone();
+        }
+        if newer.credits.is_some() {
+            self.credits = newer.credits.clone();
         }
         if newer.weekly.is_some() {
             self.weekly = newer.weekly;
@@ -258,6 +341,54 @@ impl Quota {
             .min()
     }
 
+    /// [`Self::score`] for a request of the model family `family`: its own
+    /// window counts too (reference `anthropicModelPercents`).
+    fn score_for(&self, now: u64, family: Option<&str>) -> f64 {
+        let score = self.score(now);
+        match family.and_then(|family| self.families.get(family)) {
+            Some(percent) if score >= UNKNOWN_SCORE => {
+                if *percent >= EXHAUSTED {
+                    EXHAUSTED
+                } else {
+                    score
+                }
+            }
+            Some(percent) => score.max(*percent),
+            None => score,
+        }
+    }
+
+    /// A window that is full now: the short one while it runs, or a long
+    /// one whose reset is still ahead. A long window without a reset is not
+    /// trusted to say when it ends (reference `codexUsageLimitResetAt`).
+    fn limit_reached(&self, now: u64) -> bool {
+        self.short_spent(now)
+            || [
+                (self.weekly, self.weekly_reset_ms),
+                (self.monthly, self.monthly_reset_ms),
+            ]
+            .into_iter()
+            .any(|(percent, reset)| {
+                percent.is_some_and(|p| p >= EXHAUSTED) && reset.is_some_and(|r| r > now)
+            })
+    }
+
+    /// Fresh credits the provider spends once a window is full (reference
+    /// `hasSpendableCodexCredits`).
+    fn spendable_credits(&self, now: u64) -> bool {
+        let Some((credits, read)) = &self.credits else {
+            return false;
+        };
+        if now < *read || now - read > CREDITS_FRESHNESS {
+            return false;
+        }
+        if credits.overage_limit_reached == Some(true) || credits.has_credits == Some(false) {
+            return false;
+        }
+        credits.unlimited == Some(true)
+            || (credits.has_credits == Some(true) && credits.balance.is_some_and(|b| b > 0.0))
+    }
+
     fn view(&self) -> Value {
         json!({
             "short_percent": self.short,
@@ -266,6 +397,8 @@ impl Quota {
             "weekly_resets_at": self.weekly_reset_ms,
             "monthly_percent": self.monthly,
             "monthly_resets_at": self.monthly_reset_ms,
+            "families": self.families,
+            "plan": self.plan,
             "updated": self.updated_ms,
         })
     }
@@ -333,6 +466,7 @@ pub(crate) fn codex_headers(header: Header<'_>, now: u64) -> Option<Quota> {
             quota.short = primary;
             quota.short_reset_ms = primary.and(reset("primary"));
             quota.short_observed_ms = primary.map(|_| now);
+            quota.short_seconds = primary.map(|_| seconds);
             quota.weekly = secondary;
             quota.weekly_reset_ms = secondary.and(reset("secondary"));
         }
@@ -349,7 +483,33 @@ pub(crate) fn codex_headers(header: Header<'_>, now: u64) -> Option<Quota> {
         quota.monthly = tertiary;
         quota.monthly_reset_ms = reset("tertiary");
     }
+    let flag = |name: &str| {
+        header(&format!("x-codex-credits-{name}")).and_then(|value| value.trim().parse().ok())
+    };
+    let credits = crate::usage::Credits {
+        has_credits: flag("has-credits"),
+        unlimited: flag("unlimited"),
+        overage_limit_reached: None,
+        balance: header("x-codex-credits-balance")
+            .as_deref()
+            .and_then(number)
+            .filter(|balance| *balance >= 0.0),
+    };
+    if credits != crate::usage::Credits::default() {
+        quota.credits = Some((credits, now));
+    }
     (!quota.is_empty()).then_some(quota)
+}
+
+/// The Anthropic model family a model belongs to, for the families with a
+/// window of their own: `Fable` (reference `anthropicModelFamily`).
+pub(crate) fn anthropic_family(model: &str) -> Option<&'static str> {
+    let name = model
+        .rsplit('/')
+        .next()
+        .unwrap_or(model)
+        .to_ascii_lowercase();
+    (name == "claude-fable-5" || name.starts_with("claude-fable-5-")).then_some("Fable")
 }
 
 /// The Anthropic `anthropic-ratelimit-unified-{5h,7d}-*` headers:
@@ -369,7 +529,7 @@ pub(crate) fn anthropic_headers(header: Header<'_>, now: u64) -> Option<Quota> {
     };
     let short = utilization("5h");
     let weekly = utilization("7d");
-    let quota = Quota {
+    let mut quota = Quota {
         short,
         short_reset_ms: short.and(reset("5h")),
         short_observed_ms: short.map(|_| now),
@@ -378,7 +538,135 @@ pub(crate) fn anthropic_headers(header: Header<'_>, now: u64) -> Option<Quota> {
         updated_ms: now,
         ..Quota::default()
     };
+    // The Fable window: its observed overage reads 1.01, shown as 100
+    // (reference `parseAnthropicFamilyHeaders`).
+    let family = header("anthropic-ratelimit-unified-7d_oi-utilization")
+        .as_deref()
+        .and_then(number)
+        .filter(|fraction| (0.0..=1.01).contains(fraction))
+        .map(|fraction| ((fraction * 10_000.0).round() / 100.0).min(EXHAUSTED))
+        .or_else(|| family_rejected(header).then_some(EXHAUSTED));
+    if let Some(percent) = family {
+        quota.families.insert("Fable".into(), percent);
+    }
     (!quota.is_empty()).then_some(quota)
+}
+
+fn family_rejected(header: Header<'_>) -> bool {
+    header("anthropic-ratelimit-unified-7d_oi-status").is_some_and(|s| s.trim() == "rejected")
+}
+
+/// How an Anthropic 429 limits the account (reference `classifyAnthropic429`):
+/// a rejected 5-hour, weekly or unified window is the shared quota, a
+/// rejected `7d_oi` window the Fable family's, a `Retry-After` or an
+/// allowed unified status a short pause of the account, else unknown.
+pub(crate) fn anthropic_429(header: Header<'_>, now: u64) -> Refusal {
+    let rejected = |window: &str| {
+        header(&format!("anthropic-ratelimit-unified-{window}-status"))
+            .is_some_and(|status| status.trim() == "rejected")
+    };
+    let unified = header("anthropic-ratelimit-unified-status");
+    if rejected("5h") || rejected("7d") {
+        Refusal::Shared
+    } else if family_rejected(header) {
+        Refusal::Family
+    } else if unified.as_deref().map(str::trim) == Some("rejected") {
+        Refusal::Shared
+    } else if retry_after_ms(header("retry-after").as_deref(), now).is_some()
+        || unified.as_deref().map(str::trim) == Some("allowed")
+    {
+        Refusal::Rate
+    } else {
+        Refusal::Unknown
+    }
+}
+
+/// When the Fable window a refusal rejected resets, if it says.
+pub(crate) fn family_resets(header: Header<'_>) -> Vec<u64> {
+    header("anthropic-ratelimit-unified-7d_oi-reset")
+        .as_deref()
+        .and_then(reset_ms)
+        .into_iter()
+        .collect()
+}
+
+/// Whether an Anthropic 403 body refuses the account itself for its
+/// subscription, organization or credit balance, rather than the request
+/// (reference `isAccountRefusal`).
+pub(crate) fn anthropic_account_refusal(body: &str) -> bool {
+    let Ok(payload) = serde_json::from_str::<Value>(body) else {
+        return false;
+    };
+    let Some(error) = payload.get("error").filter(|error| error.is_object()) else {
+        return false;
+    };
+    let kind = error.get("type").and_then(Value::as_str).unwrap_or("");
+    let Some(message) = error.get("message").and_then(Value::as_str) else {
+        return false;
+    };
+    let code = error.get("code").filter(|code| !code.is_null());
+    if let Some(code) = code {
+        if !matches!(
+            code.as_str(),
+            Some(
+                "subscription_required"
+                    | "insufficient_quota"
+                    | "permission_denied"
+                    | "oauth_org_not_allowed"
+            )
+        ) {
+            return false;
+        }
+    }
+    if kind == "oauth_org_not_allowed"
+        || code.and_then(Value::as_str) == Some("oauth_org_not_allowed")
+    {
+        return true;
+    }
+    let message = message.trim().trim_end_matches(['.', '!']).to_lowercase();
+    let subscription = [
+        "your account does not have access to claude code",
+        "your subscription has expired",
+        "your claude subscription has expired",
+        "your subscription is expired",
+        "your claude subscription is expired",
+        "your subscription is inactive",
+        "your claude subscription is inactive",
+        "your account does not have an active subscription",
+        "your organization has disabled claude subscription access for claude code",
+        "this organization has disabled claude subscription access for claude code",
+        "your organization has disabled claude subscription access for claude code. use an \
+         anthropic api key instead, or ask your admin to enable access",
+        "this organization has disabled claude subscription access for claude code. use an \
+         anthropic api key instead, or ask your admin to enable access",
+    ];
+    let credit = [
+        "your credit balance is too low to access the anthropic api",
+        "your credit balance is too low to access the anthropic api. please go to plans & \
+         billing to upgrade or purchase credits",
+    ];
+    (kind == "permission_error" && subscription.contains(&message.as_str()))
+        || (matches!(kind, "billing_error" | "permission_error")
+            && credit.contains(&message.as_str()))
+}
+
+/// The model a ChatGPT 400 says the account may not use (reference
+/// `CODEX_ACCOUNT_MODEL_REFUSAL`): `detail`, or `error.message`, is exactly
+/// "The '<model>' model is not supported when using Codex with a ChatGPT
+/// account."
+pub(crate) fn codex_model_refusal(body: &str) -> Option<String> {
+    let payload: Value = serde_json::from_str(body.trim()).ok()?;
+    if payload.get("detail").is_some() && payload.get("error").is_some() {
+        return None;
+    }
+    let text = payload
+        .get("detail")
+        .and_then(Value::as_str)
+        .or_else(|| payload.get("error")?.get("message")?.as_str())?;
+    let model = text
+        .strip_prefix("The '")?
+        .strip_suffix("' model is not supported when using Codex with a ChatGPT account.")?;
+    (!model.is_empty() && model.len() <= 256 && !model.contains('\'')).then(|| model.to_string())
 }
 
 /// The usage endpoint's windows ([`crate::Usage`]): sorted into short,
@@ -416,6 +704,7 @@ pub(crate) fn usage_quota(usage: &crate::Usage, now: u64) -> Option<Quota> {
                 quota.short = Some(used);
                 quota.short_reset_ms = reset;
                 quota.short_observed_ms = Some(now);
+                quota.short_seconds = window.window_seconds;
             }
             1 if quota.weekly.is_none() => {
                 quota.weekly = Some(used);
@@ -428,7 +717,9 @@ pub(crate) fn usage_quota(usage: &crate::Usage, now: u64) -> Option<Quota> {
             _ => {}
         }
     }
-    (!quota.is_empty()).then_some(quota)
+    quota.plan = usage.plan.clone().filter(|plan| !plan.trim().is_empty());
+    quota.credits = usage.credits.clone().map(|credits| (credits, now));
+    (!quota.is_empty() || quota.plan.is_some()).then_some(quota)
 }
 
 /// The reset instants a quota refusal announces: every Codex window's, and
@@ -605,6 +896,9 @@ struct Health {
     quota_avoid_until: Option<u64>,
     last_probe_ms: Option<u64>,
     soft_avoid_until: Option<u64>,
+    /// An Anthropic rate pause: the account takes no new request until
+    /// then, and keeps its threads.
+    rate_pause_until: Option<u64>,
     /// It refused on quota and has not served since: a thread bound to it
     /// leaves, whatever its cooldown says.
     quota_refused: bool,
@@ -624,12 +918,51 @@ impl Health {
         self.soft_avoid_until.is_some_and(|until| until > now)
     }
 
+    fn rate_paused(&self, now: u64) -> bool {
+        self.rate_pause_until.is_some_and(|until| until > now)
+    }
+
     fn clear_cooldown(&mut self) {
         self.cooldown_until = None;
         self.cooldown_since = None;
         self.cooldown_source = None;
         self.quota_avoid_until = None;
         self.quota_refused = false;
+    }
+}
+
+/// What an error answer says beyond its status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Refusal {
+    /// Its status alone.
+    Plain,
+    /// Anthropic 429: the account's shared quota.
+    Shared,
+    /// Anthropic 429: the Fable family's quota only.
+    Family,
+    /// Anthropic 429: a short pause of the account, not its quota.
+    Rate,
+    /// Anthropic 429 that names no window.
+    Unknown,
+    /// Anthropic 403 refusing the account's subscription or billing.
+    Account,
+    /// ChatGPT 400: the account may not use the model.
+    ModelDenied,
+}
+
+/// What an error answer of the provider of the store name `kind` is.
+pub(crate) fn refusal(
+    kind: &str,
+    status: u16,
+    header: Header<'_>,
+    body: &str,
+    now: u64,
+) -> Refusal {
+    match (kind, status) {
+        ("claude-oauth", 429) => anthropic_429(header, now),
+        ("claude-oauth", 403) if anthropic_account_refusal(body) => Refusal::Account,
+        ("gpt-oauth", 400) if codex_model_refusal(body).is_some() => Refusal::ModelDenied,
+        _ => Refusal::Plain,
     }
 }
 
@@ -644,10 +977,27 @@ pub(crate) enum Outcome {
         /// A 403 whose body names a workspace or entitlement denial: the
         /// credential is fine, the account lacks access.
         denial: bool,
+        refusal: Refusal,
         message: String,
     },
     /// No answer: the connection failed, timed out, or the stream broke.
     Broken(String),
+    /// The host was never reached (its name did not resolve, or it refused
+    /// the connection): nothing about the account.
+    Unreachable { message: String, code: String },
+}
+
+/// Whether, and how, a refused request is sent again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Retry {
+    No,
+    /// Once, on the account the pool chooses next.
+    Other,
+    /// Once, on the same account after this many milliseconds.
+    Same(u64),
+    /// On the same account after this many milliseconds, then once on
+    /// another.
+    SameThenOther(u64),
 }
 
 impl Outcome {
@@ -658,14 +1008,51 @@ impl Outcome {
             retry_after: None,
             resets: Vec::new(),
             denial: false,
+            refusal: Refusal::Plain,
             message: String::new(),
         }
     }
 
-    /// A refusal on quota (HTTP 429 or 402).
-    pub(crate) fn is_quota(&self) -> bool {
-        classify(self) == Class::Quota
+    /// How a refusal on an account of the store name `kind` is retried:
+    /// quota and account refusals elsewhere; an Anthropic pause of up to a
+    /// second on the same account first; an unnamed Anthropic 429 once on
+    /// the same account (reference `rotateAnthropicAccountOnResponse`); a
+    /// refused static key elsewhere (reference `rotateKeyAfterFailure`).
+    pub(crate) fn retry(&self, kind: &str, now: u64) -> Retry {
+        let Self::Status {
+            status,
+            retry_after,
+            refusal,
+            ..
+        } = self
+        else {
+            return Retry::No;
+        };
+        match refusal {
+            Refusal::Shared | Refusal::Family | Refusal::Account | Refusal::ModelDenied => {
+                Retry::Other
+            }
+            Refusal::Rate => {
+                let wait = retry_after_ms(retry_after.as_deref(), now).unwrap_or(SHORT_RETRY);
+                if wait <= MAX_INLINE_THROTTLE {
+                    Retry::SameThenOther(wait)
+                } else {
+                    Retry::Other
+                }
+            }
+            Refusal::Unknown => Retry::Same(SHORT_RETRY),
+            Refusal::Plain => match status {
+                402 | 429 => Retry::Other,
+                401 if is_key(kind) => Retry::Other,
+                _ => Retry::No,
+            },
+        }
     }
+}
+
+/// Whether the store name `kind` holds static API keys.
+fn is_key(kind: &str) -> bool {
+    kind.starts_with("api-key/")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -677,21 +1064,48 @@ enum Class {
     Credential,
     Quota,
     Transient,
+    /// A model family's quota is spent; the account serves other models.
+    Family,
+    /// The account is paused for a moment; its quota is fine.
+    Rate,
+    /// The account may not use the model.
+    ModelDenied,
+    /// A static key was refused.
+    KeyRefused,
+    /// The host was never reached.
+    Unreachable,
 }
 
-fn classify(outcome: &Outcome) -> Class {
-    match outcome {
-        Outcome::Broken(_) => Class::Transient,
-        Outcome::Status { status, denial, .. } => match status {
-            200..=299 => Class::Success,
-            300..=399 => Class::Neutral,
-            403 if *denial => Class::Workspace,
-            401 | 403 => Class::Credential,
-            402 | 429 => Class::Quota,
-            400..=499 => Class::Caller,
-            500..=599 => Class::Transient,
-            _ => Class::Neutral,
-        },
+fn classify(kind: &str, outcome: &Outcome) -> Class {
+    let (status, denial, refusal) = match outcome {
+        Outcome::Broken(_) => return Class::Transient,
+        Outcome::Unreachable { .. } => return Class::Unreachable,
+        Outcome::Status {
+            status,
+            denial,
+            refusal,
+            ..
+        } => (*status, *denial, *refusal),
+    };
+    match refusal {
+        Refusal::Shared | Refusal::Account => return Class::Quota,
+        Refusal::Family => return Class::Family,
+        Refusal::Rate => return Class::Rate,
+        Refusal::Unknown => return Class::Neutral,
+        Refusal::ModelDenied => return Class::ModelDenied,
+        Refusal::Plain => {}
+    }
+    match status {
+        200..=299 => Class::Success,
+        300..=399 => Class::Neutral,
+        401 if is_key(kind) => Class::KeyRefused,
+        403 if is_key(kind) || kind == "claude-oauth" => Class::Caller,
+        403 if denial => Class::Workspace,
+        401 | 403 => Class::Credential,
+        402 | 429 => Class::Quota,
+        400..=499 => Class::Caller,
+        500..=599 => Class::Transient,
+        _ => Class::Neutral,
     }
 }
 
@@ -726,6 +1140,10 @@ pub(crate) struct Member {
     pub threshold: Option<u32>,
     pub paused: bool,
     pub needs_reauth: bool,
+    /// The plan its credential names, if any.
+    pub plan: Option<String>,
+    /// It may serve from credits once a window is full.
+    pub credits: bool,
 }
 
 impl Member {
@@ -740,10 +1158,12 @@ impl Member {
             threshold: account.info.auto_switch_threshold.map(|t| t.min(100)),
             paused: account.info.paused,
             needs_reauth: account.info.needs_reauth,
+            plan: account.plan.clone(),
+            credits: account.info.credits,
         }
     }
 
-    fn usable(&self) -> bool {
+    pub(crate) fn usable(&self) -> bool {
         !self.paused && !self.needs_reauth
     }
 }
@@ -757,12 +1177,43 @@ pub(crate) struct Ctx<'a> {
     /// The settings' `active_account`.
     pub pinned: Option<&'a str>,
     pub members: &'a [Member],
+    /// The model of the request.
+    pub model: &'a str,
     pub now: u64,
+}
+
+/// The quota group of a model whose refusals may spare the account's other
+/// models: ChatGPT's `gpt-reserve` (`reserve`) apart from the rest
+/// (`shared`), reference `NATIVE_MODEL_QUOTA_SCOPES`; Anthropic's Fable
+/// family, reference `anthropicModelFamily`. Other kinds have none.
+pub(crate) fn quota_scope(kind: &str, model: &str) -> Option<&'static str> {
+    match kind {
+        "gpt-oauth" if model.trim().eq_ignore_ascii_case("gpt-reserve") => Some("reserve"),
+        "gpt-oauth" if !model.trim().is_empty() => Some("shared"),
+        "claude-oauth" => anthropic_family(model),
+        _ => None,
+    }
 }
 
 impl Ctx<'_> {
     fn member(&self, id: &str) -> Option<&Member> {
         self.members.iter().find(|member| member.id == id)
+    }
+
+    fn scope(&self) -> Option<&'static str> {
+        quota_scope(self.kind, self.model)
+    }
+
+    /// A quota group apart from the account's shared quota: refusals in it
+    /// do not move the provider's placement.
+    fn independent_scope(&self) -> bool {
+        self.scope().is_some_and(|scope| scope != "shared")
+    }
+
+    fn family(&self) -> Option<&'static str> {
+        (self.kind == "claude-oauth")
+            .then(|| anthropic_family(self.model))
+            .flatten()
     }
 
     fn threshold(&self, id: &str) -> u32 {
@@ -808,6 +1259,7 @@ enum Write {
     UnbindAccount(String, String),
     Cooldown(PoolCooldown),
     Uncool(String, String),
+    UncoolScope(String, String, String),
     Clear(Option<String>, Option<SessionId>),
 }
 
@@ -815,6 +1267,31 @@ type Key = (String, String);
 
 fn key(kind: &str, account: &str) -> Key {
     (kind.to_string(), account.to_string())
+}
+
+/// A quota refusal of one quota group of an account ([`quota_scope`]).
+#[derive(Debug, Clone)]
+struct Scoped {
+    until: u64,
+    avoid_until: u64,
+    since: u64,
+    source: CooldownSource,
+    status: u16,
+    /// Refused and not served in the group since.
+    refused: bool,
+}
+
+/// What is known of one provider host's reachability (reference
+/// `upstream-host-health.ts`).
+#[derive(Debug, Clone, Default)]
+struct Host {
+    failures: u32,
+    last_failure_ms: u64,
+    last_code: Option<String>,
+    cooldown_until: Option<u64>,
+    /// When a request after the cooldown started; others wait for it,
+    /// at most another cooldown, since an unsent trial reports nothing.
+    trial: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -825,6 +1302,15 @@ struct Inner {
     bindings: HashMap<(i64, String), Binding>,
     polling: HashSet<Key>,
     polled: HashMap<Key, u64>,
+    scoped: HashMap<(Key, String), Scoped>,
+    /// Until when an account's refusal of a model keeps it last for it.
+    denials: HashMap<(Key, String), u64>,
+    /// Accounts a new conversation was sent to for their idle 5-hour
+    /// window, and until when that window is taken as started.
+    steered: HashMap<Key, u64>,
+    /// The thread each forked thread was made from.
+    parents: HashMap<i64, i64>,
+    hosts: HashMap<String, Host>,
 }
 
 /// Pick the highest priority tier that still has an account with headroom;
@@ -876,7 +1362,9 @@ impl Inner {
     fn score(&self, ctx: &Ctx, id: &str) -> f64 {
         self.quota
             .get(&key(ctx.kind, id))
-            .map_or(UNKNOWN_SCORE, |quota| quota.score(ctx.now))
+            .map_or(UNKNOWN_SCORE, |quota| {
+                quota.score_for(ctx.now, ctx.family())
+            })
     }
 
     /// Whether the account is under its threshold. Unknown usage and a
@@ -890,13 +1378,34 @@ impl Inner {
         score >= UNKNOWN_SCORE || score < f64::from(threshold)
     }
 
-    fn cooling(&self, ctx: &Ctx, id: &str) -> bool {
+    /// The account's refusal in the request's quota group, if one runs.
+    fn scoped(&self, ctx: &Ctx, id: &str) -> Option<&Scoped> {
+        let scope = ctx.scope()?;
+        self.scoped.get(&(key(ctx.kind, id), scope.to_string()))
+    }
+
+    fn account_cooling(&self, ctx: &Ctx, id: &str) -> bool {
         self.health(ctx, id).is_some_and(|h| h.cooling(ctx.now))
     }
 
-    fn quota_avoided(&self, ctx: &Ctx, id: &str) -> bool {
+    fn scope_cooling(&self, ctx: &Ctx, id: &str) -> bool {
+        self.scoped(ctx, id).is_some_and(|s| s.until > ctx.now)
+    }
+
+    fn cooling(&self, ctx: &Ctx, id: &str) -> bool {
+        self.account_cooling(ctx, id) || self.scope_cooling(ctx, id)
+    }
+
+    fn account_quota_avoided(&self, ctx: &Ctx, id: &str) -> bool {
         self.health(ctx, id)
             .is_some_and(|h| h.quota_avoided(ctx.now))
+    }
+
+    fn quota_avoided(&self, ctx: &Ctx, id: &str) -> bool {
+        self.account_quota_avoided(ctx, id)
+            || self
+                .scoped(ctx, id)
+                .is_some_and(|s| s.avoid_until > ctx.now)
     }
 
     fn soft_avoided(&self, ctx: &Ctx, id: &str) -> bool {
@@ -904,12 +1413,75 @@ impl Inner {
             .is_some_and(|h| h.soft_avoided(ctx.now))
     }
 
+    fn rate_paused(&self, ctx: &Ctx, id: &str) -> bool {
+        self.health(ctx, id).is_some_and(|h| h.rate_paused(ctx.now))
+    }
+
     fn degraded(&self, ctx: &Ctx, id: &str) -> bool {
         self.health(ctx, id).is_some_and(|h| h.window.degraded)
     }
 
-    fn quota_refused(&self, ctx: &Ctx, id: &str) -> bool {
+    fn account_quota_refused(&self, ctx: &Ctx, id: &str) -> bool {
         self.health(ctx, id).is_some_and(|h| h.quota_refused)
+    }
+
+    fn quota_refused(&self, ctx: &Ctx, id: &str) -> bool {
+        self.account_quota_refused(ctx, id) || self.scoped(ctx, id).is_some_and(|s| s.refused)
+    }
+
+    /// The account's own family refusal keeps it from this request only:
+    /// another model of the thread may still use it.
+    fn family_blocked(&self, ctx: &Ctx, id: &str) -> bool {
+        ctx.family().is_some() && self.scope_cooling(ctx, id)
+    }
+
+    fn plan(&self, ctx: &Ctx, id: &str) -> Option<String> {
+        self.quota
+            .get(&key(ctx.kind, id))
+            .and_then(|quota| quota.plan.clone())
+            .or_else(|| ctx.member(id).and_then(|member| member.plan.clone()))
+    }
+
+    /// Its plan is one the pool does not choose by itself; the account the
+    /// person chose is still used (reference `isCodexAccountPlanExcluded`).
+    fn plan_excluded(&self, ctx: &Ctx, id: &str) -> bool {
+        !ctx.rules.excluded_plans.is_empty()
+            && ctx.pinned != Some(id)
+            && self.plan(ctx, id).is_some_and(|plan| {
+                ctx.rules
+                    .excluded_plans
+                    .contains(&plan.trim().to_lowercase())
+            })
+    }
+
+    /// A ChatGPT account with a full window is kept from spending credits
+    /// unless it may and holds them (reference `isCodexAccountHeldForCredits`).
+    fn credits_held(&self, ctx: &Ctx, id: &str) -> bool {
+        if ctx.kind != "gpt-oauth" {
+            return false;
+        }
+        let Some(quota) = self.quota.get(&key(ctx.kind, id)) else {
+            return false;
+        };
+        let allowed = ctx.member(id).is_some_and(|member| member.credits);
+        quota.limit_reached(ctx.now) && !(allowed && quota.spendable_credits(ctx.now))
+    }
+
+    /// The account refused the request's model lately, or its family's
+    /// window is full: other accounts go first for this model.
+    fn model_unfit(&self, ctx: &Ctx, id: &str) -> bool {
+        let slot = key(ctx.kind, id);
+        let denied = self
+            .denials
+            .get(&(slot.clone(), ctx.model.to_string()))
+            .is_some_and(|until| *until > ctx.now);
+        let spent = ctx.family().is_some_and(|family| {
+            self.quota
+                .get(&slot)
+                .and_then(|quota| quota.families.get(family))
+                .is_some_and(|percent| *percent >= EXHAUSTED)
+        });
+        denied || spent
     }
 
     fn should_failover(&self, ctx: &Ctx, id: &str) -> bool {
@@ -934,6 +1506,9 @@ impl Inner {
             && !self.cooling(ctx, id)
             && !self.quota_avoided(ctx, id)
             && !self.soft_avoided(ctx, id)
+            && !self.rate_paused(ctx, id)
+            && !self.plan_excluded(ctx, id)
+            && !self.credits_held(ctx, id)
     }
 
     /// Why the account is not selectable, if it is not.
@@ -943,10 +1518,16 @@ impl Inner {
             Some("paused")
         } else if member.needs_reauth {
             Some("needs_reauth")
+        } else if self.plan_excluded(ctx, id) {
+            Some("plan_excluded")
+        } else if self.credits_held(ctx, id) {
+            Some("usage_limit")
         } else if self.cooling(ctx, id) {
             Some("cooldown")
         } else if self.quota_avoided(ctx, id) {
             Some("quota_avoided")
+        } else if self.rate_paused(ctx, id) {
+            Some("rate_paused")
         } else if self.soft_avoided(ctx, id) {
             Some("transient")
         } else if self.degraded(ctx, id) {
@@ -956,7 +1537,8 @@ impl Inner {
         }
     }
 
-    /// The accounts new placements and failovers may use, narrowed to the
+    /// The accounts new placements and failovers may use, those fit for the
+    /// request's model first ([`Self::model_unfit`]), narrowed to the
     /// priority tier ([`priority_tier`]).
     fn eligible(&self, ctx: &Ctx, exclude: Option<&str>, skip_failing: bool) -> Vec<String> {
         let ids: Vec<String> = ctx
@@ -969,11 +1551,20 @@ impl Inner {
                     && !(skip_failing && self.should_failover(ctx, id))
                     && !self.cooling(ctx, id)
                     && !self.soft_avoided(ctx, id)
+                    && !self.rate_paused(ctx, id)
                     && !(self.degraded(ctx, id) && ctx.pinned != Some(id))
                     && !self.quota_avoided(ctx, id)
+                    && !self.plan_excluded(ctx, id)
+                    && !self.credits_held(ctx, id)
             })
             .map(|member| member.id.clone())
             .collect();
+        let fit: Vec<String> = ids
+            .iter()
+            .filter(|id| !self.model_unfit(ctx, id))
+            .cloned()
+            .collect();
+        let ids = if fit.is_empty() { ids } else { fit };
         priority_tier(
             ids,
             |id| ctx.priority(id),
@@ -981,7 +1572,6 @@ impl Inner {
             ctx.pinned,
         )
     }
-
     /// The least used of `ids`; the first wins a tie.
     fn lowest(&self, ctx: &Ctx, ids: &[String]) -> Option<String> {
         let mut best: Option<(&String, f64)> = None;
@@ -1053,8 +1643,13 @@ impl Inner {
             .filter(|id| ctx.member(id).is_some())
     }
 
+    /// Placement in a quota group of its own (`gpt-reserve`) leaves the
+    /// provider's current account alone (reference
+    /// `isIndependentCodexQuotaScope`).
     fn set_cursor(&mut self, ctx: &Ctx, id: &str) {
-        self.state(ctx).cursor = Some(id.to_string());
+        if !ctx.independent_scope() {
+            self.state(ctx).cursor = Some(id.to_string());
+        }
     }
 
     /// Smooth weighted round robin with equal weights; with a sticky limit
@@ -1291,22 +1886,67 @@ impl Inner {
         }
     }
 
-    /// Blocked only by transient trouble: worth holding the thread's
-    /// binding while one request goes elsewhere.
+    /// Blocked only by trouble that passes: transient failures, a rate
+    /// pause, or the refusal of the request's model family. Worth holding
+    /// the thread's binding while one request goes elsewhere.
     fn transient_only(&self, ctx: &Ctx, id: &str) -> bool {
         ctx.member(id).is_some_and(Member::usable)
-            && !self.cooling(ctx, id)
-            && !self.quota_avoided(ctx, id)
-            && !self.quota_refused(ctx, id)
+            && !self.account_cooling(ctx, id)
+            && !self.account_quota_avoided(ctx, id)
+            && !self.account_quota_refused(ctx, id)
+            && !self.plan_excluded(ctx, id)
+            && !self.credits_held(ctx, id)
+            && (!self.cooling(ctx, id) || self.family_blocked(ctx, id))
             && (self.soft_avoided(ctx, id)
                 || self.should_failover(ctx, id)
-                || self.degraded(ctx, id))
+                || self.degraded(ctx, id)
+                || self.rate_paused(ctx, id)
+                || self.family_blocked(ctx, id))
+    }
+
+    /// A higher tier's account for a thread bound to `account`, under the
+    /// quota strategy with `priority_failback` on and a threshold on the
+    /// account: one with fresh usage under 100% and under its threshold,
+    /// that has not refused and is not failing (reference
+    /// `pickAffinityPriorityFailback`).
+    fn priority_failback(&self, ctx: &Ctx, account: &str) -> Option<String> {
+        if !ctx.rules.priority_failback
+            || ctx.rules.strategy != Strategy::Quota
+            || ctx.threshold(account) == 0
+            || self.preemption(ctx, account).is_none()
+        {
+            return None;
+        }
+        let fresh = |id: &str| {
+            self.quota.get(&key(ctx.kind, id)).is_some_and(|quota| {
+                ctx.now.saturating_sub(quota.updated_ms) < FAILBACK_REFRESH
+                    && quota
+                        .short_observed_ms
+                        .is_none_or(|seen| ctx.now.saturating_sub(seen) < FAILBACK_REFRESH)
+            })
+        };
+        let candidates: Vec<String> = self
+            .eligible(ctx, None, false)
+            .into_iter()
+            .filter(|id| {
+                let threshold = ctx.threshold(id);
+                let usage = self.score(ctx, id);
+                self.headroom(ctx, id)
+                    && !self.quota_refused(ctx, id)
+                    && !self.should_failover(ctx, id)
+                    && fresh(id)
+                    && usage < EXHAUSTED
+                    && (threshold == 0 || usage < f64::from(threshold))
+            })
+            .collect();
+        self.lowest(ctx, &candidates)
     }
 
     /// A strictly less used account with headroom for a bound thread under
     /// the quota strategy, once its own account may be left: spent (or
     /// over its threshold when `cache_affinity` is off). Checked at most
-    /// once a minute while it may not be left.
+    /// once a minute while it may not be left. A higher tier that has room
+    /// again is checked on every request ([`Self::priority_failback`]).
     fn reevaluate(&mut self, ctx: &Ctx, slot: &(i64, String)) -> Option<String> {
         if ctx.rules.strategy != Strategy::Quota {
             return None;
@@ -1315,6 +1955,12 @@ impl Inner {
             let binding = self.bindings.get(slot)?;
             (binding.account.clone(), binding.reeval_ms)
         };
+        if let Some(higher) = self.priority_failback(ctx, &account) {
+            if let Some(binding) = self.bindings.get_mut(slot) {
+                binding.reeval_ms = ctx.now;
+            }
+            return Some(higher);
+        }
         let threshold = ctx.threshold(&account);
         let usage = if threshold > 0 {
             self.score(ctx, &account)
@@ -1414,7 +2060,9 @@ impl Inner {
     }
 
     /// The account of the request of `thread` (none outside a thread);
-    /// `None` when no account is usable at all.
+    /// `None` when no account is usable at all. A thread that never had an
+    /// account of the provider starts where its parent or a sibling is
+    /// served ([`Self::lineage_pick`]).
     fn resolve(
         &mut self,
         ctx: &Ctx,
@@ -1423,8 +2071,17 @@ impl Inner {
     ) -> Option<String> {
         self.sync_pin(ctx, writes);
         if let Some(thread) = thread {
+            let had = self
+                .bindings
+                .contains_key(&(thread, ctx.provider.to_string()));
             if let Some(account) = self.resolve_bound(ctx, thread, writes) {
                 return Some(account);
+            }
+            if !had {
+                if let Some(account) = self.lineage_pick(ctx, thread) {
+                    self.bind(ctx, thread, &account, writes);
+                    return Some(account);
+                }
             }
         }
         let placed = self.place(ctx, true)?;
@@ -1434,6 +2091,63 @@ impl Inner {
             }
         }
         Some(placed)
+    }
+
+    /// The account serving the thread `other` of the provider: its detour
+    /// while a transient hold lasts, else its own, when that can take a
+    /// request now (reference `lineageServingAccountId`).
+    fn serving(&self, ctx: &Ctx, other: i64) -> Option<String> {
+        let binding = self.bindings.get(&(other, ctx.provider.to_string()))?;
+        if binding.kind != ctx.kind || ctx.now.saturating_sub(binding.used_ms) >= AFFINITY_IDLE {
+            return None;
+        }
+        let held = binding
+            .hold_since
+            .is_some_and(|since| ctx.now.saturating_sub(since) < TRANSIENT_HOLD);
+        let serving = match (&binding.detour, held) {
+            (Some(detour), true) => detour.clone(),
+            _ => binding.account.clone(),
+        };
+        (self.selectable(ctx, &serving)
+            && !self.quota_refused(ctx, &serving)
+            && !self.should_failover(ctx, &serving))
+        .then_some(serving)
+    }
+
+    /// Where a forked thread starts: its parent's serving account, else one
+    /// of up to [`MAX_SIBLINGS`] siblings' (newest first), for the prompt
+    /// cache they share (reference `pickLineageServingAccount`).
+    fn lineage_pick(&self, ctx: &Ctx, thread: i64) -> Option<String> {
+        let parent = *self.parents.get(&thread)?;
+        if let Some(account) = self.serving(ctx, parent) {
+            return Some(account);
+        }
+        let mut siblings: Vec<i64> = self
+            .parents
+            .iter()
+            .filter(|(child, of)| **of == parent && **child != thread)
+            .map(|(child, _)| *child)
+            .collect();
+        siblings.sort_unstable_by(|a, b| b.cmp(a));
+        siblings
+            .into_iter()
+            .take(MAX_SIBLINGS)
+            .find_map(|sibling| self.serving(ctx, sibling))
+    }
+
+    /// Another account fit for the request's model when `account` is not
+    /// ([`Self::model_unfit`]); the binding stays, since the thread's other
+    /// models may still use `account`.
+    fn fit_alternative(&self, ctx: &Ctx, account: &str) -> Option<String> {
+        if !self.model_unfit(ctx, account) {
+            return None;
+        }
+        let fit: Vec<String> = self
+            .eligible(ctx, Some(account), true)
+            .into_iter()
+            .filter(|id| !self.model_unfit(ctx, id))
+            .collect();
+        self.lowest(ctx, &fit)
     }
 
     /// The bound account of `thread` while it can serve, a detour while
@@ -1458,7 +2172,7 @@ impl Inner {
                 self.bind(ctx, thread, &cooler, writes);
                 return Some(cooler);
             }
-            return Some(account);
+            return Some(self.fit_alternative(ctx, &account).unwrap_or(account));
         }
         let hold_expired = binding
             .hold_since
@@ -1493,10 +2207,65 @@ impl Inner {
     /// quota strategy the provider's current account while it serves and
     /// has headroom.
     fn place(&mut self, ctx: &Ctx, commit: bool) -> Option<String> {
+        let placed = self.place_shared(ctx, commit)?;
+        Some(self.fit_alternative(ctx, &placed).unwrap_or(placed))
+    }
+
+    /// An account whose 5-hour window has not started, for a new
+    /// conversation to start it, when `start_idle_windows` is on and no
+    /// account is chosen by hand: its short window reads 0% of a stated 5
+    /// hours, read in the last 5 minutes, with its reset 5 hours after that
+    /// read (within a minute), and it was not sent one for that window yet
+    /// (reference `pickIdleWindowAccount`).
+    fn idle_window(&mut self, ctx: &Ctx, commit: bool) -> Option<String> {
+        if !ctx.rules.start_idle_windows || ctx.independent_scope() || ctx.pinned.is_some() {
+            return None;
+        }
+        let window = IDLE_WINDOW_SECONDS * SECOND;
+        let picked = self.eligible(ctx, None, false).into_iter().find(|id| {
+            let slot = key(ctx.kind, id);
+            let Some(quota) = self.quota.get(&slot) else {
+                return false;
+            };
+            let (Some(seen), Some(reset)) = (quota.short_observed_ms, quota.short_reset_ms) else {
+                return false;
+            };
+            let steered = self.steered.get(&slot);
+            self.headroom(ctx, id)
+                && !self.model_unfit(ctx, id)
+                && quota.short == Some(0.0)
+                && quota.short_seconds == Some(IDLE_WINDOW_SECONDS)
+                && ctx.now >= seen
+                && ctx.now - seen <= IDLE_WINDOW_FRESHNESS
+                && reset.abs_diff(seen + window) <= IDLE_WINDOW_TOLERANCE
+                && reset > ctx.now
+                && steered.is_none_or(|until| ctx.now > *until && seen > *until)
+        })?;
+        if commit {
+            let now = ctx.now;
+            self.steered
+                .retain(|_, until| *until + IDLE_WINDOW_FRESHNESS >= now);
+            let reset = self
+                .quota
+                .get(&key(ctx.kind, &picked))
+                .and_then(|quota| quota.short_reset_ms)
+                .unwrap_or(now);
+            self.steered.insert(
+                key(ctx.kind, &picked),
+                reset.max(now + window) + IDLE_WINDOW_TOLERANCE,
+            );
+        }
+        Some(picked)
+    }
+
+    fn place_shared(&mut self, ctx: &Ctx, commit: bool) -> Option<String> {
         if matches!(ctx.rules.strategy, Strategy::Quota | Strategy::FillFirst) {
             if let Some(pinned) = self.usable_pin(ctx) {
                 self.set_cursor(ctx, &pinned);
             }
+        }
+        if let Some(idle) = self.idle_window(ctx, commit) {
+            return Some(idle);
         }
         if let Some(picked) = self.strategy_pick(ctx, commit) {
             return Some(picked);
@@ -1533,19 +2302,63 @@ impl Inner {
     /// With nowhere else to go: `active` when it is a usable account, else
     /// the usable account whose cooldown ends first. The provider then
     /// answers for itself, which is also how a lapsed refusal is noticed.
+    /// An account kept out by its plan or from spending credits is never
+    /// sent to (reference `isCodexAccountRotationExcluded`).
     fn stay(&self, ctx: &Ctx, active: Option<&str>) -> Option<String> {
-        if let Some(active) = active.filter(|id| ctx.member(id).is_some_and(Member::usable)) {
+        let open = |id: &str| {
+            ctx.member(id).is_some_and(Member::usable)
+                && !self.plan_excluded(ctx, id)
+                && !self.credits_held(ctx, id)
+        };
+        if let Some(active) = active.filter(|id| open(id)) {
             return Some(active.to_string());
         }
         ctx.members
             .iter()
-            .filter(|member| member.usable())
+            .filter(|member| open(&member.id))
             .min_by_key(|member| {
                 self.health(ctx, &member.id)
                     .and_then(|h| h.cooldown_until.max(h.soft_avoid_until))
                     .unwrap_or(0)
             })
             .map(|member| member.id.clone())
+    }
+
+    /// Records a refusal of `account` in the quota group `scope` only.
+    fn cool_scope(
+        &mut self,
+        ctx: &Ctx,
+        account: &str,
+        scope: &str,
+        refusal: Scoped,
+        writes: &mut Vec<Write>,
+    ) {
+        writes.push(Write::Cooldown(PoolCooldown {
+            kind: ctx.kind.to_string(),
+            account: account.to_string(),
+            scope: Some(scope.to_string()),
+            until_ms: refusal.until,
+            avoid_until_ms: refusal.avoid_until,
+            since_ms: refusal.since,
+            source: refusal.source.name().to_string(),
+            status: refusal.status,
+        }));
+        self.scoped
+            .insert((key(ctx.kind, account), scope.to_string()), refusal);
+    }
+
+    /// Moves the provider's placement off `account` after it refused.
+    fn leave(&mut self, ctx: &Ctx, account: &str) {
+        let state = self.state(ctx);
+        if state.sticky.as_deref() == Some(account) {
+            state.sticky = None;
+            state.sticky_count = 0;
+        }
+        if self.cursor(ctx).as_deref() == Some(account) {
+            if let Some(next) = self.alternate(ctx, account) {
+                self.set_cursor(ctx, &next);
+            }
+        }
     }
 
     /// Records what `account` did, and moves the provider's placement away
@@ -1560,11 +2373,27 @@ impl Inner {
     ) {
         self.sync_pin(ctx, writes);
         let now = ctx.now;
-        let class = classify(outcome);
+        let class = classify(ctx.kind, outcome);
         let failover_on = ctx.rules.failover_threshold > 0;
+        let slot = key(ctx.kind, account);
         match class {
-            Class::Neutral | Class::Caller => {}
+            Class::Neutral | Class::Caller | Class::Unreachable => {}
             Class::Success => {
+                self.denials.remove(&(slot.clone(), ctx.model.to_string()));
+                if let Some(scope) = ctx.scope() {
+                    let scoped = (slot.clone(), scope.to_string());
+                    if ctx.family().is_some() {
+                        if self.scoped.remove(&scoped).is_some() {
+                            writes.push(Write::UncoolScope(
+                                ctx.kind.to_string(),
+                                account.to_string(),
+                                scope.to_string(),
+                            ));
+                        }
+                    } else if let Some(entry) = self.scoped.get_mut(&scoped) {
+                        entry.refused = false;
+                    }
+                }
                 let health = self.health_mut(ctx.kind, account);
                 health.window.push(now, false);
                 health.quota_refused = false;
@@ -1597,18 +2426,111 @@ impl Inner {
                 }
                 self.unbind_account(ctx.kind, account, writes);
             }
-            Class::Quota => {
+            Class::Rate => {
+                let Outcome::Status { retry_after, .. } = outcome else {
+                    return;
+                };
+                let wait = retry_after_ms(retry_after.as_deref(), now).unwrap_or(SHORT_RETRY);
+                let health = self.health_mut(ctx.kind, account);
+                health.rate_pause_until =
+                    Some(health.rate_pause_until.unwrap_or(0).max(now + wait));
+                note(health, outcome);
+            }
+            Class::ModelDenied => {
+                self.denials
+                    .insert((slot, ctx.model.to_string()), now + MODEL_DENIAL);
+                note(self.health_mut(ctx.kind, account), outcome);
+            }
+            Class::Family => {
+                let Some(scope) = ctx.family() else {
+                    return;
+                };
+                let Outcome::Status { status, resets, .. } = outcome else {
+                    return;
+                };
+                let until = resets
+                    .iter()
+                    .copied()
+                    .filter(|reset| *reset > now)
+                    .min()
+                    .unwrap_or(u64::MAX)
+                    .min(now + FAMILY_REFUSAL_MAX_AGE);
+                let refusal = Scoped {
+                    until,
+                    avoid_until: until,
+                    since: now,
+                    source: CooldownSource::Reset,
+                    status: *status,
+                    refused: true,
+                };
+                self.cool_scope(ctx, account, scope, refusal, writes);
+                self.quota
+                    .entry(slot)
+                    .or_default()
+                    .families
+                    .insert(scope.to_string(), EXHAUSTED);
+                note(self.health_mut(ctx.kind, account), outcome);
+            }
+            Class::KeyRefused | Class::Quota => {
                 let Outcome::Status {
                     status,
                     retry_after,
                     resets,
+                    refusal,
                     ..
                 } = outcome
                 else {
                     return;
                 };
-                let (until, source) = quota_cooldown(retry_after.as_deref(), resets, now);
-                let avoid = quota_avoid_until(resets, now, until);
+                let (until, source, avoid) = if is_key(ctx.kind) {
+                    // Reference `rotateKeyAfterFailure`: a refused key waits
+                    // the cap, a 429 its Retry-After up to the cap.
+                    let delay = match class {
+                        Class::KeyRefused => Some(MAX_KEY_COOLDOWN),
+                        _ => retry_after_ms(retry_after.as_deref(), now)
+                            .map(|delay| delay.min(MAX_KEY_COOLDOWN)),
+                    };
+                    let (until, source) = match delay {
+                        Some(delay) if class == Class::Quota => {
+                            (now + delay, CooldownSource::RetryAfter)
+                        }
+                        Some(delay) => (now + delay, CooldownSource::Default),
+                        None => (now + DEFAULT_QUOTA_COOLDOWN, CooldownSource::Default),
+                    };
+                    (until, source, until)
+                } else if *refusal == Refusal::Account {
+                    match retry_after_ms(retry_after.as_deref(), now) {
+                        Some(delay) => (now + delay, CooldownSource::RetryAfter, now + delay),
+                        None => {
+                            let until = now + ACCOUNT_REFUSAL_COOLDOWN;
+                            (until, CooldownSource::Default, until)
+                        }
+                    }
+                } else {
+                    let (until, source) = quota_cooldown(retry_after.as_deref(), resets, now);
+                    (until, source, quota_avoid_until(resets, now, until))
+                };
+                // Reference `recordCodexUpstreamOutcome`: a reset-derived
+                // ChatGPT refusal belongs to the model's quota group.
+                if ctx.kind == "gpt-oauth" && source == CooldownSource::Reset {
+                    if let Some(scope) = ctx.scope() {
+                        let refusal = Scoped {
+                            until,
+                            avoid_until: avoid,
+                            since: now,
+                            source,
+                            status: *status,
+                            refused: true,
+                        };
+                        self.cool_scope(ctx, account, scope, refusal, writes);
+                        note(self.health_mut(ctx.kind, account), outcome);
+                        if scope == "shared" {
+                            self.unbind_account(ctx.kind, account, writes);
+                            self.leave(ctx, account);
+                        }
+                        return;
+                    }
+                }
                 let health = self.health_mut(ctx.kind, account);
                 health.consecutive_failures = 0;
                 health.consecutive_successes = 0;
@@ -1622,6 +2544,7 @@ impl Inner {
                 writes.push(Write::Cooldown(PoolCooldown {
                     kind: ctx.kind.to_string(),
                     account: account.to_string(),
+                    scope: None,
                     until_ms: until,
                     avoid_until_ms: avoid,
                     since_ms: now,
@@ -1629,16 +2552,7 @@ impl Inner {
                     status: *status,
                 }));
                 self.unbind_account(ctx.kind, account, writes);
-                let state = self.state(ctx);
-                if state.sticky.as_deref() == Some(account) {
-                    state.sticky = None;
-                    state.sticky_count = 0;
-                }
-                if self.cursor(ctx).as_deref() == Some(account) {
-                    if let Some(next) = self.alternate(ctx, account) {
-                        self.set_cursor(ctx, &next);
-                    }
-                }
+                self.leave(ctx, account);
             }
             Class::Transient => {
                 let threshold = ctx.rules.failover_threshold;
@@ -1692,9 +2606,14 @@ impl Inner {
         let by_usage = ctx.rules.strategy == Strategy::Quota
             || ctx.rules.strategy == Strategy::ResetFirst
             || usable.iter().any(|member| ctx.threshold(&member.id) > 0);
-        if usable.len() < 2 || !by_usage {
+        if usable.len() < 2 || !by_usage || is_key(ctx.kind) {
             return Vec::new();
         }
+        let refresh = if ctx.rules.priority_failback {
+            FAILBACK_REFRESH
+        } else {
+            USAGE_REFRESH
+        };
         let mut due = Vec::new();
         for member in usable {
             let slot = key(ctx.kind, &member.id);
@@ -1713,11 +2632,11 @@ impl Inner {
             let stale = self
                 .quota
                 .get(&slot)
-                .is_none_or(|quota| ctx.now.saturating_sub(quota.updated_ms) >= USAGE_REFRESH)
+                .is_none_or(|quota| ctx.now.saturating_sub(quota.updated_ms) >= refresh)
                 && self
                     .polled
                     .get(&slot)
-                    .is_none_or(|at| ctx.now.saturating_sub(*at) >= USAGE_REFRESH);
+                    .is_none_or(|at| ctx.now.saturating_sub(*at) >= refresh);
             if probe || stale {
                 if probe {
                     self.health_mut(ctx.kind, &member.id).last_probe_ms = Some(ctx.now);
@@ -1739,10 +2658,81 @@ fn note(health: &mut Health, outcome: &Outcome) {
             health.last_status = Some(*status);
             health.last_error = Some(message.clone());
         }
-        Outcome::Broken(message) => {
+        Outcome::Broken(message) | Outcome::Unreachable { message, .. } => {
             health.last_status = None;
             health.last_error = Some(message.clone());
         }
+    }
+}
+
+impl Inner {
+    /// Whether a request to `host` may go: always with no circuit
+    /// (`threshold` 0); else not while its cooldown runs, and after it
+    /// only one trial at a time (reference `acquireUpstreamHostAdmission`).
+    /// `Err` holds the seconds to wait.
+    fn admit_host(&mut self, host: &str, threshold: u32, now: u64) -> Result<(), u64> {
+        if threshold == 0 {
+            return Ok(());
+        }
+        let Some(entry) = self.hosts.get_mut(host) else {
+            return Ok(());
+        };
+        match entry.cooldown_until {
+            Some(until) if until > now => Err((until - now).div_ceil(SECOND).max(1)),
+            Some(_)
+                if entry
+                    .trial
+                    .is_some_and(|since| now.saturating_sub(since) < HOST_CIRCUIT_COOLDOWN) =>
+            {
+                Err(1)
+            }
+            Some(_) => {
+                entry.trial = Some(now);
+                Ok(())
+            }
+            None => Ok(()),
+        }
+    }
+
+    /// A request to `host` that never reached it (reference
+    /// `recordUpstreamHostFailure`): failures within 10 minutes of each
+    /// other add up; with a circuit, the threshold, or a failed trial,
+    /// starts a 30-second cooldown.
+    fn host_failed(&mut self, host: &str, code: &str, threshold: u32, now: u64) {
+        if !self.hosts.contains_key(host) && self.hosts.len() >= MAX_HOSTS {
+            let stalest = self
+                .hosts
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_failure_ms)
+                .map(|(name, _)| name.clone());
+            if let Some(stalest) = stalest {
+                self.hosts.remove(&stalest);
+            }
+        }
+        let entry = self.hosts.entry(host.to_string()).or_default();
+        let reopens = entry.trial.is_some() || entry.cooldown_until.is_some();
+        let stale = entry.failures == 0
+            || (!reopens && now.saturating_sub(entry.last_failure_ms) > HOST_FAILURE_WINDOW);
+        entry.failures = if reopens && threshold > 0 {
+            threshold.max(entry.failures + 1)
+        } else if stale {
+            1
+        } else {
+            entry.failures + 1
+        };
+        entry.last_failure_ms = now;
+        if !code.is_empty() {
+            entry.last_code = Some(code.to_string());
+        }
+        entry.trial = None;
+        entry.cooldown_until = (threshold > 0 && (reopens || entry.failures >= threshold))
+            .then_some(now + HOST_CIRCUIT_COOLDOWN);
+    }
+
+    /// Any answer from `host` proves it is reachable (reference
+    /// `resetUpstreamHostHealth`).
+    fn host_reached(&mut self, host: &str) {
+        self.hosts.remove(host);
     }
 }
 
@@ -1779,7 +2769,9 @@ impl Pool {
                     .await
                     .unwrap_or_default();
                 let cooldowns = store.pool_cooldowns(now).await.unwrap_or_default();
+                let lineage = store.thread_lineage().await.unwrap_or_default();
                 let mut inner = self.lock();
+                inner.parents.extend(lineage);
                 for row in bindings {
                     inner
                         .bindings
@@ -1796,6 +2788,20 @@ impl Pool {
                         });
                 }
                 for row in cooldowns {
+                    if let Some(scope) = row.scope {
+                        inner
+                            .scoped
+                            .entry((key(&row.kind, &row.account), scope))
+                            .or_insert(Scoped {
+                                until: row.until_ms,
+                                avoid_until: row.avoid_until_ms,
+                                since: row.since_ms,
+                                source: CooldownSource::parse(&row.source),
+                                status: row.status,
+                                refused: true,
+                            });
+                        continue;
+                    }
                     let health = inner.health_mut(&row.kind, &row.account);
                     if health.cooldown_until.is_none() {
                         health.cooldown_until = Some(row.until_ms);
@@ -1825,7 +2831,12 @@ impl Pool {
                     store.delete_pool_bindings_to(kind, account).await
                 }
                 Write::Cooldown(cooldown) => store.set_pool_cooldown(cooldown).await,
-                Write::Uncool(kind, account) => store.delete_pool_cooldown(kind, account).await,
+                Write::Uncool(kind, account) => {
+                    store.delete_pool_cooldown(kind, account, None).await
+                }
+                Write::UncoolScope(kind, account, scope) => {
+                    store.delete_pool_cooldown(kind, account, Some(scope)).await
+                }
                 Write::Clear(provider, thread) => store.clear_pool_bindings(provider, thread).await,
             };
             if let Err(error) = written {
@@ -1932,20 +2943,26 @@ impl Pool {
         self.persist(writes).await;
     }
 
-    /// Ends a cooldown and quota avoidance by hand; whether one was running.
+    /// Ends a cooldown and quota avoidance by hand, the account's and its
+    /// quota groups'; whether one was running.
     pub(crate) async fn clear_cooldown(&self, kind: &str, account: &str) -> bool {
         self.ready().await;
         let now = now_ms();
         let cleared = {
             let mut inner = self.lock();
-            match inner.health.get_mut(&key(kind, account)) {
+            let slot = key(kind, account);
+            let before = inner.scoped.len();
+            inner.scoped.retain(|(owner, _), _| *owner != slot);
+            let scoped = inner.scoped.len() != before;
+            let own = match inner.health.get_mut(&slot) {
                 Some(health) if health.cooling(now) || health.quota_avoided(now) => {
                     health.clear_cooldown();
                     health.last_probe_ms = Some(now);
                     true
                 }
                 _ => false,
-            }
+            };
+            own || scoped
         };
         if cleared {
             self.persist(vec![Write::Uncool(kind.to_string(), account.to_string())])
@@ -1976,6 +2993,34 @@ impl Pool {
         removed
     }
 
+    /// Notes that `child` was forked from `parent`, so its first request
+    /// starts on the parent's account.
+    pub(crate) async fn note_lineage(&self, child: SessionId, parent: SessionId) {
+        self.ready().await;
+        self.lock().parents.insert(child.0, parent.0);
+    }
+
+    /// Whether a request to `host` may go now ([`Inner::admit_host`]).
+    pub(crate) fn admit_host(&self, host: &str, threshold: u32) -> Result<(), u64> {
+        self.lock().admit_host(host, threshold, now_ms())
+    }
+
+    /// Records whether a request reached `host` ([`Inner::host_failed`],
+    /// [`Inner::host_reached`]); a request that broke after reaching it
+    /// says neither.
+    pub(crate) fn note_host(&self, host: &str, threshold: u32, outcome: &Outcome) {
+        let mut inner = self.lock();
+        match outcome {
+            Outcome::Unreachable { code, .. } => inner.host_failed(host, code, threshold, now_ms()),
+            Outcome::Status { .. } => inner.host_reached(host),
+            Outcome::Broken(_) => {
+                if let Some(entry) = inner.hosts.get_mut(host) {
+                    entry.trial = None;
+                }
+            }
+        }
+    }
+
     /// Forgets everything about a removed account.
     pub(crate) async fn forget(&self, kind: &str, account: &str) {
         self.ready().await;
@@ -1986,6 +3031,9 @@ impl Pool {
             inner.health.remove(&slot);
             inner.quota.remove(&slot);
             inner.polled.remove(&slot);
+            inner.steered.remove(&slot);
+            inner.scoped.retain(|(owner, _), _| *owner != slot);
+            inner.denials.retain(|(owner, _), _| *owner != slot);
             inner.unbind_account(kind, account, &mut writes);
             for state in inner.providers.values_mut() {
                 if state.cursor.as_deref() == Some(account) {
@@ -2000,8 +3048,8 @@ impl Pool {
         self.persist(writes).await;
     }
 
-    /// `pool/status` of one provider.
-    pub(crate) async fn status(&self, ctx: &Ctx<'_>, accounts: &[Account]) -> Value {
+    /// `pool/status` of one provider, its host's reachability included.
+    pub(crate) async fn status(&self, ctx: &Ctx<'_>, accounts: &[Account], host: &str) -> Value {
         let current = self.peek(ctx).await;
         let mut inner = self.lock();
         for health in inner.health.values_mut() {
@@ -2016,6 +3064,31 @@ impl Pool {
                 let quota = inner.quota.get(&key(ctx.kind, id));
                 let score = inner.score(ctx, id);
                 let active = |time: Option<u64>| time.filter(|time| *time > ctx.now);
+                let scoped: serde_json::Map<String, Value> = inner
+                    .scoped
+                    .iter()
+                    .filter(|((owner, _), refusal)| {
+                        *owner == key(ctx.kind, id)
+                            && refusal.until.max(refusal.avoid_until) > ctx.now
+                    })
+                    .map(|((_, scope), refusal)| {
+                        (
+                            scope.clone(),
+                            json!({
+                                "cooldown_until": active(Some(refusal.until)),
+                                "cooldown_source": refusal.source.name(),
+                                "quota_avoid_until": active(Some(refusal.avoid_until)),
+                                "status": refusal.status,
+                            }),
+                        )
+                    })
+                    .collect();
+                let denied: Vec<&String> = inner
+                    .denials
+                    .iter()
+                    .filter(|((owner, _), until)| *owner == key(ctx.kind, id) && **until > ctx.now)
+                    .map(|((_, model), _)| model)
+                    .collect();
                 json!({
                     "id": id,
                     "alias": account.info.alias,
@@ -2023,6 +3096,8 @@ impl Pool {
                     "needs_reauth": account.info.needs_reauth,
                     "priority": account.info.priority.unwrap_or(0),
                     "auto_switch_threshold": account.info.auto_switch_threshold,
+                    "credits": account.info.credits,
+                    "plan": inner.plan(ctx, id),
                     "threshold": ctx.threshold(id),
                     "score": (score < UNKNOWN_SCORE).then_some(score),
                     "usage": quota.map(Quota::view),
@@ -2033,6 +3108,9 @@ impl Pool {
                         .map(CooldownSource::name),
                     "quota_avoid_until": active(health.and_then(|h| h.quota_avoid_until)),
                     "soft_avoid_until": active(health.and_then(|h| h.soft_avoid_until)),
+                    "rate_pause_until": active(health.and_then(|h| h.rate_pause_until)),
+                    "scoped_cooldowns": scoped,
+                    "denied_models": denied,
                     "reason": inner.block_reason(ctx, id),
                     "consecutive_failures": health.map_or(0, |h| h.consecutive_failures),
                     "degraded": inner.degraded(ctx, id),
@@ -2049,12 +3127,23 @@ impl Pool {
                 })
             })
             .collect();
+        let host_view = inner.hosts.get(host).map(|entry| {
+            json!({
+                "host": host,
+                "consecutive_failures": entry.failures,
+                "last_failure": entry.last_failure_ms,
+                "last_code": entry.last_code,
+                "cooldown_until": entry.cooldown_until.filter(|until| *until > ctx.now),
+            })
+        });
         json!({
             "provider": ctx.provider,
             "kind": ctx.kind,
+            "model": ctx.model,
             "pool": ctx.rules.view(),
             "active_account": ctx.pinned,
             "current": current,
+            "host": host_view,
             "accounts": rows,
         })
     }
@@ -2065,19 +3154,23 @@ impl Pool {
 pub(crate) struct Route {
     pub pool: Arc<Pool>,
     pub provider: String,
-    pub kind: &'static str,
+    /// The credential store's provider name of the accounts.
+    pub kind: String,
     pub rules: Rules,
     pub pinned: Option<String>,
+    /// The provider's id and endpoint host, for the reachability ledger.
+    pub host: String,
 }
 
 impl Route {
-    pub(crate) fn ctx<'a>(&'a self, members: &'a [Member], now: u64) -> Ctx<'a> {
+    pub(crate) fn ctx<'a>(&'a self, members: &'a [Member], model: &'a str, now: u64) -> Ctx<'a> {
         Ctx {
             provider: &self.provider,
-            kind: self.kind,
-            rules: self.rules,
+            kind: &self.kind,
+            rules: self.rules.clone(),
             pinned: self.pinned.as_deref(),
             members,
+            model,
             now,
         }
     }
@@ -2095,28 +3188,30 @@ impl Route {
             .into_iter()
             .flatten()
         {
-            self.pool.observe(self.kind, account, quota);
+            self.pool.observe(&self.kind, account, quota);
         }
     }
 
-    /// Records what `account` did, with the accounts as the credential
-    /// store at `store` holds them now.
+    /// Records what `account` did for a request of `model`, with the
+    /// accounts as the credential store at `store` holds them now.
     pub(crate) async fn record(
         &self,
         store: &std::path::Path,
         account: &str,
+        model: &str,
         thread: Option<SessionId>,
         outcome: &Outcome,
     ) {
+        self.pool
+            .note_host(&self.host, self.rules.host_circuit_threshold, outcome);
         let Ok(stored) = crate::oauth::Store::load(store.to_path_buf()) else {
             return;
         };
-        let members: Vec<Member> = stored.accounts(self.kind).iter().map(Member::of).collect();
-        let ctx = self.ctx(&members, now_ms());
+        let members: Vec<Member> = stored.accounts(&self.kind).iter().map(Member::of).collect();
+        let ctx = self.ctx(&members, model, now_ms());
         self.pool.record(&ctx, account, thread, outcome).await;
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2128,6 +3223,8 @@ mod tests {
             threshold: None,
             paused: false,
             needs_reauth: false,
+            plan: None,
+            credits: false,
         }
     }
 
@@ -2138,6 +3235,7 @@ mod tests {
             rules,
             pinned,
             members,
+            model: "m",
             now,
         }
     }
@@ -2166,6 +3264,7 @@ mod tests {
             retry_after: retry_after.map(str::to_string),
             resets,
             denial: false,
+            refusal: Refusal::Plain,
             message: "provider returned HTTP 429".into(),
         }
     }
@@ -2176,6 +3275,7 @@ mod tests {
             retry_after: None,
             resets: Vec::new(),
             denial: false,
+            refusal: Refusal::Plain,
             message: String::new(),
         }
     }
@@ -2186,6 +3286,7 @@ mod tests {
             retry_after: None,
             resets: Vec::new(),
             denial: false,
+            refusal: Refusal::Plain,
             message: "provider returned HTTP 503".into(),
         }
     }
@@ -2731,6 +3832,7 @@ mod tests {
             retry_after: None,
             resets: Vec::new(),
             denial: true,
+            refusal: Refusal::Plain,
             message: "denied".into(),
         };
         inner.record(&c, "a", Some(1), &denied, &mut writes);
@@ -2740,6 +3842,7 @@ mod tests {
             retry_after: None,
             resets: Vec::new(),
             denial: false,
+            refusal: Refusal::Plain,
             message: "refused".into(),
         };
         inner.record(&c, "a", Some(1), &refused, &mut writes);
@@ -2877,6 +3980,7 @@ mod tests {
                 window("five_hour:Opus", 99.0, None),
             ],
             theos: None,
+            credits: None,
         };
         let quota = usage_quota(&usage, NOW).unwrap();
         assert_eq!(
@@ -2890,10 +3994,734 @@ mod tests {
                 window("seven_day", 8.0, None),
             ],
             theos: None,
+            credits: None,
         };
         let quota = usage_quota(&usage, NOW).unwrap();
         assert_eq!((quota.short, quota.weekly), (Some(3.0), Some(8.0)));
         assert_eq!(quota.weekly_reset_ms, Some(1_800_000_900_000));
+    }
+
+    fn ctx_of<'a>(
+        members: &'a [Member],
+        kind: &'a str,
+        model: &'a str,
+        rules: Rules,
+        now: u64,
+    ) -> Ctx<'a> {
+        Ctx {
+            provider: "p",
+            kind,
+            rules,
+            pinned: None,
+            members,
+            model,
+            now,
+        }
+    }
+
+    fn refusal_of(status: u16, refusal: Refusal, retry_after: Option<&str>) -> Outcome {
+        Outcome::Status {
+            status,
+            retry_after: retry_after.map(str::to_string),
+            resets: Vec::new(),
+            denial: false,
+            refusal,
+            message: format!("provider returned HTTP {status}"),
+        }
+    }
+
+    fn headers(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let pairs: Vec<(String, String)> = pairs
+            .iter()
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect();
+        move |name: &str| {
+            pairs
+                .iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.clone())
+        }
+    }
+
+    #[test]
+    fn anthropic_429s_are_told_apart_by_their_windows() {
+        let shared = headers(&[("anthropic-ratelimit-unified-7d-status", "rejected")]);
+        assert_eq!(anthropic_429(&shared, NOW), Refusal::Shared);
+        let family = headers(&[
+            ("anthropic-ratelimit-unified-7d_oi-status", "rejected"),
+            ("anthropic-ratelimit-unified-7d_oi-reset", "1800003600"),
+        ]);
+        assert_eq!(anthropic_429(&family, NOW), Refusal::Family);
+        assert_eq!(family_resets(&family), vec![1_800_003_600_000]);
+        let unified = headers(&[("anthropic-ratelimit-unified-status", "rejected")]);
+        assert_eq!(anthropic_429(&unified, NOW), Refusal::Shared);
+        let paused = headers(&[("retry-after", "0.5")]);
+        assert_eq!(anthropic_429(&paused, NOW), Refusal::Rate);
+        let allowed = headers(&[("anthropic-ratelimit-unified-status", "allowed")]);
+        assert_eq!(anthropic_429(&allowed, NOW), Refusal::Rate);
+        assert_eq!(anthropic_429(&headers(&[]), NOW), Refusal::Unknown);
+        assert_eq!(
+            refusal("claude-oauth", 429, &shared, "", NOW),
+            Refusal::Shared
+        );
+        assert_eq!(
+            refusal("gpt-oauth", 429, &shared, "", NOW),
+            Refusal::Plain,
+            "only Anthropic sign-ins"
+        );
+    }
+
+    #[test]
+    fn anthropic_429s_and_403s_are_retried_and_recorded_by_their_class() {
+        let now = NOW;
+        assert_eq!(
+            refusal_of(429, Refusal::Rate, Some("0.5")).retry("claude-oauth", now),
+            Retry::SameThenOther(500)
+        );
+        assert_eq!(
+            refusal_of(429, Refusal::Rate, Some("30")).retry("claude-oauth", now),
+            Retry::Other
+        );
+        assert_eq!(
+            refusal_of(429, Refusal::Unknown, None).retry("claude-oauth", now),
+            Retry::Same(SHORT_RETRY)
+        );
+        assert_eq!(
+            refusal_of(403, Refusal::Account, None).retry("claude-oauth", now),
+            Retry::Other
+        );
+        assert_eq!(
+            refusal_of(403, Refusal::Plain, None).retry("claude-oauth", now),
+            Retry::No
+        );
+
+        let members = [member("a"), member("b")];
+        let mut inner = Inner::default();
+        let mut writes = Vec::new();
+        let c = ctx(&members, rules(Strategy::Quota), None, now);
+        assert_eq!(
+            inner.resolve(&c, Some(1), &mut writes).as_deref(),
+            Some("a")
+        );
+        // A rate pause keeps the thread on its account and sends this
+        // request elsewhere; it is no quota cooldown.
+        inner.record(
+            &c,
+            "a",
+            Some(1),
+            &refusal_of(429, Refusal::Rate, Some("30")),
+            &mut writes,
+        );
+        assert!(!inner.cooling(&c, "a"));
+        assert_eq!(inner.block_reason(&c, "a"), Some("rate_paused"));
+        assert_eq!(
+            inner.resolve(&c, Some(1), &mut writes).as_deref(),
+            Some("b")
+        );
+        assert_eq!(inner.bindings[&(1, "p".to_string())].account, "a", "kept");
+        let later = ctx(&members, rules(Strategy::Quota), None, now + 31 * SECOND);
+        assert_eq!(
+            inner.resolve(&later, Some(1), &mut writes).as_deref(),
+            Some("a")
+        );
+        // An unnamed 429 changes nothing of the account.
+        inner.record(
+            &later,
+            "a",
+            Some(1),
+            &refusal_of(429, Refusal::Unknown, None),
+            &mut writes,
+        );
+        assert_eq!(inner.block_reason(&later, "a"), None);
+        // A plain Anthropic 403 is no verdict; one refusing the account
+        // cools it for ten minutes.
+        inner.record(
+            &later,
+            "a",
+            Some(1),
+            &refusal_of(403, Refusal::Plain, None),
+            &mut writes,
+        );
+        assert_eq!(inner.block_reason(&later, "a"), None);
+        inner.record(
+            &later,
+            "a",
+            Some(1),
+            &refusal_of(403, Refusal::Account, None),
+            &mut writes,
+        );
+        let until = inner.health[&key("claude-oauth", "a")].cooldown_until;
+        assert_eq!(until, Some(now + 31 * SECOND + ACCOUNT_REFUSAL_COOLDOWN));
+        assert!(inner.bindings.is_empty(), "its threads leave");
+        assert!(anthropic_account_refusal(
+            r#"{"type":"error","error":{"type":"permission_error","message":"Your subscription has expired."}}"#
+        ));
+        assert!(anthropic_account_refusal(
+            r#"{"error":{"type":"billing_error","message":"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."}}"#
+        ));
+        assert!(anthropic_account_refusal(
+            r#"{"error":{"type":"oauth_org_not_allowed","message":"x"}}"#
+        ));
+        assert!(!anthropic_account_refusal(
+            r#"{"error":{"type":"permission_error","message":"This model is not available."}}"#
+        ));
+        assert!(!anthropic_account_refusal(
+            r#"{"error":{"type":"permission_error","code":"other","message":"Your subscription has expired."}}"#
+        ));
+    }
+
+    #[test]
+    fn a_family_refusal_keeps_the_account_for_other_models() {
+        let members = [member("a"), member("b")];
+        let mut inner = Inner::default();
+        let mut writes = Vec::new();
+        let fable = ctx_of(
+            &members,
+            "claude-oauth",
+            "claude-fable-5",
+            rules(Strategy::Quota),
+            NOW,
+        );
+        let sonnet = ctx_of(
+            &members,
+            "claude-oauth",
+            "claude-sonnet-5",
+            rules(Strategy::Quota),
+            NOW,
+        );
+        assert_eq!(
+            inner.resolve(&fable, Some(1), &mut writes).as_deref(),
+            Some("a")
+        );
+        let refused = Outcome::Status {
+            status: 429,
+            retry_after: None,
+            resets: vec![NOW + HOUR],
+            denial: false,
+            refusal: Refusal::Family,
+            message: "family".into(),
+        };
+        inner.record(&fable, "a", Some(1), &refused, &mut writes);
+        assert!(inner.cooling(&fable, "a"));
+        assert!(!inner.cooling(&sonnet, "a"), "other models still use it");
+        let until = inner.scoped[&(key("claude-oauth", "a"), "Fable".to_string())].until;
+        assert_eq!(until, NOW + FAMILY_REFUSAL_MAX_AGE, "at most 30 minutes");
+        assert_eq!(
+            inner.resolve(&fable, Some(1), &mut writes).as_deref(),
+            Some("b")
+        );
+        assert_eq!(inner.bindings[&(1, "p".to_string())].account, "a", "kept");
+        assert_eq!(
+            inner.resolve(&sonnet, Some(2), &mut writes).as_deref(),
+            Some("a")
+        );
+        // A Fable answer from the account clears its family refusal.
+        inner.record(&fable, "a", Some(1), &Outcome::answered(), &mut writes);
+        assert!(!inner.cooling(&fable, "a"));
+        assert_eq!(anthropic_family("claude-fable-5-20261101"), Some("Fable"));
+        assert_eq!(anthropic_family("claude-sonnet-5"), None);
+    }
+
+    #[test]
+    fn a_reset_dated_codex_refusal_cools_only_the_models_quota_group() {
+        let members = [member("a"), member("b")];
+        let mut inner = Inner::default();
+        let mut writes = Vec::new();
+        let reserve = ctx_of(
+            &members,
+            "gpt-oauth",
+            "gpt-reserve",
+            rules(Strategy::Quota),
+            NOW,
+        );
+        let shared = ctx_of(
+            &members,
+            "gpt-oauth",
+            "gpt-5.2-codex",
+            rules(Strategy::Quota),
+            NOW,
+        );
+        assert_eq!(
+            inner.resolve(&shared, Some(1), &mut writes).as_deref(),
+            Some("a")
+        );
+        let dated = Outcome::Status {
+            status: 429,
+            retry_after: None,
+            resets: vec![NOW + 10 * MINUTE],
+            denial: false,
+            refusal: Refusal::Plain,
+            message: "limit".into(),
+        };
+        inner.record(&reserve, "a", Some(2), &dated, &mut writes);
+        assert!(inner.cooling(&reserve, "a"));
+        assert!(
+            !inner.cooling(&shared, "a"),
+            "the shared group still serves"
+        );
+        assert_eq!(
+            inner.resolve(&shared, Some(1), &mut writes).as_deref(),
+            Some("a")
+        );
+        assert_eq!(
+            inner.resolve(&reserve, Some(3), &mut writes).as_deref(),
+            Some("b")
+        );
+        assert!(writes.iter().any(|write| matches!(
+            write,
+            Write::Cooldown(PoolCooldown { scope: Some(scope), .. }) if scope == "reserve"
+        )));
+        // The shared group's dated refusal leaves the shared group, and its
+        // threads leave the account; gpt-reserve still reaches it later.
+        inner.record(&shared, "a", Some(1), &dated, &mut writes);
+        assert!(inner.cooling(&shared, "a"));
+        assert!(!inner.bindings.contains_key(&(1, "p".to_string())));
+        // A refusal with Retry-After cools the whole account.
+        inner.record(
+            &shared,
+            "b",
+            None,
+            &quota_refusal(Some("60"), Vec::new()),
+            &mut writes,
+        );
+        assert!(inner.cooling(&reserve, "b") && inner.cooling(&shared, "b"));
+        assert_eq!(quota_scope("gpt-oauth", "GPT-Reserve"), Some("reserve"));
+        assert_eq!(quota_scope("claude-oauth", "claude-sonnet-5"), None);
+    }
+
+    #[test]
+    fn an_excluded_plan_is_chosen_only_by_hand() {
+        let mut members = [member("a"), member("b")];
+        members[0].plan = Some("Free".into());
+        let mut inner = Inner::default();
+        let mut writes = Vec::new();
+        let excluding = Rules {
+            excluded_plans: vec!["free".into()],
+            ..rules(Strategy::Quota)
+        };
+        let c = ctx_of(&members, "gpt-oauth", "m", excluding.clone(), NOW);
+        assert_eq!(
+            inner.resolve(&c, Some(1), &mut writes).as_deref(),
+            Some("b")
+        );
+        assert_eq!(inner.block_reason(&c, "a"), Some("plan_excluded"));
+        let pinned = Ctx {
+            pinned: Some("a"),
+            ..ctx_of(&members, "gpt-oauth", "m", excluding.clone(), NOW)
+        };
+        assert_eq!(
+            inner.peek_place(&pinned).as_deref(),
+            Some("a"),
+            "chosen by hand"
+        );
+        // A plan the usage read names wins over the token's.
+        inner.quota.insert(
+            key("gpt-oauth", "b"),
+            Quota {
+                plan: Some("free".into()),
+                updated_ms: NOW,
+                ..Quota::default()
+            },
+        );
+        assert_eq!(inner.peek_place(&c), None, "both excluded");
+    }
+
+    #[test]
+    fn a_full_chatgpt_account_waits_unless_it_may_spend_credits() {
+        let mut members = [member("a"), member("b")];
+        let mut inner = Inner::default();
+        let c = ctx_of(&members, "gpt-oauth", "m", rules(Strategy::Quota), NOW);
+        let full = |credits: Option<crate::usage::Credits>| Quota {
+            weekly: Some(100.0),
+            weekly_reset_ms: Some(NOW + HOUR),
+            credits: credits.map(|credits| (credits, NOW)),
+            updated_ms: NOW,
+            ..Quota::default()
+        };
+        let funded = crate::usage::Credits {
+            has_credits: Some(true),
+            balance: Some(5.0),
+            ..crate::usage::Credits::default()
+        };
+        inner
+            .quota
+            .insert(key("gpt-oauth", "a"), full(Some(funded.clone())));
+        assert_eq!(inner.block_reason(&c, "a"), Some("usage_limit"));
+        assert_eq!(inner.peek_place(&c).as_deref(), Some("b"));
+        members[0].credits = true;
+        let c = ctx_of(&members, "gpt-oauth", "m", rules(Strategy::Quota), NOW);
+        assert_eq!(inner.block_reason(&c, "a"), None, "it may spend them");
+        let stale = ctx_of(
+            &members,
+            "gpt-oauth",
+            "m",
+            rules(Strategy::Quota),
+            NOW + 6 * MINUTE,
+        );
+        assert_eq!(
+            inner.block_reason(&stale, "a"),
+            Some("usage_limit"),
+            "old credits"
+        );
+        inner.quota.insert(key("gpt-oauth", "a"), full(None));
+        assert_eq!(
+            inner.block_reason(&c, "a"),
+            Some("usage_limit"),
+            "none known"
+        );
+        let alone = [members[0].clone()];
+        let c = ctx_of(&alone, "gpt-oauth", "m", rules(Strategy::Quota), NOW);
+        assert_eq!(inner.peek_place(&c), None, "never sent to spend credits");
+        let claude = ctx_of(&alone, "claude-oauth", "m", rules(Strategy::Quota), NOW);
+        assert!(!inner.credits_held(&claude, "a"), "ChatGPT only");
+    }
+
+    #[test]
+    fn an_account_that_refused_a_model_goes_last_for_it() {
+        let members = [member("a"), member("b")];
+        let mut inner = Inner::default();
+        let mut writes = Vec::new();
+        let astra = ctx_of(
+            &members,
+            "gpt-oauth",
+            "gpt-6-astra",
+            rules(Strategy::Quota),
+            NOW,
+        );
+        let other = ctx_of(
+            &members,
+            "gpt-oauth",
+            "gpt-5.2-codex",
+            rules(Strategy::Quota),
+            NOW,
+        );
+        assert_eq!(
+            inner.resolve(&astra, Some(1), &mut writes).as_deref(),
+            Some("a")
+        );
+        assert_eq!(
+            refusal_of(400, Refusal::ModelDenied, None).retry("gpt-oauth", NOW),
+            Retry::Other
+        );
+        inner.record(
+            &astra,
+            "a",
+            Some(1),
+            &refusal_of(400, Refusal::ModelDenied, None),
+            &mut writes,
+        );
+        assert_eq!(
+            inner.resolve(&astra, Some(1), &mut writes).as_deref(),
+            Some("b")
+        );
+        assert_eq!(inner.bindings[&(1, "p".to_string())].account, "a", "kept");
+        assert_eq!(
+            inner.resolve(&other, Some(2), &mut writes).as_deref(),
+            Some("a")
+        );
+        let alone = [member("a")];
+        let c = ctx_of(
+            &alone,
+            "gpt-oauth",
+            "gpt-6-astra",
+            rules(Strategy::Quota),
+            NOW,
+        );
+        assert_eq!(inner.peek_place(&c).as_deref(), Some("a"), "nothing better");
+        inner.record(&astra, "a", None, &Outcome::answered(), &mut writes);
+        assert!(!inner.model_unfit(&astra, "a"), "an answer clears it");
+        let later = ctx_of(
+            &members,
+            "gpt-oauth",
+            "gpt-6-astra",
+            rules(Strategy::Quota),
+            NOW + 7 * HOUR,
+        );
+        inner.record(
+            &astra,
+            "a",
+            None,
+            &refusal_of(400, Refusal::ModelDenied, None),
+            &mut writes,
+        );
+        assert!(!inner.model_unfit(&later, "a"), "six hours");
+        assert_eq!(
+            codex_model_refusal(
+                r#"{"detail":"The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT account."}"#
+            )
+            .as_deref(),
+            Some("gpt-6-astra")
+        );
+        assert_eq!(
+            codex_model_refusal(r#"{"detail":"The 'x' model is not supported."}"#),
+            None
+        );
+    }
+
+    #[test]
+    fn a_new_thread_starts_an_idle_five_hour_window_first() {
+        let members = [member("a"), member("b")];
+        let mut inner = Inner::default();
+        let on = Rules {
+            start_idle_windows: true,
+            ..rules(Strategy::Quota)
+        };
+        let idle = |seen: u64| Quota {
+            short: Some(0.0),
+            short_reset_ms: Some(seen + 5 * HOUR),
+            short_observed_ms: Some(seen),
+            short_seconds: Some(IDLE_WINDOW_SECONDS),
+            weekly: Some(50.0),
+            updated_ms: seen,
+            ..Quota::default()
+        };
+        weekly(&mut inner, "a", 10.0);
+        inner.quota.insert(key("claude-oauth", "b"), idle(NOW));
+        let c = ctx(&members, on.clone(), None, NOW + MINUTE);
+        assert_eq!(inner.place(&c, true).as_deref(), Some("b"), "the idle one");
+        assert_eq!(
+            inner.place(&c, true).as_deref(),
+            Some("a"),
+            "its window is taken as started"
+        );
+        let off = ctx(&members, rules(Strategy::Quota), None, NOW + MINUTE);
+        let mut fresh = Inner::default();
+        weekly(&mut fresh, "a", 10.0);
+        fresh.quota.insert(key("claude-oauth", "b"), idle(NOW));
+        assert_eq!(
+            fresh.place(&off, true).as_deref(),
+            Some("a"),
+            "off by default"
+        );
+        let old = ctx(&members, on.clone(), None, NOW + 6 * MINUTE);
+        assert_eq!(
+            fresh.place(&old, true).as_deref(),
+            Some("a"),
+            "a stale reading"
+        );
+        let pinned = ctx(&members, on, Some("a"), NOW + MINUTE);
+        assert_eq!(
+            fresh.peek_place(&pinned).as_deref(),
+            Some("a"),
+            "chosen by hand"
+        );
+    }
+
+    #[test]
+    fn a_fork_starts_on_its_parents_account_then_a_siblings() {
+        let members = [member("a"), member("b")];
+        let mut inner = Inner::default();
+        let mut writes = Vec::new();
+        let c = ctx(&members, rules(Strategy::RoundRobin), None, NOW);
+        assert_eq!(
+            inner.resolve(&c, Some(1), &mut writes).as_deref(),
+            Some("a")
+        );
+        inner.parents.insert(2, 1);
+        inner.parents.insert(3, 1);
+        assert_eq!(
+            inner.resolve(&c, Some(2), &mut writes).as_deref(),
+            Some("a"),
+            "the parent's, not the next in turn"
+        );
+        assert_eq!(
+            inner.resolve(&c, Some(4), &mut writes).as_deref(),
+            Some("b")
+        );
+        inner.unbind(&(1, "p".to_string()), &mut writes);
+        assert_eq!(
+            inner.resolve(&c, Some(3), &mut writes).as_deref(),
+            Some("a"),
+            "a sibling's"
+        );
+        let mut writes = Vec::new();
+        inner.record(
+            &c,
+            "a",
+            None,
+            &quota_refusal(Some("60"), Vec::new()),
+            &mut writes,
+        );
+        inner.parents.insert(5, 1);
+        assert_eq!(
+            inner.resolve(&c, Some(5), &mut writes).as_deref(),
+            Some("b"),
+            "not where the family cannot be served"
+        );
+    }
+
+    #[test]
+    fn a_bound_thread_moves_back_to_a_higher_tier_that_has_room() {
+        let mut members = [member("high"), member("low")];
+        members[0].priority = 10;
+        let mut inner = Inner::default();
+        let mut writes = Vec::new();
+        let on = Rules {
+            priority_failback: true,
+            ..rules(Strategy::Quota)
+        };
+        let fresh = |percent: f64, at: u64| Quota {
+            weekly: Some(percent),
+            updated_ms: at,
+            ..Quota::default()
+        };
+        inner
+            .quota
+            .insert(key("claude-oauth", "high"), fresh(95.0, NOW));
+        inner
+            .quota
+            .insert(key("claude-oauth", "low"), fresh(10.0, NOW));
+        let c = ctx(&members, on.clone(), None, NOW);
+        assert_eq!(
+            inner.resolve(&c, Some(1), &mut writes).as_deref(),
+            Some("low")
+        );
+        inner
+            .quota
+            .insert(key("claude-oauth", "high"), fresh(20.0, NOW + MINUTE));
+        let back = ctx(&members, on.clone(), None, NOW + MINUTE);
+        let off = ctx(&members, rules(Strategy::Quota), None, NOW + MINUTE);
+        assert_eq!(
+            inner
+                .clone()
+                .resolve(&off, Some(1), &mut Vec::new())
+                .as_deref(),
+            Some("low"),
+            "off by default: the thread keeps its cache"
+        );
+        let mut stale = inner.clone();
+        let late = ctx(&members, on.clone(), None, NOW + MINUTE + FAILBACK_REFRESH);
+        assert_eq!(
+            stale.resolve(&late, Some(1), &mut Vec::new()).as_deref(),
+            Some("low"),
+            "only on fresh usage"
+        );
+        assert_eq!(
+            inner.resolve(&back, Some(1), &mut writes).as_deref(),
+            Some("high")
+        );
+        assert_eq!(inner.bindings[&(1, "p".to_string())].account, "high");
+        let mut pinned = inner.clone();
+        pinned.bindings.insert(
+            (2, "p".to_string()),
+            Binding {
+                kind: "claude-oauth".into(),
+                account: "low".into(),
+                bound_ms: NOW,
+                used_ms: NOW,
+                written_ms: NOW,
+                reeval_ms: NOW,
+                hold_since: None,
+                detour: None,
+            },
+        );
+        let hand = ctx(&members, on, Some("low"), NOW + MINUTE);
+        pinned.sync_pin(&hand, &mut Vec::new());
+        assert!(
+            pinned.priority_failback(&hand, "low").is_none(),
+            "a hand choice holds"
+        );
+    }
+
+    #[test]
+    fn unreachable_hosts_are_counted_apart_and_may_open_a_circuit() {
+        let mut inner = Inner::default();
+        let host = "p|api.example.test";
+        inner.host_failed(host, "dns", 0, NOW);
+        inner.host_failed(host, "dns", 0, NOW + MINUTE);
+        assert_eq!(inner.hosts[host].failures, 2);
+        assert_eq!(
+            inner.admit_host(host, 0, NOW + MINUTE),
+            Ok(()),
+            "only recorded"
+        );
+        inner.host_failed(host, "dns", 0, NOW + 12 * MINUTE);
+        assert_eq!(
+            inner.hosts[host].failures, 1,
+            "ten minutes apart start again"
+        );
+        inner.host_reached(host);
+        assert!(inner.hosts.is_empty());
+
+        for step in 0..3 {
+            inner.host_failed(host, "connection_refused", 3, NOW + step);
+        }
+        assert_eq!(inner.admit_host(host, 3, NOW + 3), Err(30));
+        let after = NOW + 2 + HOST_CIRCUIT_COOLDOWN;
+        assert_eq!(inner.admit_host(host, 3, after), Ok(()), "one trial");
+        assert_eq!(
+            inner.admit_host(host, 3, after + 1),
+            Err(1),
+            "the others wait"
+        );
+        inner.host_failed(host, "connection_refused", 3, after + 2);
+        assert!(
+            inner.admit_host(host, 3, after + 3).is_err(),
+            "a failed trial reopens"
+        );
+        inner.host_reached(host);
+        assert_eq!(inner.admit_host(host, 3, after + 4), Ok(()));
+
+        let members = [member("a"), member("b")];
+        let mut writes = Vec::new();
+        let c = ctx(&members, rules(Strategy::Quota), None, NOW);
+        let unreachable = Outcome::Unreachable {
+            message: "dns".into(),
+            code: "dns".into(),
+        };
+        for _ in 0..5 {
+            inner.record(&c, "a", None, &unreachable, &mut writes);
+        }
+        assert_eq!(inner.block_reason(&c, "a"), None, "no account's fault");
+    }
+
+    #[test]
+    fn a_static_key_cools_by_its_own_caps() {
+        let members = [member("k1"), member("k2")];
+        let mut inner = Inner::default();
+        let mut writes = Vec::new();
+        let c = ctx_of(
+            &members,
+            "api-key/logfare",
+            "m",
+            rules(Strategy::Quota),
+            NOW,
+        );
+        inner.record(
+            &c,
+            "k1",
+            None,
+            &quota_refusal(Some("3600"), Vec::new()),
+            &mut writes,
+        );
+        assert_eq!(
+            inner.health[&key("api-key/logfare", "k1")].cooldown_until,
+            Some(NOW + MAX_KEY_COOLDOWN),
+            "Retry-After up to ten minutes"
+        );
+        assert_eq!(inner.peek_place(&c).as_deref(), Some("k2"));
+        let refused = refusal_of(401, Refusal::Plain, None);
+        assert_eq!(refused.retry("api-key/logfare", NOW), Retry::Other);
+        assert_eq!(refused.retry("claude-oauth", NOW), Retry::No);
+        inner.record(&c, "k2", None, &refused, &mut writes);
+        assert_eq!(
+            inner.health[&key("api-key/logfare", "k2")].cooldown_until,
+            Some(NOW + MAX_KEY_COOLDOWN),
+            "a refused key waits the cap"
+        );
+        inner.record(
+            &c,
+            "k1",
+            None,
+            &quota_refusal(None, vec![NOW + HOUR]),
+            &mut writes,
+        );
+        assert_eq!(
+            inner.health[&key("api-key/logfare", "k1")].cooldown_until,
+            Some(NOW + DEFAULT_QUOTA_COOLDOWN),
+            "an undated 429 waits a minute"
+        );
+        assert!(inner.due_reads(&c).is_empty(), "keys have no usage to read");
     }
 
     impl Inner {

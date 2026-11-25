@@ -257,6 +257,16 @@ pub fn api_key_name(id: &str) -> String {
     format!("api-key/{id}")
 }
 
+/// The credential store's provider name of the accounts of the provider
+/// `id`: its own key entry for a static-key kind, else its sign-in kind's.
+pub fn account_store(id: &str, kind: Kind) -> String {
+    if kind.uses_api_key() {
+        api_key_name(id)
+    } else {
+        kind.auth().store_name().to_string()
+    }
+}
+
 /// The thinking depth and summary a provider's models get unless the
 /// conversation chooses.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -349,6 +359,22 @@ pub struct PoolConfig {
     /// cache, until that account is spent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_affinity: Option<bool>,
+    /// Plans, as the provider names them in any case, whose accounts the
+    /// pool does not choose by itself; `active_account` may still name one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub excluded_plans: Option<Vec<String>>,
+    /// Whether a new conversation goes first to an account whose 5-hour
+    /// window has not started, so that the window starts running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_idle_windows: Option<bool>,
+    /// Whether a conversation bound to a lower priority tier moves back to
+    /// a higher tier that has room again (the quota strategy only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority_failback: Option<bool>,
+    /// Unreachable-host failures in a row after which requests to the
+    /// provider's host wait; 0 only records them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_circuit_threshold: Option<u32>,
 }
 
 impl PoolConfig {
@@ -379,7 +405,22 @@ impl PoolConfig {
             self.failover_threshold,
             0,
             crate::pool::MAX_FAILOVER_THRESHOLD,
-        )
+        )?;
+        within(
+            "host_circuit_threshold",
+            self.host_circuit_threshold,
+            0,
+            crate::pool::MAX_HOST_CIRCUIT_THRESHOLD,
+        )?;
+        if self
+            .excluded_plans
+            .iter()
+            .flatten()
+            .any(|plan| plan.trim().is_empty())
+        {
+            return Err("\"pool.excluded_plans\" has an empty name".into());
+        }
+        Ok(())
     }
 }
 
@@ -431,22 +472,11 @@ impl Provider {
             .and_then(|()| check_summary(self.reasoning.summary.as_deref()))
             .map_err(|error| format!("provider {id}: {error}"))?;
         if let Some(account) = &self.active_account {
-            if self.kind.uses_api_key() {
-                return Err(format!(
-                    "provider {id}: \"active_account\" is only for the sign-in kinds"
-                ));
-            }
             if account.trim().is_empty() {
                 return Err(format!("provider {id}: \"active_account\" is empty"));
             }
         }
         if let Some(pool) = &self.pool {
-            if self.kind.uses_api_key() {
-                return Err(format!(
-                    "provider {id}: \"pool\" is only for the sign-in kinds: an API key \
-                     provider keeps one key"
-                ));
-            }
             pool.check()
                 .map_err(|error| format!("provider {id}: {error}"))?;
         }
@@ -1002,17 +1032,19 @@ pub async fn add_signed_in(path: &Path, kind: Kind) -> Result<bool, String> {
     .await
 }
 
-/// Forgets the account `account` of the sign-in kind `kind` wherever a
-/// provider made it its active account, after it was removed.
-pub async fn forget_account(path: &Path, kind: Kind, account: &str) -> Result<(), String> {
+/// Forgets the account `account` of the credential store's provider
+/// `store` ([`account_store`]) wherever a provider made it its active
+/// account, after it was removed.
+pub async fn forget_account(path: &Path, store: &str, account: &str) -> Result<(), String> {
     edit_settings(path, |file| {
         let settings = Settings::from_value(&Value::Object(file.clone()))?;
         let using: Vec<String> = settings
             .providers
             .iter()
             .flatten()
-            .filter(|(_, provider)| {
-                provider.kind == kind && provider.active_account.as_deref() == Some(account)
+            .filter(|(id, provider)| {
+                account_store(id, provider.kind) == store
+                    && provider.active_account.as_deref() == Some(account)
             })
             .map(|(id, _)| id.clone())
             .collect();

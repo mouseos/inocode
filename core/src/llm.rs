@@ -165,6 +165,8 @@ enum Attempt {
     Unsent(ErrorInfo),
     /// The request was sent and got no answer, or a broken one.
     Broken(ErrorInfo),
+    /// The host was never reached ([`unreachable_code`]).
+    Unreachable { error: ErrorInfo, code: String },
     /// The provider answered with an error status.
     Refused {
         error: ErrorInfo,
@@ -539,9 +541,11 @@ impl Llm {
         Ok(stream)
     }
 
-    /// Starts an answer on the account the pool chooses. A quota refusal
-    /// (HTTP 429 or 402) is retried once on the account the pool chooses
-    /// next, when that is another one: nothing of the answer was streamed.
+    /// Starts an answer on the account the pool chooses. A refusal the
+    /// pool retries ([`crate::pool::Outcome::retry`]) is sent again once,
+    /// on the same account after a short wait or on the account the pool
+    /// chooses next when that is another one: nothing of the answer was
+    /// streamed.
     async fn start_routed<F, Fut>(
         &self,
         route: &crate::pool::Route,
@@ -551,18 +555,29 @@ impl Llm {
         F: Fn(Option<String>) -> Fut,
         Fut: std::future::Future<Output = Result<ChatStream, Attempt>>,
     {
+        use crate::pool::Retry;
         let thread = crate::pool::current_thread();
+        let model = self.config.model.as_str();
+        let threshold = route.rules.host_circuit_threshold;
         let mut refused: Option<(String, ErrorInfo)> = None;
+        let mut moved = false;
+        let mut same_tried = false;
+        let mut again: Option<(String, Vec<crate::pool::Member>)> = None;
         loop {
-            let (account, members) = self.pick(route, thread).await?;
+            let (account, members) = match again.take() {
+                Some(same) => same,
+                None => self.pick(route, thread).await?,
+            };
             if let Some((_, error)) = refused.take_if(|(first, _)| *first == account) {
                 return Err(error);
             }
-            let retried = refused.is_some();
             let record = |outcome: crate::pool::Outcome| {
-                let ctx = route.ctx(&members, crate::pool::now_ms());
+                let ctx = route.ctx(&members, model, crate::pool::now_ms());
                 let account = account.clone();
-                async move { route.pool.record(&ctx, &account, thread, &outcome).await }
+                async move {
+                    route.pool.note_host(&route.host, threshold, &outcome);
+                    route.pool.record(&ctx, &account, thread, &outcome).await
+                }
             };
             match attempt(Some(account.clone())).await {
                 Ok(mut stream) => {
@@ -571,6 +586,7 @@ impl Llm {
                         route: route.clone(),
                         store: self.store_path().ok(),
                         account,
+                        model: model.to_string(),
                         thread,
                     });
                     return Ok(stream);
@@ -580,39 +596,91 @@ impl Llm {
                     record(crate::pool::Outcome::Broken(error.message.clone())).await;
                     return Err(error);
                 }
+                Err(Attempt::Unreachable { error, code }) => {
+                    record(crate::pool::Outcome::Unreachable {
+                        message: error.message.clone(),
+                        code,
+                    })
+                    .await;
+                    return Err(error);
+                }
                 Err(Attempt::Refused { error, outcome }) => {
-                    let quota = outcome.is_quota();
+                    let retry = outcome.retry(&route.kind, crate::pool::now_ms());
                     record(outcome).await;
-                    if !quota || retried {
+                    let usable = members.iter().filter(|member| member.usable()).count();
+                    let wait = match retry {
+                        Retry::Same(wait) if !same_tried && !moved && usable > 1 => Some(wait),
+                        Retry::SameThenOther(wait) if !same_tried && !moved => Some(wait),
+                        _ => None,
+                    };
+                    if let Some(wait) = wait {
+                        same_tried = true;
+                        tokio::time::sleep(Duration::from_millis(wait)).await;
+                        again = Some((account, members));
+                        continue;
+                    }
+                    if moved || !matches!(retry, Retry::Other | Retry::SameThenOther(_)) {
                         return Err(error);
                     }
+                    moved = true;
                     refused = Some((account, error));
                 }
             }
         }
     }
 
-    /// The accounts of the route's provider kind.
+    /// The accounts of the route's provider kind; of a static-key provider,
+    /// those that hold a key.
     fn route_accounts(
         &self,
         route: &crate::pool::Route,
     ) -> Result<Vec<crate::oauth::Account>, ErrorInfo> {
-        crate::oauth::Store::load(self.store_path()?)
-            .map(|store| store.accounts(route.kind))
-            .map_err(|error| ErrorInfo::new("provider_config", error))
+        let accounts = crate::oauth::Store::load(self.store_path()?)
+            .map(|store| store.accounts(&route.kind))
+            .map_err(|error| ErrorInfo::new("provider_config", error))?;
+        if self.config.auth != AuthKind::ApiKey {
+            return Ok(accounts);
+        }
+        let keys: Vec<crate::oauth::Account> = accounts
+            .into_iter()
+            .filter(|account| account.has_key)
+            .collect();
+        if keys.is_empty() {
+            return Err(ErrorInfo::new(
+                "provider_unconfigured",
+                format!(
+                    "no API key is stored for the provider {}; run `inocode-server key set {}`",
+                    route.provider, route.provider
+                ),
+            ));
+        }
+        Ok(keys)
     }
 
     /// The account the pool chooses for a request of `thread`, with the
     /// accounts it chose from; the usage reads the pool asks for are
-    /// started.
+    /// started. While the provider's host circuit is open nothing is sent.
     async fn pick(
         &self,
         route: &crate::pool::Route,
         thread: Option<crate::store::SessionId>,
     ) -> Result<(String, Vec<crate::pool::Member>), ErrorInfo> {
+        if let Err(seconds) = route
+            .pool
+            .admit_host(&route.host, route.rules.host_circuit_threshold)
+        {
+            return Err(ErrorInfo::new(
+                "provider_unreachable",
+                format!(
+                    "the host of the provider {} could not be reached several times in a row; \
+                     trying again in {seconds} s",
+                    route.provider
+                ),
+            ));
+        }
         let accounts = self.route_accounts(route)?;
         let unavailable = |accounts: &[crate::oauth::Account]| {
-            crate::oauth::choose_account(route.kind, accounts, route.pinned.as_deref())
+            crate::oauth::choose_account(&route.kind, accounts, route.pinned.as_deref())
                 .err()
                 .unwrap_or_else(|| {
                     ErrorInfo::new(
@@ -631,7 +699,7 @@ impl Llm {
         }
         let members: Vec<crate::pool::Member> =
             accounts.iter().map(crate::pool::Member::of).collect();
-        let ctx = route.ctx(&members, crate::pool::now_ms());
+        let ctx = route.ctx(&members, &self.config.model, crate::pool::now_ms());
         let (chosen, due) = route.pool.choose(&ctx, thread).await;
         self.read_usage_of(route, due);
         match chosen {
@@ -660,12 +728,34 @@ impl Llm {
                 }
             }
         }
-        let ctx = route.ctx(&members, crate::pool::now_ms());
+        let ctx = route.ctx(&members, &self.config.model, crate::pool::now_ms());
         match route.pool.peek(&ctx).await {
             Some(account) => Ok(Some(account)),
-            None => crate::oauth::choose_account(route.kind, &accounts, route.pinned.as_deref())
+            None => crate::oauth::choose_account(&route.kind, &accounts, route.pinned.as_deref())
                 .map(Some),
         }
+    }
+
+    /// The static key of `account` of the route's provider, else the key
+    /// the client was made with.
+    fn api_key_of(&self, account: Option<&str>) -> Result<String, ErrorInfo> {
+        let (Some(account), Some(route)) = (account, &self.route) else {
+            return Ok(self.config.api_key.clone());
+        };
+        crate::oauth::Store::load(self.store_path()?)
+            .map_err(|error| ErrorInfo::new("provider_config", error))?
+            .account_credential(&route.kind, account)
+            .and_then(|credential| credential.api_key.clone())
+            .filter(|key| !key.trim().is_empty())
+            .ok_or_else(|| {
+                ErrorInfo::new(
+                    "provider_unconfigured",
+                    format!(
+                        "the key {account} of the provider {} is no longer stored",
+                        route.provider
+                    ),
+                )
+            })
     }
 
     /// Reads the usage of `accounts` in the background for the pool.
@@ -679,9 +769,9 @@ impl Llm {
         };
         for account in accounts {
             let pool = std::sync::Arc::clone(&route.pool);
-            let kind = route.kind;
+            let kind = route.kind.clone();
             if !readable {
-                tokio::spawn(async move { pool.read_done(kind, &account, None).await });
+                tokio::spawn(async move { pool.read_done(&kind, &account, None).await });
                 continue;
             }
             let client = self.client.clone();
@@ -703,7 +793,7 @@ impl Llm {
                 let quota = usage
                     .as_ref()
                     .and_then(|usage| crate::pool::usage_quota(usage, crate::pool::now_ms()));
-                pool.read_done(kind, &account, quota).await;
+                pool.read_done(&kind, &account, quota).await;
             });
         }
     }
@@ -711,22 +801,30 @@ impl Llm {
     /// Sends `body` on `account` (the fixed or only account when `None`)
     /// and returns the answer once its status is a success.
     async fn send(&self, account: Option<&str>, body: Value) -> Result<reqwest::Response, Attempt> {
+        let key = match self.config.auth {
+            AuthKind::ApiKey => self.api_key_of(account).map_err(Attempt::Unsent)?,
+            _ => String::new(),
+        };
         let (request, signed_in) = match self.config.provider {
-            ProviderKind::OpenAi => (self.openai_request(&body), None),
+            ProviderKind::OpenAi => (self.openai_request(&key, &body), None),
             ProviderKind::Anthropic => self
-                .anthropic_request(account, body)
+                .anthropic_request(account, &key, body)
                 .await
                 .map_err(Attempt::Unsent)?,
             ProviderKind::Responses => self
-                .responses_request(account, &body)
+                .responses_request(account, &key, &body)
                 .await
                 .map_err(Attempt::Unsent)?,
         };
         let response = request.send().await.map_err(|error| {
-            Attempt::Broken(ErrorInfo::new(
-                "provider_http",
-                format!("request failed: {error}"),
-            ))
+            let failed = ErrorInfo::new("provider_http", format!("request failed: {error}"));
+            match unreachable_code(&error) {
+                Some(code) => Attempt::Unreachable {
+                    error: failed,
+                    code,
+                },
+                None => Attempt::Broken(failed),
+            }
         })?;
         self.answered(account, signed_in.as_ref(), response).await
     }
@@ -747,24 +845,36 @@ impl Llm {
         if response.status().is_success() {
             return Ok(response);
         }
+        let headers = response.headers().clone();
         let header = |name: &str| {
-            response
-                .headers()
+            headers
                 .get(name)
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_string)
         };
         let retry_after = header("retry-after");
-        let resets = crate::pool::refusal_resets(&header);
         let body = match read_capped(&mut response, ERROR_BODY_MAX_BYTES).await {
             Ok(Some(bytes)) => String::from_utf8_lossy(&bytes).into_owned(),
             Ok(None) | Err(_) => String::new(),
+        };
+        let kind = match &self.route {
+            Some(route) => route.kind.clone(),
+            None => self.config.auth.store_name().to_string(),
+        };
+        let refusal = crate::pool::refusal(&kind, status, &header, &body, crate::pool::now_ms());
+        let resets = match refusal {
+            crate::pool::Refusal::Family => crate::pool::family_resets(&header),
+            _ => crate::pool::refusal_resets(&header),
         };
         let denial = status == 403 && crate::pool::names_denial(&body);
         if let Some(credential) = signed_in {
             match status {
                 401 => self.refused(account, credential).await,
-                403 if !denial => self.mark_refused(account).await,
+                // Reference `isAccountRefusal`: an Anthropic 403 is no
+                // verdict on the sign-in.
+                403 if !denial && self.config.auth != AuthKind::ClaudeOauth => {
+                    self.mark_refused(account).await
+                }
                 _ => {}
             }
         }
@@ -776,6 +886,7 @@ impl Llm {
                 retry_after,
                 resets,
                 denial,
+                refusal,
                 message,
             },
         })
@@ -959,10 +1070,10 @@ impl Llm {
         format!("{base}/v1/messages")
     }
 
-    fn openai_request(&self, body: &Value) -> reqwest::RequestBuilder {
+    fn openai_request(&self, key: &str, body: &Value) -> reqwest::RequestBuilder {
         self.client
             .post(self.url("chat/completions"))
-            .bearer_auth(&self.config.api_key)
+            .bearer_auth(key)
             .header("accept", "text/event-stream")
             .json(body)
     }
@@ -970,6 +1081,7 @@ impl Llm {
     async fn anthropic_request(
         &self,
         account: Option<&str>,
+        key: &str,
         mut body: Value,
     ) -> Result<(reqwest::RequestBuilder, Option<Credential>), ErrorInfo> {
         let destination = destination(ProviderKind::Anthropic, &self.config);
@@ -997,7 +1109,7 @@ impl Llm {
                 .header("anthropic-beta", beta);
             signed_in = Some(credential);
         } else {
-            request = request.header("x-api-key", &self.config.api_key);
+            request = request.header("x-api-key", key);
             if let Some(beta) = crate::reasoning::anthropic_beta(&destination, summary) {
                 request = request.header("anthropic-beta", beta);
             }
@@ -1023,6 +1135,7 @@ impl Llm {
                 plan: None,
                 windows: Vec::new(),
                 theos: Some(theos),
+                credits: None,
             });
         }
         if matches!(self.config.auth, AuthKind::ApiKey | AuthKind::DeepAi) {
@@ -1126,6 +1239,7 @@ impl Llm {
     async fn responses_request(
         &self,
         account: Option<&str>,
+        key: &str,
         body: &Value,
     ) -> Result<(reqwest::RequestBuilder, Option<Credential>), ErrorInfo> {
         let request = self
@@ -1134,7 +1248,7 @@ impl Llm {
             .header("accept", "text/event-stream");
         let mut signed_in = None;
         let request = match self.config.auth {
-            AuthKind::ApiKey => request.bearer_auth(&self.config.api_key),
+            AuthKind::ApiKey => request.bearer_auth(key),
             // The Muse account token must never be sent to the model API
             // (measured 401); its minted key is the bearer.
             AuthKind::MuseSubscription => {
@@ -1465,9 +1579,44 @@ async fn read_usage(
 impl Attempt {
     fn error(self) -> ErrorInfo {
         match self {
-            Self::Unsent(error) | Self::Broken(error) | Self::Refused { error, .. } => error,
+            Self::Unsent(error)
+            | Self::Broken(error)
+            | Self::Unreachable { error, .. }
+            | Self::Refused { error, .. } => error,
         }
     }
+}
+
+/// Why a request never reached its host, when the error proves it: the
+/// name did not resolve, or the connection was refused or had no route
+/// (reference `PRE_CONNECT_REACHABILITY_CODES`). A reset, a timeout or a
+/// TLS failure may come after the host saw the request, so they are not.
+fn unreachable_code(error: &reqwest::Error) -> Option<String> {
+    if !error.is_connect() {
+        return None;
+    }
+    let mut source: Option<&(dyn std::error::Error + 'static)> = std::error::Error::source(error);
+    while let Some(current) = source {
+        if let Some(io) = current.downcast_ref::<std::io::Error>() {
+            let code = match io.kind() {
+                std::io::ErrorKind::ConnectionRefused => Some("connection_refused"),
+                std::io::ErrorKind::HostUnreachable => Some("host_unreachable"),
+                std::io::ErrorKind::NetworkUnreachable => Some("network_unreachable"),
+                std::io::ErrorKind::NetworkDown => Some("network_down"),
+                _ => None,
+            };
+            if let Some(code) = code {
+                return Some(code.to_string());
+            }
+        }
+        // hyper-util names a failed name lookup this way; its error type
+        // is not exported to match on.
+        if current.to_string().starts_with("dns error") {
+            return Some("dns".to_string());
+        }
+        source = current.source();
+    }
+    None
 }
 
 /// The pool's account of a started answer, so a failure of its stream
@@ -1476,6 +1625,7 @@ struct Ticket {
     route: crate::pool::Route,
     store: Option<std::path::PathBuf>,
     account: String,
+    model: String,
     thread: Option<crate::store::SessionId>,
 }
 
@@ -2002,7 +2152,13 @@ impl ChatStream {
                 let outcome = crate::pool::Outcome::Broken(error.message.clone());
                 ticket
                     .route
-                    .record(store, &ticket.account, ticket.thread, &outcome)
+                    .record(
+                        store,
+                        &ticket.account,
+                        &ticket.model,
+                        ticket.thread,
+                        &outcome,
+                    )
                     .await;
             }
         }
