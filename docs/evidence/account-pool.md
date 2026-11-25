@@ -187,6 +187,7 @@
 
 - 保存方式は `settings.json` の `server.credentials`（`auto`（既定）・`keyring`・`encrypted-file`・`plaintext`）で選ぶ。サーバーは起動時にこれを読み、保管庫を一度開く。パスフレーズで閉じたファイルなら、端末でパスフレーズを尋ねる（表示しない。3 回まで）。パスフレーズを環境変数からは読まない。
 - 試験の中で一時フォルダーに作るログイン情報は、平文の方式で扱う（OS の保管庫に残さず、パスフレーズも要らないように）。
+- 本物の移行（2026-11-25、Windows 11）：この機械の平文の `~/.inocode/auth.json`（claude-oauth・deepai・gpt-oauth・muse-code の 4 件）が、最初の読み込みで Windows の資格情報マネージャーへ移った。ファイルには秘密を含まない目次（形式 `inocode-credentials` 版 2、`backend: keyring`、アカウントの一覧）だけが残った。gpt-oauth の値は 2 つに分けて保存された。移した後、`live_api::a_turn_answers_on_the_provider_the_settings_choose` で claude-oauth（claude-haiku-5-5、1.8 秒）と gpt-oauth（gpt-6-luna、2.4 秒）がどちらも答えた。
 
 - **関連ソースコード：** `core/src/secrets.rs`（保存先の選択・暗号化・移行）、`core/src/oauth.rs`（`Store` がこれを使う）。
 - **根拠の状態：** UNSUPPORTED_APPROVED（上の「方針」のユーザー判断による。学術研究での裏付けは調べていない）。暗号の使い方は下の公式資料・規格に合わせた。
