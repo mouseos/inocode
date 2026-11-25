@@ -303,6 +303,29 @@ async fn thinking_is_translated_while_turned_on() {
                 .any(|c| ('\u{3040}'..='\u{30ff}').contains(&c)),
             "the translation has no Japanese kana"
         );
+        // The translation is shown only: the thread keeps the thinking as
+        // the model wrote it.
+        let read = support::call(
+            &mut client,
+            6,
+            json!({"id": 6, "method": "thread/read", "params": {"thread_id": thread}}),
+        )
+        .await;
+        let stored = read["result"]["messages"].to_string();
+        let first_translated = seen.translated.split('。').next().unwrap_or_default();
+        assert!(
+            !first_translated.is_empty() && !stored.contains(first_translated),
+            "the translation was stored"
+        );
+        let first_thinking: String = seen.thinking.chars().take(40).collect();
+        assert!(
+            stored.contains(
+                serde_json::to_string(&first_thinking)
+                    .unwrap()
+                    .trim_matches('"')
+            ),
+            "the thinking as written was not stored"
+        );
         let off = support::call(
             &mut client,
             7,

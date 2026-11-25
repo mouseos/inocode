@@ -295,7 +295,7 @@ impl Translator {
         if !sent.is_empty() {
             let translated = match self.service {
                 Service::Edge | Service::Firefox | Service::Chromium => {
-                    self.around_code(&sent, to).await?
+                    self.with_code_inline(&sent, to).await?
                 }
                 Service::Google => self.with_code_marked(&sent, to).await?,
             };
@@ -335,6 +335,58 @@ impl Translator {
         Ok(out)
     }
 
+    /// For the services that cannot be told to leave code alone: each text
+    /// goes whole, code and all, since cutting a sentence at its code makes
+    /// pieces that translate badly (docs/evidence/translation.md); each
+    /// piece of code found again in the translation is put back as
+    /// written, and a text where one is not found is translated around its
+    /// code instead.
+    async fn with_code_inline(&self, texts: &[String], to: &str) -> Result<Vec<String>, ErrorInfo> {
+        let split: Vec<Vec<Segment>> = texts.iter().map(|text| segments(text)).collect();
+        let whole: Vec<String> = texts.iter().map(|text| text.trim().to_string()).collect();
+        let answers = self.plain(&whole, to).await?;
+        let mut out = Vec::with_capacity(texts.len());
+        let mut redo = Vec::new();
+        for (index, ((answer, segments), text)) in answers.iter().zip(&split).zip(texts).enumerate()
+        {
+            match restore_code(answer, segments) {
+                Some(restored) => {
+                    let lead = &text[..text.len() - text.trim_start().len()];
+                    let trail = &text[text.trim_end().len()..];
+                    out.push(format!("{lead}{restored}{trail}"));
+                }
+                None => {
+                    out.push(String::new());
+                    redo.push(index);
+                }
+            }
+        }
+        if !redo.is_empty() {
+            let again: Vec<String> = redo.iter().map(|&index| texts[index].clone()).collect();
+            for (index, text) in redo.into_iter().zip(self.around_code(&again, to).await?) {
+                out[index] = text;
+            }
+        }
+        Ok(out)
+    }
+
+    /// `texts` as plain text through the service, each on its own.
+    async fn plain(&self, texts: &[String], to: &str) -> Result<Vec<String>, ErrorInfo> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        match self.service {
+            Service::Edge => self.edge(texts, to).await,
+            Service::Firefox => self.firefox.translate(texts, to).await,
+            Service::Chromium => self.chromium.translate(texts, to).await,
+            Service::Google => {
+                let escaped: Vec<String> = texts.iter().map(|text| escape(text)).collect();
+                let answers = self.google(&escaped, to).await?;
+                Ok(answers.iter().map(|answer| unescape(answer)).collect())
+            }
+        }
+    }
+
     /// Translates the text between pieces of code, each run on its own,
     /// and puts the code back between them as written.
     async fn around_code(&self, texts: &[String], to: &str) -> Result<Vec<String>, ErrorInfo> {
@@ -345,21 +397,7 @@ impl Translator {
             .filter(|segment| segment.translate)
             .map(|segment| segment.text.trim().to_string())
             .collect();
-        let mut translated = if sent.is_empty() {
-            Vec::new()
-        } else {
-            match self.service {
-                Service::Edge => self.edge(&sent, to).await?,
-                Service::Firefox => self.firefox.translate(&sent, to).await?,
-                Service::Chromium => self.chromium.translate(&sent, to).await?,
-                Service::Google => {
-                    let escaped: Vec<String> = sent.iter().map(|text| escape(text)).collect();
-                    let answers = self.google(&escaped, to).await?;
-                    answers.iter().map(|answer| unescape(answer)).collect()
-                }
-            }
-        }
-        .into_iter();
+        let mut translated = self.plain(&sent, to).await?.into_iter();
         Ok(split
             .into_iter()
             .map(|segments| {
@@ -418,12 +456,42 @@ impl Translator {
             "zh-Hant" => "zh-TW",
             other => other,
         };
+        let (mut out, detected) = self.google_from(html, "auto", to).await?;
+        // Google takes a mostly English text with a few Japanese or Chinese
+        // characters for that language and gives it back untranslated;
+        // such texts go again as English.
+        let again: Vec<usize> = (0..html.len())
+            .filter(|&index| {
+                detected
+                    .get(index)
+                    .is_some_and(|language| primary(language) == primary(to))
+                    && script_language(&html[index]).is_none()
+            })
+            .collect();
+        if !again.is_empty() {
+            let resent: Vec<String> = again.iter().map(|&index| html[index].clone()).collect();
+            let (translated, _) = self.google_from(&resent, "en", to).await?;
+            for (index, text) in again.into_iter().zip(translated) {
+                out[index] = text;
+            }
+        }
+        Ok(out)
+    }
+
+    /// `html` from the language `from` (or `auto`) to `to`, and the
+    /// languages Google took each for.
+    async fn google_from(
+        &self,
+        html: &[String],
+        from: &str,
+        to: &str,
+    ) -> Result<(Vec<String>, Vec<String>), ErrorInfo> {
         let response = self
             .client
             .post(&self.hosts.google)
             .header("Content-Type", "application/json+protobuf")
             .header("X-Goog-API-Key", &self.google_key)
-            .body(json!([[html, "auto", to], "te_lib"]).to_string())
+            .body(json!([[html, from, to], "te_lib"]).to_string())
             .timeout(WAIT)
             .send()
             .await
@@ -433,14 +501,24 @@ impl Translator {
         if items.len() != html.len() {
             return Err(unexpected(&value));
         }
-        items
+        let texts = items
             .iter()
             .map(|item| {
                 item.as_str()
                     .map(str::to_string)
                     .ok_or_else(|| unexpected(item))
             })
-            .collect()
+            .collect::<Result<_, _>>()?;
+        let detected = value[1]
+            .as_array()
+            .map(|languages| {
+                languages
+                    .iter()
+                    .map(|language| language.as_str().unwrap_or_default().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok((texts, detected))
     }
 }
 
@@ -513,13 +591,104 @@ fn unmark(html: &str, marks: usize) -> Option<String> {
     while let Some(start) = rest.find(MARK_OPEN) {
         let inner = &rest[start + MARK_OPEN.len()..];
         let end = inner.find(MARK_CLOSE)?;
+        let code = unescape(&inner[..end]);
         out.push_str(&unescape(&rest[..start]));
-        out.push_str(&unescape(&inner[..end]));
+        drop_copied_start(&mut out, &code);
+        out.push_str(&code);
         rest = &inner[end + MARK_CLOSE.len()..];
         found += 1;
     }
     out.push_str(&unescape(rest));
     (found == marks).then_some(out)
+}
+
+/// Quotes a translation may put around code in place of its backticks.
+const QUOTES: [(&str, &str); 7] = [
+    ("`", "`"),
+    ("「", "」"),
+    ("『", "』"),
+    ("'", "'"),
+    ("\"", "\""),
+    ("\u{201c}", "\u{201d}"),
+    ("\u{2018}", "\u{2019}"),
+];
+
+/// `translation` with each piece of code of `segments` put back as
+/// written where it is found again: its text in any of [`QUOTES`], or, for
+/// text of three or more characters, bare between non-word characters.
+/// `None` when a piece is not found, or for a fenced block, whose lines a
+/// translation does not keep.
+fn restore_code(translation: &str, segments: &[Segment]) -> Option<String> {
+    let mut found: Vec<(usize, usize, &str)> = Vec::new();
+    let free = |found: &[(usize, usize, &str)], start: usize, end: usize| {
+        found
+            .iter()
+            .all(|&(at, until, _)| end <= at || until <= start)
+    };
+    for segment in segments.iter().filter(|segment| !segment.translate) {
+        let code = segment.text.as_str();
+        if code.trim().is_empty() {
+            continue;
+        }
+        if code.starts_with("```") {
+            return None;
+        }
+        let inner = code.trim_matches('`');
+        if inner.is_empty() {
+            return None;
+        }
+        let quoted = QUOTES.iter().find_map(|(open, close)| {
+            let wanted = format!("{open}{inner}{close}");
+            translation
+                .match_indices(&wanted)
+                .map(|(at, _)| (at, at + wanted.len()))
+                .find(|&(start, end)| free(&found, start, end))
+        });
+        let bare = || {
+            (inner.chars().count() >= 3)
+                .then(|| {
+                    translation
+                        .match_indices(inner)
+                        .map(|(at, _)| (at, at + inner.len()))
+                        .find(|&(start, end)| {
+                            let before = translation[..start].chars().next_back();
+                            let after = translation[end..].chars().next();
+                            let word = |c: Option<char>| {
+                                c.is_some_and(|c| c.is_alphanumeric() && c.is_ascii())
+                            };
+                            !word(before) && !word(after) && free(&found, start, end)
+                        })
+                })
+                .flatten()
+        };
+        let (start, end) = quoted.or_else(bare)?;
+        found.push((start, end, code));
+    }
+    found.sort_by_key(|&(start, ..)| start);
+    let mut out = String::with_capacity(translation.len());
+    let mut at = 0;
+    for (start, end, code) in found {
+        out.push_str(&translation[at..start]);
+        out.push_str(code);
+        at = end;
+    }
+    out.push_str(&translation[at..]);
+    Some(out)
+}
+
+/// Google sometimes writes the start of a marked piece of code again just
+/// before the mark (`` `let <mark>`let t = s;`</mark> ``); such a copy at the
+/// end of `out` is taken off. Code starts with a backtick, which translated
+/// text does not end with, so text of its own is not taken.
+fn drop_copied_start(out: &mut String, code: &str) {
+    let kept = out.trim_end().len();
+    let copied = code
+        .char_indices()
+        .map(|(at, char)| at + char.len_utf8())
+        .rfind(|&end| out[..kept].ends_with(&code[..end]));
+    if let Some(length) = copied {
+        out.truncate(kept - length);
+    }
 }
 
 fn failed(error: reqwest::Error) -> ErrorInfo {
@@ -648,16 +817,33 @@ impl Chunker {
                 continue;
             }
             let end = at + char.len_utf8();
-            let next = chars.peek().map(|&(_, next)| next);
             match char {
                 '\n' | '。' | '！' | '？' => sentence = Some(end),
-                '.' | '!' | '?' if next.is_some_and(char::is_whitespace) => sentence = Some(end),
+                '.' | '!' | '?' if starts_sentence(&text[end..]) => sentence = Some(end),
                 _ if char.is_whitespace() => space = Some(end),
                 _ => {}
             }
         }
         sentence.or(space.filter(|_| text.len() > LONGEST_CHUNK))
     }
+}
+
+/// Whether `rest`, the text after a `.`, `!` or `?`, starts a new
+/// sentence: space, then a capital, a digit, a list mark, a quote or code,
+/// or a character of a script without capitals. A lower-case word carries
+/// the sentence on, as after `println!` or `e.g.`; until the next word has
+/// come it is not known, so the cut waits.
+fn starts_sentence(rest: &str) -> bool {
+    let next = rest.trim_start();
+    if next.len() == rest.len() {
+        return false;
+    }
+    next.chars().next().is_some_and(|first| {
+        first.is_uppercase()
+            || first.is_ascii_digit()
+            || matches!(first, '-' | '*' | '`' | '(' | '"' | '\'' | '#')
+            || (!first.is_ascii() && !first.is_lowercase())
+    })
 }
 
 /// A translated piece of a stream.
@@ -1008,6 +1194,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn code_found_in_a_translation_is_put_back_as_written() {
+        let parts = segments("Check `parse_config` and `s` in `cfg(test)` now.");
+        assert_eq!(
+            restore_code("「parse_config」と『s』を 'cfg(test)' で確認する。", &parts).as_deref(),
+            Some("`parse_config`と`s`を `cfg(test)` で確認する。")
+        );
+        assert_eq!(
+            restore_code("cfg(test) の中の parse_config と「s」を確認。", &parts).as_deref(),
+            Some("`cfg(test)` の中の `parse_config` と`s`を確認。")
+        );
+        // `s` bare could be any letter s, so it is not taken.
+        assert_eq!(
+            restore_code("parse_config と s を cfg(test) で。", &parts),
+            None
+        );
+        assert_eq!(restore_code("設定を確認する。", &parts), None);
+        let fenced = segments("Run\n```\ncargo test\n```\n");
+        assert_eq!(restore_code("実行\n```\ncargo test\n```\n", &fenced), None);
+        assert_eq!(
+            restore_code("設定を確認。", &segments("Check the settings.")).as_deref(),
+            Some("設定を確認。")
+        );
+    }
+
+    #[test]
     fn marked_code_comes_back_as_written() {
         let parts = segments("Use `a && b <x>` and `c`.");
         let html = mark(&parts);
@@ -1023,6 +1234,11 @@ mod tests {
             Some("`c` と `a && b <x>` を使う & 終わり")
         );
         assert_eq!(unmark("<span class=notranslate>`c`</span> だけ", 2), None);
+        let copied = "問題: `let <span class=notranslate>`let t = s;`</span> が <span class=notranslate>`s`</span>使えない";
+        assert_eq!(
+            unmark(copied, 2).as_deref(),
+            Some("問題: `let t = s;` が `s`使えない")
+        );
         assert_eq!(unmark("切れた <span class=notranslate>`c`", 1), None);
     }
 
@@ -1068,6 +1284,13 @@ mod tests {
         assert_eq!(chunker.push("```\n"), Some("```\nfoo. bar\n```\n".into()));
         assert_eq!(chunker.push("考える。次"), Some("考える。".into()));
         assert_eq!(chunker.finish(), Some("次".into()));
+        assert_eq!(chunker.push("The println! macro, e.g. this one. "), None);
+        assert_eq!(
+            chunker.push("Now done! Next"),
+            Some("The println! macro, e.g. this one. Now done!".into())
+        );
+        assert_eq!(chunker.finish(), Some(" Next".into()));
+        assert_eq!(chunker.push("最初。"), Some("最初。".into()));
         assert_eq!(chunker.finish(), None);
         let long = "word ".repeat(100);
         assert_eq!(chunker.push(&long).map(|text| text.len()), Some(500));
@@ -1141,7 +1364,8 @@ mod tests {
         std::fs::remove_dir_all(&folder).unwrap();
     }
 
-    /// A stand-in for Edge's service that answers each text in capitals,
+    /// A stand-in for Edge's service that answers each text in capitals
+    /// outside backticks,
     /// or fails with 500 when a text says "fail"; gives back its address
     /// and the number of requests it had.
     async fn edge_stand_in() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
@@ -1181,7 +1405,20 @@ mod tests {
                 } else {
                     let items: Vec<Value> = texts
                         .iter()
-                        .map(|text| json!({"translations": [{"text": text.to_uppercase()}]}))
+                        .map(|text| {
+                            let shouted: Vec<String> = text
+                                .split('`')
+                                .enumerate()
+                                .map(|(at, part)| {
+                                    if at % 2 == 0 {
+                                        part.to_uppercase()
+                                    } else {
+                                        part.to_string()
+                                    }
+                                })
+                                .collect();
+                            json!({"translations": [{"text": shouted.join("`")}]})
+                        })
                         .collect();
                     ("200 OK", Value::from(items).to_string())
                 };
@@ -1263,9 +1500,8 @@ mod tests {
             .map(|piece| piece.error.as_ref().map_or("", |error| error.code))
             .collect();
         let count = |wanted: &str| codes.iter().filter(|&&code| code == wanted).count();
-        // The space after the last sentence is a piece of its own.
-        assert_eq!(pieces.len(), 41);
-        assert_eq!(count("translation_behind"), 41 - MOST_WAITING);
+        assert_eq!(pieces.len(), 40);
+        assert_eq!(count("translation_behind"), 40 - MOST_WAITING);
         assert_eq!(count("translation_timeout"), MOST_WAITING);
         drop(listener);
     }
@@ -1476,10 +1712,13 @@ mod tests {
         let texts = vec![
             "I should check `src/main.rs` before running the tests.".to_string(),
             "The user wants a & b <now>.".to_string(),
+            "Quick arithmetic: 9:47 plus 2 hours 38 minutes comes to 12:25, which is 午後0時25分."
+                .to_string(),
         ];
         let translated = translator.translate(&texts, "ja").await.unwrap();
         println!("{translated:?}");
         assert!(translated[0].contains("`src/main.rs`"));
-        assert_eq!(translated.len(), 2);
+        assert_eq!(translated.len(), 3);
+        assert!(!translated[2].starts_with("Quick"), "{}", translated[2]);
     }
 }
