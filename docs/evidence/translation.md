@@ -105,11 +105,29 @@ Firefox がページ翻訳に使うモデル（Bergamot / Marian）を Mozilla �
   6. 署名は base64url の 96 バイト（r と s が 48 バイトずつ）。署名者の証明書の P-384 の鍵で、ECDSA・SHA-384 で確かめる。
 - 当日の連なり（`https://content-signature-2.cdn.mozilla.net/g/chains/202402/remote-settings.content-signature.mozilla.org-2027-01-03-18-03-41.chain`）：署名者は P-384、有効 2026-10-15〜2027-01-03、中間が ecdsa-with-SHA384 で署名。中間は P-384、CA、用途コード署名、名前の制約 `.content-signature.mozilla.org`、根が sha384WithRSAEncryption で署名。根は RSA 4096 ビット（指数 3）、有効 2024-02-01〜2200-12-03。
 - 上の手順を Python で組んで、`translations-models-v2`（404 件、ASCII 以外の文字なし）と、ASCII 以外の文字を含む `password-rules`（403 件）を含む 7 つのコレクションの署名が合うことを確かめた（OpenSSL の入った Python の `cryptography` で）。
-- 仕様は、応答の `Backoff` 見出しに従うことを求めている（MUST）。inocode は一覧を 1 回の起動で 1 度しか取らないが、`Backoff` は読んでいない。
+
+### 置き場からの「待て」（`Backoff`・`Retry-After`、確かめた事実、2026-11-25）
+
+- 仕様（client-specifications の「Backoff Headers」）：「Client MUST honour the wait interval in seconds set in the `Backoff` response headers.」。`Retry-After`・429・503 については書かれていない。
+- Firefox（`services/settings/Utils.sys.mjs` の `fetchLatestChanges`、`services/settings/remote-settings.sys.mjs` の `pollChanges`）：変更の一覧（`monitor/changes`）の答えが成功したときだけ `Backoff` を整数の秒として読み、「今＋秒」を設定 `services.settings.server.backoff` に書く（設定なので再起動しても残る）。次の `pollChanges` はその時刻より前なら何も取らずに「Server is asking clients to back off」で終わり、過ぎていれば設定を消す。コレクションの changeset は kinto-http（`services/common/kinto-http-client.sys.mjs`）で取り、こちらは `Backoff` を読んでも、取得のたびに作り直すクライアントの中に覚えるだけ。`Retry-After` は再試行の回数が 0（既定）なので使われない。
+- application-services（`components/remote_settings/src/client.rs` の `RemoteState`）：置き場へのどの要求の答えでも（失敗の答えでも）`Backoff` と `Retry-After` を整数の秒として読み（数でなければ 0）、大きいほうが 0 より大きければ、その秒数が過ぎるまで次の要求を送らず `BackoffError` にする。覚えるのはメモリの中だけ。上限は無い。
+- 参照したソースは mozilla-firefox/firefox と mozilla/application-services の main ブランチ（2026-11-25 に取得、リビジョンは記録していない）。
+- 本物の置き場の答え（OneCRL の changeset、2026-11-25）には `Backoff` も `Retry-After` も無かった。実際に送られてくる場面は見ていない。
+
+### 証明書の失効（確かめた事実、2026-11-25）
+
+- Firefox の `security/manager/ssl/ContentSignatureVerifier.cpp` は、署名者の証明書の連なりを `AppTrustDomain`（`security/manager/ssl/AppTrustDomain.cpp`）で組む。`AppTrustDomain::GetCertTrust` は連なりの各証明書（根も含む）について、発行者の名前・通し番号・主体の名前・公開鍵（SubjectPublicKeyInfo）を取り出し（`security/certverifier/NSSCertDBTrustDomain.cpp` の `BuildRevocationCheckArrays`）、証明書の倉庫 cert_storage の `GetRevocationState` が「失効」（`STATE_ENFORCE`）を返せば `ERROR_REVOKED_CERTIFICATE` で断る。`AppTrustDomain::CheckRevocation` は何もしない（コメントに「We don't currently do revocation checking」）。つまり OCSP や CRL は使わず、見るのは cert_storage の失効の記録だけ。
+- cert_storage（`security/manager/ssl/cert_storage/src/lib.rs` の `get_revocation_state`）は、「発行者の名前の DER＋通し番号」と「主体の名前の DER＋公開鍵の DER の SHA-256」の 2 つの鍵で引く。
+- その記録は OneCRL から入る。`security/manager/ssl/RemoteSecuritySettings.sys.mjs` は Remote Settings の `security-state/onecrl` を署名者 `onecrl.content-signature.mozilla.org` で取り、同期のたびに `updateCertBlocklist` で各レコードの `issuerName`＋`serialNumber`、無ければ `subject`＋`pubKeyHash`（どれも base64）を失効として書く。レコードの `enabled` は見ない。同期の「sync」の知らせは署名が合った後に出るので、OneCRL 自身の署名は、それまでに倉庫にある記録（Firefox は同梱の OneCRL から始める）で確かめられる。CRLite は `AppTrustDomain` からは使われない。
+- 当日の OneCRL：920 件（`issuerName`・`serialNumber` のもの 911 件、`subject`・`pubKeyHash` のもの 9 件、`enabled` が true 404 件・false 516 件）。署名者の連なりは `https://content-signature-2.cdn.mozilla.net/g/chains/202402/onecrl.content-signature.mozilla.org-2027-01-04-22-29-07.chain` で、根は一覧と同じ。本物の一覧の連なりの証明書はどれも OneCRL に載っていなかった（下の手で動かす試験）。
 
 ### inocode の決め事
 
-- 一覧の署名：上の手順をすべて行い、合わない一覧は使わない（モデルの取得も更新もしない）。証明書の読み取りは `x509-cert`、P-384 の署名は `p384`、根から中間への RSA の署名は既存の `rsa`。どれも Rust の実装。Firefox（mozilla::pkix）と同じく、知らない「重要」な拡張を持つ証明書は断る。名前の制約は確かめない（署名者の名前を固定しており、その名前は中間の制約の内側にあるため）。`x5u` は https だけ、64 KB まで。失効の確認（OneCRL など）はしない。
+- 一覧の署名：上の手順をすべて行い、合わない一覧は使わない（モデルの取得も更新もしない）。証明書の読み取りは `x509-cert`、P-384 の署名は `p384`、根から中間への RSA の署名は既存の `rsa`。どれも Rust の実装。Firefox（mozilla::pkix）と同じく、知らない「重要」な拡張を持つ証明書は断る。名前の制約は確かめない（署名者の名前を固定しており、その名前は中間の制約の内側にあるため）。`x5u` は https だけ、64 KB まで。
+- 失効：Firefox と同じく OneCRL だけを見る。一覧を取る前に `security-state/onecrl` の changeset を取り、同じ手順で署名を確かめる（署名者の名前は `onecrl.content-signature.mozilla.org`）。そのときの失効の記録には、前に確かめて置き場の `onecrl.json` に書いた OneCRL を使う（無ければ空。Firefox は同梱の OneCRL から始めるが、inocode には同梱が無い）。合えば、その OneCRL を `onecrl.json` に書き、一覧の連なりの各証明書（根も含む）を「発行者の名前の DER＋通し番号」と「主体の名前の DER＋公開鍵の DER の SHA-256」で引き、載っていれば一覧を断る。OneCRL が取れない・合わないときは、Firefox が倉庫の記録を使い続けるのと同じく、前の `onecrl.json`（無ければ空）で一覧を確かめる。`enabled` は Firefox と同じく見ない。base64 でない値のレコードは cert_storage と同じく飛ばす。名前は証明書を読んでから DER に書き直したもので比べる（DER として正しい証明書なら元のバイトと同じ）。
+- 置き場からの「待て」：application-services と同じく、置き場（`firefox.settings.services.mozilla.com`）へのどの要求の答えでも `Backoff` と `Retry-After` を整数の秒として読み、大きいほうが 0 より大きければ「今＋秒」を覚え、その時刻までは置き場に何も送らない。Firefox と同じく覚えた時刻は残す：置き場ごとに、置き場の `settings-backoff.json` に書き、メモリにも持つ。別のプロセスや次の起動もこのファイルを読む。待っている間も、手元のモデルと、そのプロセスですでに取った一覧はそのまま使う。手元に無い組が要るときだけ「置き場があと何秒待つよう求めている」という誤りになる。裏の更新の確かめは黙って飛ばす。上限は付けない（Firefox・application-services とも付けていない）。`x5u` と添付の取得先は別のホストなので対象にしない。`translate::languages`（訳せる言語の一覧）は置き場のフォルダを受け取らないので、メモリの中の時刻だけを見る。
+- 別々のプロセスが同じ置き場を使うとき：置き場の `.locks/` に組のフォルダごとに 2 つの錠のファイル（`<元>-<先>.write`、`<元>-<先>.read`）を置き、OS のファイルの錠（`std::fs::File::lock`・`lock_shared`）を掛ける。`write` は取得・更新・削除の間ずっと 1 つの持ち手だけが持つ（ダウンロードも含む）。`read` はモデルのファイルを読む間は共有で、フォルダの入れ替えと削除の間だけ独占で持つ。このため裏で更新をダウンロードしている間も、別のプロセスや同じプロセスは手元の版を読める。取る順は `write`、`read`、プロセスの中の読み書きの錠の順に決めてあり、逆には取らない。錠はファイルを閉じると OS が外すので、プロセスが落ちても残らない。`write` を取ったときに、落ちたプロセスが残したものを片付ける：組のフォルダが無く `.old` だけがあれば `.old` を元の名前に戻し、そうでなければ `.old` を消し、`.update` はいつも消す。取得は `write` を取った後にもう一度手元を確かめ、別のプロセスがその間に取り終えていれば取らない。削除は `.old` を戻してから消すので、消したモデルが `.old` から戻ることはない。錠のファイルを作れない置き場（書き込めないフォルダ）では、読むときだけは錠なしで読む。
+- 根拠の状態：上の 3 つ（失効・「待て」・錠）は、Remote Settings の仕様と Firefox・application-services・Chromium のソースに合わせるための、互換と正しさのための仕組み。効果を示す学術研究は調べていない。依頼に沿って入れた。
 - 一覧は 1 回の起動（プロセス）で、置き場の送り先ごとに 1 度だけ取る（取れたものを覚えておく）。取れなかったときは覚えず、次に要るときにまた取る。
 - 更新：手元にある組は、その起動で初めて使うときに 1 度だけ、一覧により新しい版（数字の大小）があるか確かめる。`prepare()` からは確かめ終わってから読み込む。訳すときは古い版のまま訳し、確かめは裏で行う（ネットにつながらないときに訳が待たされないため）。新しい版があれば、別のフォルダ（`<元>-<先>.update`）に取って確かめてから、元のフォルダを `.old` に名前を変え、新しいフォルダを元の名前にし、`.old` を消す。この入れ替えの間は、同じプロセスの中のモデルの読み込みを止める（読み書きの錠）。入れ替えた後は、その `Translator` が覚えているモデルを捨て、次に使うとき新しい版を読む。取得や確認に失敗したら、`.update` を消して手元の版をそのまま使う。初めて取った組はその起動では確かめない。
 - 使用条件：`files.json` に `license` を書く（名前 `MPL-2.0`、出典 https://github.com/mozilla/translations/blob/main/README.md 。その README に「The model files are distributed under the MPL 2.0 license」とある。2026-11-25 に確かめた。旧来のモデル置き場 mozilla/firefox-translations-models の LICENSE も MPL 2.0）。`license` の無い古い `files.json` は同じ値として読む。
@@ -149,8 +167,10 @@ Firefox がページ翻訳に使うモデル（Bergamot / Marian）を Mozilla �
 - tiny の種類と、en→ja・ja→en・en→zh-Hans 以外の組のモデルは動かしていない。BPE の語彙、intgemm16・float32 の行列のモデルには対応していない。
 - 原文の言語を文字の種類で決めるやり方の当たり外れ。英語以外のラテン文字の言語（ドイツ語など）は英語として扱われる。
 - 一覧の内容が変わったとき（版 4 など）は使えなくなる。
-- 更新で実際に新しい版が配られたときの入れ替え（本物の一覧では、当日は手元の en→ja より新しい版が無かった）。模擬のサーバーでだけ確かめた。別のプロセスが同じフォルダを同時に読み書きする場合は守っていない。
-- 証明書の失効。`Backoff` 見出し。
+- 更新で実際に新しい版が配られたときの入れ替え（本物の一覧では、当日は手元の en→ja より新しい版が無かった）。模擬のサーバーでだけ確かめた。
+- 本物の置き場が `Backoff`・`Retry-After` を送ってきたときの動き（見たことがない。模擬でだけ確かめた）。`Retry-After` の日付の形（HTTP-date）は application-services と同じく読まない。
+- OneCRL に実際に載った署名者の連なりで一覧が断られる場面（本物では起きていない。模擬でだけ確かめた）。初めての起動では OneCRL 自身の署名を空の記録で確かめる点は Firefox（同梱の OneCRL がある）と違う。
+- 別々のプロセスの間の錠は Windows 11 でだけ確かめた（Unix の flock では動かしていない）。ネットワーク上のフォルダ（SMB・NFS）での錠の効き方は確かめていない。
 
 ## オフライン方式：Chrome の言語パック（Chromium 方式）
 
@@ -171,6 +191,7 @@ Chrome が組み込みの翻訳 API（Translator API）のために取ってく�
 - パックは 38 個。どれも英語ともう 1 言語の組（`language_pack.h` の `LanguagePackKey`、鍵の SHA-256 は `kTranslateKit*Config.public_key_sha`）。表は `chromium.rs` の `PACKS` に写した。英語以外どうしは英語を経由する（`language_pack.cc` の「Currently we always translate via English」）。
 - en-ja のパック：版 2024.9.9.1、56,490,050 バイト、CRX3（`Cr24`、版 3、見出しの長さ、見出しの protobuf、その後ろが zip）。見出しには RSA の証明が 2 つ（2048 ビットの鍵と、SHA-256 が上の値に一致する 4096 ビットの鍵）と ECDSA（P-256）の証明が 1 つ、`signed_header_data` の `crx_id` は鍵の SHA-256 の先頭 16 バイト。4096 ビットの鍵の署名（RSA PKCS#1 v1.5、SHA-256、署名する中身は `"CRX3 SignedData\0"`＋見出しの長さ（u32 LE）＋見出し＋zip）が合うことを、手で動かす試験で確かめた。
 - zip の中身：`en_ja_nmt/` と `ja_en_nmt/`（両方向）、それぞれ `encoder_0.tflite`（23,278,704 バイト）、`decoder_step_0.tflite`（14,574,968）、`decoder_init_0.tflite`（13,048）、`src_spm_model.model`・`tgt_spm_model.model`（SentencePiece）、同名の `.vocab`（文字の一覧）、`translation_model.pb`（320 バイト）、`processor_spec.pb`。ほかに `en_ja_dictionary/dictionary.bin`（先頭 `BD00`、中身は不明）、`_metadata/verified_contents.json`、`manifest.json`。
+- 更新サーバーからの「待て」（components/update_client、main ブランチを 2026-11-25 に取得）：`net/network_impl.cc` の `GetInt64Header` が答えの `X-Retry-After` を整数で読む（無い・数でなければ -1）。`request_sender.cc` の `OnNetworkFetcherComplete` は、URL が https で、答えが返ったとき（HTTP の状態が分かったとき）だけその値を使い、`kMaxRetryAfterSec`（24 時間）で頭を打つ（コメントに、見出しは CUP の署名の外なので https で守られるときだけ従う、とある）。`update_engine.cc` の `UpdateCheckResultsAvailable` は、0 以上なら永続のデータに「今＋秒」を書き（0 なら消す）、負なら何もしない。`UpdateEngine::IsThrottled` は、ユーザーが待っている確かめ（foreground）なら止めず、裏の確かめは「その時刻の 1 日前より後で、その時刻より前」のときだけ止める（時計のずれの影響を抑えるため、とコメントにある）。本物の答えに `X-Retry-After` が付いているかは確かめていない。
 - `translation_model.pb`（形式は公開されていない。en-ja での値）：1＝`en`、2＝`ja`、6.3＝{1: 2, 2: {1: 1, 2: 2, 3: 3.0, 5: 5.0, 6: 1, 7: 2, 8: -1, 9: 0.0, 10: 1.0}}、6.4＝{1: 1, 2: 4, 3: 72, 6: 1}、6.5＝モデル名とファイル名の組（`decoder_init_0`、`decoder_step_0`、`encoder_0`）、6.6・6.7＝原文側・訳側の SentencePiece のファイル名。
 - `processor_spec.pb`：en→ja は手順 `b2a`、`lc`、`add_period_10` と、その設定 `PreprocAddPeriod/add_period_10:max_sent_len=10:skip_in_training=true:use_wpm_tokens=false:mode=annotate`、`PreprocB2A/b2a:mode=tokenize`、`PreprocLowercaser/lc:activate_languages`。ja→en は `b2a` と `lc` だけ。これらの名前を説明する公開資料は見つからなかった（Web 検索、2026-11-25）。
 - SentencePiece：unigram、語彙 8000、`<unk>`=0、`<s>`=1、`</s>`=2、バイトへの分解あり、独自の正規化表あり。英語の原文側の語彙には大文字の片が無い（大文字を含む行はバイトの片 `<0x..>` だけ）。ja→en の訳側（英語）の語彙には `▁I`、`▁The` など大文字の片がある。
@@ -196,6 +217,8 @@ Chrome が組み込みの翻訳 API（Translator API）のために取ってく�
 - 読み込んだ方向は `Translator` の中に持ち、計算は `spawn_blocking` で行う。`settings/translation` で `chromium` の思考の翻訳がオンになったときも、Firefox 方式と同じく裏でパックを取りに行く。
 - 依存を 2 つ足した：`rsa` 0.9（署名の確認）、`flate2` 1（zip の展開。すでに他のクレート経由で入っていた）。どちらも Rust の実装。
 - 更新：要求の `version` に手元のパックの版（`pack.json` の `version`。無ければ `0.0.0.0`）を入れる。答えの `updatecheck.status` が `noupdate` なら手元のまま。新しい版が示されたら、初めての取得と同じ確認をして `en-<言語>.update` に置き、Firefox 方式と同じ名前の入れ替えで置き換える。確かめる時と回数（その起動で初めて使うとき 1 度、`prepare()` は待ち、訳すときは裏で）、失敗したら手元の版を使うことも Firefox 方式と同じ。
+- 更新サーバーからの「待て」：Chrome と同じく、https の更新サーバーの答えの `X-Retry-After` を整数の秒として読み、24 時間で頭を打ち、0 より大きければ「今＋秒」を、0 なら取り消しを、パックの置き場の `update-backoff.json` とメモリに書く。数でない・負・無いときは何もしない。手元のパックの更新の確かめ（Chrome の裏の確かめにあたると inocode が見なした）は、その時刻の 1 日前より後でその時刻より前なら送らず、黙って手元のパックを使う。初めての取得（ユーザーが待っている。Chrome の foreground にあたると見なした）は止めない。要求の見出し `X-Goog-Update-Interactivity` はどちらも前と同じく `fg` のまま。
+- 別々のプロセスが同じ置き場を使うとき：Firefox 方式と同じ錠と片付けを、`chromium/.locks/en-<言語>.write`・`.read` で行う。
 - 使用条件：言語パックの使用許諾は見つからなかった（パックの中身を許諾の有無という目で調べてはいない）。`pack.json` の `license` に、名前 `unknown`、出典 https://www.google.com/chrome/terms/ 、注記（使用許諾は見つからず、Google 利用規約 https://policies.google.com/terms と Chrome の追加利用規約が及びうるし、この使い方を認めていない可能性がある）を書く。Chrome の追加利用規約（2025-09-30 改定版、2026-11-25 に読んだ）は「Chrome を使うと Google 利用規約とこの追加規約に同意したことになる」としている。`license` の無い古い `pack.json` は同じ値として読む。
 
 ### 本物での確認（2026-11-25、Windows 11、release ビルド）
@@ -221,6 +244,7 @@ Chrome が組み込みの翻訳 API（Translator API）のために取ってく�
 - en-ja 以外のパック（zh など）は動かしていない。フォルダ名・言語の書き方・演算の種類が違えば読み込みで誤りになる。英語経由（ja→zh など）も動かしていない。
 - 2048 ビットの鍵と ECDSA の証明は確かめていない。
 - 更新サーバーが、実在の Chrome でない要求（版を名乗るだけで CUP 署名なし）をこの先も受けるか。
+- 本物の更新サーバーが `X-Retry-After` を送ってきたときの動き（模擬でだけ確かめた。模擬のサーバーは http なので、見出しの読み取りは関数だけで確かめ、待つ動きは時刻を書いたファイルで確かめた）。
 - 新しい版が実際に配られたときの入れ替え（当日は 2024.9.9.1 が最新で、それより新しい版は無かった）。新しい CRX を作れない（Google の鍵が要る）ので、模擬では「更新なし」「http だけの取得先」「つながらない」の 3 つで手元のパックが残ることだけを確かめた。
 - debug ビルドでの速さ（測っていない）。
 
@@ -268,7 +292,7 @@ Chrome が組み込みの翻訳 API（Translator API）のために取ってく�
 思考に限らずどこからでも使えるよう `translate` の公開関数にした。プロトコルでは `translation/models`（一覧）、`translation/models/remove`（削除、`{"service", "from", "to"}`）、`translation/languages`（`{"service"}`）で呼べる。
 
 - `installed(models)`：`models`（`Translator::new` に渡すフォルダ）にそろっているモデル。Firefox は `<元>-<先>/files.json`、Chromium は `chromium/en-<言語>/pack.json` があり、載っているファイルの大きさが合うものだけ。サービス、元、先（Chromium のパックは両方向を持つので、元はいつも `en`）、版、ファイルの合計の大きさ、使用条件、フォルダを返す。フォルダ名の分け方：一覧の組はどれも片側が英語なので、`en-` で始まれば残りが先、`-en` で終われば手前が元（`en-zh-Hans` など）。`.update`・`.old` の付いたフォルダや途中のものは数えない。
-- `remove(models, service, from, to)`：そのモデルのフォルダを消す。無ければ `Ok(false)`。言語は英数字と `-` だけ（16 文字まで）で、`..`・`/`・`\` は断る。消す前に、それが実在のフォルダ（シンボリックリンクではない）で、実際の場所が置き場の直下であることを確かめる。消している間は同じプロセスの読み込みを止める。Chromium はどちらかが `en` の組だけ。Google・Edge は手元に何も置かないので誤り。すでに読み込んだ `Translator` はメモリの中のモデルを使い続ける。
+- `remove(models, service, from, to)`：そのモデルのフォルダを消す。無ければ `Ok(false)`。言語は英数字と `-` だけ（16 文字まで）で、`..`・`/`・`\` は断る。消す前に、それが実在のフォルダ（シンボリックリンクではない）で、実際の場所が置き場の直下であることを確かめる。消している間は、そのモデルの `write`・`read` の錠を独占で持ち、同じプロセスの読み込みも止める。残っていた `.old`・`.update` も消す。Chromium はどちらかが `en` の組だけ。Google・Edge は手元に何も置かないので誤り。すでに読み込んだ `Translator` はメモリの中のモデルを使い続ける。
 - `languages(service, hosts)`：
   - Firefox：署名を確かめた一覧から、選び方の決まり（デスクトップ向け、3.x、そろった組）に合う組。2026-11-25 は 114 組、58 言語。英語を経由する組は `direct` に無い。
   - Chromium：`PACKS` の 38 言語と英語、英語との間の 76 方向。ネットは使わない。
@@ -280,11 +304,19 @@ Chrome が組み込みの翻訳 API（Translator API）のために取ってく�
 - `translate::firefox::tests::canonical_json_follows_firefox`：鍵の UTF-16 順（U+10000 が U+E000 より前）、文字列の書き方、数の JavaScript の書き方、署名する中身（id の順、削除済みを除く、同じ id は後ろを残す）。
 - `translate::firefox::tests::a_signed_catalog_verifies_and_a_changed_one_does_not`：本物の `main/message-groups`（15 件）の changeset と証明書の連なりを 2026-11-25 に保存したもの（`core/src/translate/fixtures/`）。2026-11-25 の時刻で合うこと。レコード・時刻・署名を変えると、期限切れの後の時刻、連なりが無い、根が無い、中間を飛ばした、順番が違うと断ること。改行が CRLF でも読めること。
 - `translate::firefox::tests::a_newer_version_replaces_the_kept_one_and_the_kept_one_stays_otherwise`：手元の 3.0 が、模擬の置き場から取った 3.1 に置き換わり（`.update`・`.old` は残らない）、同じ版ではもう取らない。ハッシュの合わない 3.2、つながらない送り先では手元の 3.1 が残る。
+- `translate::firefox::tests::a_chain_with_a_certificate_in_onecrl_is_refused`：保存した `message-groups` の連なりの署名者を発行者と通し番号で、中間を主体と鍵の SHA-256 で OneCRL に載せると断る。関係ないレコードと base64 でないレコードだけなら合う。署名者の名前が違えば断る。
+- `translate::firefox::tests::a_settings_server_that_asks_to_wait_is_not_asked_again_until_then`：模擬の置き場が `Backoff: 600` を返すと、その後の要求を送らない（OneCRL も一覧も）。メモリから消しても `settings-backoff.json` から読んで送らない。手元に無い組の `prepare` は待つよう求められているという誤りになる。503 と `Retry-After: 120` でも同じ。過ぎた時刻なら送る。
+- `translate::firefox::tests::a_folder_being_written_or_swapped_is_waited_for`：同じプロセスの中の別々の錠の持ち手で、`write` を持たれている間は別の更新と削除が待ち、読むことは待たない。`read` を独占で持たれている間は読むことが待つ。共有どうしは待たない。
+- `translate::firefox::tests::what_a_stopped_update_left_is_put_right`：組のフォルダが無く `.old` と `.update` が残っていれば `.old` が戻り、両方消える。手元の組があれば、更新（つながらない送り先で失敗）の前に `.old`・`.update` が消える。削除の後に `.old` から戻らない。
+- `translate::firefox::tests::a_lock_held_by_another_process_is_waited_for_and_let_go_when_it_stops`：同じ試験のプログラムを子のプロセスとして起こし（`INOCODE_TEST_LOCK_HOLDER` に置き場を渡し、`lock_holder_for_another_process` だけを動かす）、子が `en-ja` の `write` を持つ間は親が 300 ms 待っても取れず、子を kill した（落ちたのと同じ）後は取れる。
+- `translate::chromium::tests::x_retry_after_is_read_only_over_https`、`translate::chromium::tests::an_update_check_waits_while_the_server_asked_but_a_first_fetch_does_not`：`X-Retry-After` は https のときだけ、0 以上の整数だけ読む。1 時間後までと書いてあれば手元のパックの更新の確かめを送らず、初めての取得にあたる確かめは送る。3 日後と書いてあれば（1 日より先なので）送る。
 - `translate::firefox::tests::newer_versions_languages_and_folder_names_come_from_the_catalog`、`translate::chromium::tests::the_kept_pack_stays_unless_a_newer_one_installs`、`translate::chromium::tests::the_packs_give_english_and_their_languages_both_ways`、`translate::tests::kept_models_are_listed_and_removed_only_inside_the_folder`、`translate::tests::the_online_services_languages_are_read_from_their_lists`。
 
 ## 本物での確認（2026-11-25、debug ビルド）
 
 - `translate::firefox::tests::the_real_catalog_is_signed_and_lists_newer_versions`（手で動かす）：本物の一覧 404 件の署名が合った。en→ja の最新は 3.0（base-memory）。手元を 3.0 とすると新しい版なし、2.9 とすると 3.0 を新しい版とした。訳せる組 114。
+- `translate::firefox::tests::the_real_onecrl_is_signed_and_revokes_nothing_in_the_catalog_chain`（手で動かす）：本物の OneCRL 920 件の署名が（空の記録で）合い、失効は発行者と通し番号で 910、主体と鍵で 9（同じ組の重なりを除いた数）。その記録で本物の一覧 404 件の署名が合った。`onecrl.json` は 151,282 バイト。
+- 錠を入れた後に `translate::firefox::tests::english_to_japanese_is_fetched_once_and_kept`（手で動かす）をもう一度動かし、取得と読み込みが 3.2 秒で終わり、同じ 5 ファイルがそろうことを確かめた。
 - `translate::chromium::tests::the_update_server_offers_a_pack_only_newer_than_the_kept_one`（手で動かす）：版 `0.0.0.0` で聞くと 2024.9.9.1（56,490,050 バイト）が示され、2024.9.9.1 で聞くと `noupdate` だった。
 - `translate::tests::languages_are_listed_here`（手で動かす）：Google 249・249、Edge 156・156、Firefox 58・58（114 組）、Chromium 39・39（76 方向）。
 - `translate::tests::translates_here`（`firefox`・`chromium`、前に取ったモデルを使う。`license` の無い古い `files.json`・`pack.json`）：訳は前と同じ文になった。

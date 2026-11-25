@@ -16,8 +16,8 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use super::firefox::{
-    body, first_check, language_tag, remove_folder, replace_folder, safe_name, sentences, sha256,
-    write_whole, DISK,
+    asked_to_wait, body, first_check, language_tag, reading, remove_folder, replace_folder,
+    safe_name, sentences, set_wait, sha256, write_whole, writing, Waits, DISK,
 };
 use super::sentencepiece::{Fields, Value as Field, Vocabulary};
 use super::tflite::{Graph, Tensor};
@@ -194,6 +194,12 @@ const LARGEST_ANSWER: u64 = 1 << 20;
 const LARGEST_PACK: u64 = 300 << 20;
 const LARGEST_FILE: u64 = 300 << 20;
 const MANIFEST: &str = "pack.json";
+/// The file in the packs folder that keeps when each update server asked
+/// not to be asked again before.
+const BACKOFF_FILE: &str = "update-backoff.json";
+/// The longest wait an `X-Retry-After` header is followed for
+/// (`kMaxRetryAfterSec` in components/update_client/request_sender.cc).
+const LONGEST_RETRY_AFTER: i64 = 24 * 60 * 60;
 /// The CRX3 signature covers this, the signed header's length and the
 /// signed header, then the archive (components/crx_file/crx_verifier.cc).
 const SIGNATURE_CONTEXT: &[u8] = b"CRX3 SignedData\x00";
@@ -258,6 +264,7 @@ pub(super) fn languages() -> Languages {
 /// The list of files of the pack in `folder`, when all of them are on
 /// disk.
 async fn read_manifest(folder: &Path) -> Option<Manifest> {
+    let _locked = reading(folder).await;
     let _reading = DISK.read().await;
     let text = tokio::fs::read_to_string(folder.join(MANIFEST))
         .await
@@ -1140,6 +1147,27 @@ fn recase(text: &str, source: &str) -> String {
     out
 }
 
+/// When each update server asked not to be asked again before.
+static UPDATE_WAITS: Waits = std::sync::LazyLock::new(Default::default);
+
+/// The seconds the `X-Retry-After` header of an answer from the update
+/// server `url` asks to wait, followed only over https as Chrome's
+/// `RequestSender::OnNetworkFetcherComplete` follows it; `None` without a
+/// whole number there. Zero ends an earlier wait.
+fn retry_after(url: &str, headers: &reqwest::header::HeaderMap) -> Option<i64> {
+    if !url.starts_with("https://") {
+        return None;
+    }
+    headers
+        .get("X-Retry-After")?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<i64>()
+        .ok()
+        .filter(|&seconds| seconds >= 0)
+}
+
 /// Directions loaded into memory, by source and target language.
 type Loaded = HashMap<(String, String), Arc<Direction>>;
 
@@ -1290,9 +1318,10 @@ impl Chromium {
             }
         };
         let (want_from, want_to) = (from.clone(), to.clone());
+        let locked = reading(&folder).await;
         let reading = DISK.read().await;
         let direction = tokio::task::spawn_blocking(move || -> Result<Direction, String> {
-            let _reading = reading;
+            let _reading = (locked, reading);
             let mut folders: Vec<&str> = manifest
                 .files
                 .iter()
@@ -1323,8 +1352,12 @@ impl Chromium {
     /// Asks the update server for the pack, downloads and checks it, and
     /// keeps its models and then its list of files.
     async fn fetch(&self, language: &str) -> Result<Manifest, String> {
+        let _writing = writing(&self.folder, &format!("{PIVOT}-{language}")).await?;
+        if let Some(manifest) = self.manifest(language).await {
+            return Ok(manifest);
+        }
         let package = self
-            .check(language, "0.0.0.0")
+            .check(language, "0.0.0.0", false)
             .await?
             .ok_or("the update server offers no pack")?;
         self.install(language, &package, &self.pack_folder(language))
@@ -1335,10 +1368,14 @@ impl Chromium {
     /// and puts it in place of the kept one, when the update server offers
     /// one for the kept version; `Ok(false)` when it does not.
     pub(super) async fn update(&self, language: &str) -> Result<bool, String> {
+        if self.manifest(language).await.is_none() {
+            return Ok(false);
+        }
+        let _writing = writing(&self.folder, &format!("{PIVOT}-{language}")).await?;
         let Some(kept) = self.manifest(language).await else {
             return Ok(false);
         };
-        let Some(package) = self.check(language, &kept.version).await? else {
+        let Some(package) = self.check(language, &kept.version, true).await? else {
             return Ok(false);
         };
         if package.version == kept.version {
@@ -1346,7 +1383,6 @@ impl Chromium {
         }
         let folder = self.pack_folder(language);
         let staging = folder.with_extension("update");
-        let _ = tokio::fs::remove_dir_all(&staging).await;
         if let Err(error) = self.install(language, &package, &staging).await {
             let _ = tokio::fs::remove_dir_all(&staging).await;
             return Err(error);
@@ -1359,9 +1395,31 @@ impl Chromium {
     }
 
     /// What the update server offers for the pack when `version` is kept.
-    async fn check(&self, language: &str, version: &str) -> Result<Option<Package>, String> {
+    /// As in Chrome's update_client, an update check in the `background`
+    /// is not sent in the day before the time the server's `X-Retry-After`
+    /// asked to wait for (`UpdateEngine::IsThrottled`), while one a user
+    /// waits for is.
+    async fn check(
+        &self,
+        language: &str,
+        version: &str,
+        background: bool,
+    ) -> Result<Option<Package>, String> {
         let key = key_hash(language).ok_or("no such pack")?;
         let app = component_id(&key);
+        let waits = self.folder.join(BACKOFF_FILE);
+        let now = chrono::Utc::now().timestamp();
+        if background {
+            if let Some(until) = asked_to_wait(&UPDATE_WAITS, Some(&waits), &self.update)
+                .await
+                .filter(|&until| until - LONGEST_RETRY_AFTER < now && now < until)
+            {
+                return Err(format!(
+                    "Google's update server asked not to be asked again for {} more seconds",
+                    until - now
+                ));
+            }
+        }
         let response = self
             .client
             .post(&self.update)
@@ -1374,6 +1432,11 @@ impl Chromium {
             .send()
             .await
             .map_err(|error| error.to_string())?;
+        if let Some(seconds) = retry_after(&self.update, response.headers()) {
+            let until = (seconds > 0).then(|| now + seconds.min(LONGEST_RETRY_AFTER));
+            let _ = tokio::fs::create_dir_all(&self.folder).await;
+            set_wait(&UPDATE_WAITS, Some(&waits), &self.update, until).await;
+        }
         let answer = body(response, LARGEST_ANSWER).await?;
         package(&String::from_utf8_lossy(&answer), &app)
     }
@@ -1788,6 +1851,79 @@ mod tests {
     }
 
     #[test]
+    fn x_retry_after_is_read_only_over_https() {
+        let headers = |value: &str| {
+            let mut headers = reqwest::header::HeaderMap::new();
+            headers.insert("X-Retry-After", value.parse().unwrap());
+            headers
+        };
+        let secure = "https://update.example/service";
+        assert_eq!(retry_after(secure, &headers("3600")), Some(3600));
+        assert_eq!(retry_after(secure, &headers("0")), Some(0));
+        assert_eq!(retry_after(secure, &headers("-5")), None);
+        assert_eq!(retry_after(secure, &headers("soon")), None);
+        assert_eq!(
+            retry_after(secure, &reqwest::header::HeaderMap::new()),
+            None
+        );
+        assert_eq!(
+            retry_after("http://update.example/service", &headers("3600")),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn an_update_check_waits_while_the_server_asked_but_a_first_fetch_does_not() {
+        let folder = tempfile::tempdir().unwrap();
+        let kept_folder = folder.path().join("en-ja");
+        std::fs::create_dir_all(kept_folder.join("en_ja_nmt")).unwrap();
+        std::fs::write(kept_folder.join("en_ja_nmt/encoder_0.tflite"), b"model").unwrap();
+        let kept = Manifest {
+            version: "2024.9.9.1".into(),
+            files: vec![Kept {
+                path: "en_ja_nmt/encoder_0.tflite".into(),
+                size: 5,
+                sha256: sha256(b"model"),
+            }],
+            license: license(),
+        };
+        std::fs::write(
+            kept_folder.join(MANIFEST),
+            serde_json::to_vec(&kept).unwrap(),
+        )
+        .unwrap();
+        let app = component_id(&key_hash("ja").unwrap());
+        let none = format!(
+            ")]}}'\n{}",
+            json!({"response": {"protocol": "4.0", "apps": [
+                {"appid": app, "status": "ok", "updatecheck": {"status": "noupdate"}}]}})
+        );
+        let (base, asked) = super::super::firefox::tests::stand_in_with(vec![(
+            "/none".into(),
+            "200 OK".into(),
+            none.into_bytes(),
+        )])
+        .await;
+        let update = format!("{base}/none");
+        let waits = folder.path().join(BACKOFF_FILE);
+        let now = chrono::Utc::now().timestamp();
+        set_wait(&UPDATE_WAITS, Some(&waits), &update, Some(now + 3600)).await;
+        let chromium = Chromium::new(folder.path().into(), update.clone(), reqwest::Client::new());
+        let error = chromium.update("ja").await.unwrap_err();
+        assert!(error.contains("asked not to be asked again"), "{error}");
+        assert!(asked.lock().unwrap().is_empty());
+        assert_eq!(chromium.check("ja", "0.0.0.0", false).await, Ok(None));
+        assert_eq!(asked.lock().unwrap().len(), 1);
+        // A wait more than a day away is taken for a wrong clock, as Chrome
+        // takes it.
+        set_wait(&UPDATE_WAITS, Some(&waits), &update, Some(now + 3 * 86_400)).await;
+        UPDATE_WAITS.lock().unwrap().remove(&update);
+        assert_eq!(chromium.update("ja").await, Ok(false));
+        assert_eq!(asked.lock().unwrap().len(), 2);
+        assert_eq!(chromium.manifest("ja").await, Some(kept));
+    }
+
+    #[test]
     fn the_packs_give_english_and_their_languages_both_ways() {
         let found = languages();
         assert!(found.from.contains(&"en".to_string()) && found.to.contains(&"ja".to_string()));
@@ -1806,9 +1942,13 @@ mod tests {
             UPDATE.into(),
             reqwest::Client::new(),
         );
-        let offered = chromium.check("ja", "0.0.0.0").await.unwrap().unwrap();
+        let offered = chromium
+            .check("ja", "0.0.0.0", false)
+            .await
+            .unwrap()
+            .unwrap();
         println!("offered {} ({} bytes)", offered.version, offered.size);
-        let again = chromium.check("ja", &offered.version).await.unwrap();
+        let again = chromium.check("ja", &offered.version, false).await.unwrap();
         println!("asked with {}: {again:?}", offered.version);
         assert_eq!(again, None);
     }

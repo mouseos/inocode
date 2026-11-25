@@ -36,6 +36,17 @@ const ROOT_SHA256: &str = "c8a80e9afaef4e219b6fb5d7a71d0f101223bac5001ac28f9b0d4
 /// The name the signing certificate must carry for the main bucket
 /// (`DEFAULT_SIGNER` in services/settings/remote-settings.sys.mjs).
 const SIGNER: &str = "remote-settings.content-signature.mozilla.org";
+/// OneCRL, the certificates Mozilla revokes, and the name its signing
+/// certificate carries (`SECURITY_STATE_SIGNER` in
+/// security/manager/ssl/RemoteSecuritySettings.sys.mjs).
+const ONECRL: &str = "buckets/security-state/collections/onecrl";
+const ONECRL_SIGNER: &str = "onecrl.content-signature.mozilla.org";
+/// Files in the models folder: OneCRL's revocations as last verified, and
+/// when each settings server asked not to be asked again before.
+const ONECRL_FILE: &str = "onecrl.json";
+const BACKOFF_FILE: &str = "settings-backoff.json";
+/// The folder in a models folder that holds the lock files.
+const LOCKS: &str = ".locks";
 /// What the signature covers before the catalog
 /// (security/manager/ssl/ContentSignatureVerifier.cpp).
 const SIGNATURE_PREFIX: &str = "Content-Signature:\x00";
@@ -642,13 +653,73 @@ fn issued_by(child: &Certificate, issuer: &Certificate) -> Result<(), String> {
     }
 }
 
-/// The key that signs the catalog, from the PEM chain at the signature's
+/// Certificates OneCRL revokes, by issuer and serial number and by subject
+/// and the SHA-256 of the public key, each part in standard base64.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+struct Revoked {
+    by_issuer: BTreeSet<(String, String)>,
+    by_key: BTreeSet<(String, String)>,
+}
+
+impl Revoked {
+    /// The revocations in OneCRL's `records`, read as Firefox's
+    /// `updateCertBlocklist` reads them: `issuerName` and `serialNumber`,
+    /// else `subject` and `pubKeyHash`; parts that are not base64 are
+    /// left out, as cert_storage leaves them out.
+    fn from_records(records: &[Value]) -> Self {
+        let part = |value: &Value| {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(value.as_str()?)
+                .ok()?;
+            Some(base64::engine::general_purpose::STANDARD.encode(bytes))
+        };
+        let mut out = Self::default();
+        for record in records {
+            if let (Some(issuer), Some(serial)) =
+                (part(&record["issuerName"]), part(&record["serialNumber"]))
+            {
+                out.by_issuer.insert((issuer, serial));
+            } else if let (Some(subject), Some(key)) =
+                (part(&record["subject"]), part(&record["pubKeyHash"]))
+            {
+                out.by_key.insert((subject, key));
+            }
+        }
+        out
+    }
+
+    /// Whether `certificate` is revoked, looked up as cert_storage's
+    /// `get_revocation_state` looks it up.
+    fn revokes(&self, certificate: &Certificate) -> Result<bool, String> {
+        let encode = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+        fn der(value: &impl Encode) -> Result<Vec<u8>, String> {
+            value.to_der().map_err(|error| error.to_string())
+        }
+        let tbs = &certificate.tbs_certificate;
+        let by_issuer = (
+            encode(&der(&tbs.issuer)?),
+            encode(tbs.serial_number.as_bytes()),
+        );
+        let by_key = (
+            encode(&der(&tbs.subject)?),
+            encode(&Sha256::digest(der(&tbs.subject_public_key_info)?)),
+        );
+        Ok(self.by_issuer.contains(&by_issuer) || self.by_key.contains(&by_key))
+    }
+}
+
+/// The key that signs a collection, from the PEM chain at the signature's
 /// `x5u`, checked as Firefox checks it: the chain runs from the signing
 /// certificate to Mozilla's root, each certificate signed by the next, all
-/// valid at `now` (seconds since 1970), the ones above the signer allowed
-/// to issue certificates, code signing allowed, and the signer named
-/// [`SIGNER`].
-fn signing_key(pem: &[u8], now: i64) -> Result<p384::ecdsa::VerifyingKey, String> {
+/// valid at `now` (seconds since 1970) and none in `revoked`, the ones
+/// above the signer allowed to issue certificates, code signing allowed,
+/// and the signer named `signer`.
+fn signing_key(
+    pem: &[u8],
+    now: i64,
+    signer: &str,
+    revoked: &Revoked,
+) -> Result<p384::ecdsa::VerifyingKey, String> {
     let ders = pem_certificates(pem)?;
     let chain: Vec<Certificate> = ders
         .iter()
@@ -665,6 +736,9 @@ fn signing_key(pem: &[u8], now: i64) -> Result<p384::ecdsa::VerifyingKey, String
             || now > validity.not_after.to_unix_duration().as_secs()
         {
             return Err("a certificate of the chain is not valid now".into());
+        }
+        if revoked.revokes(certificate)? {
+            return Err("a certificate of the chain is revoked in OneCRL".into());
         }
         for extension in certificate.tbs_certificate.extensions.iter().flatten() {
             if extension.critical && !KNOWN_EXTENSIONS.contains(&&*extension.extn_id.to_string()) {
@@ -686,9 +760,9 @@ fn signing_key(pem: &[u8], now: i64) -> Result<p384::ecdsa::VerifyingKey, String
             let named = names
                 .iter()
                 .flat_map(|names| &names.0)
-                .any(|name| matches!(name, GeneralName::DnsName(dns) if dns.to_string() == SIGNER));
+                .any(|name| matches!(name, GeneralName::DnsName(dns) if dns.to_string() == signer));
             if !named {
-                return Err(format!("the signing certificate is not for {SIGNER}"));
+                return Err(format!("the signing certificate is not for {signer}"));
             }
         } else {
             if code_signing == Some(false) {
@@ -710,17 +784,24 @@ fn signing_key(pem: &[u8], now: i64) -> Result<p384::ecdsa::VerifyingKey, String
 }
 
 /// Checks the base64url ECDSA P-384 SHA-384 `signature` (r and s, 48 bytes
-/// each) of `message` with the chain `pem`.
-fn check_signature(message: &str, signature: &str, pem: &[u8], now: i64) -> Result<(), String> {
+/// each) of `message` with the chain `pem` (see [`signing_key`]).
+fn check_signature(
+    message: &str,
+    signature: &str,
+    pem: &[u8],
+    now: i64,
+    signer: &str,
+    revoked: &Revoked,
+) -> Result<(), String> {
     use p384::ecdsa::signature::Verifier;
-    let key = signing_key(pem, now)?;
+    let key = signing_key(pem, now, signer, revoked)?;
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(signature.trim_end_matches('='))
         .map_err(|_| "the signature is not base64url")?;
     let signature =
         p384::ecdsa::Signature::from_slice(&bytes).map_err(|_| "the signature is broken")?;
     key.verify(message.as_bytes(), &signature)
-        .map_err(|_| "the catalog does not match its signature".to_string())
+        .map_err(|_| "the collection does not match its signature".to_string())
 }
 
 /// The `(x5u, signature)` of each P-384 signature in a collection's
@@ -739,18 +820,21 @@ fn signatures(metadata: &Value) -> Vec<(&str, &str)> {
 }
 
 /// The records of a changeset when one of its signatures verifies with
-/// its chain in `chains` (by `x5u`) at `now`; deleted records left out.
+/// its chain in `chains` (by `x5u`) at `now`, signed by `signer` and with
+/// no certificate in `revoked`; deleted records left out.
 fn verified(
     changeset: &Value,
     chains: &[(String, Vec<u8>)],
     now: i64,
+    signer: &str,
+    revoked: &Revoked,
 ) -> Result<Vec<Value>, String> {
     let records = changeset["changes"]
         .as_array()
-        .ok_or("the model catalog has no records")?;
+        .ok_or("the collection has no records")?;
     let timestamp = changeset["timestamp"]
         .as_u64()
-        .ok_or("the model catalog has no timestamp")?;
+        .ok_or("the collection has no timestamp")?;
     let message = signed_message(records, timestamp);
     let mut last = String::from("it has no P-384 signature");
     for (x5u, signature) in signatures(&changeset["metadata"]) {
@@ -758,7 +842,7 @@ fn verified(
             last = format!("its certificate chain {x5u} was not fetched");
             continue;
         };
-        match check_signature(&message, signature, pem, now) {
+        match check_signature(&message, signature, pem, now, signer, revoked) {
             Ok(()) => {
                 return Ok(records
                     .iter()
@@ -770,7 +854,7 @@ fn verified(
         }
     }
     Err(format!(
-        "the model catalog's signature does not verify: {last}"
+        "the collection's signature does not verify: {last}"
     ))
 }
 
@@ -858,7 +942,99 @@ pub(super) async fn body(mut response: reqwest::Response, limit: u64) -> Result<
 
 /// Held to read a kept model's files and to replace or delete a model's
 /// folder, so that no one in this process reads a folder half replaced.
+/// Taken after a folder's lock files, never before.
 pub(super) static DISK: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
+
+/// A lock on a file in a models folder's [`LOCKS`] folder, which other
+/// processes see too. The system lets it go when the file is closed, which
+/// happens when this is dropped or the process ends, so a process that
+/// stops leaves no lock behind.
+pub(super) struct FileLock {
+    _file: std::fs::File,
+}
+
+/// Each model folder has two locks. `Write` is held, exclusive, for the
+/// whole of fetching, updating or deleting the model, so that only one
+/// process at a time writes it. `Read` is held shared while the model's
+/// files are read, and exclusive while its folder is swapped or deleted.
+/// A process takes `Write` before `Read`, and both before [`DISK`].
+#[derive(Clone, Copy)]
+pub(super) enum Lock {
+    Write,
+    Read { exclusive: bool },
+}
+
+/// Takes the lock `kind` of the model folder `name` in `base`, waiting for
+/// other holders.
+pub(super) async fn lock(base: &Path, name: &str, kind: Lock) -> Result<FileLock, String> {
+    let locks = base.join(LOCKS);
+    let (suffix, exclusive) = match kind {
+        Lock::Write => ("write", true),
+        Lock::Read { exclusive } => ("read", exclusive),
+    };
+    let path = locks.join(format!("{name}.{suffix}"));
+    let shown = path.display().to_string();
+    tokio::task::spawn_blocking(move || {
+        std::fs::create_dir_all(&locks)?;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)?;
+        if exclusive {
+            file.lock()?;
+        } else {
+            file.lock_shared()?;
+        }
+        Ok::<_, std::io::Error>(FileLock { _file: file })
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| format!("{shown}: {error}"))
+}
+
+/// `folder` as the models folder it is in and its name there.
+fn split(folder: &Path) -> (&Path, &str) {
+    (
+        folder.parent().unwrap_or(Path::new("")),
+        folder
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(""),
+    )
+}
+
+/// The shared read lock of the model folder `folder`; `None` when its lock
+/// file cannot be made, as in a models folder this user may not write to,
+/// where nothing can change the model either.
+pub(super) async fn reading(folder: &Path) -> Option<FileLock> {
+    let (base, name) = split(folder);
+    lock(base, name, Lock::Read { exclusive: false }).await.ok()
+}
+
+/// Takes the write lock of the model folder `name` in `base`, then puts
+/// right what a process that stopped while updating it left behind: the
+/// kept folder is put back from its `.old` copy when only that is there,
+/// and the `.update` folder and any other `.old` copy are deleted.
+pub(super) async fn writing(base: &Path, name: &str) -> Result<FileLock, String> {
+    let held = lock(base, name, Lock::Write).await?;
+    let folder = base.join(name);
+    let old = folder.with_extension("old");
+    if !tokio::fs::try_exists(&folder).await.unwrap_or(true)
+        && tokio::fs::try_exists(&old).await.unwrap_or(false)
+    {
+        let _swapping = lock(base, name, Lock::Read { exclusive: true }).await?;
+        let _writing = DISK.write().await;
+        tokio::fs::rename(&old, &folder)
+            .await
+            .map_err(|error| format!("{}: {error}", old.display()))?;
+    } else {
+        let _ = tokio::fs::remove_dir_all(&old).await;
+    }
+    let _ = tokio::fs::remove_dir_all(folder.with_extension("update")).await;
+    Ok(held)
+}
 
 /// The model folders already checked for a newer version in this process.
 static CHECKED: LazyLock<std::sync::Mutex<HashSet<PathBuf>>> = LazyLock::new(Default::default);
@@ -872,9 +1048,12 @@ pub(super) fn first_check(folder: &Path) -> bool {
         .insert(folder.to_path_buf())
 }
 
-/// Puts the folder `new` in the place of `folder` and deletes the old one.
+/// Puts the folder `new` in the place of `folder` and deletes the old one;
+/// the caller holds the write lock of `folder`.
 pub(super) async fn replace_folder(new: &Path, folder: &Path) -> Result<(), String> {
     let old = folder.with_extension("old");
+    let (base, name) = split(folder);
+    let _swapping = lock(base, name, Lock::Read { exclusive: true }).await?;
     let _writing = DISK.write().await;
     let _ = tokio::fs::remove_dir_all(&old).await;
     tokio::fs::rename(folder, &old)
@@ -892,6 +1071,10 @@ pub(super) async fn replace_folder(new: &Path, folder: &Path) -> Result<(), Stri
 /// inside it; `Ok(false)` when there is none.
 pub(super) async fn remove_folder(base: &Path, name: &str) -> Result<bool, ErrorInfo> {
     let invalid = |message: String| ErrorInfo::new("invalid_params", message);
+    if !tokio::fs::try_exists(base).await.unwrap_or(false) {
+        return Ok(false);
+    }
+    let _writing = writing(base, name).await.map_err(failed)?;
     let path = base.join(name);
     let metadata = match tokio::fs::symlink_metadata(&path).await {
         Ok(metadata) => metadata,
@@ -909,16 +1092,19 @@ pub(super) async fn remove_folder(base: &Path, name: &str) -> Result<bool, Error
             path.display()
         )));
     }
-    let _writing = DISK.write().await;
+    let _swapping = lock(base, name, Lock::Read { exclusive: true })
+        .await
+        .map_err(failed)?;
+    let _disk = DISK.write().await;
     tokio::fs::remove_dir_all(&real)
         .await
         .map_err(|error| failed(format!("{}: {error}", path.display())))?;
     Ok(true)
 }
 
-/// The files of the pair in `folder`, when all of them were fetched.
-async fn read_manifest(folder: &Path) -> Option<Files> {
-    let _reading = DISK.read().await;
+/// The files of the pair in `folder`, when all of them were fetched; the
+/// caller holds the folder's read lock and [`DISK`].
+async fn manifest_in(folder: &Path) -> Option<Files> {
     let text = tokio::fs::read_to_string(folder.join(MANIFEST))
         .await
         .ok()?;
@@ -930,6 +1116,78 @@ async fn read_manifest(folder: &Path) -> Option<Files> {
         }
     }
     Some(files)
+}
+
+/// The files of the pair in `folder`, when all of them were fetched.
+async fn read_manifest(folder: &Path) -> Option<Files> {
+    let _locked = reading(folder).await;
+    let _reading = DISK.read().await;
+    manifest_in(folder).await
+}
+
+/// The time each server asked not to be asked again before, in seconds
+/// since 1970, as this process knows it.
+pub(super) type Waits = LazyLock<std::sync::Mutex<HashMap<String, i64>>>;
+
+/// When `server` asked not to be asked again before, from `memory` and the
+/// file `kept` that other processes write too.
+pub(super) async fn asked_to_wait(
+    memory: &Waits,
+    kept: Option<&Path>,
+    server: &str,
+) -> Option<i64> {
+    let mut until = memory
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(server)
+        .copied();
+    if let Some(path) = kept {
+        let on_disk = tokio::fs::read(path)
+            .await
+            .ok()
+            .and_then(|data| serde_json::from_slice::<HashMap<String, i64>>(&data).ok())
+            .and_then(|waits| waits.get(server).copied());
+        until = until.max(on_disk);
+    }
+    until
+}
+
+/// Notes that `server` asked not to be asked again before `until`, or no
+/// longer asks when `None`, in `memory` and in the file `kept`.
+pub(super) async fn set_wait(
+    memory: &Waits,
+    kept: Option<&Path>,
+    server: &str,
+    until: Option<i64>,
+) {
+    let change = |waits: &mut HashMap<String, i64>| match until {
+        Some(until) => {
+            waits.insert(server.to_string(), until);
+        }
+        None => {
+            waits.remove(server);
+        }
+    };
+    change(
+        &mut memory
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    );
+    let Some(path) = kept else {
+        return;
+    };
+    let mut waits: HashMap<String, i64> = tokio::fs::read(path)
+        .await
+        .ok()
+        .and_then(|data| serde_json::from_slice(&data).ok())
+        .unwrap_or_default();
+    change(&mut waits);
+    if let Some(parent) = path.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    if let Ok(data) = serde_json::to_vec_pretty(&waits) {
+        let _ = write_whole(path, &data).await;
+    }
 }
 
 /// The whole models kept in `models`.
@@ -978,7 +1236,7 @@ pub(super) async fn languages(
     settings: &str,
     client: &reqwest::Client,
 ) -> Result<Languages, ErrorInfo> {
-    let catalog = catalog(client, settings).await.map_err(failed)?;
+    let catalog = catalog(client, settings, None).await.map_err(failed)?;
     Ok(catalog_languages(&catalog.records))
 }
 
@@ -996,9 +1254,147 @@ struct Catalog {
 static CATALOGS: LazyLock<std::sync::Mutex<HashMap<String, Arc<Catalog>>>> =
     LazyLock::new(Default::default);
 
+/// When each settings server asked not to be asked again before.
+static SETTINGS_WAITS: Waits = LazyLock::new(Default::default);
+
+/// The seconds an answer of a settings server asks to wait before the next
+/// request: the larger of its `Backoff` and `Retry-After` headers read as
+/// whole seconds, a header that is not one left out, as application-services'
+/// remote_settings client reads them.
+fn backoff_seconds(headers: &reqwest::header::HeaderMap) -> u64 {
+    let seconds = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .unwrap_or(0)
+    };
+    seconds("Backoff").max(seconds("Retry-After"))
+}
+
+/// Requests to a settings server, which are not sent while the server has
+/// asked to wait.
+struct Settings<'a> {
+    client: &'a reqwest::Client,
+    server: &'a str,
+    /// The file the waits are kept in, when there is a models folder.
+    waits: Option<PathBuf>,
+}
+
+impl Settings<'_> {
+    /// The body at `path` on the server, at most `limit` bytes.
+    async fn get(&self, path: &str, limit: u64) -> Result<Vec<u8>, String> {
+        let now = chrono::Utc::now().timestamp();
+        if let Some(until) = asked_to_wait(&SETTINGS_WAITS, self.waits.as_deref(), self.server)
+            .await
+            .filter(|&until| until > now)
+        {
+            return Err(format!(
+                "Mozilla's settings server {} asked not to be asked again for {} more seconds",
+                self.server,
+                until - now
+            ));
+        }
+        let response = self
+            .client
+            .get(format!("{}/{path}", self.server))
+            .timeout(CATALOG_WAIT)
+            .send()
+            .await
+            .map_err(|error| error.to_string())?;
+        let wait = backoff_seconds(response.headers());
+        if wait > 0 {
+            let until = now.saturating_add(i64::try_from(wait).unwrap_or(i64::MAX));
+            set_wait(
+                &SETTINGS_WAITS,
+                self.waits.as_deref(),
+                self.server,
+                Some(until),
+            )
+            .await;
+        }
+        body(response, limit).await
+    }
+
+    async fn json(&self, path: &str) -> Result<Value, String> {
+        let data = self.get(path, LARGEST_CATALOG).await?;
+        serde_json::from_slice(&data).map_err(|error| format!("{}/{path}: {error}", self.server))
+    }
+
+    /// The verified records of `collection`, signed by `signer` with no
+    /// certificate in `revoked`.
+    async fn collection(
+        &self,
+        collection: &str,
+        signer: &str,
+        revoked: &Revoked,
+    ) -> Result<Vec<Value>, String> {
+        let changeset = self
+            .json(&format!("{collection}/changeset?_expected=0"))
+            .await?;
+        let mut chains = Vec::new();
+        for (x5u, _) in signatures(&changeset["metadata"]) {
+            if !x5u.starts_with("https://") {
+                continue;
+            }
+            let fetched = async {
+                let response = self
+                    .client
+                    .get(x5u)
+                    .timeout(CATALOG_WAIT)
+                    .send()
+                    .await
+                    .map_err(|error| error.to_string())?;
+                body(response, LARGEST_CHAIN).await
+            };
+            if let Ok(pem) = fetched.await {
+                chains.push((x5u.to_string(), pem));
+            }
+        }
+        verified(
+            &changeset,
+            &chains,
+            chrono::Utc::now().timestamp(),
+            signer,
+            revoked,
+        )
+        .map_err(|error| format!("{collection}: {error}"))
+    }
+
+    /// OneCRL's revocations, its own signature checked against those known
+    /// before (kept in `kept`, none without it), as Firefox checks OneCRL
+    /// against its certificate store; those known before when it cannot
+    /// be fetched or does not verify.
+    async fn revoked(&self, kept: Option<&Path>) -> Revoked {
+        let before: Revoked = match kept {
+            Some(path) => tokio::fs::read(path)
+                .await
+                .ok()
+                .and_then(|data| serde_json::from_slice(&data).ok())
+                .unwrap_or_default(),
+            None => Revoked::default(),
+        };
+        let Ok(records) = self.collection(ONECRL, ONECRL_SIGNER, &before).await else {
+            return before;
+        };
+        let now = Revoked::from_records(&records);
+        if let (Some(path), Ok(data)) = (kept, serde_json::to_vec(&now)) {
+            if now != before {
+                let _ = write_whole(path, &data).await;
+            }
+        }
+        now
+    }
+}
+
 /// The verified catalog at `settings`, fetched when this process has not
-/// fetched it yet.
-async fn catalog(client: &reqwest::Client, settings: &str) -> Result<Arc<Catalog>, String> {
+/// fetched it yet; `models` is the models folder, where OneCRL and the
+/// server's request to wait are kept.
+async fn catalog(
+    client: &reqwest::Client,
+    settings: &str,
+    models: Option<&Path>,
+) -> Result<Arc<Catalog>, String> {
     let settings = settings.trim_end_matches('/');
     let kept = CATALOGS
         .lock()
@@ -1008,34 +1404,26 @@ async fn catalog(client: &reqwest::Client, settings: &str) -> Result<Arc<Catalog
     if let Some(kept) = kept {
         return Ok(kept);
     }
-    let get = |url: String, limit: u64| async move {
-        let response = client
-            .get(&url)
-            .timeout(CATALOG_WAIT)
-            .send()
-            .await
-            .map_err(|error| error.to_string())?;
-        body(response, limit).await
+    if let Some(models) = models {
+        let _ = tokio::fs::create_dir_all(models).await;
+    }
+    let server = Settings {
+        client,
+        server: settings,
+        waits: models.map(|models| models.join(BACKOFF_FILE)),
     };
-    let json = |url: String| async move {
-        let data = get(url.clone(), LARGEST_CATALOG).await?;
-        serde_json::from_slice::<Value>(&data).map_err(|error| format!("{url}: {error}"))
-    };
-    let server = json(format!("{settings}/")).await?;
-    let base = server["capabilities"]["attachments"]["base_url"]
+    let info = server.json("").await?;
+    let base = info["capabilities"]["attachments"]["base_url"]
         .as_str()
         .ok_or("the settings server names no attachment address")?;
     let attachments = reqwest::Url::parse(base).map_err(|error| error.to_string())?;
-    let changeset = json(format!("{settings}/{COLLECTION}/changeset?_expected=0")).await?;
-    let mut chains = Vec::new();
-    for (x5u, _) in signatures(&changeset["metadata"]) {
-        if x5u.starts_with("https://") {
-            if let Ok(pem) = get(x5u.to_string(), LARGEST_CHAIN).await {
-                chains.push((x5u.to_string(), pem));
-            }
-        }
-    }
-    let records = verified(&changeset, &chains, chrono::Utc::now().timestamp())?;
+    let revoked = server
+        .revoked(models.map(|models| models.join(ONECRL_FILE)).as_deref())
+        .await;
+    let records = server
+        .collection(COLLECTION, SIGNER, &revoked)
+        .await
+        .map_err(|error| format!("the model catalog: {error}"))?;
     let fetched = Arc::new(Catalog {
         attachments,
         records,
@@ -1148,9 +1536,8 @@ impl Firefox {
                 if self.kept(&pair).await {
                     on_disk.push(pair.clone());
                 } else {
-                    let folder = self.pair_folder(&pair);
-                    first_check(&folder);
-                    self.fetch(&catalog, &folder, &files)
+                    first_check(&self.pair_folder(&pair));
+                    self.fetch_pair(&catalog, &pair, &files)
                         .await
                         .map_err(failed)?;
                 }
@@ -1195,14 +1582,14 @@ impl Firefox {
         if let Some(found) = loaded.get(&pair) {
             return Ok(found.clone());
         }
-        let files = self
-            .manifest(&pair)
+        let folder = self.pair_folder(&pair);
+        let locked = reading(&folder).await;
+        let reading = DISK.read().await;
+        let files = manifest_in(&folder)
             .await
             .ok_or_else(|| failed(format!("the {}-{} model is missing", pair.0, pair.1)))?;
-        let folder = self.pair_folder(&pair);
-        let reading = DISK.read().await;
         let model = tokio::task::spawn_blocking(move || {
-            let _reading = reading;
+            let _reading = (locked, reading);
             Pair::load(&folder, &files)
         })
         .await
@@ -1214,13 +1601,36 @@ impl Firefox {
     }
 
     async fn catalog(&self) -> Result<Arc<Catalog>, String> {
-        catalog(&self.client, &self.settings).await
+        catalog(&self.client, &self.settings, Some(&self.folder)).await
+    }
+
+    /// Fetches the pair's `files` into its folder, unless another process
+    /// fetched it while this one waited for the write lock.
+    async fn fetch_pair(
+        &self,
+        catalog: &Catalog,
+        pair: &(String, String),
+        files: &Files,
+    ) -> Result<(), String> {
+        let folder = self.pair_folder(pair);
+        let (base, name) = split(&folder);
+        let _writing = writing(base, name).await?;
+        if self.manifest(pair).await.is_some() {
+            return Ok(());
+        }
+        self.fetch(catalog, &folder, files).await
     }
 
     /// Fetches the newest version of the kept pair into a folder of its
     /// own and puts it in place of the kept one, when the catalog lists a
     /// newer version; `Ok(false)` when it does not.
     pub(super) async fn update(&self, pair: &(String, String)) -> Result<bool, String> {
+        let folder = self.pair_folder(pair);
+        let (base, name) = split(&folder);
+        if self.manifest(pair).await.is_none() {
+            return Ok(false);
+        }
+        let _writing = writing(base, name).await?;
         let Some(kept) = self.manifest(pair).await else {
             return Ok(false);
         };
@@ -1228,9 +1638,7 @@ impl Firefox {
         let Some(files) = newer(&catalog.records, &pair.0, &pair.1, &kept) else {
             return Ok(false);
         };
-        let folder = self.pair_folder(pair);
         let staging = folder.with_extension("update");
-        let _ = tokio::fs::remove_dir_all(&staging).await;
         if let Err(error) = self.fetch(&catalog, &staging, &files).await {
             let _ = tokio::fs::remove_dir_all(&staging).await;
             return Err(error);
@@ -1549,17 +1957,17 @@ pub(super) mod tests {
     #[test]
     fn a_signed_catalog_verifies_and_a_changed_one_does_not() {
         let (changeset, chains) = fixture();
-        let records = verified(&changeset, &chains, SIGNED_AT).unwrap();
+        let records = verified(&changeset, &chains, SIGNED_AT, SIGNER, &none()).unwrap();
         assert_eq!(records.len(), 15);
 
         let mut changed = changeset.clone();
         changed["changes"][0]["id"] = json!("something-else");
-        assert!(verified(&changed, &chains, SIGNED_AT)
+        assert!(verified(&changed, &chains, SIGNED_AT, SIGNER, &none())
             .unwrap_err()
             .contains("does not match its signature"));
         let mut changed = changeset.clone();
         changed["timestamp"] = json!(changeset["timestamp"].as_u64().unwrap() + 1);
-        assert!(verified(&changed, &chains, SIGNED_AT).is_err());
+        assert!(verified(&changed, &chains, SIGNED_AT, SIGNER, &none()).is_err());
         let mut changed = changeset.clone();
         let original = changed["metadata"]["signature"]["signature"]
             .as_str()
@@ -1569,13 +1977,15 @@ pub(super) mod tests {
         let signature = format!("{first}{}", &original[1..]);
         changed["metadata"]["signature"]["signature"] = json!(signature);
         changed["metadata"]["signatures"][0]["signature"] = json!(signature);
-        assert!(verified(&changed, &chains, SIGNED_AT).is_err());
+        assert!(verified(&changed, &chains, SIGNED_AT, SIGNER, &none()).is_err());
 
         // After the signing certificate expires (2027-01-03).
-        assert!(verified(&changeset, &chains, 1_799_000_000)
-            .unwrap_err()
-            .contains("not valid now"));
-        assert!(verified(&changeset, &[], SIGNED_AT)
+        assert!(
+            verified(&changeset, &chains, 1_799_000_000, SIGNER, &none())
+                .unwrap_err()
+                .contains("not valid now")
+        );
+        assert!(verified(&changeset, &[], SIGNED_AT, SIGNER, &none())
             .unwrap_err()
             .contains("was not fetched"));
         let certificates = pem_certificates(CHAIN.as_bytes()).unwrap();
@@ -1594,17 +2004,21 @@ pub(super) mod tests {
         let with = |chain: Vec<u8>| vec![(chains[0].0.clone(), chain)];
         // The same chain with Windows line ends still verifies.
         let all: Vec<&Vec<u8>> = certificates.iter().collect();
-        assert!(verified(&changeset, &with(pem(&all)), SIGNED_AT).is_ok());
+        assert!(verified(&changeset, &with(pem(&all)), SIGNED_AT, SIGNER, &none()).is_ok());
         let no_root = pem(&[&certificates[0], &certificates[1]]);
-        assert!(verified(&changeset, &with(no_root), SIGNED_AT)
-            .unwrap_err()
-            .contains("Mozilla's root"));
+        assert!(
+            verified(&changeset, &with(no_root), SIGNED_AT, SIGNER, &none())
+                .unwrap_err()
+                .contains("Mozilla's root")
+        );
         let skipped = pem(&[&certificates[0], &certificates[2]]);
-        assert!(verified(&changeset, &with(skipped), SIGNED_AT)
-            .unwrap_err()
-            .contains("issuer"));
+        assert!(
+            verified(&changeset, &with(skipped), SIGNED_AT, SIGNER, &none())
+                .unwrap_err()
+                .contains("issuer")
+        );
         let reversed = pem(&[&certificates[1], &certificates[0], &certificates[2]]);
-        assert!(verified(&changeset, &with(reversed), SIGNED_AT).is_err());
+        assert!(verified(&changeset, &with(reversed), SIGNED_AT, SIGNER, &none()).is_err());
         assert!(pem_certificates(b"not a chain").is_err());
     }
 
@@ -1655,13 +2069,31 @@ pub(super) mod tests {
     /// A stand-in HTTP server that answers each path in `routes` with its
     /// body and anything else with 404; gives back its address.
     pub(crate) async fn stand_in(routes: Vec<(String, Vec<u8>)>) -> String {
+        let routes = routes
+            .into_iter()
+            .map(|(path, body)| (path, "200 OK".to_string(), body))
+            .collect();
+        stand_in_with(routes).await.0
+    }
+
+    /// The paths a stand-in server was asked for, in order.
+    pub(crate) type Asked = Arc<std::sync::Mutex<Vec<String>>>;
+
+    /// A stand-in HTTP server that answers each path in `routes` with its
+    /// status line, which may go on with header lines, and its body, and
+    /// anything else with 404; gives back its address and what it was
+    /// asked for.
+    pub(crate) async fn stand_in_with(routes: Vec<(String, String, Vec<u8>)>) -> (String, Asked) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let asked = Asked::default();
+        let log = asked.clone();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = format!("http://{}", listener.local_addr().unwrap());
         let routes = Arc::new(routes);
         tokio::spawn(async move {
             while let Ok((mut socket, _)) = listener.accept().await {
                 let routes = routes.clone();
+                let log = log.clone();
                 tokio::spawn(async move {
                     let mut request = Vec::new();
                     let mut buffer = [0u8; 4096];
@@ -1695,8 +2127,9 @@ pub(super) mod tests {
                         .next()
                         .unwrap_or("")
                         .to_string();
-                    let (status, body) = match routes.iter().find(|(route, _)| *route == path) {
-                        Some((_, body)) => ("200 OK", body.clone()),
+                    log.lock().unwrap().push(path.clone());
+                    let (status, body) = match routes.iter().find(|(route, _, _)| *route == path) {
+                        Some((_, status, body)) => (status.as_str(), body.clone()),
                         None => ("404 Not Found", Vec::new()),
                     };
                     let head = format!(
@@ -1708,7 +2141,7 @@ pub(super) mod tests {
                 });
             }
         });
-        address
+        (address, asked)
     }
 
     /// A catalog record whose attachment is `data`, zstd-compressed, at
@@ -1790,7 +2223,7 @@ pub(super) mod tests {
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         names.sort();
-        assert_eq!(names, ["en-ja"]);
+        assert_eq!(names, [LOCKS, "en-ja"]);
         assert_eq!(firefox.update(&pair).await, Ok(false));
 
         // A newer version whose download does not match the catalog leaves
@@ -1865,6 +2298,286 @@ pub(super) mod tests {
         assert_eq!(model_language("ja"), "ja");
     }
 
+    fn none() -> Revoked {
+        Revoked::default()
+    }
+
+    fn base64(bytes: &[u8]) -> String {
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+
+    #[test]
+    fn a_chain_with_a_certificate_in_onecrl_is_refused() {
+        let (changeset, chains) = fixture();
+        let ders = pem_certificates(CHAIN.as_bytes()).unwrap();
+        let signer = Certificate::from_der(&ders[0]).unwrap();
+        let middle = Certificate::from_der(&ders[1]).unwrap();
+        let by_issuer = json!({
+            "issuerName": base64(&signer.tbs_certificate.issuer.to_der().unwrap()),
+            "serialNumber": base64(signer.tbs_certificate.serial_number.as_bytes()),
+        });
+        let spki = middle
+            .tbs_certificate
+            .subject_public_key_info
+            .to_der()
+            .unwrap();
+        let by_key = json!({
+            "subject": base64(&middle.tbs_certificate.subject.to_der().unwrap()),
+            "pubKeyHash": base64(&Sha256::digest(&spki)),
+        });
+        let other = json!({"issuerName": base64(b"someone else"), "serialNumber": "AQ=="});
+        let broken = json!({"issuerName": "not base64!", "serialNumber": "AQ=="});
+        for revoking in [by_issuer, by_key] {
+            let revoked = Revoked::from_records(&[revoking, other.clone()]);
+            assert!(verified(&changeset, &chains, SIGNED_AT, SIGNER, &revoked)
+                .unwrap_err()
+                .contains("revoked in OneCRL"));
+        }
+        let revoked = Revoked::from_records(&[other, broken]);
+        assert_eq!(revoked.by_issuer.len(), 1);
+        assert!(verified(&changeset, &chains, SIGNED_AT, SIGNER, &revoked).is_ok());
+        // OneCRL is signed by a certificate of its own name.
+        assert!(
+            verified(&changeset, &chains, SIGNED_AT, ONECRL_SIGNER, &none())
+                .unwrap_err()
+                .contains(ONECRL_SIGNER)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_settings_server_that_asks_to_wait_is_not_asked_again_until_then() {
+        let models = tempfile::tempdir().unwrap();
+        let info = br#"{"capabilities": {"attachments": {"base_url": "https://cdn.example/"}}}"#;
+        let (base, asked) = stand_in_with(vec![
+            (
+                "/wait-a/".into(),
+                "200 OK\r\nBackoff: 600".into(),
+                info.to_vec(),
+            ),
+            (
+                "/wait-b/".into(),
+                "503 Service Unavailable\r\nRetry-After: 120".into(),
+                Vec::new(),
+            ),
+            ("/wait-c/".into(), "200 OK".into(), info.to_vec()),
+        ])
+        .await;
+        let client = reqwest::Client::new();
+        let folder = Some(models.path());
+
+        let settings = format!("{base}/wait-a");
+        let error = catalog(&client, &settings, folder).await.err().unwrap();
+        assert!(error.contains("asked not to be asked again"), "{error}");
+        assert_eq!(*asked.lock().unwrap(), ["/wait-a/"]);
+        // A process that starts later reads the wait from the models folder.
+        SETTINGS_WAITS.lock().unwrap().remove(&settings);
+        assert!(catalog(&client, &settings, folder).await.is_err());
+        assert_eq!(asked.lock().unwrap().len(), 1);
+        let firefox = Firefox::new(models.path().into(), settings, client.clone());
+        let error = firefox.prepare("en", "ja").await.unwrap_err();
+        assert!(error.message.contains("asked not to be asked again"));
+        assert_eq!(asked.lock().unwrap().len(), 1);
+
+        let settings = format!("{base}/wait-b");
+        assert!(catalog(&client, &settings, folder)
+            .await
+            .err()
+            .unwrap()
+            .contains("503"));
+        assert!(catalog(&client, &settings, folder)
+            .await
+            .err()
+            .unwrap()
+            .contains("asked not to be asked again"));
+        assert_eq!(asked.lock().unwrap().len(), 2);
+
+        // A wait that has passed stops nothing.
+        let settings = format!("{base}/wait-c");
+        let past = chrono::Utc::now().timestamp() - 1;
+        set_wait(
+            &SETTINGS_WAITS,
+            Some(&models.path().join(BACKOFF_FILE)),
+            &settings,
+            Some(past),
+        )
+        .await;
+        let error = catalog(&client, &settings, folder).await.err().unwrap();
+        assert!(error.contains("404"), "{error}");
+        let asked = asked.lock().unwrap();
+        assert_eq!(
+            asked[2..],
+            [
+                "/wait-c/".to_string(),
+                format!("/wait-c/{ONECRL}/changeset"),
+                format!("/wait-c/{COLLECTION}/changeset"),
+            ]
+        );
+    }
+
+    /// Writes a whole kept model of one file in `folder`.
+    fn keep(folder: &Path, version: &str) -> Files {
+        std::fs::create_dir_all(folder).unwrap();
+        let data = b"kept model".to_vec();
+        std::fs::write(folder.join("model.enja.bin"), &data).unwrap();
+        let files = Files {
+            version: version.into(),
+            architecture: "base".into(),
+            files: vec![File {
+                name: "model.enja.bin".into(),
+                kind: "model".into(),
+                location: "main/kept.zst".into(),
+                size: 1,
+                hash: "h".into(),
+                decompressed_size: data.len() as u64,
+                decompressed_hash: sha256(&data),
+            }],
+            license: license(),
+        };
+        std::fs::write(folder.join(MANIFEST), serde_json::to_vec(&files).unwrap()).unwrap();
+        files
+    }
+
+    const SHORT: Duration = Duration::from_millis(300);
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_folder_being_written_or_swapped_is_waited_for() {
+        let models = tempfile::tempdir().unwrap();
+        let pair = ("en".to_string(), "ja".to_string());
+        keep(&models.path().join("en-ja"), "3.0");
+        let one = Firefox::new(models.path().into(), NOWHERE.into(), reqwest::Client::new());
+        let two = Firefox::new(models.path().into(), NOWHERE.into(), reqwest::Client::new());
+
+        // Another holder writing the model: a second writer waits, a
+        // reader does not.
+        let held = writing(models.path(), "en-ja").await.unwrap();
+        assert!(tokio::time::timeout(SHORT, two.update(&pair))
+            .await
+            .is_err());
+        assert!(
+            tokio::time::timeout(SHORT, remove(models.path(), "en", "ja"))
+                .await
+                .is_err()
+        );
+        assert!(one.manifest(&pair).await.is_some());
+        drop(held);
+
+        // Another holder swapping the folder: readers wait.
+        let swapping = lock(models.path(), "en-ja", Lock::Read { exclusive: true })
+            .await
+            .unwrap();
+        assert!(tokio::time::timeout(SHORT, one.manifest(&pair))
+            .await
+            .is_err());
+        drop(swapping);
+        assert!(one.manifest(&pair).await.is_some());
+
+        // Readers share.
+        let first = reading(&models.path().join("en-ja")).await.unwrap();
+        assert!(two.manifest(&pair).await.is_some());
+        assert!(tokio::time::timeout(
+            SHORT,
+            lock(models.path(), "en-ja", Lock::Read { exclusive: true })
+        )
+        .await
+        .is_err());
+        drop(first);
+
+        assert_eq!(remove(models.path(), "en", "ja").await, Ok(true));
+        assert!(one.manifest(&pair).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn what_a_stopped_update_left_is_put_right() {
+        let models = tempfile::tempdir().unwrap();
+        let folder = models.path().join("en-ja");
+        let pair = ("en".to_string(), "ja".to_string());
+        // Stopped between moving the kept folder aside and moving the new
+        // one in.
+        keep(&folder.with_extension("old"), "3.0");
+        keep(&folder.with_extension("update"), "3.1");
+        drop(writing(models.path(), "en-ja").await.unwrap());
+        let firefox = Firefox::new(models.path().into(), NOWHERE.into(), reqwest::Client::new());
+        assert_eq!(firefox.manifest(&pair).await.unwrap().version, "3.0");
+        assert!(!folder.with_extension("old").exists());
+        assert!(!folder.with_extension("update").exists());
+
+        // Stopped while downloading, or before deleting the old copy.
+        keep(&folder.with_extension("old"), "2.9");
+        keep(&folder.with_extension("update"), "3.1");
+        assert!(firefox.update(&pair).await.is_err());
+        assert_eq!(firefox.manifest(&pair).await.unwrap().version, "3.0");
+        assert!(!folder.with_extension("old").exists());
+        assert!(!folder.with_extension("update").exists());
+
+        // A deleted model does not come back from its old copy.
+        keep(&folder.with_extension("old"), "2.9");
+        assert_eq!(remove(models.path(), "en", "ja").await, Ok(true));
+        assert!(!folder.with_extension("old").exists());
+        assert!(firefox.manifest(&pair).await.is_none());
+        assert_eq!(remove(models.path(), "en", "ja").await, Ok(false));
+    }
+
+    /// Set to a models folder, [`lock_holder_for_another_process`] holds
+    /// the write lock of its `en-ja` folder until it is killed.
+    const HOLDER: &str = "INOCODE_TEST_LOCK_HOLDER";
+
+    #[tokio::test]
+    #[ignore = "run by a_lock_held_by_another_process_is_waited_for_and_let_go_when_it_stops"]
+    async fn lock_holder_for_another_process() {
+        let Ok(models) = std::env::var(HOLDER) else {
+            return;
+        };
+        let models = PathBuf::from(models);
+        let _held = writing(&models, "en-ja").await.unwrap();
+        std::fs::write(models.join("held"), b"").unwrap();
+        tokio::time::sleep(Duration::from_secs(120)).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_lock_held_by_another_process_is_waited_for_and_let_go_when_it_stops() {
+        let models = tempfile::tempdir().unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "translate::firefox::tests::lock_holder_for_another_process",
+                "--ignored",
+                "--test-threads=1",
+            ])
+            .env(HOLDER, models.path())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let held = models.path().join("held");
+        let started = std::time::Instant::now();
+        while !held.exists() {
+            assert!(
+                started.elapsed() < Duration::from_secs(60),
+                "the other process did not take the lock"
+            );
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "the other process ended"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            tokio::time::timeout(SHORT, lock(models.path(), "en-ja", Lock::Write))
+                .await
+                .is_err()
+        );
+        // Killed, as a crash would end it: its lock goes with it.
+        child.kill().unwrap();
+        child.wait().unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            lock(models.path(), "en-ja", Lock::Write),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    }
+
     /// An address nothing answers at, for runs that must not use the
     /// network.
     const NOWHERE: &str = "http://127.0.0.1:9";
@@ -1903,7 +2616,7 @@ pub(super) mod tests {
     #[ignore = "fetches Mozilla's model catalog and its certificate chain; run by hand"]
     async fn the_real_catalog_is_signed_and_lists_newer_versions() {
         let client = reqwest::Client::new();
-        let catalog = catalog(&client, SETTINGS).await.unwrap();
+        let catalog = catalog(&client, SETTINGS, None).await.unwrap();
         println!("{} records, signature verified", catalog.records.len());
         assert!(catalog.records.len() > 100);
         let newest = choose(&catalog.records, "en", "ja").unwrap();
@@ -1926,6 +2639,45 @@ pub(super) mod tests {
             languages.to
         );
         assert!(languages.direct.contains(&("en".into(), "ja".into())));
+    }
+
+    #[tokio::test]
+    #[ignore = "fetches Mozilla's OneCRL, model catalog and their certificate chains; run by hand"]
+    async fn the_real_onecrl_is_signed_and_revokes_nothing_in_the_catalog_chain() {
+        let client = reqwest::Client::new();
+        let server = Settings {
+            client: &client,
+            server: SETTINGS,
+            waits: None,
+        };
+        let records = server
+            .collection(ONECRL, ONECRL_SIGNER, &none())
+            .await
+            .unwrap();
+        let revoked = Revoked::from_records(&records);
+        println!(
+            "OneCRL: {} records; {} by issuer and serial, {} by subject and key",
+            records.len(),
+            revoked.by_issuer.len(),
+            revoked.by_key.len()
+        );
+        assert!(revoked.by_issuer.len() > 100);
+        let catalog = server
+            .collection(COLLECTION, SIGNER, &revoked)
+            .await
+            .unwrap();
+        println!(
+            "model catalog: {} records, signature verified",
+            catalog.len()
+        );
+        let models = tempfile::tempdir().unwrap();
+        let kept = models.path().join(ONECRL_FILE);
+        assert_eq!(server.revoked(Some(&kept)).await, revoked);
+        assert_eq!(server.revoked(Some(&kept)).await, revoked);
+        println!(
+            "kept OneCRL: {} bytes",
+            std::fs::metadata(&kept).unwrap().len()
+        );
     }
 
     #[tokio::test]
