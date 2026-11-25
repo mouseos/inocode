@@ -2,8 +2,9 @@
 
 - **対象と範囲：** 文章を別の言語に訳す共通部品。思考に限らず、ほかの場所からも使う。今回つなぐのは、モデルの思考を人の言語に訳して出すところだけ。
   - 計画：Notion「軽量翻訳エンジンと将来の多言語対応」（2026-11-25 版）。オフライン方式（Firefox・Chromium のモデル）とオンライン方式（Google・Edge のページ翻訳）の両方。
-- **関連ソースコード：** `core/src/translate.rs`（共通部品）、`core/src/translate/firefox.rs`（Firefox のモデルの取得・保存・訳）、`core/src/translate/marian.rs`（モデルとショートリストの読み込み、推論）、`core/src/translate/sentencepiece.rs`（文の分割と復元）、`core/src/translate/chromium.rs`（Chrome の言語パックの取得・確認・保存・訳）、`core/src/translate/tflite.rs`（TFLite モデルの読み込みと実行）、`core/src/turn.rs`（思考へのつなぎ）、`core/src/lib.rs`（`thinking_translation` イベント、`Core::set_translation`）、`server/src/lib.rs`（`settings/translation`）。
+- **関連ソースコード：** `core/src/translate.rs`（共通部品）、`core/src/translate/firefox.rs`（Firefox のモデルの取得・保存・訳）、`core/src/translate/marian.rs`（モデルとショートリストの読み込み、推論）、`core/src/translate/sentencepiece.rs`（文の分割と復元）、`core/src/translate/chromium.rs`（Chrome の言語パックの取得・確認・保存・訳）、`core/src/translate/tflite.rs`（TFLite モデルの読み込みと実行）、`core/src/translate/fixtures/`（署名の試験に使う本物の応答）、`core/src/turn.rs`（思考へのつなぎ）、`core/src/lib.rs`（`thinking_translation` イベント、`Core::set_translation`）、`server/src/lib.rs`（`settings/translation`）。
 - **根拠の状態：** UNSUPPORTED_APPROVED。ユーザーの指示（2026-11-25）：「推論過程などげんごがゆーざーしようのものとちがうと読みにくい。……推論過程の翻訳を実装して。オンオフはすぐできるように。他の場でもこの機能は使用予定なのでthinking翻訳限定でコードを組まないこと」。訳して読みやすくなるという学術的な裏付けは調べていない。
+  - 一覧の署名の確認、モデルの更新、使用条件の記録、手元のモデルの一覧・削除と訳せる言語の一覧は、2026-11-25 の作業の依頼による（ユーザー本人の承認の文言は、この記録には写していない＝不明）。署名の確認は Remote Settings の仕様に合わせるためのもので、学術的な裏付けの対象ではない。ほかも学術的な裏付けは調べていない。
 
 ## オンライン方式（確かめた事実）
 
@@ -76,7 +77,7 @@ Firefox がページ翻訳に使うモデル（Bergamot / Marian）を Mozilla �
 
 ### 確かめた事実（2026-11-25）
 
-- 一覧：`GET https://firefox.settings.services.mozilla.com/v1/buckets/main/collections/translations-models-v2/records` の `data`（404 件）。添付ファイルの置き場は `GET https://firefox.settings.services.mozilla.com/v1/` の `capabilities.attachments.base_url`（`https://firefox-settings-attachments.cdn.mozilla.net/`）。鍵は要らない。
+- 一覧：`GET https://firefox.settings.services.mozilla.com/v1/buckets/main/collections/translations-models-v2/changeset?_expected=0` の `changes`（404 件）。`metadata` に署名、`timestamp` に一覧の時刻がある。Remote Settings のクライアント仕様（https://remote-settings.readthedocs.io/en/latest/client-specifications.html 、2026-11-25 に読んだ）は、データの取得にこの `changeset` と `monitor/changes` の 2 つだけを使うよう求めている（`/records` は使わない）。`_expected` は必須で、固定の `0` なら CDN のキャッシュの寿命に任せる形になる（仕様の「Cache Busting」）。添付ファイルの置き場は `GET https://firefox.settings.services.mozilla.com/v1/` の `capabilities.attachments.base_url`（`https://firefox-settings-attachments.cdn.mozilla.net/`）。鍵は要らない。
 - 1 件ごとに `name`、`version`、`fileType`（`model`・`lex`・`srcvocab`・`trgvocab`、両側共通なら `vocab`）、`architecture`、`sourceLanguage`、`targetLanguage`、`decompressedHash`・`decompressedSize`（展開後の sha256 と大きさ）、`filter_expression`、`attachment`（`hash`＝zstd 圧縮ファイルの sha256、`size`、`location`）。
 - 当日の値の数：`filter_expression` は空 358、`env.appinfo.OS == 'Android'` 16、`env.appinfo.OS != 'Android'` 15、`env.channel == 'default' || env.channel == 'nightly'` 15。`version` は 3.0 が 325、3.1 が 64、3.0a1 が 15。`architecture` は base-memory 245、tiny 144、base 15。
 - 英語との間の組だけがある（en→ja、ja→en、en→zh-Hans、zh-Hans→en、en→zh-Hant など）。それ以外の組は英語を経由する（Firefox の `PIVOT_LANGUAGE = "en"`）。
@@ -90,8 +91,25 @@ Firefox がページ翻訳に使うモデル（Bergamot / Marian）を Mozilla �
 - ショートリスト（`src/data/shortlist.cpp`・`shortlist.h`）：先頭に u64 の magic（0xF11A48D5013417F5）、検査値、firstNum、bestNum、オフセットの数、単語の数。続いて u64 のオフセット、u32 の目的側の単語。候補は「頻出の firstNum 語＋原文の各単語に載っている語」を 8 の倍数になるまで頻出順に足したもの。検査値は先頭 16 バイトの後ろを u64 ずつ boost の hash_combine（整数の hash はそのまま）で混ぜた値で、en→ja のファイルで一致を確かめた。
 - 語彙ファイル（SentencePiece の `sentencepiece_model.proto`）：en→ja・ja→en とも unigram、`byte_fallback` 有効、`</s>`=0、`<unk>`=1、正規化は `nmt_nfkc`（前もって組まれた変換表）、先頭に空白の印を足し、余分な空白を除く。`__source__` などの利用者定義の記号がある。分割は `unigram_model.cc` の Viterbi（利用者定義の記号は 0.1×(長さ−1)、未知の文字は最低点−10）、変換表は darts-clone の二重配列（`normalizer.cc`）。https://github.com/google/sentencepiece
 
+### 一覧の署名（確かめた事実、2026-11-25）
+
+- 手順（仕様の「Signature Verification」と、Firefox の `services/settings/RemoteSettings.worker.mjs`・`toolkit/modules/CanonicalJSON.sys.mjs`・`toolkit/modules/third_party/jsesc/jsesc.mjs`・`security/manager/ssl/ContentSignatureVerifier.cpp`・`services/settings/remote-settings.sys.mjs`、mozilla/application-services の `components/remote_settings/src/client.rs`・`signatures.rs`・`components/support/rc_crypto/src/contentsignature.rs`。いずれも main ブランチを 2026-11-25 に取得、リビジョンは記録していない）：
+  1. `metadata.signatures`（無ければ `metadata.signature`）のうち `mode` が `p384ecdsa` のものについて、`x5u` の URL から PEM の証明書の連なりを取る。どれか 1 つが合えば良い。
+  2. 連なりは署名者の証明書、中間、根の順。根の DER の SHA-256 が Firefox の持つ根（`security/manager/ssl/content-signature-prod.pem`）と同じ `c8a80e9a…a106db` であること。application-services の `ROOT_CERT_SHA256_HASH_PROD` も同じ値。
+  3. 各証明書が今の時刻で有効で、各証明書が次の証明書の鍵で署名されていること。Firefox は署名者の証明書に用途「コード署名」（`id_kp_codeSigning`）を求め、SAN の DNS 名が `remote-settings.content-signature.mozilla.org`（main バケット。`security-state` は onecrl）であることを確かめる。
+  4. 署名する中身：`"Content-Signature:\0"` ＋ `{"data": id で並べたレコード, "last_modified": "<timestamp を文字列で>"}` の正準 JSON。削除済み（`deleted: true`）は除き、同じ id が並べば後ろのものを残す。
+  5. 正準 JSON（CanonicalJSON ＋ jsesc の `json`・`lowercaseHex`）：空白なし。オブジェクトの鍵は JavaScript の `sort()` の順（UTF-16 の符号単位の順）。文字列は印字できる ASCII（0x20〜0x7E）だけそのまま、`"` と `\` は `\"`・`\\`、`\b \f \n \r \t` は短い形、ほかは UTF-16 の符号単位ごとに `\u` と小文字の 16 進 4 桁（基本面の外は代用対 2 つ）。`/` と `'` はそのまま。数は JavaScript の書き方（`1e+21`、`1e-7`、2^53 を超える整数は丸める）、-0 は `-0`。
+  6. 署名は base64url の 96 バイト（r と s が 48 バイトずつ）。署名者の証明書の P-384 の鍵で、ECDSA・SHA-384 で確かめる。
+- 当日の連なり（`https://content-signature-2.cdn.mozilla.net/g/chains/202402/remote-settings.content-signature.mozilla.org-2027-01-03-18-03-41.chain`）：署名者は P-384、有効 2026-10-15〜2027-01-03、中間が ecdsa-with-SHA384 で署名。中間は P-384、CA、用途コード署名、名前の制約 `.content-signature.mozilla.org`、根が sha384WithRSAEncryption で署名。根は RSA 4096 ビット（指数 3）、有効 2024-02-01〜2200-12-03。
+- 上の手順を Python で組んで、`translations-models-v2`（404 件、ASCII 以外の文字なし）と、ASCII 以外の文字を含む `password-rules`（403 件）を含む 7 つのコレクションの署名が合うことを確かめた（OpenSSL の入った Python の `cryptography` で）。
+- 仕様は、応答の `Backoff` 見出しに従うことを求めている（MUST）。inocode は一覧を 1 回の起動で 1 度しか取らないが、`Backoff` は読んでいない。
+
 ### inocode の決め事
 
+- 一覧の署名：上の手順をすべて行い、合わない一覧は使わない（モデルの取得も更新もしない）。証明書の読み取りは `x509-cert`、P-384 の署名は `p384`、根から中間への RSA の署名は既存の `rsa`。どれも Rust の実装。Firefox（mozilla::pkix）と同じく、知らない「重要」な拡張を持つ証明書は断る。名前の制約は確かめない（署名者の名前を固定しており、その名前は中間の制約の内側にあるため）。`x5u` は https だけ、64 KB まで。失効の確認（OneCRL など）はしない。
+- 一覧は 1 回の起動（プロセス）で、置き場の送り先ごとに 1 度だけ取る（取れたものを覚えておく）。取れなかったときは覚えず、次に要るときにまた取る。
+- 更新：手元にある組は、その起動で初めて使うときに 1 度だけ、一覧により新しい版（数字の大小）があるか確かめる。`prepare()` からは確かめ終わってから読み込む。訳すときは古い版のまま訳し、確かめは裏で行う（ネットにつながらないときに訳が待たされないため）。新しい版があれば、別のフォルダ（`<元>-<先>.update`）に取って確かめてから、元のフォルダを `.old` に名前を変え、新しいフォルダを元の名前にし、`.old` を消す。この入れ替えの間は、同じプロセスの中のモデルの読み込みを止める（読み書きの錠）。入れ替えた後は、その `Translator` が覚えているモデルを捨て、次に使うとき新しい版を読む。取得や確認に失敗したら、`.update` を消して手元の版をそのまま使う。初めて取った組はその起動では確かめない。
+- 使用条件：`files.json` に `license` を書く（名前 `MPL-2.0`、出典 https://github.com/mozilla/translations/blob/main/README.md 。その README に「The model files are distributed under the MPL 2.0 license」とある。2026-11-25 に確かめた。旧来のモデル置き場 mozilla/firefox-translations-models の LICENSE も MPL 2.0）。`license` の無い古い `files.json` は同じ値として読む。
 - 一覧から選ぶ組：`filter_expression` が空か `env.appinfo.OS != 'Android'` のものだけ（デスクトップのプログラムなので。Android 向けと nightly 向けは使わない）。版は 3.x の数字だけのもの（3.0a1 のような試験版は使わない）。同じ組で、モデルと語彙がそろっている版のうち最も新しいもの。同じ版に複数の種類（architecture）があれば、モデルの大きいほう。
 - 取得：一覧と添付は 30 秒・600 秒で打ち切り、一覧は 20 MB、ファイルは一覧に載った大きさ（上限 300 MB）を超えたら止める。添付の場所は置き場と同じスキーム・ホスト・ポートに限る（`..` や絶対 URL は断る）。圧縮ファイルの sha256 と大きさ、展開後の sha256 と大きさを確かめてから、一時ファイルに書いて名前を変える。組の全ファイルがそろったら最後に `files.json` を書く。展開は Rust だけの `ruzstd`。
 - 置き場：`settings.json` の隣の `translation-models/<元>-<先>/`。`files.json` があり各ファイルの大きさが合えば、ネットにはつながない。読み込むときは大きさだけ確かめ、ハッシュは取得時にだけ確かめる。
@@ -127,7 +145,9 @@ Firefox がページ翻訳に使うモデル（Bergamot / Marian）を Mozilla �
 - Bergamot と同じ訳になるか（比べていない）。訳の質の測定はしていない。上の例のとおり誤訳がある。
 - tiny の種類と、en→ja・ja→en・en→zh-Hans 以外の組のモデルは動かしていない。BPE の語彙、intgemm16・float32 の行列のモデルには対応していない。
 - 原文の言語を文字の種類で決めるやり方の当たり外れ。英語以外のラテン文字の言語（ドイツ語など）は英語として扱われる。
-- 一覧の内容が変わったとき（版 4 など）は使えなくなる。手元に置いたモデルは新しい版が出ても取り直さない。
+- 一覧の内容が変わったとき（版 4 など）は使えなくなる。
+- 更新で実際に新しい版が配られたときの入れ替え（本物の一覧では、当日は手元の en→ja より新しい版が無かった）。模擬のサーバーでだけ確かめた。別のプロセスが同じフォルダを同時に読み書きする場合は守っていない。
+- 証明書の失効。`Backoff` 見出し。
 
 ## オフライン方式：Chrome の言語パック（Chromium 方式）
 
@@ -172,6 +192,8 @@ Chrome が組み込みの翻訳 API（Translator API）のために取ってく�
 - コードは Edge・Firefox 方式と同じく、コードの前後の文を別々に訳してコードを挟み直す。
 - 読み込んだ方向は `Translator` の中に持ち、計算は `spawn_blocking` で行う。`settings/translation` で `chromium` の思考の翻訳がオンになったときも、Firefox 方式と同じく裏でパックを取りに行く。
 - 依存を 2 つ足した：`rsa` 0.9（署名の確認）、`flate2` 1（zip の展開。すでに他のクレート経由で入っていた）。どちらも Rust の実装。
+- 更新：要求の `version` に手元のパックの版（`pack.json` の `version`。無ければ `0.0.0.0`）を入れる。答えの `updatecheck.status` が `noupdate` なら手元のまま。新しい版が示されたら、初めての取得と同じ確認をして `en-<言語>.update` に置き、Firefox 方式と同じ名前の入れ替えで置き換える。確かめる時と回数（その起動で初めて使うとき 1 度、`prepare()` は待ち、訳すときは裏で）、失敗したら手元の版を使うことも Firefox 方式と同じ。
+- 使用条件：言語パックの使用許諾は見つからなかった（パックの中身を許諾の有無という目で調べてはいない）。`pack.json` の `license` に、名前 `unknown`、出典 https://www.google.com/chrome/terms/ 、注記（使用許諾は見つからず、Google 利用規約 https://policies.google.com/terms と Chrome の追加利用規約が及びうるし、この使い方を認めていない可能性がある）を書く。Chrome の追加利用規約（2025-09-30 改定版、2026-11-25 に読んだ）は「Chrome を使うと Google 利用規約とこの追加規約に同意したことになる」としている。`license` の無い古い `pack.json` は同じ値として読む。
 
 ### 本物での確認（2026-11-25、Windows 11、release ビルド）
 
@@ -195,13 +217,40 @@ Chrome が組み込みの翻訳 API（Translator API）のために取ってく�
 - `b2a`、`add_period_10`、`lc` の後の大文字の戻し方について、Chrome（libtranslatekit）が実際にすること。`translation_model.pb` の各番号の意味（上は値からの推定）。辞書 `dictionary.bin` の使い道（使っていない）。
 - en-ja 以外のパック（zh など）は動かしていない。フォルダ名・言語の書き方・演算の種類が違えば読み込みで誤りになる。英語経由（ja→zh など）も動かしていない。
 - 2048 ビットの鍵と ECDSA の証明は確かめていない。
-- 更新サーバーが、実在の Chrome でない要求（版を名乗るだけで CUP 署名なし）をこの先も受けるか。手元のパックは新しい版が出ても取り直さない。
+- 更新サーバーが、実在の Chrome でない要求（版を名乗るだけで CUP 署名なし）をこの先も受けるか。
+- 新しい版が実際に配られたときの入れ替え（当日は 2024.9.9.1 が最新で、それより新しい版は無かった）。新しい CRX を作れない（Google の鍵が要る）ので、模擬では「更新なし」「http だけの取得先」「つながらない」の 3 つで手元のパックが残ることだけを確かめた。
 - debug ビルドでの速さ（測っていない）。
 
 ## 思考の翻訳を Chromium のモデルで（本物での確認、2026-11-25）
 
 - `thinking_is_translated_while_turned_on`（`INOCODE_TRANSLATE_SERVICE=chromium`、Claude OAuth `claude-haiku-5-5`（high）、release ビルド、言語パックは試験の中で初めて取得）：思考 34 件、訳 4 件。オフ後のターンは訳 0 件。全体 8.62 秒。
 - 訳の例：「9:47 に 2 時間 38 分が 12:25 になると、日本語で答えます。 算術がチェックアウトされるので、ここにはツールは必要ありません。」（"checks out" を直訳している）。
+
+## 手元のモデルの管理と、訳せる言語の一覧（共通部品の関数）
+
+思考に限らずどこからでも使えるよう `translate` の公開関数にした。プロトコルへのつなぎはまだ無い。
+
+- `installed(models)`：`models`（`Translator::new` に渡すフォルダ）にそろっているモデル。Firefox は `<元>-<先>/files.json`、Chromium は `chromium/en-<言語>/pack.json` があり、載っているファイルの大きさが合うものだけ。サービス、元、先（Chromium のパックは両方向を持つので、元はいつも `en`）、版、ファイルの合計の大きさ、使用条件、フォルダを返す。フォルダ名の分け方：一覧の組はどれも片側が英語なので、`en-` で始まれば残りが先、`-en` で終われば手前が元（`en-zh-Hans` など）。`.update`・`.old` の付いたフォルダや途中のものは数えない。
+- `remove(models, service, from, to)`：そのモデルのフォルダを消す。無ければ `Ok(false)`。言語は英数字と `-` だけ（16 文字まで）で、`..`・`/`・`\` は断る。消す前に、それが実在のフォルダ（シンボリックリンクではない）で、実際の場所が置き場の直下であることを確かめる。消している間は同じプロセスの読み込みを止める。Chromium はどちらかが `en` の組だけ。Google・Edge は手元に何も置かないので誤り。すでに読み込んだ `Translator` はメモリの中のモデルを使い続ける。
+- `languages(service, hosts)`：
+  - Firefox：署名を確かめた一覧から、選び方の決まり（デスクトップ向け、3.x、そろった組）に合う組。2026-11-25 は 114 組、58 言語。英語を経由する組は `direct` に無い。
+  - Chromium：`PACKS` の 38 言語と英語、英語との間の 76 方向。ネットは使わない。
+  - Google：`GET https://translate-pa.googleapis.com/v1/supportedLanguages?client=te_lib&display_language=en&key=AIzaSyBWDj0QJvVIx8XOhRegXX5_SrRWxhT5Hs4`。答えは `sourceLanguages`・`targetLanguages`（各 `language`・`name`）。鍵はページ翻訳スクリプト `m=el_main` の中で、この一覧の取得にだけ使われているもの（訳に使う鍵とは別）。訳に使う鍵で呼ぶと 403 だった。2026-11-25：元 249 言語（`auto` を除く）、先 249 言語。
+  - Edge：Edge の送り先（`edge.microsoft.com/translate/…`）に言語の一覧は見つからなかった（`languages`、`supportedlanguages` は 404）。代わりに Microsoft Translator の鍵の要らない一覧 `GET https://api.cognitive.microsofttranslator.com/languages?api-version=3.0&scope=translation` の `translation` の言語を使う。Edge の送り先がこの一覧の言語を受けるかは、`tlh-Latn`・`zh-Hans`・`yue`・`mn-Mong` の 4 つで訳が返り、一覧に無い `xx` で 400 になることだけを確かめた（2026-11-25）。156 言語。
+
+## テスト（模擬、ネットを使わない）
+
+- `translate::firefox::tests::canonical_json_follows_firefox`：鍵の UTF-16 順（U+10000 が U+E000 より前）、文字列の書き方、数の JavaScript の書き方、署名する中身（id の順、削除済みを除く、同じ id は後ろを残す）。
+- `translate::firefox::tests::a_signed_catalog_verifies_and_a_changed_one_does_not`：本物の `main/message-groups`（15 件）の changeset と証明書の連なりを 2026-11-25 に保存したもの（`core/src/translate/fixtures/`）。2026-11-25 の時刻で合うこと。レコード・時刻・署名を変えると、期限切れの後の時刻、連なりが無い、根が無い、中間を飛ばした、順番が違うと断ること。改行が CRLF でも読めること。
+- `translate::firefox::tests::a_newer_version_replaces_the_kept_one_and_the_kept_one_stays_otherwise`：手元の 3.0 が、模擬の置き場から取った 3.1 に置き換わり（`.update`・`.old` は残らない）、同じ版ではもう取らない。ハッシュの合わない 3.2、つながらない送り先では手元の 3.1 が残る。
+- `translate::firefox::tests::newer_versions_languages_and_folder_names_come_from_the_catalog`、`translate::chromium::tests::the_kept_pack_stays_unless_a_newer_one_installs`、`translate::chromium::tests::the_packs_give_english_and_their_languages_both_ways`、`translate::tests::kept_models_are_listed_and_removed_only_inside_the_folder`、`translate::tests::the_online_services_languages_are_read_from_their_lists`。
+
+## 本物での確認（2026-11-25、debug ビルド）
+
+- `translate::firefox::tests::the_real_catalog_is_signed_and_lists_newer_versions`（手で動かす）：本物の一覧 404 件の署名が合った。en→ja の最新は 3.0（base-memory）。手元を 3.0 とすると新しい版なし、2.9 とすると 3.0 を新しい版とした。訳せる組 114。
+- `translate::chromium::tests::the_update_server_offers_a_pack_only_newer_than_the_kept_one`（手で動かす）：版 `0.0.0.0` で聞くと 2024.9.9.1（56,490,050 バイト）が示され、2024.9.9.1 で聞くと `noupdate` だった。
+- `translate::tests::languages_are_listed_here`（手で動かす）：Google 249・249、Edge 156・156、Firefox 58・58（114 組）、Chromium 39・39（76 方向）。
+- `translate::tests::translates_here`（`firefox`・`chromium`、前に取ったモデルを使う。`license` の無い古い `files.json`・`pack.json`）：訳は前と同じ文になった。
 
 ## 未実装・未検証
 

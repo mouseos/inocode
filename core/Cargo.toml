@@ -22,6 +22,7 @@ ignore = "0.4"
 hayro = "0.9"
 hound = "3.5"
 nokhwa = { version = "0.10", default-features = false, features = ["input-native"] }
+p384 = { version = "0.13", default-features = false, features = ["ecdsa", "std"] }
 pdf-extract = "0.12"
 portable-pty = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
@@ -48,6 +49,7 @@ tree-sitter-tags = "0.27"
 tree-sitter-typescript = "0.23"
 two-face = { version = "0.5", default-features = false, features = ["syntect-onig"] }
 vt100 = "0.18"
+x509-cert = { version = "0.2", default-features = false, features = ["std"] }
 zero-search = { git = "https://github.com/mouseos/ZeroSearch_MCP", rev = "7288401092daca571865f3a0419afc85acee9e14" }
 
 [target.'cfg(target_os = "linux")'.dependencies]

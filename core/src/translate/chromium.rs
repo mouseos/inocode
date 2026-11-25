@@ -15,9 +15,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use super::firefox::{body, safe_name, sentences, sha256, write_whole};
+use super::firefox::{
+    body, first_check, language_tag, remove_folder, replace_folder, safe_name, sentences, sha256,
+    write_whole, DISK,
+};
 use super::sentencepiece::{Fields, Value as Field, Vocabulary};
 use super::tflite::{Graph, Tensor};
+use super::{InstalledModel, Languages, License, Service};
 use crate::ErrorInfo;
 
 /// Chrome's component update server
@@ -210,6 +214,111 @@ struct Kept {
 struct Manifest {
     version: String,
     files: Vec<Kept>,
+    #[serde(default = "license")]
+    license: License,
+}
+
+/// No license for the packs was found (see the evidence document).
+fn license() -> License {
+    License {
+        name: "unknown".into(),
+        source: "https://www.google.com/chrome/terms/".into(),
+        terms: Some(
+            "No license for Chrome's language packs was found. They come from Google's \
+             component update server; the Google Terms of Service \
+             (https://policies.google.com/terms) and the Chrome Additional Terms of Service \
+             may apply and may not allow this use."
+                .into(),
+        ),
+    }
+}
+
+/// What Chrome's packs translate: English and each pack's language, both
+/// ways.
+pub(super) fn languages() -> Languages {
+    let mut all: Vec<String> = PACKS.iter().map(|(name, _)| name.to_string()).collect();
+    all.push(PIVOT.into());
+    all.sort();
+    let direct = PACKS
+        .iter()
+        .flat_map(|(name, _)| {
+            [
+                (PIVOT.to_string(), name.to_string()),
+                (name.to_string(), PIVOT.to_string()),
+            ]
+        })
+        .collect();
+    Languages {
+        from: all.clone(),
+        to: all,
+        direct,
+    }
+}
+
+/// The list of files of the pack in `folder`, when all of them are on
+/// disk.
+async fn read_manifest(folder: &Path) -> Option<Manifest> {
+    let _reading = DISK.read().await;
+    let text = tokio::fs::read_to_string(folder.join(MANIFEST))
+        .await
+        .ok()?;
+    let manifest: Manifest = serde_json::from_str(&text).ok()?;
+    for file in &manifest.files {
+        let metadata = tokio::fs::metadata(folder.join(&file.path)).await.ok()?;
+        if metadata.len() != file.size {
+            return None;
+        }
+    }
+    Some(manifest)
+}
+
+/// The whole packs kept in `folder`.
+pub(super) async fn installed(folder: &Path) -> Vec<InstalledModel> {
+    let mut out = Vec::new();
+    let Ok(mut entries) = tokio::fs::read_dir(folder).await else {
+        return out;
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let name = entry.file_name();
+        let Some(language) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix("en-"))
+            .filter(|language| language_tag(language))
+        else {
+            continue;
+        };
+        if !entry.file_type().await.is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        let path = entry.path();
+        if let Some(manifest) = read_manifest(&path).await {
+            out.push(InstalledModel {
+                service: Service::Chromium,
+                from: PIVOT.into(),
+                to: language.to_string(),
+                bytes: manifest.files.iter().map(|file| file.size).sum(),
+                version: manifest.version,
+                license: manifest.license,
+                path,
+            });
+        }
+    }
+    out.sort_by(|a, b| a.to.cmp(&b.to));
+    out
+}
+
+/// Deletes the kept pack that holds `from` → `to`.
+pub(super) async fn remove(folder: &Path, from: &str, to: &str) -> Result<bool, ErrorInfo> {
+    let language = match (from, to) {
+        (PIVOT, other) | (other, PIVOT) if other != PIVOT && language_tag(other) => other,
+        _ => {
+            return Err(ErrorInfo::new(
+                "invalid_params",
+                format!("{from:?} → {to:?} is not a pair of English and a pack's language"),
+            ))
+        }
+    };
+    remove_folder(folder, &format!("{PIVOT}-{language}")).await
 }
 
 /// The `pack` language as the pack list writes it: Chinese by script,
@@ -248,9 +357,9 @@ fn component_id(key_hash: &[u8; 32]) -> String {
         .collect()
 }
 
-/// The update request for `app` (docs/updater/protocol_4.md), naming the
-/// system inocode runs on.
-fn update_request(app: &str) -> Value {
+/// The update request for `app` at `version`, `0.0.0.0` when none is kept
+/// (docs/updater/protocol_4.md), naming the system inocode runs on.
+fn update_request(app: &str, version: &str) -> Value {
     let (os, platform) = match std::env::consts::OS {
         "windows" => ("win", "Windows"),
         "macos" => ("mac", "Mac OS X"),
@@ -277,7 +386,7 @@ fn update_request(app: &str) -> Value {
         "os": {"platform": platform, "arch": os_arch},
         "apps": [{
             "appid": app,
-            "version": "0.0.0.0",
+            "version": version,
             "enabled": true,
             "installsource": "ondemand",
             "updatecheck": {},
@@ -295,8 +404,9 @@ struct Package {
 }
 
 /// The whole-file download of `app` in an update answer: the pipeline
-/// that is only a download and a CRX3 install, from https addresses.
-fn package(answer: &str, app: &str) -> Result<Package, String> {
+/// that is only a download and a CRX3 install, from https addresses;
+/// `None` when the server has nothing newer than the version asked with.
+fn package(answer: &str, app: &str) -> Result<Option<Package>, String> {
     let text = answer.trim_start();
     let text = text.strip_prefix(")]}'").unwrap_or(text);
     let value: Value =
@@ -312,6 +422,9 @@ fn package(answer: &str, app: &str) -> Result<Package, String> {
         ));
     }
     let check = &entry["updatecheck"];
+    if check["status"] == "noupdate" {
+        return Ok(None);
+    }
     if check["status"] != "ok" {
         return Err(format!(
             "the update server answered {} for the pack",
@@ -347,12 +460,12 @@ fn package(answer: &str, app: &str) -> Result<Package, String> {
             .map(str::to_string)
             .collect();
         if !urls.is_empty() {
-            return Ok(Package {
+            return Ok(Some(Package {
                 version,
                 size,
                 sha256: sha256.to_ascii_lowercase(),
                 urls,
-            });
+            }));
         }
     }
     Err("the update answer has no whole download of the pack".into())
@@ -1074,7 +1187,7 @@ impl Chromium {
         for text in texts {
             let from = pack_language(super::script_language(text).unwrap_or(PIVOT));
             if !routes.contains_key(&from) {
-                let route = self.route(&from, &to).await?;
+                let route = self.route(&from, &to, false).await?;
                 routes.insert(from.clone(), route);
             }
             jobs.push((routes[&from].clone(), text.clone()));
@@ -1094,17 +1207,26 @@ impl Chromium {
     }
 
     /// Fetches the packs that take `from` to `to` when they are not on
-    /// disk yet.
+    /// disk yet, or a newer version of them when the update server offers
+    /// one.
     pub(super) async fn prepare(&self, from: &str, to: &str) -> Result<(), ErrorInfo> {
-        self.route(&pack_language(from), &pack_language(to))
+        self.route(&pack_language(from), &pack_language(to), true)
             .await
             .map(drop)
     }
 
     /// The loaded directions that take `from` to `to`, through English
     /// between two other languages; packs are fetched first when they are
-    /// not on disk yet.
-    async fn route(&self, from: &str, to: &str) -> Result<Vec<Arc<Direction>>, ErrorInfo> {
+    /// not on disk yet. A pack already on disk is checked for a newer
+    /// version the first time this process uses it: before loading when
+    /// `wait`, else alongside, the new version then used from the next
+    /// load.
+    async fn route(
+        &self,
+        from: &str,
+        to: &str,
+        wait: bool,
+    ) -> Result<Vec<Arc<Direction>>, ErrorInfo> {
         if from == to {
             return Ok(Vec::new());
         }
@@ -1116,6 +1238,22 @@ impl Chromium {
                 (PIVOT.to_string(), to.to_string()),
             ]
         };
+        for (from, to) in &steps {
+            let language = if from == PIVOT { to } else { from };
+            if self.manifest(language).await.is_none() || !first_check(&self.pack_folder(language))
+            {
+                continue;
+            }
+            if wait {
+                let _ = self.update(language).await;
+            } else {
+                let this = self.clone();
+                let language = language.clone();
+                tokio::spawn(async move {
+                    let _ = this.update(&language).await;
+                });
+            }
+        }
         let mut out = Vec::with_capacity(steps.len());
         for step in steps {
             out.push(self.load(step).await?);
@@ -1129,18 +1267,7 @@ impl Chromium {
 
     /// The pack's list of files, when all of them are on disk.
     async fn manifest(&self, language: &str) -> Option<Manifest> {
-        let folder = self.pack_folder(language);
-        let text = tokio::fs::read_to_string(folder.join(MANIFEST))
-            .await
-            .ok()?;
-        let manifest: Manifest = serde_json::from_str(&text).ok()?;
-        for file in &manifest.files {
-            let metadata = tokio::fs::metadata(folder.join(&file.path)).await.ok()?;
-            if metadata.len() != file.size {
-                return None;
-            }
-        }
-        Some(manifest)
+        read_manifest(&self.pack_folder(language)).await
     }
 
     async fn load(&self, (from, to): (String, String)) -> Result<Arc<Direction>, ErrorInfo> {
@@ -1154,13 +1281,18 @@ impl Chromium {
                 "Chrome has no language pack for {language}"
             )));
         }
+        let folder = self.pack_folder(language);
         let manifest = match self.manifest(language).await {
             Some(manifest) => manifest,
-            None => self.fetch(language).await.map_err(failed)?,
+            None => {
+                first_check(&folder);
+                self.fetch(language).await.map_err(failed)?
+            }
         };
-        let folder = self.pack_folder(language);
         let (want_from, want_to) = (from.clone(), to.clone());
+        let reading = DISK.read().await;
         let direction = tokio::task::spawn_blocking(move || -> Result<Direction, String> {
+            let _reading = reading;
             let mut folders: Vec<&str> = manifest
                 .files
                 .iter()
@@ -1191,6 +1323,43 @@ impl Chromium {
     /// Asks the update server for the pack, downloads and checks it, and
     /// keeps its models and then its list of files.
     async fn fetch(&self, language: &str) -> Result<Manifest, String> {
+        let package = self
+            .check(language, "0.0.0.0")
+            .await?
+            .ok_or("the update server offers no pack")?;
+        self.install(language, &package, &self.pack_folder(language))
+            .await
+    }
+
+    /// Fetches a newer version of the kept pack into a folder of its own
+    /// and puts it in place of the kept one, when the update server offers
+    /// one for the kept version; `Ok(false)` when it does not.
+    pub(super) async fn update(&self, language: &str) -> Result<bool, String> {
+        let Some(kept) = self.manifest(language).await else {
+            return Ok(false);
+        };
+        let Some(package) = self.check(language, &kept.version).await? else {
+            return Ok(false);
+        };
+        if package.version == kept.version {
+            return Ok(false);
+        }
+        let folder = self.pack_folder(language);
+        let staging = folder.with_extension("update");
+        let _ = tokio::fs::remove_dir_all(&staging).await;
+        if let Err(error) = self.install(language, &package, &staging).await {
+            let _ = tokio::fs::remove_dir_all(&staging).await;
+            return Err(error);
+        }
+        replace_folder(&staging, &folder).await?;
+        let mut loaded = self.loaded.lock().await;
+        loaded.remove(&(PIVOT.to_string(), language.to_string()));
+        loaded.remove(&(language.to_string(), PIVOT.to_string()));
+        Ok(true)
+    }
+
+    /// What the update server offers for the pack when `version` is kept.
+    async fn check(&self, language: &str, version: &str) -> Result<Option<Package>, String> {
         let key = key_hash(language).ok_or("no such pack")?;
         let app = component_id(&key);
         let response = self
@@ -1200,13 +1369,24 @@ impl Chromium {
             .header("X-Goog-Update-Interactivity", "fg")
             .header("X-Goog-Update-Updater", format!("chrome-{CHROME_VERSION}"))
             .header("X-Goog-Update-AppId", &app)
-            .body(update_request(&app).to_string())
+            .body(update_request(&app, version).to_string())
             .timeout(UPDATE_WAIT)
             .send()
             .await
             .map_err(|error| error.to_string())?;
         let answer = body(response, LARGEST_ANSWER).await?;
-        let package = package(&String::from_utf8_lossy(&answer), &app)?;
+        package(&String::from_utf8_lossy(&answer), &app)
+    }
+
+    /// Downloads and checks `package`, and keeps its models and then its
+    /// list of files in `folder`.
+    async fn install(
+        &self,
+        language: &str,
+        package: &Package,
+        folder: &Path,
+    ) -> Result<Manifest, String> {
+        let key = key_hash(language).ok_or("no such pack")?;
         if package.size > LARGEST_PACK {
             return Err("the pack is too large".into());
         }
@@ -1247,7 +1427,6 @@ impl Chromium {
         if files.is_empty() {
             return Err("the pack has no models".into());
         }
-        let folder = self.pack_folder(language);
         let mut kept = Vec::with_capacity(files.len());
         for (path, data) in files {
             let (inner, _) = path.split_once('/').ok_or("a file is outside a folder")?;
@@ -1262,8 +1441,9 @@ impl Chromium {
             });
         }
         let manifest = Manifest {
-            version: package.version,
+            version: package.version.clone(),
             files: kept,
+            license: license(),
         };
         let text = serde_json::to_vec_pretty(&manifest).map_err(|error| error.to_string())?;
         write_whole(&folder.join(MANIFEST), &text).await?;
@@ -1287,11 +1467,12 @@ mod tests {
         assert_eq!(pack_language("ja-JP"), "ja");
         assert_eq!(pack_language("zh-TW"), "zh-Hant");
         assert!(key_hash("xx").is_none());
-        let request = update_request("hnccddhebmkigcfihhnmiiihcnaogoel");
+        let request = update_request("hnccddhebmkigcfihhnmiiihcnaogoel", "2024.9.9.1");
         assert_eq!(
             request["request"]["apps"][0]["appid"],
             "hnccddhebmkigcfihhnmiiihcnaogoel"
         );
+        assert_eq!(request["request"]["apps"][0]["version"], "2024.9.9.1");
         assert_eq!(request["request"]["protocol"], "4.0");
     }
 
@@ -1304,7 +1485,7 @@ mod tests {
     fn the_update_answer_gives_the_whole_download_over_https() {
         let found = package(ANSWER, "hnccddhebmkigcfihhnmiiihcnaogoel").unwrap();
         assert_eq!(
-            found,
+            found.unwrap(),
             Package {
                 version: "2024.9.9.1".into(),
                 size: 56490050,
@@ -1315,7 +1496,11 @@ mod tests {
                 ],
             }
         );
-        assert!(package(ANSWER, "lbimbicckdokpoicboneldipejkhjgdg").is_err());
+        // Nothing newer than the version asked with.
+        assert_eq!(
+            package(ANSWER, "lbimbicckdokpoicboneldipejkhjgdg"),
+            Ok(None)
+        );
         assert!(package(ANSWER, "boeedobmjjddfgncfnmnehcemjbfpfbk").is_err());
         assert!(package("not json", "x").is_err());
     }
@@ -1548,6 +1733,87 @@ mod tests {
     const NOWHERE: &str = "http://127.0.0.1:9";
 
     #[tokio::test]
+    async fn the_kept_pack_stays_unless_a_newer_one_installs() {
+        let folder = tempfile::tempdir().unwrap();
+        let kept_folder = folder.path().join("en-ja");
+        std::fs::create_dir_all(kept_folder.join("en_ja_nmt")).unwrap();
+        std::fs::write(kept_folder.join("en_ja_nmt/encoder_0.tflite"), b"model").unwrap();
+        let kept = Manifest {
+            version: "2024.9.9.1".into(),
+            files: vec![Kept {
+                path: "en_ja_nmt/encoder_0.tflite".into(),
+                size: 5,
+                sha256: sha256(b"model"),
+            }],
+            license: license(),
+        };
+        std::fs::write(
+            kept_folder.join(MANIFEST),
+            serde_json::to_vec(&kept).unwrap(),
+        )
+        .unwrap();
+        let app = component_id(&key_hash("ja").unwrap());
+        let answer = |check: Value| {
+            format!(
+                ")]}}'\n{}",
+                json!({"response": {"protocol": "4.0", "apps": [
+                    {"appid": app, "status": "ok", "updatecheck": check}]}})
+            )
+            .into_bytes()
+        };
+        let none = answer(json!({"status": "noupdate"}));
+        // Offered only over http, which is not used.
+        let http_only = answer(json!({"status": "ok", "nextversion": "2025.1.1.1",
+            "pipelines": [{"operations": [
+                {"type": "download", "size": 5, "out": {"sha256": "0".repeat(64)},
+                 "urls": [{"url": "http://127.0.0.1:9/a.crx3"}]},
+                {"type": "crx3"}]}]}));
+        let base = super::super::firefox::tests::stand_in(vec![
+            ("/none".into(), none),
+            ("/http".into(), http_only),
+        ])
+        .await;
+        for (update, expected) in [
+            (format!("{base}/none"), Ok(false)),
+            (format!("{base}/http"), Err(())),
+            (NOWHERE.to_string(), Err(())),
+        ] {
+            let chromium = Chromium::new(folder.path().into(), update, reqwest::Client::new());
+            assert_eq!(chromium.update("ja").await.map_err(drop), expected);
+            assert_eq!(chromium.manifest("ja").await, Some(kept.clone()));
+            assert!(!folder.path().join("en-ja.update").exists());
+        }
+        let chromium = Chromium::new(folder.path().into(), NOWHERE.into(), reqwest::Client::new());
+        assert_eq!(chromium.update("de").await, Ok(false));
+    }
+
+    #[test]
+    fn the_packs_give_english_and_their_languages_both_ways() {
+        let found = languages();
+        assert!(found.from.contains(&"en".to_string()) && found.to.contains(&"ja".to_string()));
+        assert_eq!(found.from.len(), PACKS.len() + 1);
+        assert!(found.direct.contains(&("ja".into(), "en".into())));
+        assert!(found.direct.contains(&("en".into(), "zh-Hant".into())));
+        assert_eq!(found.direct.len(), PACKS.len() * 2);
+        assert_eq!(license().name, "unknown");
+    }
+
+    #[tokio::test]
+    #[ignore = "asks Google's update server about the English-Japanese pack; run by hand"]
+    async fn the_update_server_offers_a_pack_only_newer_than_the_kept_one() {
+        let chromium = Chromium::new(
+            std::env::temp_dir().join("inocode-chromium-unused"),
+            UPDATE.into(),
+            reqwest::Client::new(),
+        );
+        let offered = chromium.check("ja", "0.0.0.0").await.unwrap().unwrap();
+        println!("offered {} ({} bytes)", offered.version, offered.size);
+        let again = chromium.check("ja", &offered.version).await.unwrap();
+        println!("asked with {}: {again:?}", offered.version);
+        assert_eq!(again, None);
+    }
+
+    #[tokio::test]
     #[ignore = "downloads about 56 MB from Google; run by hand"]
     async fn english_to_japanese_is_fetched_once_and_kept() {
         let folder = tempfile::tempdir_in(std::env::temp_dir()).unwrap();
@@ -1598,7 +1864,7 @@ mod tests {
         let chromium = Chromium::new(folder, NOWHERE.into(), reqwest::Client::new());
         for (from, to) in [("en", "ja"), ("ja", "en")] {
             let started = std::time::Instant::now();
-            chromium.route(from, to).await.unwrap();
+            chromium.route(from, to, false).await.unwrap();
             println!("loaded {from}-{to} from disk in {:?}", started.elapsed());
         }
         println!(

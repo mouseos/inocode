@@ -14,6 +14,7 @@ mod tflite;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -65,6 +66,11 @@ pub struct Hosts {
     pub firefox: String,
     /// The component update server Chrome's language packs come from.
     pub chromium: String,
+    /// The list of languages Google's page translation offers.
+    pub google_languages: String,
+    /// Microsoft Translator's list of languages, which Edge's service
+    /// translates into.
+    pub edge_languages: String,
 }
 
 impl Default for Hosts {
@@ -74,6 +80,143 @@ impl Default for Hosts {
             google: "https://translate-pa.googleapis.com/v1/translateHtml".into(),
             firefox: firefox::SETTINGS.into(),
             chromium: chromium::UPDATE.into(),
+            google_languages: "https://translate-pa.googleapis.com/v1/supportedLanguages".into(),
+            edge_languages: "https://api.cognitive.microsofttranslator.com/languages".into(),
+        }
+    }
+}
+
+/// The license or terms a kept model comes under, as far as they are known.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct License {
+    /// The license's SPDX name, or `unknown`.
+    pub name: String,
+    /// Where the license, or the search for one, was read.
+    pub source: String,
+    /// Other terms that may apply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terms: Option<String>,
+}
+
+/// A model kept on disk for one of the offline services.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InstalledModel {
+    pub service: Service,
+    /// A Chromium pack translates both ways: `from` is always `en` and
+    /// `to` the pack's other language.
+    pub from: String,
+    pub to: String,
+    pub version: String,
+    /// The size of the model's files.
+    pub bytes: u64,
+    pub license: License,
+    /// The model's folder.
+    pub path: PathBuf,
+}
+
+/// What a service can translate.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Languages {
+    pub from: Vec<String>,
+    pub to: Vec<String>,
+    /// For the offline services, the pairs with a model of their own;
+    /// other pairs go through English, so a pair of a `from` and a `to`
+    /// works only when both have one with English. Empty for the online
+    /// services, which translate between any of `from` and `to`.
+    pub direct: Vec<(String, String)>,
+}
+
+/// The whole models kept in `models`, the folder given to
+/// [`Translator::new`].
+pub async fn installed(models: &Path) -> Vec<InstalledModel> {
+    let mut out = firefox::installed(models).await;
+    out.extend(chromium::installed(&models.join("chromium")).await);
+    out
+}
+
+/// Deletes the model of `service` for `from` → `to` kept in `models`;
+/// `Ok(false)` when there is none. For Chromium, either language may be
+/// `en`, since a pack holds both ways. A [`Translator`] that has already
+/// loaded the model keeps it in memory.
+pub async fn remove(
+    models: &Path,
+    service: Service,
+    from: &str,
+    to: &str,
+) -> Result<bool, ErrorInfo> {
+    match service {
+        Service::Firefox => firefox::remove(models, from, to).await,
+        Service::Chromium => chromium::remove(&models.join("chromium"), from, to).await,
+        Service::Edge | Service::Google => Err(ErrorInfo::new(
+            "invalid_params",
+            format!("the {} service keeps no models", service.name()),
+        )),
+    }
+}
+
+/// The key in Google's page-translation script for its list of languages.
+const GOOGLE_LANGUAGES_KEY: &str = "AIzaSyBWDj0QJvVIx8XOhRegXX5_SrRWxhT5Hs4";
+
+/// What `service` can translate: Firefox's from its catalog, Chromium's
+/// from the packs Chrome lists, Google's and Edge's from their lists of
+/// languages.
+pub async fn languages(service: Service, hosts: &Hosts) -> Result<Languages, ErrorInfo> {
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("inocode/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .unwrap_or_default();
+    let get = |url: &str, query: &[(&str, &str)]| client.get(url).query(query).timeout(WAIT).send();
+    let codes = |items: &Value, skip: &str| -> Vec<String> {
+        let mut out: Vec<String> = items
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|item| item["language"].as_str())
+            .filter(|code| *code != skip)
+            .map(str::to_string)
+            .collect();
+        out.sort();
+        out
+    };
+    match service {
+        Service::Firefox => firefox::languages(&hosts.firefox, &client).await,
+        Service::Chromium => Ok(chromium::languages()),
+        Service::Google => {
+            let query = [
+                ("client", "te_lib"),
+                ("display_language", "en"),
+                ("key", GOOGLE_LANGUAGES_KEY),
+            ];
+            let response = get(&hosts.google_languages, &query).await.map_err(failed)?;
+            let value = answer(response).await?;
+            let from = codes(&value["sourceLanguages"], "auto");
+            let to = codes(&value["targetLanguages"], "auto");
+            if from.is_empty() || to.is_empty() {
+                return Err(unexpected(&value));
+            }
+            Ok(Languages {
+                from,
+                to,
+                direct: Vec::new(),
+            })
+        }
+        Service::Edge => {
+            let query = [("api-version", "3.0"), ("scope", "translation")];
+            let response = get(&hosts.edge_languages, &query).await.map_err(failed)?;
+            let value = answer(response).await?;
+            let mut all: Vec<String> = value["translation"]
+                .as_object()
+                .map(|languages| languages.keys().cloned().collect())
+                .unwrap_or_default();
+            if all.is_empty() {
+                return Err(unexpected(&value));
+            }
+            all.sort();
+            Ok(Languages {
+                from: all.clone(),
+                to: all,
+                direct: Vec::new(),
+            })
         }
     }
 }
@@ -944,6 +1087,8 @@ mod tests {
                 google: String::new(),
                 firefox: String::new(),
                 chromium: String::new(),
+                google_languages: String::new(),
+                edge_languages: String::new(),
             },
             PathBuf::new(),
         );
@@ -990,6 +1135,154 @@ mod tests {
         let joined: String = pieces.iter().map(|piece| piece.text.as_str()).collect();
         assert_eq!(joined, "This will fail. So `this`.");
         assert!(pieces.iter().all(|piece| piece.error.is_some()));
+    }
+
+    #[tokio::test]
+    async fn kept_models_are_listed_and_removed_only_inside_the_folder() {
+        let models = tempfile::tempdir().unwrap();
+        let root = models.path();
+        let write = |path: &str, data: &[u8]| {
+            let path = root.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, data).unwrap();
+        };
+        // A Firefox list written before licenses were kept in it.
+        write(
+            "en-zh-Hans/files.json",
+            br#"{"version": "3.0", "architecture": "tiny", "files": [{"name": "model.bin",
+                "kind": "model", "location": "x", "size": 1, "hash": "h",
+                "decompressed_size": 5, "decompressed_hash": "d"}]}"#,
+        );
+        write("en-zh-Hans/model.bin", b"12345");
+        // Not whole: the list names a file that is missing.
+        write(
+            "ja-en/files.json",
+            br#"{"version": "3.0", "architecture": "base", "files": [{"name": "m",
+                "kind": "model", "location": "x", "size": 1, "hash": "h",
+                "decompressed_size": 5, "decompressed_hash": "d"}]}"#,
+        );
+        write("en-ja.update/files.json", b"{}");
+        write("notes.txt", b"not a model");
+        write(
+            "chromium/en-ja/pack.json",
+            br#"{"version": "2024.9.9.1", "files": [{"path": "en_ja_nmt/a.pb", "size": 3, "sha256": "x"}]}"#,
+        );
+        write("chromium/en-ja/en_ja_nmt/a.pb", b"abc");
+
+        let found = installed(root).await;
+        let shown: Vec<(Service, &str, &str, &str, u64, &str)> = found
+            .iter()
+            .map(|model| {
+                (
+                    model.service,
+                    model.from.as_str(),
+                    model.to.as_str(),
+                    model.version.as_str(),
+                    model.bytes,
+                    model.license.name.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                (Service::Firefox, "en", "zh-Hans", "3.0", 5, "MPL-2.0"),
+                (Service::Chromium, "en", "ja", "2024.9.9.1", 3, "unknown"),
+            ]
+        );
+        assert_eq!(found[0].path, root.join("en-zh-Hans"));
+        assert!(found[1]
+            .license
+            .terms
+            .as_deref()
+            .unwrap()
+            .contains("Terms of Service"));
+
+        for (service, from, to) in [
+            (Service::Firefox, "..", "x"),
+            (Service::Firefox, "en/../..", "x"),
+            (Service::Firefox, "en", "ja\\..\\.."),
+            (Service::Chromium, "ja", "de"),
+            (Service::Chromium, "en", ".."),
+            (Service::Google, "en", "ja"),
+        ] {
+            assert!(
+                remove(root, service, from, to).await.is_err(),
+                "{from} {to}"
+            );
+        }
+        write("en-de", b"a file, not a folder");
+        assert!(remove(root, Service::Firefox, "en", "de").await.is_err());
+        assert!(root.join("en-de").exists());
+        assert_eq!(remove(root, Service::Firefox, "en", "fr").await, Ok(false));
+        assert_eq!(remove(root, Service::Firefox, "ja", "en").await, Ok(true));
+        assert_eq!(
+            remove(root, Service::Firefox, "en", "zh-Hans").await,
+            Ok(true)
+        );
+        assert_eq!(remove(root, Service::Chromium, "ja", "en").await, Ok(true));
+        assert!(installed(root).await.is_empty());
+        assert!(root.join("notes.txt").exists() && root.join("chromium").exists());
+    }
+
+    #[tokio::test]
+    async fn the_online_services_languages_are_read_from_their_lists() {
+        let google = br#"{"sourceLanguages": [{"language": "auto", "name": "Detect language"},
+            {"language": "ja", "name": "Japanese"}, {"language": "en", "name": "English"}],
+            "targetLanguages": [{"language": "en", "name": "English"},
+            {"language": "zh-TW", "name": "Chinese (Traditional)"}]}"#;
+        let edge = br#"{"translation": {"ja": {"name": "Japanese"}, "en": {"name": "English"},
+            "tlh-Latn": {"name": "Klingon (Latin)"}}}"#;
+        let base = firefox::tests::stand_in(vec![
+            ("/google".into(), google.to_vec()),
+            ("/edge".into(), edge.to_vec()),
+            ("/empty".into(), b"{}".to_vec()),
+        ])
+        .await;
+        let hosts = Hosts {
+            google_languages: format!("{base}/google"),
+            edge_languages: format!("{base}/edge"),
+            ..Hosts::default()
+        };
+        let found = languages(Service::Google, &hosts).await.unwrap();
+        assert_eq!(found.from, ["en", "ja"]);
+        assert_eq!(found.to, ["en", "zh-TW"]);
+        assert!(found.direct.is_empty());
+        let found = languages(Service::Edge, &hosts).await.unwrap();
+        assert_eq!(found.from, ["en", "ja", "tlh-Latn"]);
+        assert_eq!(found.from, found.to);
+        let found = languages(Service::Chromium, &hosts).await.unwrap();
+        assert!(found.direct.contains(&("en".into(), "ja".into())));
+        let empty = Hosts {
+            google_languages: format!("{base}/empty"),
+            edge_languages: format!("{base}/missing"),
+            ..Hosts::default()
+        };
+        assert!(languages(Service::Google, &empty).await.is_err());
+        assert!(languages(Service::Edge, &empty).await.is_err());
+    }
+
+    /// Lists each service's languages from the real servers.
+    #[tokio::test]
+    #[ignore = "asks Google, Microsoft and Mozilla for their lists of languages; run by hand"]
+    async fn languages_are_listed_here() {
+        for service in [
+            Service::Google,
+            Service::Edge,
+            Service::Firefox,
+            Service::Chromium,
+        ] {
+            let found = languages(service, &Hosts::default()).await.unwrap();
+            println!(
+                "{}: {} from, {} to, {} direct pairs",
+                service.name(),
+                found.from.len(),
+                found.to.len(),
+                found.direct.len()
+            );
+            assert!(found.from.contains(&"en".to_string()), "{found:?}");
+            assert!(found.to.iter().any(|to| to.starts_with("ja")), "{found:?}");
+        }
     }
 
     /// Translates through the real services: `INOCODE_TRANSLATE_SERVICE`
