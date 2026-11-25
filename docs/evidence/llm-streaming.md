@@ -24,6 +24,7 @@
   - `{"id": <要求 ID>, "event": "started"}`
   - `{"id": <要求 ID>, "event": "delta", "text": <string>}`
   - ターン（`turn/start`）では、思考が `{"id": <要求 ID>, "event": "thinking", "text": <string>}` で流れる（`reasoning-controls.md`）。
+  - 思考の翻訳がオンなら、訳が `{"id": <要求 ID>, "event": "thinking_translation", "text": <string>}` で流れる。訳せなかった塊は原文と `error` で届く（`translation.md`）。
   - `{"id": <要求 ID>, "event": "completed"}`
   - `{"id": <要求 ID>, "event": "failed", "error": {"code": <string>, "message": <string>}}`
   - `{"id": <要求 ID>, "event": "cancelled"}`

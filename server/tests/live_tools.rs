@@ -162,56 +162,157 @@ async fn thinking_streams_before_the_answer() {
         .any(|part| matches!(part, AssistantPart::Reasoning { text, .. } if !text.is_empty())));
 }
 
+/// What one turn sent the client: the thinking, the answer and the
+/// translated thinking, the number of each kind of event, whether thinking
+/// came after answer text, and how the turn ended.
+struct Seen {
+    thinking: String,
+    text: String,
+    translated: String,
+    pieces: (usize, usize, usize),
+    thinking_after_text: bool,
+}
+
+const TRAIN: &str = "A train leaves at 9:47 and the trip takes 2 hours 38 minutes. When does it \
+                     arrive? Think it through, then give the time.";
+
+async fn seen_turn(client: &mut support::Client, stream_id: u64, thread: i64) -> Seen {
+    client
+        .1
+        .write_json(
+            stream_id,
+            &json!({"id": stream_id, "method": "turn/start",
+                "params": {"thread_id": thread, "prompt": TRAIN}}),
+        )
+        .await
+        .expect("send");
+    let mut seen = Seen {
+        thinking: String::new(),
+        text: String::new(),
+        translated: String::new(),
+        pieces: (0, 0, 0),
+        thinking_after_text: false,
+    };
+    let ending = loop {
+        let event = support::next_message(client, stream_id).await;
+        let text = event["text"].as_str().unwrap_or_default().to_string();
+        match event["event"].as_str().unwrap_or_default() {
+            "thinking" => {
+                seen.thinking_after_text |= !seen.text.is_empty();
+                seen.thinking.push_str(&text);
+                seen.pieces.0 += 1;
+            }
+            "delta" => {
+                seen.text.push_str(&text);
+                seen.pieces.1 += 1;
+            }
+            "thinking_translation" => {
+                assert!(event["error"].is_null(), "{event}");
+                seen.translated.push_str(&text);
+                seen.pieces.2 += 1;
+            }
+            kind @ ("completed" | "failed" | "cancelled") => break (kind.to_string(), event),
+            _ => {}
+        }
+    };
+    println!(
+        "thinking events: {}, delta events: {}, translation events: {}",
+        seen.pieces.0, seen.pieces.1, seen.pieces.2
+    );
+    println!(
+        "thinking: {}",
+        seen.thinking.chars().take(300).collect::<String>()
+    );
+    println!(
+        "translated: {}",
+        seen.translated.chars().take(300).collect::<String>()
+    );
+    println!("answer: {}", seen.text);
+    assert_eq!(ending.0, "completed", "{}", ending.1);
+    seen
+}
+
+/// A server on the provider of the environment, with its database in a
+/// folder of its own: the folder, a client and a thread, and the server's
+/// stop handles.
+async fn live_server(
+    label: &str,
+) -> (
+    std::path::PathBuf,
+    support::Client,
+    i64,
+    impl Sized,
+    impl Sized,
+) {
+    let root = std::env::temp_dir().join(format!("inocode-live-{label}-{}", std::process::id()));
+    std::fs::create_dir_all(&root).expect("folder");
+    let store = inocode_core::store::Store::open(&root.join("inocode.db"))
+        .await
+        .expect("store");
+    let core = std::sync::Arc::new(inocode_core::Core::from_env().with_store(store));
+    let (addr, stop, handle) = support::start_server(core).await;
+    let mut client = support::connect(addr).await;
+    let response = support::call(&mut client, 1, json!({"id": 1, "method": "thread/start"})).await;
+    let thread = response["result"]["thread_id"].as_i64().expect("thread id");
+    (root, client, thread, stop, handle)
+}
+
 /// Over the protocol, a turn's `thinking` events reach the client before its
 /// `delta` events.
 #[tokio::test]
 #[ignore = "requires a provider credential; run by hand"]
 async fn thinking_reaches_the_client_before_the_answer() {
     support::with_timeout_of(support::LIVE_TIMEOUT, async {
-        let root = std::env::temp_dir().join(format!("inocode-live-think-{}", std::process::id()));
-        std::fs::create_dir_all(&root).expect("folder");
-        let store = inocode_core::store::Store::open(&root.join("inocode.db"))
-            .await
-            .expect("store");
-        let core = std::sync::Arc::new(inocode_core::Core::from_env().with_store(store));
-        let (addr, _stop, _handle) = support::start_server(core).await;
-        let mut client = support::connect(addr).await;
-        let response = support::call(&mut client, 1, json!({"id": 1, "method": "thread/start"})).await;
-        let thread = response["result"]["thread_id"].as_i64().expect("thread id");
-        client
-            .1
-            .write_json(
-                2,
-                &json!({"id": 2, "method": "turn/start", "params": {"thread_id": thread,
-                    "prompt": "A train leaves at 9:47 and the trip takes 2 hours 38 minutes.                                When does it arrive? Think it through, then give the time."}}),
-            )
-            .await
-            .expect("send");
-        let (mut thinking, mut text, mut thinking_after_text) = (String::new(), String::new(), false);
-        let mut events = (0, 0);
-        let ending = loop {
-            let event = support::next_message(&mut client, 2).await;
-            match event["event"].as_str().unwrap_or_default() {
-                "thinking" => {
-                    thinking_after_text |= !text.is_empty();
-                    thinking.push_str(event["text"].as_str().unwrap_or_default());
-                    events.0 += 1;
-                }
-                "delta" => {
-                    text.push_str(event["text"].as_str().unwrap_or_default());
-                    events.1 += 1;
-                }
-                kind @ ("completed" | "failed" | "cancelled") => break (kind.to_string(), event),
-                _ => {}
-            }
-        };
+        let (root, mut client, thread, _stop, _handle) = live_server("think").await;
+        let seen = seen_turn(&mut client, 2, thread).await;
         let _ = std::fs::remove_dir_all(&root);
-        println!("thinking events: {}, delta events: {}", events.0, events.1);
-        println!("thinking: {}", thinking.chars().take(300).collect::<String>());
-        println!("answer: {text}");
-        assert_eq!(ending.0, "completed", "{}", ending.1);
-        assert!(!thinking.is_empty(), "no thinking event reached the client");
-        assert!(!thinking_after_text, "thinking came after the answer");
+        assert!(
+            !seen.thinking.is_empty(),
+            "no thinking event reached the client"
+        );
+        assert!(!seen.thinking_after_text, "thinking came after the answer");
+        assert_eq!(seen.pieces.2, 0, "translated with translation off");
+    })
+    .await;
+}
+
+/// Turned on with `settings/translation`, the thinking also reaches the
+/// client translated into Japanese by `INOCODE_TRANSLATE_SERVICE` (`edge`
+/// or `google`); turned off, it does not.
+#[tokio::test]
+#[ignore = "requires a provider credential and sends the thinking to a translation service; run by hand"]
+async fn thinking_is_translated_while_turned_on() {
+    support::with_timeout_of(support::LIVE_TIMEOUT, async {
+        let service =
+            std::env::var("INOCODE_TRANSLATE_SERVICE").unwrap_or_else(|_| "google".into());
+        let (root, mut client, thread, _stop, _handle) = live_server("translate").await;
+        let on = support::call(
+            &mut client,
+            3,
+            json!({"id": 3, "method": "settings/translation",
+                "params": {"thinking": true, "service": service, "to": "ja"}}),
+        )
+        .await;
+        assert_eq!(on["result"]["thinking"], true, "{on}");
+        let seen = seen_turn(&mut client, 5, thread).await;
+        assert!(!seen.thinking.is_empty(), "no thinking");
+        assert!(seen.pieces.2 > 0, "no translation reached the client");
+        assert!(
+            seen.translated
+                .chars()
+                .any(|c| ('\u{3040}'..='\u{30ff}').contains(&c)),
+            "the translation has no Japanese kana"
+        );
+        let off = support::call(
+            &mut client,
+            7,
+            json!({"id": 7, "method": "settings/translation", "params": {"thinking": false}}),
+        )
+        .await;
+        assert_eq!(off["result"]["thinking"], false, "{off}");
+        let seen = seen_turn(&mut client, 9, thread).await;
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(seen.pieces.2, 0, "translated after it was turned off");
     })
     .await;
 }

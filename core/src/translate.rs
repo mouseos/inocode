@@ -1,0 +1,863 @@
+//! Translation of text into another language, for any part of inocode that
+//! shows text in the person's language: the services the browsers' page
+//! translation uses, code left as written, and text that streams in
+//! translated in order as it comes. Wire facts and the choices made:
+//! docs/evidence/translation.md.
+
+use std::path::Path;
+use std::time::Duration;
+
+use serde_json::{json, Value};
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
+
+use crate::ErrorInfo;
+
+/// The key in Google's published page-translation script.
+const GOOGLE_KEY: &str = "AIzaSyATBXajvzQLTDHEQbcpq0Ihe0vWDHmO520";
+const WAIT: Duration = Duration::from_secs(20);
+/// The longest run of text without a sentence end that waits for one.
+const LONGEST_CHUNK: usize = 400;
+
+/// A translation service.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Service {
+    Edge,
+    Google,
+}
+
+impl Service {
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "edge" => Some(Self::Edge),
+            "google" => Some(Self::Google),
+            _ => None,
+        }
+    }
+}
+
+/// Where the services are; the defaults are the real ones.
+#[derive(Debug, Clone)]
+pub struct Hosts {
+    pub edge: String,
+    pub google: String,
+}
+
+impl Default for Hosts {
+    fn default() -> Self {
+        Self {
+            edge: "https://edge.microsoft.com/translate/translatetext".into(),
+            google: "https://translate-pa.googleapis.com/v1/translateHtml".into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Translator {
+    service: Service,
+    google_key: String,
+    hosts: Hosts,
+    client: reqwest::Client,
+}
+
+impl Translator {
+    pub fn new(service: Service, google_key: Option<String>, hosts: Hosts) -> Self {
+        Self {
+            service,
+            google_key: google_key.unwrap_or_else(|| GOOGLE_KEY.to_string()),
+            hosts,
+            client: reqwest::Client::builder()
+                // Edge's service refuses requests without one.
+                .user_agent(concat!("inocode/", env!("CARGO_PKG_VERSION")))
+                .build()
+                .unwrap_or_default(),
+        }
+    }
+
+    /// Each of `texts` in the language `to` (a tag such as `ja`), in the
+    /// same order; code in backticks is left as written.
+    pub async fn translate(&self, texts: &[String], to: &str) -> Result<Vec<String>, ErrorInfo> {
+        match self.service {
+            Service::Edge => self.around_code(texts, to).await,
+            Service::Google => self.with_code_marked(texts, to).await,
+        }
+    }
+
+    /// Google leaves text in a `notranslate` span as it is, so each text
+    /// goes whole with its code marked and the code is put back from the
+    /// marks; a text whose marks do not all come back is translated
+    /// around its code instead.
+    async fn with_code_marked(&self, texts: &[String], to: &str) -> Result<Vec<String>, ErrorInfo> {
+        let split: Vec<Vec<Segment>> = texts.iter().map(|text| segments(text)).collect();
+        let marked: Vec<String> = split.iter().map(|segments| mark(segments)).collect();
+        let answers = self.google(&marked, to).await?;
+        let mut out = Vec::with_capacity(texts.len());
+        let mut redo = Vec::new();
+        for (index, (answer, segments)) in answers.iter().zip(&split).enumerate() {
+            match unmark(answer, marks(segments)) {
+                Some(text) => out.push(text),
+                None => {
+                    out.push(String::new());
+                    redo.push(index);
+                }
+            }
+        }
+        if !redo.is_empty() {
+            let again: Vec<String> = redo.iter().map(|&index| texts[index].clone()).collect();
+            for (index, text) in redo.into_iter().zip(self.around_code(&again, to).await?) {
+                out[index] = text;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Translates the text between pieces of code, each run on its own,
+    /// and puts the code back between them as written.
+    async fn around_code(&self, texts: &[String], to: &str) -> Result<Vec<String>, ErrorInfo> {
+        let split: Vec<Vec<Segment>> = texts.iter().map(|text| segments(text)).collect();
+        let sent: Vec<String> = split
+            .iter()
+            .flatten()
+            .filter(|segment| segment.translate)
+            .map(|segment| segment.text.trim().to_string())
+            .collect();
+        let mut translated = if sent.is_empty() {
+            Vec::new()
+        } else {
+            match self.service {
+                Service::Edge => self.edge(&sent, to).await?,
+                Service::Google => {
+                    let escaped: Vec<String> = sent.iter().map(|text| escape(text)).collect();
+                    let answers = self.google(&escaped, to).await?;
+                    answers.iter().map(|answer| unescape(answer)).collect()
+                }
+            }
+        }
+        .into_iter();
+        Ok(split
+            .into_iter()
+            .map(|segments| {
+                segments
+                    .into_iter()
+                    .map(|segment| {
+                        if !segment.translate {
+                            return segment.text;
+                        }
+                        let text = translated.next().unwrap_or_default();
+                        let lead =
+                            &segment.text[..segment.text.len() - segment.text.trim_start().len()];
+                        let trail = &segment.text[segment.text.trim_end().len()..];
+                        format!("{lead}{text}{trail}")
+                    })
+                    .collect()
+            })
+            .collect())
+    }
+
+    async fn edge(&self, texts: &[String], to: &str) -> Result<Vec<String>, ErrorInfo> {
+        let to = match to {
+            "zh-CN" | "zh-SG" | "zh" => "zh-Hans",
+            "zh-TW" | "zh-HK" | "zh-MO" => "zh-Hant",
+            other => other,
+        };
+        let response = self
+            .client
+            .post(&self.hosts.edge)
+            .query(&[("from", ""), ("to", to), ("isEnterpriseClient", "false")])
+            .json(texts)
+            .timeout(WAIT)
+            .send()
+            .await
+            .map_err(failed)?;
+        let value = answer(response).await?;
+        let items = value.as_array().ok_or_else(|| unexpected(&value))?;
+        if items.len() != texts.len() {
+            return Err(unexpected(&value));
+        }
+        items
+            .iter()
+            .map(|item| {
+                item["translations"][0]["text"]
+                    .as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| unexpected(item))
+            })
+            .collect()
+    }
+
+    /// `html` translated, as Google answers it: still HTML.
+    async fn google(&self, html: &[String], to: &str) -> Result<Vec<String>, ErrorInfo> {
+        let to = match to {
+            "zh-Hans" | "zh" => "zh-CN",
+            "zh-Hant" => "zh-TW",
+            other => other,
+        };
+        let response = self
+            .client
+            .post(&self.hosts.google)
+            .header("Content-Type", "application/json+protobuf")
+            .header("X-Goog-API-Key", &self.google_key)
+            .body(json!([[html, "auto", to], "te_lib"]).to_string())
+            .timeout(WAIT)
+            .send()
+            .await
+            .map_err(failed)?;
+        let value = answer(response).await?;
+        let items = value[0].as_array().ok_or_else(|| unexpected(&value))?;
+        if items.len() != html.len() {
+            return Err(unexpected(&value));
+        }
+        items
+            .iter()
+            .map(|item| {
+                item.as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| unexpected(item))
+            })
+            .collect()
+    }
+}
+
+/// Google answers 502 to a quoted attribute, so the class is unquoted.
+const MARK_OPEN: &str = "<span class=notranslate>";
+const MARK_CLOSE: &str = "</span>";
+
+/// How many pieces of code `segments` holds.
+fn marks(segments: &[Segment]) -> usize {
+    segments
+        .iter()
+        .filter(|segment| !segment.translate && !segment.text.trim().is_empty())
+        .count()
+}
+
+/// The text as HTML with each piece of code in a mark.
+fn mark(segments: &[Segment]) -> String {
+    segments
+        .iter()
+        .map(|segment| {
+            if segment.translate || segment.text.trim().is_empty() {
+                escape(&segment.text)
+            } else {
+                format!("{MARK_OPEN}{}{MARK_CLOSE}", escape(&segment.text))
+            }
+        })
+        .collect()
+}
+
+/// The translated HTML as text, the code taken from the marks; `None`
+/// unless exactly `marks` marks came back.
+fn unmark(html: &str, marks: usize) -> Option<String> {
+    let mut out = String::new();
+    let mut rest = html;
+    let mut found = 0;
+    while let Some(start) = rest.find(MARK_OPEN) {
+        let inner = &rest[start + MARK_OPEN.len()..];
+        let end = inner.find(MARK_CLOSE)?;
+        out.push_str(&unescape(&rest[..start]));
+        out.push_str(&unescape(&inner[..end]));
+        rest = &inner[end + MARK_CLOSE.len()..];
+        found += 1;
+    }
+    out.push_str(&unescape(rest));
+    (found == marks).then_some(out)
+}
+
+fn failed(error: reqwest::Error) -> ErrorInfo {
+    ErrorInfo::new("translation_failed", error.to_string())
+}
+
+fn unexpected(value: &Value) -> ErrorInfo {
+    let mut shown = value.to_string();
+    shown.truncate(shown.floor_char_boundary(300));
+    ErrorInfo::new("translation_failed", format!("unexpected answer: {shown}"))
+}
+
+async fn answer(response: reqwest::Response) -> Result<Value, ErrorInfo> {
+    let status = response.status();
+    let text = response.text().await.map_err(failed)?;
+    if !status.is_success() {
+        let mut text = text;
+        text.truncate(text.floor_char_boundary(300));
+        return Err(ErrorInfo::new(
+            "translation_failed",
+            format!("HTTP {status}: {text}"),
+        ));
+    }
+    serde_json::from_str(&text)
+        .map_err(|error| ErrorInfo::new("translation_failed", error.to_string()))
+}
+
+fn escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+fn unescape(text: &str) -> String {
+    text.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&amp;", "&")
+}
+
+/// A run of text, to translate or to keep as written.
+#[derive(Debug, PartialEq)]
+struct Segment {
+    text: String,
+    translate: bool,
+}
+
+/// `text` cut into code, in ``` fences or backticks, and the text around
+/// it; runs of only whitespace are kept as written.
+fn segments(text: &str) -> Vec<Segment> {
+    let mut out: Vec<Segment> = Vec::new();
+    let mut push = |text: &str, code: bool| {
+        if text.is_empty() {
+            return;
+        }
+        let translate = !code && !text.trim().is_empty();
+        match out.last_mut() {
+            Some(last) if last.translate == translate => last.text.push_str(text),
+            _ => out.push(Segment {
+                text: text.to_string(),
+                translate,
+            }),
+        }
+    };
+    let mut rest = text;
+    while let Some(start) = rest.find('`') {
+        let fence = if rest[start..].starts_with("```") {
+            "```"
+        } else {
+            "`"
+        };
+        let Some(length) = rest[start + fence.len()..].find(fence) else {
+            break;
+        };
+        let end = start + fence.len() + length + fence.len();
+        push(&rest[..start], false);
+        push(&rest[start..end], true);
+        rest = &rest[end..];
+    }
+    push(rest, false);
+    out
+}
+
+/// Cuts streamed text into pieces worth translating on their own: up to
+/// a sentence end, outside code.
+#[derive(Debug, Default)]
+pub struct Chunker {
+    pending: String,
+}
+
+impl Chunker {
+    /// Adds `text` and gives back what is ready.
+    pub fn push(&mut self, text: &str) -> Option<String> {
+        self.pending.push_str(text);
+        let end = self.cut()?;
+        let rest = self.pending.split_off(end);
+        Some(std::mem::replace(&mut self.pending, rest))
+    }
+
+    /// What is left at the end of the stream.
+    pub fn finish(&mut self) -> Option<String> {
+        (!self.pending.is_empty()).then(|| std::mem::take(&mut self.pending))
+    }
+
+    /// Where the ready text ends: after the last sentence end that is
+    /// outside code, else, past the longest chunk, after the last space.
+    fn cut(&self) -> Option<usize> {
+        let text = &self.pending;
+        let (mut sentence, mut space) = (None, None);
+        let mut in_fence = false;
+        let mut in_code = false;
+        let mut chars = text.char_indices().peekable();
+        while let Some((at, char)) = chars.next() {
+            if text[at..].starts_with("```") {
+                in_fence = !in_fence;
+                chars.next();
+                chars.next();
+                continue;
+            }
+            if char == '`' && !in_fence {
+                in_code = !in_code;
+                continue;
+            }
+            if in_fence || in_code {
+                continue;
+            }
+            let end = at + char.len_utf8();
+            let next = chars.peek().map(|&(_, next)| next);
+            match char {
+                '\n' | '。' | '！' | '？' => sentence = Some(end),
+                '.' | '!' | '?' if next.is_some_and(char::is_whitespace) => sentence = Some(end),
+                _ if char.is_whitespace() => space = Some(end),
+                _ => {}
+            }
+        }
+        sentence.or(space.filter(|_| text.len() > LONGEST_CHUNK))
+    }
+}
+
+/// A translated piece of a stream.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Translated {
+    pub text: String,
+    /// Why the piece could not be translated; `text` is then the source.
+    pub error: Option<ErrorInfo>,
+}
+
+/// Translates text pushed in as it streams, sending each piece, wrapped
+/// by `wrap`, to `out` in the order it came. Pieces that pile up while a
+/// translation is under way go together in the next one.
+pub struct Streamer {
+    pieces: Option<mpsc::UnboundedSender<String>>,
+    task: JoinHandle<()>,
+}
+
+impl Streamer {
+    pub fn start<T: Send + 'static>(
+        translator: Translator,
+        to: String,
+        out: mpsc::Sender<T>,
+        wrap: fn(Translated) -> T,
+    ) -> Self {
+        let (pieces, mut received) = mpsc::unbounded_channel::<String>();
+        let task = tokio::spawn(async move {
+            let mut chunker = Chunker::default();
+            let mut ended = false;
+            while !ended {
+                let mut ready = Vec::new();
+                match received.recv().await {
+                    Some(text) => ready.extend(chunker.push(&text)),
+                    None => ended = true,
+                }
+                loop {
+                    match received.try_recv() {
+                        Ok(text) => ready.extend(chunker.push(&text)),
+                        Err(mpsc::error::TryRecvError::Empty) => break,
+                        Err(mpsc::error::TryRecvError::Disconnected) => {
+                            ended = true;
+                            break;
+                        }
+                    }
+                }
+                if ended {
+                    ready.extend(chunker.finish());
+                }
+                if ready.is_empty() {
+                    continue;
+                }
+                let translated = match translator.translate(&ready, &to).await {
+                    Ok(texts) => texts
+                        .into_iter()
+                        .map(|text| Translated { text, error: None })
+                        .collect(),
+                    Err(error) => ready
+                        .into_iter()
+                        .map(|text| Translated {
+                            text,
+                            error: Some(error.clone()),
+                        })
+                        .collect::<Vec<_>>(),
+                };
+                for piece in translated {
+                    if out.send(wrap(piece)).await.is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+        Self {
+            pieces: Some(pieces),
+            task,
+        }
+    }
+
+    pub fn push(&self, text: String) {
+        if let Some(pieces) = &self.pieces {
+            let _ = pieces.send(text);
+        }
+    }
+
+    /// Translates what is left and waits for it, at most `wait`.
+    pub async fn finish(mut self, wait: Duration) {
+        self.pieces = None;
+        if tokio::time::timeout(wait, &mut self.task).await.is_err() {
+            self.task.abort();
+        }
+    }
+}
+
+impl Drop for Streamer {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// The `translation` settings of `settings.json`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Settings {
+    pub thinking: bool,
+    pub service: Service,
+    pub to: Option<String>,
+    pub google_key: Option<String>,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            thinking: false,
+            service: Service::Google,
+            to: None,
+            google_key: None,
+        }
+    }
+}
+
+impl Settings {
+    pub(crate) fn from_value(value: &Value) -> Result<Self, String> {
+        let mut settings = Self::default();
+        let Some(section) = value.get("translation") else {
+            return Ok(settings);
+        };
+        if section.is_null() {
+            return Ok(settings);
+        }
+        let section = section
+            .as_object()
+            .ok_or("\"translation\" is not an object")?;
+        let text = |name: &str| -> Result<Option<String>, String> {
+            match section.get(name) {
+                None | Some(Value::Null) => Ok(None),
+                Some(Value::String(text)) if text.trim().is_empty() => Ok(None),
+                Some(Value::String(text)) => Ok(Some(text.trim().to_string())),
+                Some(_) => Err(format!("\"translation.{name}\" is not a string")),
+            }
+        };
+        match section.get("thinking") {
+            None | Some(Value::Null) => {}
+            Some(Value::Bool(on)) => settings.thinking = *on,
+            Some(_) => return Err("\"translation.thinking\" is not true or false".into()),
+        }
+        if let Some(name) = text("service")? {
+            settings.service = Service::parse(&name)
+                .ok_or_else(|| format!("unknown translation service {name:?}"))?;
+        }
+        settings.to = text("to")?;
+        settings.google_key = text("google_key")?;
+        Ok(settings)
+    }
+
+    /// The settings in the file at `path`; the defaults when it is missing.
+    pub(crate) async fn read(path: &Path) -> Result<Self, String> {
+        match tokio::fs::read_to_string(path).await {
+            Ok(text) => {
+                let value: Value =
+                    serde_json::from_str(&text).map_err(|error| error.to_string())?;
+                Self::from_value(&value)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+}
+
+/// The language to translate into: the setting, else the reply language
+/// when it is written as a language tag, else the system's language.
+pub(crate) fn target(settings: &Settings, language: Option<&str>) -> Option<String> {
+    settings
+        .to
+        .clone()
+        .or_else(|| language.and_then(tag))
+        .or_else(|| crate::language::system().as_deref().and_then(tag))
+}
+
+/// `name` as a translation language tag when it is one, such as `ja` for
+/// `ja-JP`; Chinese keeps its script or region.
+fn tag(name: &str) -> Option<String> {
+    let parts: Vec<&str> = name.split(['-', '_']).collect();
+    let primary = parts[0];
+    if !(2..=3).contains(&primary.len()) || !primary.chars().all(|c| c.is_ascii_alphabetic()) {
+        return None;
+    }
+    let primary = primary.to_ascii_lowercase();
+    if primary == "zh" {
+        if let Some(rest) = parts.get(1) {
+            return Some(format!("zh-{rest}"));
+        }
+    }
+    Some(primary)
+}
+
+/// Writes `patch` into the `translation` settings of the file at `path`,
+/// leaving the rest of the file as it is, and gives back the result.
+pub(crate) async fn update(path: &Path, patch: &Value) -> Result<Settings, String> {
+    let patch = patch.as_object().ok_or("the settings are not an object")?;
+    let mut value = match tokio::fs::read_to_string(path).await {
+        Ok(text) => serde_json::from_str(&text).map_err(|error| error.to_string())?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => json!({}),
+        Err(error) => return Err(error.to_string()),
+    };
+    let file = value
+        .as_object_mut()
+        .ok_or("the settings file is not an object")?;
+    let section = file.entry("translation").or_insert_with(|| json!({}));
+    if section.is_null() {
+        *section = json!({});
+    }
+    let section = section
+        .as_object_mut()
+        .ok_or("\"translation\" is not an object")?;
+    for (name, field) in patch {
+        section.insert(name.clone(), field.clone());
+    }
+    let settings = Settings::from_value(&value)?;
+    let text = serde_json::to_string_pretty(&value).map_err(|error| error.to_string())?;
+    let temporary = path.with_extension("json.tmp");
+    tokio::fs::write(&temporary, text)
+        .await
+        .map_err(|error| error.to_string())?;
+    tokio::fs::rename(&temporary, path)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(settings)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn marked_code_comes_back_as_written() {
+        let parts = segments("Use `a && b <x>` and `c`.");
+        let html = mark(&parts);
+        assert_eq!(
+            html,
+            "Use <span class=notranslate>`a &amp;&amp; b &lt;x&gt;`</span> and \
+             <span class=notranslate>`c`</span>."
+        );
+        let answer = "<span class=notranslate>`c`</span> と \
+                      <span class=notranslate>`a &amp;&amp; b &lt;x&gt;`</span> を使う &amp; 終わり";
+        assert_eq!(
+            unmark(answer, marks(&parts)).as_deref(),
+            Some("`c` と `a && b <x>` を使う & 終わり")
+        );
+        assert_eq!(unmark("<span class=notranslate>`c`</span> だけ", 2), None);
+        assert_eq!(unmark("切れた <span class=notranslate>`c`", 1), None);
+    }
+
+    #[test]
+    fn code_is_kept_apart_from_the_text() {
+        let parts = segments("Run `cargo test` now.\n```rust\nfn a() {}\n```\nDone ` open");
+        let shown: Vec<(&str, bool)> = parts
+            .iter()
+            .map(|part| (part.text.as_str(), part.translate))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("Run ", true),
+                ("`cargo test`", false),
+                (" now.\n", true),
+                ("```rust\nfn a() {}\n```", false),
+                ("\nDone ` open", true),
+            ]
+        );
+        assert_eq!(
+            segments("  \n"),
+            [Segment {
+                text: "  \n".into(),
+                translate: false
+            }]
+        );
+    }
+
+    #[test]
+    fn streamed_text_is_cut_at_sentence_ends_outside_code() {
+        let mut chunker = Chunker::default();
+        assert_eq!(chunker.push("I need to che"), None);
+        assert_eq!(
+            chunker.push("ck a.rs. Then"),
+            Some("I need to check a.rs.".into())
+        );
+        assert_eq!(chunker.push(" run `x. y` ok"), None);
+        assert_eq!(
+            chunker.push("\n```\nfoo. bar\n"),
+            Some(" Then run `x. y` ok\n".into())
+        );
+        assert_eq!(chunker.push("```\n"), Some("```\nfoo. bar\n```\n".into()));
+        assert_eq!(chunker.push("考える。次"), Some("考える。".into()));
+        assert_eq!(chunker.finish(), Some("次".into()));
+        assert_eq!(chunker.finish(), None);
+        let long = "word ".repeat(100);
+        assert_eq!(chunker.push(&long).map(|text| text.len()), Some(500));
+    }
+
+    #[test]
+    fn settings_are_read_and_checked() {
+        assert_eq!(Settings::from_value(&json!({})), Ok(Settings::default()));
+        let settings = Settings::from_value(&json!({"translation": {
+            "thinking": true, "service": "google", "to": " ja ", "google_key": ""}}))
+        .unwrap();
+        assert_eq!(
+            settings,
+            Settings {
+                thinking: true,
+                service: Service::Google,
+                to: Some("ja".into()),
+                google_key: None,
+            }
+        );
+        assert!(Settings::from_value(&json!({"translation": {"service": "deepl"}})).is_err());
+        assert!(Settings::from_value(&json!({"translation": {"thinking": "yes"}})).is_err());
+        assert!(Settings::from_value(&json!({"translation": 3})).is_err());
+    }
+
+    #[test]
+    fn the_target_comes_from_the_setting_then_the_reply_language() {
+        let mut settings = Settings::default();
+        assert_eq!(target(&settings, Some("ja-JP")).as_deref(), Some("ja"));
+        assert_eq!(target(&settings, Some("zh_TW")).as_deref(), Some("zh-TW"));
+        settings.to = Some("de".into());
+        assert_eq!(target(&settings, Some("ja-JP")).as_deref(), Some("de"));
+        assert_eq!(tag("Japanese"), None);
+        assert_eq!(tag("ja"), Some("ja".into()));
+    }
+
+    #[tokio::test]
+    async fn an_update_keeps_the_rest_of_the_file() {
+        let folder = std::env::temp_dir().join(format!("inocode-translate-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"language": "ja-JP", "translation": {"service": "google"}}"#,
+        )
+        .unwrap();
+        let settings = update(&path, &json!({"thinking": true})).await.unwrap();
+        assert!(settings.thinking);
+        assert_eq!(settings.service, Service::Google);
+        let value: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["language"], "ja-JP");
+        assert!(update(&path, &json!({"service": "nope"})).await.is_err());
+        let value: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(value["translation"]["service"], "google");
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    /// A stand-in for Edge's service that answers each text in capitals,
+    /// or fails with 500 when a text says "fail"; gives back its address
+    /// and the number of requests it had.
+    async fn edge_stand_in() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = format!("http://{}/translate", listener.local_addr().unwrap());
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = count.clone();
+        tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let mut request = Vec::new();
+                let body = loop {
+                    let mut buffer = [0u8; 4096];
+                    let read = socket.read(&mut buffer).await.unwrap();
+                    assert!(read > 0, "the request ended early");
+                    request.extend_from_slice(&buffer[..read]);
+                    let text = String::from_utf8_lossy(&request).to_string();
+                    if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                        let length: usize = head
+                            .lines()
+                            .find_map(|line| {
+                                line.to_ascii_lowercase()
+                                    .strip_prefix("content-length: ")
+                                    .map(|n| n.parse().unwrap())
+                            })
+                            .unwrap_or(0);
+                        if body.len() >= length {
+                            break body.to_string();
+                        }
+                    }
+                };
+                let texts: Vec<String> = serde_json::from_str(&body).unwrap();
+                let (status, answer) = if texts.iter().any(|text| text.contains("fail")) {
+                    ("500 Internal Server Error", "no".to_string())
+                } else {
+                    let items: Vec<Value> = texts
+                        .iter()
+                        .map(|text| json!({"translations": [{"text": text.to_uppercase()}]}))
+                        .collect();
+                    ("200 OK", Value::from(items).to_string())
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{answer}",
+                    answer.len()
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        (address, count)
+    }
+
+    async fn stream(edge: &str, pieces: &[&str]) -> Vec<Translated> {
+        let translator = Translator::new(
+            Service::Edge,
+            None,
+            Hosts {
+                edge: edge.to_string(),
+                google: String::new(),
+            },
+        );
+        let (out, mut received) = mpsc::channel(16);
+        let streamer = Streamer::start(translator, "ja".into(), out, |piece| piece);
+        for piece in pieces {
+            streamer.push(piece.to_string());
+        }
+        streamer.finish(Duration::from_secs(10)).await;
+        let mut translated = Vec::new();
+        while let Ok(piece) = received.try_recv() {
+            translated.push(piece);
+        }
+        translated
+    }
+
+    #[tokio::test]
+    async fn a_stream_is_translated_in_order_with_code_kept() {
+        let (edge, count) = edge_stand_in().await;
+        let pieces = stream(
+            &edge,
+            &["first one", ". Run `cargo t", "est` now.\n", "end"],
+        )
+        .await;
+        let joined: String = pieces.iter().map(|piece| piece.text.as_str()).collect();
+        assert_eq!(joined, "FIRST ONE. RUN `cargo test` NOW.\nEND");
+        assert!(pieces.iter().all(|piece| piece.error.is_none()));
+        // Pushed before the first translation started, so sent together.
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        let pieces = stream(&edge, &["This will fail. ", "So `this`."]).await;
+        let joined: String = pieces.iter().map(|piece| piece.text.as_str()).collect();
+        assert_eq!(joined, "This will fail. So `this`.");
+        assert!(pieces.iter().all(|piece| piece.error.is_some()));
+    }
+
+    /// Translates through the real services: `INOCODE_TRANSLATE_SERVICE`
+    /// (`edge` or `google`).
+    #[tokio::test]
+    #[ignore = "sends text to a translation service; run by hand"]
+    async fn translates_here() {
+        let service = std::env::var("INOCODE_TRANSLATE_SERVICE").unwrap_or_else(|_| "edge".into());
+        let translator = Translator::new(Service::parse(&service).unwrap(), None, Hosts::default());
+        let texts = vec![
+            "I should check `src/main.rs` before running the tests.".to_string(),
+            "The user wants a & b <now>.".to_string(),
+        ];
+        let translated = translator.translate(&texts, "ja").await.unwrap();
+        println!("{translated:?}");
+        assert!(translated[0].contains("`src/main.rs`"));
+        assert_eq!(translated.len(), 2);
+    }
+}

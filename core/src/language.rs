@@ -46,7 +46,7 @@ async fn configured(settings: &Path) -> Result<Option<String>, String> {
 
 /// The first of the person's display languages.
 #[cfg(windows)]
-fn system() -> Option<String> {
+pub(crate) fn system() -> Option<String> {
     use windows_sys::Win32::Globalization::{GetUserPreferredUILanguages, MUI_LANGUAGE_NAME};
     let mut count = 0u32;
     let mut length = 0u32;
@@ -84,7 +84,7 @@ fn system() -> Option<String> {
 /// The locale the system's messages use: `LC_ALL`, then `LC_MESSAGES`,
 /// then `LANG`, the order POSIX gives them.
 #[cfg(not(windows))]
-fn system() -> Option<String> {
+pub(crate) fn system() -> Option<String> {
     ["LC_ALL", "LC_MESSAGES", "LANG"]
         .into_iter()
         .filter_map(|name| std::env::var(name).ok())

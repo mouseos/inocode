@@ -260,6 +260,19 @@ async fn dispatch(
             });
             true
         }
+        "settings/translation" => {
+            // A file write, off the read loop like the store requests.
+            let (id, core, queue) = (request.id, Arc::clone(core), queue.clone());
+            let patch = request.params.clone().unwrap_or_else(|| json!({}));
+            tokio::spawn(async move {
+                let payload = match core.set_translation(&patch).await {
+                    Ok(settings) => json!({ "id": id, "result": settings }),
+                    Err(error) => json!({ "id": id, "error": error }),
+                };
+                let _ = send(&queue, stream_id, payload).await;
+            });
+            true
+        }
         "stats/models" => {
             // A store read, off the read loop like the thread requests.
             tokio::spawn(model_stats(
@@ -586,6 +599,7 @@ async fn run_turn(
     let relay = |event: TurnEvent| match event {
         TurnEvent::Delta(text) => EventPayload::delta(id, text),
         TurnEvent::Thinking(text) => EventPayload::thinking(id, text),
+        TurnEvent::ThinkingTranslation(piece) => EventPayload::thinking_translation(id, piece),
         TurnEvent::Message { seq, message } => EventPayload::message(id, seq, &message),
         TurnEvent::Elicitation(elicitation) => EventPayload::elicitation(id, elicitation),
     };

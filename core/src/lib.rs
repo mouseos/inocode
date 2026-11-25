@@ -42,6 +42,7 @@ mod shell;
 mod sse;
 pub mod store;
 mod transcribe;
+pub mod translate;
 pub mod turn;
 mod usage;
 pub mod usage_log;
@@ -338,6 +339,16 @@ impl EventPayload {
         }
     }
 
+    /// A translated piece of the model's thinking; with `error`, the piece
+    /// as written, which could not be translated.
+    pub fn thinking_translation(id: u64, piece: translate::Translated) -> Self {
+        Self {
+            text: Some(piece.text),
+            error: piece.error,
+            ..Self::new(id, "thinking_translation")
+        }
+    }
+
     pub fn elicitation(id: u64, elicitation: Value) -> Self {
         Self {
             elicitation: Some(elicitation),
@@ -620,6 +631,23 @@ impl Core {
         let store = self.store()?;
         let models = llm.models().await?;
         Ok(catalog::build(llm, store, models).await)
+    }
+
+    /// Writes `patch` into the translation settings beside the database
+    /// and gives them back; turns that start after it use them.
+    pub async fn set_translation(&self, patch: &Value) -> Result<Value, ErrorInfo> {
+        let path = self.store()?.files_folder().with_file_name("settings.json");
+        let settings = translate::update(&path, patch)
+            .await
+            .map_err(|error| ErrorInfo::new("invalid_params", error))?;
+        Ok(json!({
+            "thinking": settings.thinking,
+            "service": match settings.service {
+                translate::Service::Edge => "edge",
+                translate::Service::Google => "google",
+            },
+            "to": settings.to,
+        }))
     }
 
     /// The requests to models of the last `days`, per model.

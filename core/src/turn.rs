@@ -43,6 +43,9 @@ pub enum TurnEvent {
     /// The model's thinking as the provider streams it; the finished
     /// thinking is in the stored message.
     Thinking(String),
+    /// A piece of the model's thinking translated into the person's
+    /// language, when that is turned on; shown only, never stored.
+    ThinkingTranslation(crate::translate::Translated),
     /// A message now stored in the thread.
     Message { seq: i64, message: Message },
     /// A question of an MCP server for the person, answered with
@@ -498,6 +501,38 @@ struct Thread<'a> {
     goal_mark: u64,
     /// The project's git state when the turn started.
     git: Option<String>,
+    /// The translator and language the thinking is translated into, when
+    /// that is turned on.
+    thinking_translation: Option<(crate::translate::Translator, String)>,
+}
+
+/// How long a turn waits, after the model's answer ends, for the rest of
+/// its thinking to be translated.
+const TRANSLATION_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The translator for the thinking when the settings at `path` turn it on
+/// and a language to translate into is known.
+async fn thinking_translator(
+    path: &Path,
+    language: Option<&str>,
+) -> Option<(crate::translate::Translator, String)> {
+    let settings = match crate::translate::Settings::read(path).await {
+        Ok(settings) => settings,
+        Err(error) => {
+            eprintln!("inocode: {}: {error}", path.display());
+            return None;
+        }
+    };
+    if !settings.thinking {
+        return None;
+    }
+    let to = crate::translate::target(&settings, language)?;
+    let translator = crate::translate::Translator::new(
+        settings.service,
+        settings.google_key,
+        crate::translate::Hosts::default(),
+    );
+    Some((translator, to))
 }
 
 impl Thread<'_> {
@@ -1545,6 +1580,11 @@ async fn open<'a>(
         Some(folder) => crate::git::state(folder).await,
         None => None,
     };
+    let thinking_translation = thinking_translator(
+        &store.files_folder().with_file_name("settings.json"),
+        language.as_deref(),
+    )
+    .await;
     Ok(Thread {
         store,
         session,
@@ -1584,6 +1624,7 @@ async fn open<'a>(
         goal_calls: 0,
         goal_mark: 0,
         git,
+        thinking_translation,
     })
 }
 
@@ -1665,6 +1706,15 @@ async fn steps(
             None => return Ending::Interrupted,
         };
         let mut failure = None;
+        let translation = thread.thinking_translation.clone().map(|(translator, to)| {
+            crate::translate::Streamer::start(
+                translator,
+                to,
+                thread.events.clone(),
+                TurnEvent::ThinkingTranslation,
+            )
+        });
+        let mut interrupted = false;
         loop {
             tokio::select! {
                 next = stream.next_piece() => match next {
@@ -1672,6 +1722,9 @@ async fn steps(
                         let _ = thread.events.send(TurnEvent::Delta(text)).await;
                     }
                     Ok(Some(crate::llm::Piece::Thinking(text))) => {
+                        if let Some(translation) = &translation {
+                            translation.push(text.clone());
+                        }
                         let _ = thread.events.send(TurnEvent::Thinking(text)).await;
                     }
                     Ok(None) => break,
@@ -1680,7 +1733,15 @@ async fn steps(
                         break;
                     }
                 },
-                () = cancelled(cancel) => break,
+                () = cancelled(cancel) => {
+                    interrupted = true;
+                    break;
+                }
+            }
+        }
+        if let Some(translation) = translation {
+            if !interrupted {
+                translation.finish(TRANSLATION_WAIT).await;
             }
         }
         usage.add_stream(&stream, "turn");
