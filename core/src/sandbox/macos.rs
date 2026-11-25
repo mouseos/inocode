@@ -18,10 +18,14 @@ pub(super) fn confine(argv: &[String], roots: &Roots) -> Result<Vec<String>, Str
     }
     let folder = canonical(&roots.folder)?;
     let temp = canonical(&roots.temp)?;
+    let hidden = match super::hidden() {
+        Some(hidden) => Some(canonical(hidden)?),
+        None => None,
+    };
     let mut confined = vec![
         SANDBOX_EXEC.to_string(),
         "-p".to_string(),
-        profile(&[folder, temp]),
+        profile(&[folder, temp], hidden.as_deref()),
         "--".to_string(),
     ];
     confined.extend_from_slice(argv);
@@ -39,7 +43,9 @@ fn canonical(root: &Path) -> Result<String, String> {
         .map_err(|path| format!("{} is not valid UTF-8", Path::new(&path).display()))
 }
 
-fn profile(roots: &[String]) -> String {
+/// The later of two matching rules wins, so the roots are readable again
+/// after the hidden folder that holds them is denied.
+fn profile(roots: &[String], hidden: Option<&str>) -> String {
     let mut forms = vec![
         "(version 1)".to_string(),
         "(allow default)".to_string(),
@@ -55,6 +61,15 @@ fn profile(roots: &[String]) -> String {
     }
     if !subpaths.is_empty() {
         forms.push(format!("(allow file-write* {})", subpaths.join(" ")));
+    }
+    if let Some(hidden) = hidden {
+        forms.push(format!(
+            "(deny file-read* (subpath {}))",
+            sbpl_string(hidden)
+        ));
+        if !subpaths.is_empty() {
+            forms.push(format!("(allow file-read* {})", subpaths.join(" ")));
+        }
     }
     forms.join(" ")
 }
@@ -76,8 +91,17 @@ mod tests {
             "/tmp/t".to_string(),
         ];
         assert_eq!(
-            profile(&roots),
+            profile(&roots, None),
             r#"(version 1) (allow default) (deny file-write*) (allow file-write* (literal "/dev/null")) (allow file-write* (subpath "/a \"b\"\\c") (subpath "/tmp/t"))"#
+        );
+    }
+
+    #[test]
+    fn the_hidden_folder_is_unreadable_except_the_roots_in_it() {
+        let roots = ["/home/a/.inocode/t".to_string()];
+        assert_eq!(
+            profile(&roots, Some("/home/a/.inocode")),
+            r#"(version 1) (allow default) (deny file-write*) (allow file-write* (literal "/dev/null")) (allow file-write* (subpath "/home/a/.inocode/t")) (deny file-read* (subpath "/home/a/.inocode")) (allow file-read* (subpath "/home/a/.inocode/t"))"#
         );
     }
 

@@ -86,8 +86,11 @@
 - `default`：`provider`・`model`・`effort`・`summary`。
 - `roles`：`review`・`compact`・`explore`・`check`・`colleague`。それぞれ `{provider, model, effort}`、どれも省ける。
   - `provider` を省くと会話と同じプロバイダ。`model` を省くと会話と同じモデル（`provider` を書いたときはそのプロバイダの既定）。`effort` を省くと会話と同じ（`provider` を書いたときはそのプロバイダの既定）。
-  - 役ごと省くと会話のモデルがする（前と同じ）。`check` を省くと同僚、同僚もいなければ会話のモデル（前と同じ）。`colleague` を省くと、前からの `colleague`（`{model, provider?, base_url?}`）を読む。その `provider` はプロバイダの id か、ログインの種類の名前。
-- `server`：`port`（既定 8787）、`sandbox`（既定 `true`）。コマンドラインの `--port N`・`--sandbox on|off` が優先する。
+  - 役ごと省くと会話のモデルがする（前と同じ）。`check` を省くと同僚、同僚もいなければ会話のモデル（前と同じ）。`colleague` を省くと同僚はいない。ファイルの最上位の前からの `colleague` は読まず、残っていれば設定の誤りになる（`colleague-review.md`）。
+  - 審査役は、ターンを始めたときのモードによらず用意する。ターンの途中で `auto` に変えても、設定した審査役が審査する。
+- `server`：`port`（既定 8787）、`sandbox`（既定 `true`）、`stream_idle_seconds`（既定 300、1〜86400）。コマンドラインの `--port N`・`--sandbox on|off` が優先する。
+  - `stream_idle_seconds`：モデルの答えが、始まるのを待つ間も途中も、この秒数なにも送ってこなければ、その要求を `provider_idle` の誤りで終える（ターンは失敗で終わる）。プロバイダは作業中も数秒〜数十秒ごとに何かを送るので、5 分の沈黙は止まった接続とみなす（判断。研究ではない）。変えると、それ以後に作るクライアントから効く。
+- 設定ファイルが読めない（JSON の誤り、知らない項目）ときやデータベースが開けないときは、サーバーは既定値で動かず、その誤りを出して起動しない。
 - 初めての起動：`providers` が無ければ、保存済みの認証情報から作る。`api-key/logfare` があれば `logfare`（`openai`、`logfare/auto`）、ログイン済みの種類ごとに種類の名前の項目。`default.provider` は最初のもの（`logfare`、`claude-oauth`、`gpt-oauth`、`muse-code`、`deepai` の順）。何も無ければ書かない（次の起動でまた見る）。いったん `providers` ができたら、空になっても作り直さない。
 - `login` の後：その種類のプロバイダが無ければ足し、`default.provider` が空ならそれにする。
 
@@ -103,7 +106,9 @@
 ### 中の作り
 
 - `Core` はプロバイダ・モデル・思考の深さ・要約ごとに `Llm` を 1 つ作って持ち続ける（初めて要るときに作る）。鍵にはプロバイダの設定の中身も含めるので、設定を変えたら新しい `Llm` になる。
-- API キーは `Llm` を作るときに読む。サーバーが動いている間に `key set` で変えた鍵は、同じプロバイダ・モデルの `Llm` には効かない（サーバーの再起動か、設定の変更で効く）。
+- API キーは、クライアントを求めるたびに保管場所から読み、その指紋（SHA-256 の先頭 8 バイト）も `Llm` を選ぶ鍵に含める。サーバーが動いている間に `key set` で変えた鍵は、次の要求から使われる。
+- 設定ファイルの書き込みは、同じプロセスの中の順番に加え、`settings.json.lock` の OS のロックで、別のプロセス（`login`・`key set` と動いているサーバー）の書き込みとも順番にする（読んでから書き終えるまで持つ。10 秒待って取れなければ誤り）。動いているターンが設定の変化に気づくための目印は、このプロセスの書き込みの回数と、ファイルの更新時刻の両方から作る。
+- 同じデータベースを使うサーバーは 1 つだけ：起動時に `inocode.db.lock` を OS のロックで取り、取れなければ起動しない。ターンの持ち主（1 スレッド 1 ターン）はそのプロセスの中で決める。
 - テストや組み込み用の `Core::with_llm`（決まった 1 つの `Llm`）も残した。プロバイダを選んでいない会話はそれで動く。
 
 ### プロトコル
@@ -113,12 +118,16 @@
 | `providers/list` | なし | `{providers: [{id, kind, …, effective_base_url, effective_default_model, credential}], default}` |
 | `providers/add` | `{id, kind, base_url?, default_model?, models?, reasoning?, translation?, disabled?, client_version?}` | `{provider}` |
 | `providers/update` | `{id, …}`（`null` で既定に戻す） | `{provider}` |
-| `providers/remove` | `{id}` | `{removed}`。`default` か役が選んでいれば `provider_in_use`（「roles.review」など場所を書く） |
-| `models/list` | `{provider}` | `{models}` |
-| `models` | `{thread_id?}` | 会話の（無ければ `default` の）プロバイダの `{models}` |
+| `providers/remove` | `{id}` | `{removed}`。`default` か役が選んでいれば `provider_in_use`（「roles.review」など場所を書く）。会話が選んでいても `provider_in_use`（会話の番号を書く）。消したら、保管場所のそのプロバイダの API キーも消す（同じ名前で足し直したとき古い鍵を使わないため） |
+| `models/list` | `{provider, include_hidden?}` | `{models}`。隠したモデルは `include_hidden` が `true` のときだけ |
+| `models` | `{thread_id?, include_hidden?}` | 会話の（無ければ `default` の）プロバイダの `{models}`。隠したモデルは同じく除く |
 | `thread/settings` | `{thread_id, provider?, model?, effort?, summary?, mode?}` | `{thread_id, provider, model, effort, summary, mode}` |
-| `settings/get` | なし | `{default, roles, server}` |
-| `settings/set` | `{default?, roles?, server?}` | `{default, roles, server}` |
+| `settings/get` | なし | `{default, roles, server, effective, restart_required, restart_for}` |
+| `settings/set` | `{default?, roles?, server?}` | `settings/get` と同じ |
+
+- `settings/get` の `server` はファイルに書いた値、`effective` はいま効いている値：`port`（待ち受けているポート）、`sandbox`（命令を閉じ込めているか）、`sandbox_from_command_line`（`--sandbox` で決めたか）、`credentials`（認証情報の保存方式）、`stream_idle_seconds`。`restart_required` は、ファイルの値が再起動まで効かないとき `true`、`restart_for` はその項目（`port`・`credentials`）。
+- `server.sandbox` の変更は、`--sandbox` で起動していなければ、それ以後に始める命令から効く（再起動は要らない）。`--sandbox` で起動したときは、コマンドラインの値が勝つ。
+- 書き込みの前に、いまのファイルが読めることを確かめる。壊れたファイルは、頼んだ変更の誤り（`invalid_params`）ではなく `settings_invalid` で返す。
 
 - 確かめること：同じ id は不可、知らない種類は不可、URL は `https` か localhost の `http` だけ、思考の深さ・要約・モードの名前、`default` と役が名前を出すプロバイダがあること。違えば `invalid_params`。
 - `thread/settings` は `thread_id` のほかに項目があれば変更、無ければ読むだけ。
@@ -178,7 +187,6 @@
 
 - CI の live ジョブ（`INOCODE_TEST_API_KEY` での Logfare と公式 Anthropic）は動かしていない。
 - `key set` のキー入力を画面に出さない処理（Windows の `SetConsoleMode`、Linux の `termios`、macOS の `stty`）は手で試していない。パイプでの入力も試していない。
-- 別のプロセス（`key set`・`login` と動いているサーバー）が同時に設定ファイルを書くと、片方の変更が消えることがある（プロセスをまたぐ鍵はかけていない）。
 - `gpt-oauth`・`muse-code`・`deepai` を設定から選んで実際に送ることは試していない（模擬の試験は `openai` の種類だけ）。
 - 送る文の翻訳（`translation.outgoing`）は保存だけで、動きは無い。
 - ほかの根拠の記録（`llm-streaming.md`、`sandbox.md` など）には、前の環境変数の名前が当時の記録として残っている。ほかの根拠の記録（`llm-streaming.md`、`sandbox.md` など）にも、前の環境変数の名前が当時の記録として残っている。

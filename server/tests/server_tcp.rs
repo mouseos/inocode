@@ -267,3 +267,109 @@ async fn shutdown_stops_accepting_new_connections() {
     })
     .await;
 }
+
+/// Reads frames until the server closes the connection; the frames read.
+async fn until_closed(client: &mut Client) -> Vec<Value> {
+    let mut frames = Vec::new();
+    while let Ok((_, frame)) = client.0.read_json::<Value>().await {
+        frames.push(frame);
+    }
+    frames
+}
+
+#[tokio::test]
+async fn a_connection_without_the_token_is_refused_and_closed() {
+    with_timeout(async {
+        let (addr, _stop, _handle) = start_server(Arc::new(Core::without_llm())).await;
+
+        let mut no_auth = connect_unauthenticated(addr).await;
+        let ping = call(&mut no_auth, 1, json!({"id": 1, "method": "ping"})).await;
+        assert_eq!(ping["id"], 1);
+        assert_eq!(ping["error"]["code"], "unauthorized", "{ping}");
+        assert!(until_closed(&mut no_auth).await.is_empty());
+
+        let mut wrong = connect_unauthenticated(addr).await;
+        let refused = call(
+            &mut wrong,
+            2,
+            json!({"id": 2, "method": "auth", "params": {"token": "test-token-0123456789abcdeX"}}),
+        )
+        .await;
+        assert_eq!(refused["error"]["code"], "unauthorized", "{refused}");
+        assert!(until_closed(&mut wrong).await.is_empty());
+
+        let mut binary = connect_unauthenticated(addr).await;
+        binary
+            .1
+            .write_binary_chunk(3, b"raw")
+            .await
+            .expect("send binary frame");
+        let (_, answer): (u64, Value) = binary.0.read_json().await.expect("answer");
+        assert_eq!(answer["error"]["code"], "unauthorized", "{answer}");
+
+        let mut right = connect(addr).await;
+        let ping = call(&mut right, 4, json!({"id": 4, "method": "ping"})).await;
+        assert_eq!(ping["result"]["pong"], true);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn an_answer_over_the_frame_limit_is_replaced_by_an_error() {
+    with_timeout(async {
+        let database = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("inocode-frame-limit-{}", std::process::id()))
+            .join("inocode.db");
+        let _ = std::fs::remove_dir_all(database.parent().unwrap());
+        std::fs::create_dir_all(database.parent().unwrap()).expect("folder");
+        let store = inocode_core::store::Store::open(&database)
+            .await
+            .expect("store");
+        let thread = store.start_session(None, "").await.expect("thread");
+        // Two messages that together are over the 16 MiB limit of a frame.
+        let half = "x".repeat(inocode::DEFAULT_MAX_PAYLOAD_LEN / 2 + 1024);
+        let message = |text: &str| inocode_core::conversation::Message {
+            id: String::new(),
+            body: inocode_core::conversation::Body::User {
+                from: inocode_core::conversation::Speaker::Person,
+                parts: vec![text.to_string()],
+            },
+        };
+        store
+            .append(thread, vec![message(&half), message(&half)])
+            .await
+            .expect("messages");
+        let core = Core::without_llm().with_store(store);
+        let (addr, _stop, _handle) = start_server(Arc::new(core)).await;
+        let mut client = connect(addr).await;
+        let answer = call(
+            &mut client,
+            1,
+            json!({"id": 1, "method": "thread/read", "params": {"thread_id": thread.0}}),
+        )
+        .await;
+        assert_eq!(answer["id"], 1);
+        assert_eq!(answer["error"]["code"], "frame_too_large", "{answer}");
+
+        let ping = call(&mut client, 2, json!({"id": 2, "method": "ping"})).await;
+        assert_eq!(ping["result"]["pong"], true, "the connection goes on");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_request_over_the_frame_limit_is_answered_before_the_close() {
+    with_timeout(async {
+        let (addr, _stop, _handle) = start_server(Arc::new(Core::without_llm())).await;
+        let (mut reader, mut write_half) = connect_raw(addr).await;
+        let header = FrameHeader::new(FrameType::Json, 7, inocode::DEFAULT_MAX_PAYLOAD_LEN + 1)
+            .expect("header")
+            .encode()
+            .expect("encoded header");
+        write_half.write_all(&header).await.expect("write header");
+        let (_, answer): (u64, Value) = reader.read_json().await.expect("answer");
+        assert_eq!(answer["error"]["code"], "frame_too_large", "{answer}");
+        assert!(reader.read_json::<Value>().await.is_err(), "then closed");
+    })
+    .await;
+}

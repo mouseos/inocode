@@ -7,6 +7,8 @@
 
 - **要求：**
   - `goal/set`（`thread_id`、`objective`、任意で `check`・`rounds`・`tokens`）：目標を決める（前の目標は置き換え）。以後のターンは、目標が終わるまで続く。
+  - 判定役が考えている間に人が目標を止めた・置き換えたときは、判定の結果を当てはめない（判定の後に目標を読み直し、同じ目標がまだ有効なときだけ当てはめる）。
+  - トークンの予算は、答えの終わりの判定のときだけでなく、ツールを使う 1 歩ごとにも数える。判定の後の分で予算を使い切ったら、次の要求を送らずに目標を止める（理由は「予算を使い切った」）。
   - `goal/read`：目標を読む。
   - `goal/stop`：人が止める。実行中のターンは次の確認で終わる。
   - 返す目標：`state`（`active`・`achieved`・`impossible`・`stopped`）、`points`、`rounds`・`round_limit`、`tokens`・`token_budget`、`stalls`、`reason`、`claim`。

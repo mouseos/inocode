@@ -149,22 +149,36 @@ pub struct Llm {
     /// The `client_version` the ChatGPT models endpoint is asked as, when
     /// the provider's settings name a usable one.
     codex_client_version: Option<String>,
+    /// See [`Llm::with_stream_idle`].
+    stream_idle: Duration,
+}
+
+/// The HTTP client of a [`Llm`]: a read that waits longer than `idle` for
+/// the next bytes fails.
+fn http_client(idle: Duration) -> Result<reqwest::Client, ErrorInfo> {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .read_timeout(idle)
+        .build()
+        .map_err(|error| {
+            ErrorInfo::new(
+                "provider_config",
+                format!("cannot build the HTTP client: {error}"),
+            )
+        })
 }
 
 impl Llm {
     pub fn new(config: LlmConfig) -> Result<Self, ErrorInfo> {
-        let client = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(10))
-            .build()
-            .map_err(|error| {
-                ErrorInfo::new(
-                    "provider_config",
-                    format!("cannot build the HTTP client: {error}"),
-                )
-            })?;
-        let deepai =
-            (config.auth == AuthKind::DeepAi).then(|| Box::new(crate::deepai::Session::new()));
+        let stream_idle = Duration::from_secs(crate::settings::DEFAULT_STREAM_IDLE_SECONDS);
+        let client = http_client(stream_idle)?;
+        let deepai = (config.auth == AuthKind::DeepAi).then(|| {
+            Box::new(crate::deepai::Session::new(
+                config.auth_store_path.as_deref(),
+            ))
+        });
         Ok(Self {
+            stream_idle,
             client,
             config,
             deepai,
@@ -182,6 +196,14 @@ impl Llm {
     pub fn with_codex_client_version(mut self, version: Option<String>) -> Self {
         self.codex_client_version = version;
         self
+    }
+
+    /// Fails a request whose answer sends nothing for `idle`, waiting for
+    /// its start or in the middle of it, instead of waiting forever.
+    pub fn with_stream_idle(mut self, idle: Duration) -> Result<Self, ErrorInfo> {
+        self.client = http_client(idle)?;
+        self.stream_idle = idle;
+        Ok(self)
     }
 
     /// The configured model.
@@ -230,7 +252,10 @@ impl Llm {
         let credential = self.credential().await.ok()?;
         let response = self
             .client
-            .get("https://api.anthropic.com/api/oauth/profile")
+            .get(format!(
+                "{}/api/oauth/profile",
+                self.config.base_url.trim_end_matches('/')
+            ))
             .timeout(MODELS_TIMEOUT)
             .bearer_auth(&credential.access)
             .header("anthropic-beta", "oauth-2025-04-20")
@@ -257,7 +282,8 @@ impl Llm {
         let Ok(response) = self
             .client
             .get(format!(
-                "https://api.anthropic.com/api/model_selector/{CLAUDE_SURFACE}"
+                "{}/api/model_selector/{CLAUDE_SURFACE}",
+                self.config.base_url.trim_end_matches('/')
             ))
             .timeout(MODELS_TIMEOUT)
             .bearer_auth(&credential.access)
@@ -319,11 +345,12 @@ impl Llm {
 
     /// A client for `model` on the same provider and credential.
     pub(crate) fn with_model(&self, model: &str) -> Result<Self, ErrorInfo> {
-        Ok(Self::new(LlmConfig {
+        Self::new(LlmConfig {
             model: model.to_string(),
             ..self.config.clone()
         })?
-        .with_codex_client_version(self.codex_client_version.clone()))
+        .with_codex_client_version(self.codex_client_version.clone())
+        .with_stream_idle(self.stream_idle)
     }
 
     /// Whether the provider is a DeepAI account, which has its own tool
@@ -440,7 +467,7 @@ impl Llm {
             ProviderKind::Anthropic => self.anthropic_chat(body).await,
             ProviderKind::Responses => self.responses_chat(&body).await,
         }?;
-        let mut stream = ChatStream::new(format, &self.config.model, response);
+        let mut stream = ChatStream::new(format, &self.config.model, response, self.stream_idle);
         stream.aliases = aliases;
         stream.started = started;
         stream.provider = self.provider_label();
@@ -747,7 +774,8 @@ impl Llm {
             match crate::deepai::admission(response).await {
                 crate::deepai::Admission::Answered(response) => {
                     let response = crate::deepai::require_lane(response).await?;
-                    let mut stream = ChatStream::new(format, &self.config.model, response);
+                    let mut stream =
+                        ChatStream::new(format, &self.config.model, response, self.stream_idle);
                     stream.slot = slot;
                     return Ok(stream);
                 }
@@ -1495,11 +1523,14 @@ pub struct ChatStream {
     started: Instant,
     first_output: Option<Instant>,
     provider: String,
+    /// How long the provider may send nothing (the client's read timeout).
+    idle: Duration,
 }
 
 impl ChatStream {
-    fn new(format: ProviderKind, model: &str, response: reqwest::Response) -> Self {
+    fn new(format: ProviderKind, model: &str, response: reqwest::Response, idle: Duration) -> Self {
         Self {
+            idle,
             format,
             response,
             parser: SseParser::new(),
@@ -1629,6 +1660,17 @@ impl ChatStream {
                 Ok(None) => {
                     self.parser.end();
                     self.body_ended = true;
+                }
+                Err(error) if error.is_timeout() => {
+                    self.done = true;
+                    return Err(ErrorInfo::new(
+                        "provider_idle",
+                        format!(
+                            "the provider sent nothing for {} seconds \
+                             (server.stream_idle_seconds), so the answer was given up",
+                            self.idle.as_secs()
+                        ),
+                    ));
                 }
                 Err(error) => {
                     self.done = true;

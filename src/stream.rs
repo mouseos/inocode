@@ -265,6 +265,11 @@ where
         }
     }
 
+    /// The writer the frames go to.
+    pub fn into_inner(self) -> W {
+        self.inner
+    }
+
     fn prepare(
         &self,
         frame_type: FrameType,

@@ -2555,6 +2555,7 @@ name = "inocode-server"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "getrandom 0.2.17",
  "inocode",
  "inocode-core",
  "reqwest",

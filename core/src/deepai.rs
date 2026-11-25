@@ -292,8 +292,26 @@ enum TheosAnswer {
     Unreachable,
 }
 
+/// The slot of metered requests of each DeepAI account in this process, by
+/// the credential store it signs in from (`None` is the default store):
+/// the clients of every model and role of one account share it.
+fn account_slot(store: Option<&std::path::Path>) -> Arc<Semaphore> {
+    static SLOTS: std::sync::OnceLock<
+        Mutex<std::collections::HashMap<Option<std::path::PathBuf>, Arc<Semaphore>>>,
+    > = std::sync::OnceLock::new();
+    SLOTS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .entry(store.map(std::path::Path::to_path_buf))
+        .or_insert_with(|| Arc::new(Semaphore::new(1)))
+        .clone()
+}
+
 impl Session {
-    pub(crate) fn new() -> Self {
+    /// The state of the DeepAI account signed in from the credential store
+    /// at `store` (the default one when `None`).
+    pub(crate) fn new(store: Option<&std::path::Path>) -> Self {
         let mut instance = [0u8; 16];
         getrandom::getrandom(&mut instance)
             .map_err(|e| e.to_string())
@@ -304,7 +322,7 @@ impl Session {
             machine: OnceCell::new(),
             check_in: tokio::sync::Mutex::new(CheckIn::default()),
             catalog: Mutex::new(None),
-            metered_slot: Arc::new(Semaphore::new(1)),
+            metered_slot: account_slot(store),
         }
     }
 
@@ -866,6 +884,27 @@ mod tests {
         assert!(read_check_in(&json!({"check_in": {"nonce": "ABCDEF", "seconds": 120}})).is_none());
         assert!(read_check_in(&json!({"check_in": {"nonce": nonce, "seconds": 0}})).is_none());
         assert!(read_check_in(&json!({"enabled": true})).is_none());
+    }
+
+    #[tokio::test]
+    async fn the_clients_of_one_account_share_its_single_metered_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let account = dir.path().join("auth.json");
+        let other = dir.path().join("other.json");
+        let (main, reviewer) = (Session::new(Some(&account)), Session::new(Some(&account)));
+        let held = main.metered_slot().await;
+        let waited =
+            tokio::time::timeout(Duration::from_millis(100), reviewer.metered_slot()).await;
+        assert!(waited.is_err(), "a second request of the account waits");
+        let elsewhere = Session::new(Some(&other));
+        let free = tokio::time::timeout(Duration::from_millis(100), elsewhere.metered_slot()).await;
+        assert!(free.is_ok(), "another account does not wait");
+        drop(held);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), reviewer.metered_slot())
+                .await
+                .is_ok()
+        );
     }
 
     #[test]

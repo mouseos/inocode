@@ -33,6 +33,9 @@ pub async fn with_timeout_of<T>(timeout: Duration, future: impl Future<Output = 
         .expect("test timed out")
 }
 
+/// The token the test servers are started with.
+pub const TEST_TOKEN: &str = "test-token-0123456789abcdef";
+
 /// Starts the server on an ephemeral loopback port. The sender in the returned
 /// tuple triggers a clean shutdown when used or dropped.
 pub async fn start_server(
@@ -44,7 +47,7 @@ pub async fn start_server(
     let addr = listener.local_addr().expect("listener address");
     let (stop, stopped) = oneshot::channel();
     let handle = tokio::spawn(async move {
-        inocode_server::run(listener, core, async {
+        inocode_server::run(listener, core, TEST_TOKEN.to_string(), async {
             let _ = stopped.await;
         })
         .await
@@ -52,20 +55,32 @@ pub async fn start_server(
     (addr, stop, handle)
 }
 
-pub async fn connect(addr: SocketAddr) -> Client {
+/// A connection that has not authenticated yet.
+pub async fn connect_unauthenticated(addr: SocketAddr) -> Client {
     let stream = TcpStream::connect(addr).await.expect("connect to server");
     stream.set_nodelay(true).expect("set nodelay");
     let (read_half, write_half) = stream.into_split();
     (FrameReader::new(read_half), FrameWriter::new(write_half))
 }
 
+/// A connection that has sent the test token.
+pub async fn connect(addr: SocketAddr) -> Client {
+    let mut client = connect_unauthenticated(addr).await;
+    let answer = call(
+        &mut client,
+        0,
+        json!({"id": 0, "method": "auth", "params": {"token": TEST_TOKEN}}),
+    )
+    .await;
+    assert_eq!(answer["result"]["authenticated"], true, "{answer}");
+    client
+}
+
 /// Reads one frame without framing the write side, for tests that must send
-/// hand-crafted bytes.
+/// hand-crafted bytes. The connection has sent the test token.
 pub async fn connect_raw(addr: SocketAddr) -> (FrameReader<OwnedReadHalf>, OwnedWriteHalf) {
-    let stream = TcpStream::connect(addr).await.expect("connect to server");
-    stream.set_nodelay(true).expect("set nodelay");
-    let (read_half, write_half) = stream.into_split();
-    (FrameReader::new(read_half), write_half)
+    let (reader, writer) = connect(addr).await;
+    (reader, writer.into_inner())
 }
 
 pub async fn call(client: &mut Client, stream_id: u64, request: Value) -> Value {

@@ -1,10 +1,13 @@
 //! Confines shell commands so they can write only in the project folder and
-//! a private temporary folder. Reads, the network, and other processes are
-//! not restricted. Where no confinement is available the command is not run.
-//! The mechanisms are ported from DeepSeek Harness (MIT, see
-//! THIRD_PARTY_NOTICES.md). Design and approval: docs/evidence/sandbox.md.
+//! a private temporary folder, and, where the OS allows it, keeps them from
+//! reading the folder of inocode's own secrets ([`hide`]). Other reads, the
+//! network, and other processes are not restricted. Where no confinement is
+//! available the command is not run. The mechanisms are ported from
+//! DeepSeek Harness (MIT, see THIRD_PARTY_NOTICES.md). Design and approval:
+//! docs/evidence/sandbox.md and docs/evidence/server-auth.md.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
 #[cfg(target_os = "linux")]
@@ -28,32 +31,63 @@ pub(crate) struct Roots {
     pub temp: PathBuf,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct Settings {
-    enabled: bool,
+    enabled: AtomicBool,
     runner: Option<PathBuf>,
 }
 
 static SETTINGS: OnceLock<Settings> = OnceLock::new();
+
+/// The folder confined commands may not read, set once by [`hide`].
+static HIDDEN: OnceLock<PathBuf> = OnceLock::new();
 
 /// Sets, once per process, whether commands are confined and which
 /// executable acts as the runner (one that calls [`run`] when given
 /// [`RUNNER_ARGUMENT`]). Without it, commands are confined and the current
 /// executable is the runner.
 pub fn configure(enabled: bool, runner: Option<PathBuf>) {
-    let _ = SETTINGS.set(Settings { enabled, runner });
+    let _ = SETTINGS.set(Settings {
+        enabled: AtomicBool::new(enabled),
+        runner,
+    });
 }
 
 fn settings() -> &'static Settings {
     SETTINGS.get_or_init(|| Settings {
-        enabled: true,
+        enabled: AtomicBool::new(true),
         runner: None,
     })
 }
 
 /// Whether shell commands are confined.
-pub(crate) fn enabled() -> bool {
-    settings().enabled
+pub fn enabled() -> bool {
+    settings().enabled.load(Ordering::SeqCst)
+}
+
+/// Turns the confinement of the commands started from now on on or off.
+pub fn set_enabled(enabled: bool) {
+    settings().enabled.store(enabled, Ordering::SeqCst);
+}
+
+/// Keeps confined commands from reading `folder` (inocode's own folder,
+/// with the credentials and the server's token), except the roots inside
+/// it that they write to. On Windows the folder is labelled at once, so a
+/// failure is returned; elsewhere the rule is added to each command's
+/// confinement. Where the OS gives no way to do it (Landlock without
+/// bwrap), commands can still read the folder.
+pub fn hide(folder: &Path) -> Result<(), String> {
+    let folder = std::fs::canonicalize(folder)
+        .map_err(|error| format!("could not resolve {}: {error}", folder.display()))?;
+    #[cfg(windows)]
+    windows::hide(&folder)?;
+    let _ = HIDDEN.set(folder);
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn hidden() -> Option<&'static Path> {
+    HIDDEN.get().map(PathBuf::as_path)
 }
 
 fn runner() -> Result<PathBuf, String> {

@@ -59,6 +59,19 @@ impl Store {
         session: SessionId,
         records: &[RequestRecord],
     ) -> Result<(), ErrorInfo> {
+        self.insert_requests(Some(session), records).await
+    }
+
+    /// Logs requests made outside a thread, such as `chat`.
+    pub(crate) async fn log_unthreaded(&self, records: &[RequestRecord]) -> Result<(), ErrorInfo> {
+        self.insert_requests(None, records).await
+    }
+
+    async fn insert_requests(
+        &self,
+        session: Option<SessionId>,
+        records: &[RequestRecord],
+    ) -> Result<(), ErrorInfo> {
         if records.is_empty() {
             return Ok(());
         }
@@ -72,7 +85,7 @@ impl Store {
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                     params![
                         record.at_ms as i64,
-                        session.0,
+                        session.map(|session| session.0),
                         record.purpose,
                         record.provider,
                         record.model,

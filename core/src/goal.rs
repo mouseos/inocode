@@ -132,6 +132,12 @@ impl Goal {
         self.state == State::Active
     }
 
+    /// Whether `other` is this goal as stored at another time, not a goal
+    /// set in its place.
+    pub(crate) fn same_goal(&self, other: &Goal) -> bool {
+        self.objective == other.objective && self.from_seq == other.from_seq
+    }
+
     /// What the working model is shown with every request while the goal is
     /// active.
     pub(crate) fn render(&self) -> String {
@@ -421,6 +427,24 @@ pub(crate) enum After {
     Continue(String),
     /// The goal ended; this is the message saying why.
     End(String),
+}
+
+/// Between checks: when the `spent` tokens since the last check use up the
+/// budget, the goal is stopped and counts them; the message saying so.
+/// `None` leaves the goal as it is, for the next check to count.
+pub(crate) fn charge(goal: &mut Goal, spent: u64) -> Option<String> {
+    let used = goal.tokens.saturating_add(spent);
+    if used < goal.token_budget {
+        return None;
+    }
+    goal.tokens = used;
+    goal.claim = None;
+    goal.state = State::Stopped;
+    goal.reason = format!("the budget of {} tokens was used up", goal.token_budget);
+    Some(format!(
+        "The goal was stopped, not achieved: {}, before the checker was asked again.",
+        goal.reason
+    ))
 }
 
 /// Applies `verdict` to `goal`: the counts, the state, and what follows.

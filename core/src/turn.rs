@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::future::pending;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, watch};
 
 use crate::agent_tools::{self, Answer};
@@ -106,7 +106,7 @@ impl TurnUsage {
 
 /// A call that waits for the person's approval. It was not run; approving
 /// its `ask` rules, or the call itself, on the next turn lets it run.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Held {
     pub rules: Vec<i64>,
     pub titles: Vec<String>,
@@ -191,12 +191,15 @@ pub struct Outcome {
     pub usage: TurnUsage,
     pub held: Vec<Held>,
     pub questions: Vec<Asked>,
+    /// What went wrong beside the work without ending the turn, such as a
+    /// colleague that could not be asked or requests that were not logged.
+    pub warnings: Vec<String>,
 }
 
 /// Questions the model asked the person with `ask`, as the form they make.
 /// `seq` is the stored answer of the call, which a reply to the questions
 /// names; `None` when it is not in the thread's history.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Asked {
     pub seq: Option<i64>,
     pub questions: serde_json::Value,
@@ -519,6 +522,8 @@ struct Thread<'a> {
     /// then.
     goal_calls: u32,
     goal_mark: u64,
+    /// See [`Outcome::warnings`].
+    warnings: Vec<String>,
     /// The project's git state when the turn started.
     git: Option<String>,
     /// Whether and how the thinking is translated.
@@ -1059,7 +1064,8 @@ impl Thread<'_> {
                 Ok(Some(advice))
             }
             Err(error) => {
-                eprintln!("inocode: the colleague could not be asked: {error}");
+                self.warnings
+                    .push(format!("the colleague could not be asked: {error}"));
                 Ok(None)
             }
         }
@@ -1184,7 +1190,7 @@ impl Thread<'_> {
     /// At the end of a turn: when the issue this thread works on is still
     /// unfinished, the harness records the turn as an unfinished attempt,
     /// with how it ended.
-    async fn record_attempt(&self, ending: &Ending) {
+    async fn record_attempt(&mut self, ending: &Ending) {
         let Ok(Some(id)) = self.store.current_issue(self.session).await else {
             return;
         };
@@ -1224,10 +1230,10 @@ impl Thread<'_> {
             )
             .await;
         if let Err(error) = recorded {
-            eprintln!(
-                "inocode: the unfinished turn was not recorded: {}",
+            self.warnings.push(format!(
+                "the unfinished turn was not recorded on its issue: {}",
                 error.message
-            );
+            ));
         }
     }
 
@@ -1260,6 +1266,31 @@ impl Thread<'_> {
                 .to_string(),
             false,
         )
+    }
+
+    /// After a step of work under an active goal: stops the goal when the
+    /// tokens since its last check use up its budget, so a long answer does
+    /// not run past it. `true` when the goal was stopped.
+    async fn charge_goal(&mut self, usage: &TurnUsage) -> Result<bool, ErrorInfo> {
+        let spent = (usage.input + usage.output).saturating_sub(self.goal_mark);
+        let Some(mut goal) = crate::goal::load(self.store, self.session)
+            .await?
+            .filter(crate::goal::Goal::is_active)
+        else {
+            return Ok(false);
+        };
+        let Some(text) = crate::goal::charge(&mut goal, spent) else {
+            return Ok(false);
+        };
+        self.goal_mark = usage.input + usage.output;
+        crate::goal::save(self.store, self.session, &goal).await?;
+        self.goal = Some(goal);
+        self.record(vec![Body::User {
+            from: Speaker::Harness(crate::goal::GOAL_KIND.to_string()),
+            parts: vec![text],
+        }])
+        .await?;
+        Ok(true)
     }
 
     /// After the model ended its answer with a goal active: has the checker
@@ -1299,6 +1330,25 @@ impl Thread<'_> {
             usage,
         )
         .await;
+        // Read again: the person may have stopped or replaced the goal while
+        // it was checked, and the finding is about the goal as it was.
+        let current = crate::goal::load(self.store, self.session).await?;
+        match current {
+            Some(now) if now.is_active() && now.same_goal(&goal) => goal = now,
+            current => {
+                self.goal = current;
+                self.record(vec![Body::User {
+                    from: Speaker::Harness(crate::goal::GOAL_KIND.to_string()),
+                    parts: vec![
+                        "The goal was stopped or replaced while it was checked; the check's \
+                         finding was not applied."
+                            .to_string(),
+                    ],
+                }])
+                .await?;
+                return Ok(false);
+            }
+        }
         let spent = (usage.input + usage.output).saturating_sub(self.goal_mark);
         self.goal_mark = usage.input + usage.output;
         let (text, goes_on) = match checked {
@@ -1496,26 +1546,60 @@ pub async fn run(
                 usage,
                 held: Vec::new(),
                 questions: Vec::new(),
+                warnings: Vec::new(),
             }
         }
     };
     drop(llm);
-    let ending = steps(
-        models.main,
-        models.mode,
-        &mut thread,
-        prompt,
-        &mut steer,
-        &mut cancel,
-        &mut usage,
-    )
-    .await;
+    let mut prompt = prompt;
+    let ending = loop {
+        let ending = steps(
+            models.main.clone(),
+            models.mode.clone(),
+            &mut thread,
+            prompt,
+            &mut steer,
+            &mut cancel,
+            &mut usage,
+        )
+        .await;
+        // Steering accepted while the turn was deciding to end is answered:
+        // once the channel is closed no more is accepted, and what came
+        // before is the next request's prompt.
+        steer.close();
+        let mut left = Vec::new();
+        while let Ok(text) = steer.try_recv() {
+            left.push(text);
+        }
+        if left.is_empty() {
+            break ending;
+        }
+        if matches!(ending, Ending::Completed | Ending::Length) {
+            prompt = Prompt {
+                text: left.join("\n\n"),
+                reply_to: None,
+            };
+            continue;
+        }
+        // An interrupted or failed turn keeps the input in the thread, for
+        // the next turn to see.
+        if let Err(error) = thread.record(left.into_iter().map(person).collect()).await {
+            thread.warnings.push(format!(
+                "input sent while the turn ended was not kept: {}",
+                error.message
+            ));
+        }
+        break ending;
+    };
     if ending == Ending::Interrupted {
         shell::stop_all(&store.files_folder().join("logs"), session);
     }
     thread.record_attempt(&ending).await;
     if let Err(error) = store.log_requests(session, &usage.records).await {
-        eprintln!("inocode: the requests were not logged: {}", error.message);
+        thread.warnings.push(format!(
+            "the requests of this turn were not logged, so the statistics leave them out: {}",
+            error.message
+        ));
     }
     let mut questions: Vec<Asked> = thread
         .asked
@@ -1531,6 +1615,7 @@ pub async fn run(
         usage,
         held: thread.held,
         questions,
+        warnings: thread.warnings,
     }
 }
 
@@ -1538,13 +1623,14 @@ pub async fn run(
 /// `llm`'s context window: the history is treated as filling the window
 /// (or its estimated size when larger), so the older part is replaced by a
 /// summary and the recent part kept. Returns the stored compaction
-/// message's position; `None` when nothing could be replaced.
+/// message's position (`None` when nothing could be replaced) and what went
+/// wrong beside it.
 pub(crate) async fn compact_now(
     llm: &Llm,
     compactor: Option<&Llm>,
     store: &Store,
     session: SessionId,
-) -> Result<Option<i64>, ErrorInfo> {
+) -> Result<(Option<i64>, Option<String>), ErrorInfo> {
     let window = llm.context_window().await.ok_or_else(|| {
         ErrorInfo::new(
             "unavailable",
@@ -1570,7 +1656,7 @@ pub(crate) async fn compact_now(
         .copied()
         .zip(thread.conversation.messages.iter().cloned())
         .collect();
-    let compacted = compaction::compact(
+    let compacted = compaction::compact_reporting(
         llm,
         compactor,
         thread.conversation.system.clone(),
@@ -1580,14 +1666,26 @@ pub(crate) async fn compact_now(
         window,
     )
     .await;
-    let Some((body, records)) = compacted else {
-        return Ok(None);
+    let Some((body, records, failure)) = compacted else {
+        return Ok((None, None));
     };
-    if let Err(error) = store.log_requests(session, &records).await {
-        eprintln!("inocode: the requests were not logged: {}", error.message);
+    let logged = store.log_requests(session, &records).await;
+    // Asked for by the person, a compaction without a summary is a failure
+    // and leaves the history as it was.
+    if let Some(why) = failure {
+        return Err(ErrorInfo::new(
+            "compaction_failed",
+            format!("no summary could be written ({why}); the thread was not compacted"),
+        ));
     }
     thread.record(vec![body]).await?;
-    Ok(thread.seqs.last().copied())
+    let warning = logged.err().map(|error| {
+        format!(
+            "the summary requests were not logged, so the statistics leave them out: {}",
+            error.message
+        )
+    });
+    Ok((thread.seqs.last().copied(), warning))
 }
 
 async fn open<'a>(
@@ -1660,6 +1758,7 @@ async fn open<'a>(
         checker: None,
         goal_calls: 0,
         goal_mark: 0,
+        warnings: Vec::new(),
         git,
         thinking_translation,
     })
@@ -1834,7 +1933,16 @@ async fn steps(
         }
         match step {
             None => return Ending::Failed(failure.expect("no step only after a failure")),
-            Some(Step::Continue) => cuts = 0,
+            Some(Step::Continue) => {
+                cuts = 0;
+                if thread.goal_active() {
+                    match thread.charge_goal(usage).await {
+                        Ok(true) => return Ending::Completed,
+                        Ok(false) => {}
+                        Err(error) => return Ending::Failed(error),
+                    }
+                }
+            }
             Some(Step::Resume) => cuts += 1,
             Some(Step::Finish(Ending::Completed)) if thread.goal_active() => {
                 let pursued = tokio::select! {

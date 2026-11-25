@@ -235,6 +235,12 @@ pub const BUILTINS: &[Builtin] = &[
         None,
     ),
     builtin(
+        "stop",
+        "Interrupt this thread's running turn, from any connection.",
+        &[form("Interrupt the running turn.", &[], Now)],
+        None,
+    ),
+    builtin(
         "export",
         "Write this thread out as Markdown or JSON.",
         &[form(
@@ -258,7 +264,8 @@ pub const BUILTINS: &[Builtin] = &[
         "Set a goal and keep working until a separate checker finds it achieved.",
         &[
             turn_form(
-                "Set the goal and start working on it.",
+                "Set the goal and start working on it; --check \"command\", --rounds n and \
+                 --tokens n before the objective set its check and limits.",
                 &[arg("objective", Text)],
             ),
             sub(
@@ -1257,6 +1264,63 @@ pub enum Ran {
     Turn(TurnStart),
 }
 
+/// What `/goal` was given: the options in front of the objective, as
+/// `goal/set` takes them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GoalOptions<'a> {
+    check: Option<String>,
+    rounds: Option<u32>,
+    tokens: Option<u64>,
+    objective: &'a str,
+}
+
+/// Reads `--check <command>`, `--rounds <n>` and `--tokens <n>` from the
+/// start of `text`; the rest is the objective. A command with spaces is
+/// written in double quotes.
+fn goal_options(text: &str) -> Result<GoalOptions<'_>, String> {
+    let mut options = GoalOptions {
+        check: None,
+        rounds: None,
+        tokens: None,
+        objective: text.trim(),
+    };
+    loop {
+        let rest = options.objective;
+        let Some((flag, after)) = rest.split_once(char::is_whitespace) else {
+            break;
+        };
+        if !matches!(flag, "--check" | "--rounds" | "--tokens") {
+            break;
+        }
+        let after = after.trim_start();
+        let (word, remaining) = match after.strip_prefix('"') {
+            Some(quoted) => quoted
+                .split_once('"')
+                .ok_or_else(|| format!("{flag} has an unclosed quote"))?,
+            None => after.split_once(char::is_whitespace).unwrap_or((after, "")),
+        };
+        if word.is_empty() {
+            return Err(format!("{flag} needs a value"));
+        }
+        let number = |name: &str| {
+            word.parse::<u64>()
+                .map_err(|_| format!("{name} must be a number, not {word:?}"))
+        };
+        match flag {
+            "--check" => options.check = Some(word.to_string()),
+            "--rounds" => {
+                options.rounds = Some(u32::try_from(number("--rounds")?).unwrap_or(u32::MAX))
+            }
+            _ => options.tokens = Some(number("--tokens")?),
+        }
+        options.objective = remaining.trim_start();
+    }
+    if options.objective.is_empty() {
+        return Err("give the objective after the options".into());
+    }
+    Ok(options)
+}
+
 /// The name and arguments of a typed command, `/name arguments`.
 pub fn split(text: &str) -> Result<(String, String), ErrorInfo> {
     let text = text.trim();
@@ -1574,10 +1638,12 @@ impl Core {
             }
             ("delete", _) => {
                 store.delete_session(thread).await?;
-                self.waiting_lock().remove(&thread);
-                json!({ "deleted": thread.0 })
+                crate::shell::stop_all(&store.files_folder().join("logs"), thread);
+                let kept = store.remove_thread_files(thread).await;
+                json!({ "deleted": thread.0, "files_not_removed": kept })
             }
             ("compact", _) => self.compact(thread).await?,
+            ("stop", _) => json!({ "interrupted": self.interrupt(thread) }),
             ("export", _) => self.export(thread, value(0), value(1)).await?,
             ("history", _) => {
                 let found = store
@@ -1603,8 +1669,17 @@ impl Core {
                 json!({ "hits": hits, "truncated": found.truncated })
             }
             ("goal", None) => {
-                let objective = value(0).unwrap_or_default();
-                let goal = self.set_goal(thread, objective, None, None, None).await?;
+                let options = goal_options(value(0).unwrap_or_default()).map_err(invalid)?;
+                let objective = options.objective;
+                let goal = self
+                    .set_goal(
+                        thread,
+                        objective,
+                        options.check.as_deref(),
+                        options.rounds,
+                        options.tokens,
+                    )
+                    .await?;
                 return Ok(Ran::Turn(TurnStart {
                     prompt: objective.to_string(),
                     reply_to: None,
@@ -1752,7 +1827,10 @@ impl Core {
                 if !(1..=3_650).contains(&days) {
                     return Err(invalid("the days must be from 1 to 3650").into());
                 }
-                json!({ "models": self.model_stats(days, 0).await? })
+                // Hours in the server's time zone, where the person typing
+                // the command is.
+                let offset = i64::from(chrono::Local::now().offset().local_minus_utc()) / 60;
+                json!({ "models": self.model_stats(days, offset).await? })
             }
             ("status", _) => {
                 let summary = store.session_summary(thread).await?;
@@ -1906,20 +1984,20 @@ impl Core {
         Ok(Ran::Result(result))
     }
 
-    fn waiting_lock(
-        &self,
-    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<SessionId, crate::Waiting>> {
-        self.waiting
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-    }
-
     async fn compact(&self, thread: SessionId) -> Result<Value, ErrorInfo> {
         let settings = self.settings().await?;
         let choice = Choice::of(&self.thread_choice(thread).await?, &settings.default);
         // Claimed like a turn, so no turn starts while the summary is made.
-        let claim = self.begin_turn(thread).await?;
-        let main = claim.model.borrow().clone();
+        // Nothing reads steering or interrupts here, so they are refused
+        // rather than lost.
+        let crate::Claim {
+            steer,
+            model,
+            cancel,
+            ..
+        } = self.begin_turn(thread).await?;
+        drop((steer, cancel));
+        let main = model.borrow().clone();
         let compacted = async {
             let compactor =
                 self.role_client(&settings, &choice, settings.roles.compact.as_ref(), &main)?;
@@ -1927,8 +2005,12 @@ impl Core {
         }
         .await;
         self.end_turn(thread);
-        let seq = compacted?;
-        Ok(json!({ "compacted": seq.is_some(), "seq": seq }))
+        let (seq, warning) = compacted?;
+        let mut result = json!({ "compacted": seq.is_some(), "seq": seq });
+        if let Some(warning) = warning {
+            result["warnings"] = json!([warning]);
+        }
+        Ok(result)
     }
 
     async fn export(
@@ -2190,16 +2272,9 @@ impl Core {
 
     async fn colleague(&self, thread: SessionId) -> Result<Value, ErrorInfo> {
         let settings = self.settings().await?;
-        let path = self.settings_path()?;
-        let older = crate::colleague::configured(&path)
-            .await
-            .map_err(|error| ErrorInfo::new("colleague_config", error))?;
-        let role = match (&settings.roles.colleague, older) {
-            (Some(role), _) => json!(role),
-            (None, Some(older)) => {
-                json!({ "provider": older.provider, "model": older.model, "base_url": older.base_url })
-            }
-            (None, None) => Value::Null,
+        let role = match &settings.roles.colleague {
+            Some(role) => json!(role),
+            None => Value::Null,
         };
         let advice: Vec<Value> = self
             .store()?
@@ -2227,11 +2302,9 @@ impl Core {
         name: &str,
         number: Option<&str>,
     ) -> Result<Ran, CommandError> {
-        let held = self
-            .waiting_lock()
-            .get(&thread)
-            .map(|waiting| waiting.held.clone())
-            .unwrap_or_default();
+        // The held calls stay listed until a turn runs: its end replaces
+        // them, so a turn that cannot start leaves them to approve again.
+        let held = self.waiting(thread).await?.held;
         let Some(number) = number else {
             return Ok(Ran::Result(json!({ "command": name, "held": held })));
         };
@@ -2241,9 +2314,6 @@ impl Core {
             "all" => return Err(invalid("no call is held").into()),
             number => vec![held[index(number, held.len())?].clone()],
         };
-        if let Some(waiting) = self.waiting_lock().get_mut(&thread) {
-            waiting.held.retain(|call| !chosen.contains(call));
-        }
         let lines: Vec<String> = chosen
             .iter()
             .map(|call| format!("- {} {}", call.tool, call.arguments))
@@ -2259,13 +2329,12 @@ impl Core {
                 lines.join("\n")
             ),
         };
+        // Only these exact calls are approved: approving the rules they met
+        // would let every other call under those rules through as well.
         let approvals = match approve {
             true => turn::Approvals {
                 mode: turn::Mode::default(),
-                rules: chosen
-                    .iter()
-                    .flat_map(|call| call.rules.iter().map(|rule| NoteId(*rule)))
-                    .collect(),
+                rules: Vec::new(),
                 calls: chosen
                     .iter()
                     .map(|call| (call.tool.clone(), call.arguments.clone()))
@@ -2290,21 +2359,31 @@ impl Core {
         number: Option<&str>,
         answer: Option<&str>,
     ) -> Result<Ran, CommandError> {
-        let asked = self
-            .waiting_lock()
-            .get(&thread)
-            .map(|waiting| waiting.questions.clone())
-            .unwrap_or_default();
-        let servers = self.store()?.elicitations(thread);
+        let asked = self.waiting(thread).await?.questions;
+        let store = self.store()?;
+        let mut servers: Vec<(u64, Value, bool)> = store
+            .elicitations(thread)
+            .into_iter()
+            .map(|(id, question)| (id, question, false))
+            .collect();
+        servers.extend(
+            store
+                .expired_elicitations(thread)
+                .await?
+                .into_iter()
+                .map(|(id, question)| (id, question, true)),
+        );
         let count = asked.len() + servers.len();
         let Some(number) = number else {
             let mut listed: Vec<Value> = asked
                 .iter()
                 .map(|asked| json!({ "kind": "ask", "seq": asked.seq, "questions": asked.questions }))
                 .collect();
-            listed.extend(servers.iter().map(
-                |(id, question)| json!({ "kind": "mcp", "elicitation": id, "question": question }),
-            ));
+            listed.extend(servers.iter().map(|(id, question, expired)| {
+                json!({
+                    "kind": "mcp", "elicitation": id, "question": question, "expired": expired,
+                })
+            }));
             for (index, item) in listed.iter_mut().enumerate() {
                 item["number"] = json!(index + 1);
             }
@@ -2328,7 +2407,18 @@ impl Core {
                 result: json!({ "command": "answer", "reply_to": seq }),
             }));
         }
-        let (elicitation, _) = &servers[chosen - asked.len()];
+        let (elicitation, _, expired) = &servers[chosen - asked.len()];
+        if *expired {
+            // The turn that waited for it ended with the server's earlier
+            // run, so no answer can reach the MCP server; it is removed.
+            store.drop_expired_elicitation(thread, *elicitation).await?;
+            return Err(ErrorInfo::new(
+                "expired",
+                "this question of an MCP server expired when the server restarted; it was \
+                 removed, and the server asks again when the work needs it",
+            )
+            .into());
+        }
         let reply = match answer.trim() {
             "decline" | "cancel" => json!({ "action": answer.trim() }),
             content => {
@@ -2577,6 +2667,28 @@ mod tests {
     }
 
     #[test]
+    fn goal_options_come_before_the_objective() {
+        let options =
+            goal_options("--check \"cargo test -p x\" --rounds 5 --tokens 9000 fix --rounds")
+                .unwrap();
+        assert_eq!(options.check.as_deref(), Some("cargo test -p x"));
+        assert_eq!(options.rounds, Some(5));
+        assert_eq!(options.tokens, Some(9000));
+        assert_eq!(options.objective, "fix --rounds");
+
+        let plain = goal_options("fix the tests").unwrap();
+        assert_eq!(
+            (plain.check, plain.rounds, plain.tokens),
+            (None, None, None)
+        );
+        assert_eq!(plain.objective, "fix the tests");
+
+        assert!(goal_options("--rounds many fix").is_err());
+        assert!(goal_options("--check \"cargo test fix").is_err());
+        assert!(goal_options("--tokens 5").is_err());
+    }
+
+    #[test]
     fn mid_turn_use_follows_the_decided_rules() {
         let when = |name: &str, text: &str| {
             let command = builtin_named(name).unwrap();
@@ -2590,6 +2702,7 @@ mod tests {
             ("issues", ""),
             ("goal", "status"),
             ("translate", "thinking on"),
+            ("stop", ""),
         ] {
             assert_eq!(when(name, text), When::Now, "/{name} {text}");
         }

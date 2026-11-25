@@ -15,6 +15,11 @@
 | 長さ切れ（Length）でターンを終える | 公開実装 | DSH は長さ切れの発言のツール呼び出しを捨てる。続けるかどうかは継続の規則の実験の対象 |
 | 呼び出しには必ず結果を付ける（ツールがないので「そのツールはない」というエラー） | 公式仕様 | 答えのない呼び出しは次の送信でエラーになる（`conversation-model.md` 判断 4） |
 | 1 スレッドで同時に 1 ターン。走行中の入力は `turn/steer` で次の要求の前に加わる | 公開実装（研究なし） | Codex の `turn/steer`、DSH の inbox（次のステップの前に取り込む） |
+| ターンが終わると決めた後に届いた `turn/steer` の入力も捨てない | 不具合の修正（「受け付けた」と返した入力が消えないこと） | 終える直前に入力の受け口を閉じ、それまでに届いた入力があれば、それを次の要求として同じターンで続ける。閉じた後の `turn/steer` は `accepted: false`。中断・失敗で終わるときは、届いた入力を人の発言として保存だけする |
+| どの接続からでもスレッドのターンを止められる：`turn/interrupt {thread_id}` と `/stop` | 不具合の修正（接続が切れたターンを止める手段が無かった） | 結果は `{interrupted}`（走っているターンが無ければ `false`）。ターンは、始めた接続の `cancel` と、この止め方の両方で止まる。接続が切れてもターンは続くこと（上）は変えない |
+| モデルの答えが一定の時間なにも送ってこなければ、ターンを誤りで終える | 不具合の修正 | 設定 `server.stream_idle_seconds`（既定 300 秒）。誤りの種類は `provider_idle`（`account-pool.md`） |
+| ターンの最後に、承認待ちの呼び出しと質問をデータベースに書く | 不具合の修正（再起動で答えられなくなった） | 版 10 の `waiting` 表。`/approve`・`/deny`・`/answer` はそこから読む。MCP のサーバーの質問も `elicitations` 表に書き、サーバーを起動し直すと「期限切れ」にする（待っていたターンがもう無いため）。`/answer` は期限切れの質問を `expired: true` で見せ、それに答えると `expired` の誤りを返してその質問を消す |
+| 仕事の外で起きた失敗を、ターンの終わりの `warnings` で知らせる | 不具合の修正（stderr だけだった） | 同僚に聞けなかった、使用量のログに書けなかった、issue に未完了を記録できなかった、承認待ちを保存できなかった、など。`completed` のイベントの `warnings`（文字列の配列。無ければ項目が無い） |
 
 ## 研究の状況（継続の規則）
 
@@ -38,5 +43,6 @@
 ## 実装・検証の状況
 
 - `server/tests/turn_tcp.rs`（模擬プロバイダ）：文章の応答でターンが終わり、理由と使用量を返し、保存した履歴を次のターンで送る。ツール呼び出しの後は結果を付けて続け、2 回目の要求に `tool` メッセージが入る。同じスレッドの 2 つ目のターンは `turn_running`。`turn/steer` の入力は保存される。`cancel` で `cancelled` になり、途中までの応答は `aborted` として残る。存在しないスレッドや不正な引数はエラー。
+- 同じファイル：始めた接続を閉じたターンを、別の接続の `turn/interrupt` で止められる（`any_connection_interrupts_a_turn_whose_connection_closed`）。黙ったプロバイダでターンが `provider_idle` で終わる（`a_provider_that_goes_silent_ends_the_turn_with_an_error`）。承認待ちがサーバーの起動し直しの後も残り、`/approve 1` はその呼び出しだけを通す（`held_calls_outlive_a_restart_and_approve_runs_only_that_call`）。ゴールの判定中に止めたゴールは止まったまま、その間に届いた入力には次の要求で答える（`a_goal_stopped_while_checked_stays_stopped_and_late_steering_is_answered`）。
 - `core/src/turn.rs` の単体テスト：判定の表と、呼び出しへの答え。
 - 実プロバイダでの確認：未実施。

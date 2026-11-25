@@ -5,7 +5,12 @@
 //! (`ping`, `echo`, `cancel`, `turn/steer`) are answered with a response
 //! frame; `chat` and `turn/start` run in their own task and report progress
 //! as `started`, `delta`, `message` (turns only), `completed`, `failed`, and
-//! `cancelled` events. `cancel` also interrupts a turn.
+//! `cancelled` events. `cancel` also interrupts a turn, and `turn/interrupt`
+//! interrupts a thread's running turn from any connection.
+//!
+//! Every connection first proves it knows the token of this server's start
+//! with an `auth` request; a connection that does not is answered
+//! `unauthorized` and closed (docs/evidence/server-auth.md).
 //!
 //! Each connection has one writer task fed by a bounded queue, so frames from
 //! concurrent requests never interleave and a client that stops reading cannot
@@ -15,7 +20,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 
-use inocode::{FrameReader, FrameType, FrameWriter};
+use inocode::{FrameReader, FrameType, FrameWriter, ProtocolError};
 use inocode_core::turn::{Ending, TurnEvent};
 use inocode_core::{Core, ErrorInfo, EventPayload, Request, Response, ResponseBody};
 use serde_json::{json, Value};
@@ -32,6 +37,13 @@ const READ_MAX_LIMIT: u64 = 1000;
 
 /// Pause after an accept error that is not about a single connection.
 const ACCEPT_ERROR_PAUSE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// How long a new connection may take to send its `auth` request.
+const AUTH_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How long the frames queued before a connection is closed for a protocol
+/// error may take to be written.
+const CLOSE_FLUSH: std::time::Duration = std::time::Duration::from_secs(2);
 
 struct Outgoing {
     stream_id: u64,
@@ -62,14 +74,21 @@ enum Generation {
 type InFlight = Arc<Mutex<HashMap<u64, Generation>>>;
 
 /// Accepts connections until `shutdown` completes, then returns. Accept
-/// errors never end the server.
+/// errors never end the server. Each connection must first send an `auth`
+/// request carrying `token`.
 ///
 /// Each connection runs in its own task, so one client closing or sending a
 /// broken frame does not affect the others.
-pub async fn run<F>(listener: TcpListener, core: Arc<Core>, shutdown: F) -> std::io::Result<()>
+pub async fn run<F>(
+    listener: TcpListener,
+    core: Arc<Core>,
+    token: String,
+    shutdown: F,
+) -> std::io::Result<()>
 where
     F: Future<Output = ()> + Send,
 {
+    let token: Arc<str> = Arc::from(token);
     tokio::pin!(shutdown);
     loop {
         tokio::select! {
@@ -92,7 +111,7 @@ where
                 if stream.set_nodelay(true).is_err() {
                     continue;
                 }
-                tokio::spawn(serve_connection(stream, Arc::clone(&core)));
+                tokio::spawn(serve_connection(stream, Arc::clone(&core), Arc::clone(&token)));
             }
             () = &mut shutdown => return Ok(()),
         }
@@ -109,7 +128,7 @@ fn is_connection_error(error: &std::io::Error) -> bool {
     )
 }
 
-async fn serve_connection(stream: TcpStream, core: Arc<Core>) {
+async fn serve_connection(stream: TcpStream, core: Arc<Core>, token: Arc<str>) {
     let (read_half, write_half) = stream.into_split();
     let mut reader = FrameReader::new(read_half);
     let mut writer = FrameWriter::new(write_half);
@@ -120,52 +139,168 @@ async fn serve_connection(stream: TcpStream, core: Arc<Core>) {
                 Payload::Value(value) => writer.write_json(message.stream_id, value).await,
                 Payload::Event(event) => writer.write_json(message.stream_id, &**event).await,
             };
-            if written.is_err() {
-                break;
+            match written {
+                Ok(()) => {}
+                // Nothing of the frame was written, so the connection stays
+                // usable: the client is told what it did not get.
+                Err(ProtocolError::PayloadTooLarge { payload_len, max }) => {
+                    let replaced = too_large(&message.payload, payload_len, max);
+                    if writer
+                        .write_json(message.stream_id, &replaced)
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Err(_) => break,
             }
         }
     });
 
     let in_flight: InFlight = Arc::new(Mutex::new(HashMap::new()));
-    loop {
-        let header = match reader.read_header().await {
-            Ok(Some(header)) => header,
-            // Clean close, or a frame that can never complete.
-            Ok(None) | Err(_) => break,
-        };
-        if header.frame_type != FrameType::Json {
-            let mut discard = tokio::io::sink();
-            if reader.read_payload_to(&header, &mut discard).await.is_err() {
-                break;
-            }
-            let message = Outgoing {
-                stream_id: header.stream_id,
-                payload: Payload::Value(error_value(
-                    "invalid_request",
-                    "Only JSON request frames are accepted",
-                )),
+    let mut flush = authenticate(&mut reader, &queue, &token).await;
+    if !flush {
+        loop {
+            let header = match reader.read_header().await {
+                Ok(Some(header)) => header,
+                Err(ProtocolError::PayloadTooLarge { payload_len, max }) => {
+                    // The rest of the frame is not read, so the connection
+                    // cannot go on; the client is told why it ends.
+                    let message = Outgoing {
+                        stream_id: 0,
+                        payload: Payload::Value(error_value(
+                            "frame_too_large",
+                            &format!(
+                                "a frame of {payload_len} bytes is over the limit of {max} \
+                                 bytes; the connection is closed"
+                            ),
+                        )),
+                    };
+                    flush = queue.send(message).await.is_ok();
+                    break;
+                }
+                // Clean close, or a frame that can never complete.
+                Ok(None) | Err(_) => break,
             };
-            if queue.send(message).await.is_err() {
+            if header.frame_type != FrameType::Json {
+                let mut discard = tokio::io::sink();
+                if reader.read_payload_to(&header, &mut discard).await.is_err() {
+                    break;
+                }
+                let message = Outgoing {
+                    stream_id: header.stream_id,
+                    payload: Payload::Value(error_value(
+                        "invalid_request",
+                        "Only JSON request frames are accepted",
+                    )),
+                };
+                if queue.send(message).await.is_err() {
+                    break;
+                }
+                continue;
+            }
+            let payload = match reader.read_payload_to_vec(&header).await {
+                Ok(payload) => payload,
+                Err(_) => break,
+            };
+            if !dispatch(&payload, header.stream_id, &core, &queue, &in_flight).await {
                 break;
             }
-            continue;
-        }
-        let payload = match reader.read_payload_to_vec(&header).await {
-            Ok(payload) => payload,
-            Err(_) => break,
-        };
-        if !dispatch(&payload, header.stream_id, &core, &queue, &in_flight).await {
-            break;
         }
     }
 
     // The read side is over: signal every generation of this connection and
     // stop the writer at its next await point. Frames still queued are dropped
     // with the connection — the client closed it or sent an unreadable frame —
-    // and awaiting a writer stalled on a dead socket would pin this task.
+    // and awaiting a writer stalled on a dead socket would pin this task. An
+    // error the connection ends on gets a short time to be written.
     in_flight.lock().await.clear();
     drop(queue);
-    writer_task.abort();
+    if flush {
+        let abort = writer_task.abort_handle();
+        if tokio::time::timeout(CLOSE_FLUSH, writer_task)
+            .await
+            .is_err()
+        {
+            abort.abort();
+        }
+    } else {
+        writer_task.abort();
+    }
+}
+
+/// Reads the first frame of a connection, which must be an `auth` request
+/// with the server's token, and answers it. Returns `true` when the
+/// connection is refused: its answer is queued and nothing more is read.
+async fn authenticate(
+    reader: &mut FrameReader<tokio::net::tcp::OwnedReadHalf>,
+    queue: &mpsc::Sender<Outgoing>,
+    token: &str,
+) -> bool {
+    let first = tokio::time::timeout(AUTH_WAIT, async {
+        let header = reader.read_header().await.ok()??;
+        if header.frame_type != FrameType::Json {
+            return Some((header.stream_id, Value::Null));
+        }
+        let payload = reader.read_payload_to_vec(&header).await.ok()?;
+        Some((
+            header.stream_id,
+            serde_json::from_slice(&payload).unwrap_or(Value::Null),
+        ))
+    })
+    .await;
+    let Ok(Some((stream_id, request))) = first else {
+        return true;
+    };
+    let id = request.get("id").and_then(Value::as_u64);
+    let given = match request.get("method").and_then(Value::as_str) {
+        Some("auth") => request
+            .get("params")
+            .and_then(|params| params.get("token"))
+            .and_then(Value::as_str),
+        _ => None,
+    };
+    let accepted = given.is_some_and(|given| same_secret(given.as_bytes(), token.as_bytes()));
+    let body = if accepted {
+        ResponseBody::Result {
+            result: json!({ "authenticated": true }),
+        }
+    } else {
+        ResponseBody::Error {
+            error: ErrorInfo::new(
+                "unauthorized",
+                "the first request must be auth with the token of this server's start",
+            ),
+        }
+    };
+    let answer = serde_json::to_value(Response { id, body }).unwrap_or(Value::Null);
+    let queued = send(queue, stream_id, answer).await;
+    !(accepted && queued)
+}
+
+/// Compares two secrets in a time that does not depend on where they
+/// first differ.
+fn same_secret(given: &[u8], expected: &[u8]) -> bool {
+    given.len() == expected.len()
+        && given
+            .iter()
+            .zip(expected)
+            .fold(0u8, |difference, (a, b)| difference | (a ^ b))
+            == 0
+}
+
+/// What is sent in place of a frame over the size limit: an error answer
+/// to the request, or for an event, a `dropped` event saying so.
+fn too_large(payload: &Payload, payload_len: usize, max: usize) -> Value {
+    let error = ErrorInfo::new(
+        "frame_too_large",
+        format!("the answer of {payload_len} bytes is over the frame limit of {max} bytes"),
+    );
+    match payload {
+        Payload::Value(value) => json!({ "id": value.get("id"), "error": error }),
+        Payload::Event(event) => json!({ "id": event.id, "event": "dropped", "error": error }),
+    }
 }
 
 /// Returns `false` when the connection should stop being read.
@@ -207,6 +342,24 @@ async fn dispatch(
                     result: json!({ "accepted": core.answer(thread, elicitation, answer) }),
                 },
                 (Err(error), _) | (_, Err(error)) => ResponseBody::Error { error },
+            };
+            let response = Response {
+                id: Some(request.id),
+                body,
+            };
+            send(
+                queue,
+                stream_id,
+                serde_json::to_value(response).unwrap_or(Value::Null),
+            )
+            .await
+        }
+        "turn/interrupt" => {
+            let body = match request.thread() {
+                Ok(thread) => ResponseBody::Result {
+                    result: json!({ "interrupted": core.interrupt(thread) }),
+                },
+                Err(error) => ResponseBody::Error { error },
             };
             let response = Response {
                 id: Some(request.id),
@@ -375,10 +528,11 @@ async fn dispatch(
                 None | Some(Value::Null) => Ok(None),
                 Some(_) => request.thread().map(Some),
             };
+            let include_hidden = include_hidden(&request);
             let (id, core, queue) = (request.id, Arc::clone(core), queue.clone());
             tokio::spawn(async move {
                 let models = match thread {
-                    Ok(thread) => core.models(None, thread).await,
+                    Ok(thread) => core.models(None, thread, include_hidden).await,
                     Err(error) => Err(error),
                 };
                 let _ = send(&queue, stream_id, models_payload(id, models)).await;
@@ -391,6 +545,17 @@ async fn dispatch(
             send(queue, stream_id, payload).await
         }
     }
+}
+
+/// Whether a model list includes the models the settings hide
+/// (`include_hidden`, `false` when absent).
+fn include_hidden(request: &Request) -> bool {
+    request
+        .params
+        .as_ref()
+        .and_then(|params| params.get("include_hidden"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 /// The answer to `models` and `models/list`.
@@ -434,7 +599,10 @@ async fn settings_request(
     let params = request.params.clone().unwrap_or_else(|| json!({}));
     let payload = if request.method == "models/list" {
         let models = match params.get("provider") {
-            Some(Value::String(provider)) => core.models(Some(provider), None).await,
+            Some(Value::String(provider)) => {
+                core.models(Some(provider), None, include_hidden(&request))
+                    .await
+            }
             _ => Err(ErrorInfo::new(
                 "invalid_params",
                 "requires a \"provider\" string",
@@ -893,16 +1061,13 @@ async fn run_turn(
     // Released before the terminal event, so a client may start the next
     // turn as soon as it reads it.
     core.end_turn(thread);
-    let terminal = match outcome.ending {
+    let terminal = match &outcome.ending {
         Ending::Interrupted => Terminal::Cancelled,
-        Ending::Failed(error) => Terminal::Failed(error),
-        ending => Terminal::Ended(Box::new(EventPayload::turn_completed(
-            id,
-            ending.as_str(),
-            outcome.usage,
-            outcome.held,
-            outcome.questions,
-        ))),
+        Ending::Failed(error) => Terminal::Failed(error.clone()),
+        ending => {
+            let reason = ending.as_str();
+            Terminal::Ended(Box::new(EventPayload::turn_completed(id, reason, outcome)))
+        }
     };
     settle(id, stream_id, &queue, &in_flight, cancelled, terminal).await;
 }
@@ -932,53 +1097,44 @@ async fn generate(
         }
     };
 
-    match deliver(&queue, stream_id, EventPayload::started(id), &mut cancelled).await {
-        Delivery::Sent => {}
-        Delivery::ConnectionGone | Delivery::Cancelled => {
-            // A cancel raced with the start, or the connection is gone: the
-            // generation is dead either way and the registry entry must go.
-            settle(
-                id,
-                stream_id,
-                &queue,
-                &in_flight,
-                cancelled,
-                Terminal::Cancelled,
-            )
-            .await;
-            return;
-        }
+    let terminal = relay_chat(id, stream_id, &mut stream, &queue, &mut cancelled).await;
+    // Logged like a turn's requests, so the statistics count it.
+    core.log_chat(&stream).await;
+    match terminal {
+        Some(terminal) => settle(id, stream_id, &queue, &in_flight, cancelled, terminal).await,
+        None => abandon(&in_flight, id).await,
     }
+}
 
+/// Relays a started `chat` stream; the terminal event, or `None` when the
+/// connection is gone and none can be delivered.
+async fn relay_chat(
+    id: u64,
+    stream_id: u64,
+    stream: &mut inocode_core::ChatStream,
+    queue: &mpsc::Sender<Outgoing>,
+    cancelled: &mut watch::Receiver<bool>,
+) -> Option<Terminal> {
+    match deliver(queue, stream_id, EventPayload::started(id), cancelled).await {
+        Delivery::Sent => {}
+        // A cancel raced with the start, or the connection is gone: the
+        // generation is dead either way and the registry entry must go.
+        Delivery::ConnectionGone | Delivery::Cancelled => return Some(Terminal::Cancelled),
+    }
     loop {
         tokio::select! {
             next = stream.next() => match next {
                 Ok(Some(text)) => {
-                    match deliver(&queue, stream_id, EventPayload::delta(id, text), &mut cancelled).await {
+                    match deliver(queue, stream_id, EventPayload::delta(id, text), cancelled).await {
                         Delivery::Sent => {}
-                        Delivery::ConnectionGone => {
-                            abandon(&in_flight, id).await;
-                            return;
-                        }
-                        Delivery::Cancelled => {
-                            settle(id, stream_id, &queue, &in_flight, cancelled, Terminal::Cancelled).await;
-                            return;
-                        }
+                        Delivery::ConnectionGone => return None,
+                        Delivery::Cancelled => return Some(Terminal::Cancelled),
                     }
                 }
-                Ok(None) => {
-                    settle(id, stream_id, &queue, &in_flight, cancelled, Terminal::Completed).await;
-                    return;
-                }
-                Err(error) => {
-                    settle(id, stream_id, &queue, &in_flight, cancelled, Terminal::Failed(error)).await;
-                    return;
-                }
+                Ok(None) => return Some(Terminal::Completed),
+                Err(error) => return Some(Terminal::Failed(error)),
             },
-            _ = cancelled.changed() => {
-                settle(id, stream_id, &queue, &in_flight, cancelled, Terminal::Cancelled).await;
-                return;
-            }
+            _ = cancelled.changed() => return Some(Terminal::Cancelled),
         }
     }
 }

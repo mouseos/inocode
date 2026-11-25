@@ -6,7 +6,8 @@ use std::time::Duration;
 use rusqlite::{params, OptionalExtension};
 
 use crate::store::{
-    load_note, now, store_error, Note, NoteId, NoteKind, ProjectId, SessionId, Store,
+    load_note, new_session_id, now, store_error, Note, NoteId, NoteKind, ProjectId, SessionId,
+    Store,
 };
 use crate::ErrorInfo;
 
@@ -109,17 +110,17 @@ impl Store {
         self.write(move |db| {
             let tx = db.transaction().map_err(store_error)?;
             let time = now();
+            let fork = new_session_id(&tx)?;
             let copied = tx
                 .execute(
-                    "INSERT INTO sessions(project_id, title, created)
-                     SELECT project_id, title, ?2 FROM sessions WHERE id = ?1",
-                    params![session.0, time],
+                    "INSERT INTO sessions(id, project_id, title, created)
+                     SELECT ?3, project_id, title, ?2 FROM sessions WHERE id = ?1",
+                    params![session.0, time, fork],
                 )
                 .map_err(store_error)?;
             if copied != 1 {
                 return Err(ErrorInfo::new("unknown_thread", "no thread has this id"));
             }
-            let fork = tx.last_insert_rowid();
             tx.execute(
                 "INSERT INTO messages(session_id, seq, role, body, text, created)
                  SELECT ?2, seq, role, body, text, created FROM messages
@@ -152,10 +153,11 @@ impl Store {
     }
 
     /// Deletes `session` with its messages, plan, goal, standing
-    /// instructions and choice of model; `false` when there is no such
-    /// thread. The log of its requests to models is kept for the
-    /// statistics, and stored payloads, which other threads may share, are
-    /// kept.
+    /// instructions, choice of model, held calls and questions; `false`
+    /// when there is no such thread. The log of its requests to models and
+    /// the events of notes are kept, no longer linked to the thread, and
+    /// stored payloads, which other threads may share, are kept. The files
+    /// of the thread are [`Self::thread_files`].
     pub async fn delete_session(&self, session: SessionId) -> Result<bool, ErrorInfo> {
         self.write(move |db| {
             let tx = db.transaction().map_err(store_error)?;
@@ -167,9 +169,24 @@ impl Store {
                 [session.0],
             )
             .map_err(store_error)?;
-            for table in ["messages", "plans", "goals", "promises", "thread_settings"] {
+            for table in [
+                "messages",
+                "plans",
+                "goals",
+                "promises",
+                "thread_settings",
+                "waiting",
+                "elicitations",
+            ] {
                 tx.execute(
                     &format!("DELETE FROM {table} WHERE session_id = ?1"),
+                    [session.0],
+                )
+                .map_err(store_error)?;
+            }
+            for table in ["requests", "note_events"] {
+                tx.execute(
+                    &format!("UPDATE {table} SET session_id = NULL WHERE session_id = ?1"),
                     [session.0],
                 )
                 .map_err(store_error)?;
@@ -181,6 +198,56 @@ impl Store {
             Ok(deleted == 1)
         })
         .await
+    }
+
+    /// The threads whose chosen provider is `provider`.
+    pub(crate) async fn threads_choosing(&self, provider: &str) -> Result<Vec<i64>, ErrorInfo> {
+        let provider = provider.to_string();
+        self.read(Duration::from_secs(30), move |db| {
+            let mut statement = db
+                .prepare_cached(
+                    "SELECT session_id FROM thread_settings
+                     WHERE json_extract(settings, '$.provider') = ?1 ORDER BY session_id",
+                )
+                .map_err(store_error)?;
+            let rows = statement
+                .query_map([provider], |row| row.get(0))
+                .map_err(store_error)?;
+            rows.collect::<Result<Vec<i64>, _>>().map_err(store_error)
+        })
+        .await
+    }
+
+    /// Removes the files kept for `session` beside the database: its command
+    /// logs, pictures, sound, fetched pages and saved messages. What could
+    /// not be removed is returned, each with why.
+    pub(crate) async fn remove_thread_files(&self, session: SessionId) -> Vec<String> {
+        let files = self.files_folder();
+        tokio::task::spawn_blocking(move || {
+            let mut failed = Vec::new();
+            let folder = format!("thread-{}", session.0);
+            for kind in ["logs", "images", "audio", "fetch"] {
+                let path = files.join(kind).join(&folder);
+                match std::fs::remove_dir_all(&path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => failed.push(format!("{}: {error}", path.display())),
+                }
+            }
+            let prefix = format!("{}-", session.0);
+            let messages = files.join("messages");
+            for entry in std::fs::read_dir(&messages).into_iter().flatten().flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with(&prefix) && name.ends_with(".txt") {
+                    if let Err(error) = std::fs::remove_file(entry.path()) {
+                        failed.push(format!("{}: {error}", entry.path().display()));
+                    }
+                }
+            }
+            failed
+        })
+        .await
+        .unwrap_or_else(|error| vec![error.to_string()])
     }
 
     /// The logged requests of `session`, added up.
