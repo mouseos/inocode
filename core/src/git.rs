@@ -9,21 +9,74 @@ use std::time::Duration;
 /// How long `git status` may take before the line is left out.
 const WAIT: Duration = Duration::from_secs(3);
 
-/// The line, or `None` when the folder is not in a git repository, git is
-/// missing, or it does not answer in time.
-pub(crate) async fn state(folder: &Path) -> Option<String> {
+/// The file that reads as empty, given where git would read a config file
+/// or a hooks folder, so that none is used.
+const NOTHING: &str = if cfg!(windows) { "nul" } else { "/dev/null" };
+
+/// `git` set up so that reading the state runs nothing the repository
+/// names. The repository's `.git/config` can be written by a command in the
+/// sandbox, while this runs outside it: the file-system monitor
+/// (`core.fsmonitor`) and the hooks are turned off, the system and global
+/// settings are not read, and submodules, whose own settings are not
+/// checked, are not looked into (docs/evidence/git-context.md).
+fn git(folder: &Path, arguments: &[&str]) -> tokio::process::Command {
     let mut command = tokio::process::Command::new("git");
     command
         .args([
+            "--no-pager",
             "--no-optional-locks",
-            "status",
-            "--porcelain=v2",
-            "--branch",
+            "-c",
+            "core.fsmonitor=false",
         ])
+        .arg("-c")
+        .arg(format!("core.hooksPath={NOTHING}"))
+        .args(arguments)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", NOTHING)
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_TERMINAL_PROMPT", "0")
         .current_dir(folder)
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true);
+    command
+}
+
+/// Whether the repository's settings name a clean filter, which `git
+/// status` runs on a file whose times changed to see whether its content
+/// did; `None` when git cannot say.
+async fn has_filters(folder: &Path) -> Option<bool> {
+    let mut command = git(
+        folder,
+        &["config", "--get-regexp", r"^filter\..*\.(clean|process)$"],
+    );
+    let output = tokio::time::timeout(WAIT, command.output())
+        .await
+        .ok()?
+        .ok()?;
+    match output.status.code() {
+        Some(0) => Some(true),
+        Some(1) => Some(false),
+        _ => None,
+    }
+}
+
+/// The line, or `None` when the folder is not in a git repository, git is
+/// missing, it does not answer in time, or the repository names a filter
+/// program that reading the state could run.
+pub(crate) async fn state(folder: &Path) -> Option<String> {
+    if has_filters(folder).await? {
+        return None;
+    }
+    let mut command = git(
+        folder,
+        &[
+            "status",
+            "--porcelain=v2",
+            "--branch",
+            "--ignore-submodules=all",
+        ],
+    );
     let output = tokio::time::timeout(WAIT, command.output())
         .await
         .ok()?
@@ -120,6 +173,74 @@ mod tests {
             line("# branch.oid 0123456789abcdef\n# branch.head (detached)\n")
                 .contains("a detached HEAD at 0123456")
         );
+    }
+
+    /// A repository with one committed file and the settings `config`.
+    fn repository(folder: &Path, config: &[(&str, &str)]) -> bool {
+        let git = |arguments: &[&str]| {
+            std::process::Command::new("git")
+                .args(arguments)
+                .current_dir(folder)
+                .output()
+                .is_ok_and(|output| output.status.success())
+        };
+        std::fs::create_dir_all(folder).expect("dir");
+        if !git(&["init", "-q", "-b", "work"]) {
+            return false;
+        }
+        std::fs::write(folder.join("a.txt"), "a").expect("write");
+        std::fs::write(folder.join(".gitattributes"), "*.txt filter=probe\n").expect("write");
+        assert!(git(&["add", "."]));
+        assert!(git(&[
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "a"
+        ]));
+        for (key, value) in config {
+            assert!(git(&["config", key, value]));
+        }
+        // Newer times make git look at the content again.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(folder.join("a.txt"), "a").expect("write");
+        true
+    }
+
+    #[tokio::test]
+    async fn reading_the_state_runs_no_program_the_repository_names() {
+        let dir = tempfile::tempdir().expect("dir");
+        let monitored = dir.path().join("monitored");
+        if !repository(
+            &monitored,
+            &[("core.fsmonitor", "echo ran > fsmonitor-ran")],
+        ) {
+            return;
+        }
+        let plain = std::process::Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(&monitored)
+            .output()
+            .expect("git");
+        assert!(plain.status.success());
+        assert!(
+            monitored.join("fsmonitor-ran").exists(),
+            "a plain git status runs the monitor, so the test means something"
+        );
+        std::fs::remove_file(monitored.join("fsmonitor-ran")).expect("remove");
+        assert!(state(&monitored).await.is_some());
+        assert!(!monitored.join("fsmonitor-ran").exists());
+
+        let filtered = dir.path().join("filtered");
+        assert!(repository(
+            &filtered,
+            &[("filter.probe.clean", "echo ran > ../filter-ran; cat")]
+        ));
+        assert_eq!(state(&filtered).await, None);
+        assert!(!dir.path().join("filter-ran").exists());
     }
 
     #[tokio::test]

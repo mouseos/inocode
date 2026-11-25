@@ -11,6 +11,7 @@ use crate::agent_tools::{self, Context};
 use crate::conversation::{
     AssistantPart, Body, Conversation, Message, Speaker, StopReason, ToolSpec,
 };
+use crate::rules::Decision;
 use crate::turn::TurnUsage;
 use crate::{find, read, Llm};
 
@@ -154,7 +155,14 @@ pub(crate) async fn read_only(
                     "Not run: the call was cut off at the output limit.".to_string(),
                     true,
                 )
-            } else if name == find::FIND || name == read::READ {
+            } else if name != find::FIND && name != read::READ {
+                (
+                    format!("Not run: only find and read are available, not {name}."),
+                    true,
+                )
+            } else if let Err(refusal) = permitted(context, &name, &arguments).await {
+                (refusal, true)
+            } else {
                 reads += 1;
                 let answer = agent_tools::run(context, &name, &arguments)
                     .await
@@ -172,11 +180,6 @@ pub(crate) async fn read_only(
                         )
                     }
                 }
-            } else {
-                (
-                    format!("Not run: only find and read are available, not {name}."),
-                    true,
-                )
             };
             conversation.messages.push(message(Body::ToolResult {
                 call_id,
@@ -188,6 +191,37 @@ pub(crate) async fn read_only(
         }
     }
     unreachable!("the last round always answers")
+}
+
+/// Whether a helper's call may run: only when the project's must rules let
+/// it run without asking, since a helper cannot ask the person, and only
+/// inside the project and the thread's own files.
+async fn permitted(context: &Context<'_>, name: &str, arguments: &str) -> Result<(), String> {
+    match context
+        .store
+        .check(context.project, name, arguments, None)
+        .await
+    {
+        Ok(Decision::Allow) => {}
+        Ok(Decision::Block(_)) => return Err("Blocked by a project rule.".into()),
+        Ok(Decision::Ask(_)) => {
+            return Err("Not run: a project rule asks the person first.".into());
+        }
+        Err(error) => {
+            return Err(format!(
+                "Not run: the rule check failed ({}).",
+                error.message
+            ));
+        }
+    }
+    let places = agent_tools::access::Places::of(context.store, context.session, context.folder);
+    match agent_tools::access::outside(name, arguments, &places) {
+        Some(outside) => Err(format!(
+            "Not run: {}; only the project is searched here.",
+            outside.describe()
+        )),
+        None => Ok(()),
+    }
 }
 
 /// One request: the assistant turn it produced, or why there is none.

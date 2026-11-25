@@ -52,14 +52,28 @@
 
 ## 実装とテスト
 
-- 依頼（turn）を始めるたびに、作業フォルダで `git --no-optional-locks status --porcelain=v2 --branch` を 1 回だけ実行し（3 秒で打ち切り）、次の 1 行にする。
+- 依頼（turn）を始めるたびに、作業フォルダで `git status --porcelain=v2 --branch --ignore-submodules=all` を 1 回だけ実行し（3 秒で打ち切り）、次の 1 行にする。git の起動のしかたは下の「リポジトリの設定で命令を動かさせない」。
   - 例：「Git, when this turn started: branch main at 2530003; files: 3 staged, 2 changed and not staged, 1 untracked. Run git yourself for the current state and the file names.」
 - 入れるもの：ブランチ（または detached HEAD）、コミットの短いハッシュ、ステージ済み・未ステージ・衝突・未追跡のファイルの数。
 - 入れないもの：ファイル名、コミットの文、`user.name`・メール、リモート URL（上の個人情報と他人の文の注意による）。
 - 置き場所：保存しない状態の部分（`Thread::state`、会話の後ろ）に、時刻の次に置く。システムプロンプトには入れないので、キャッシュされる先頭部分は変わらない。毎回の要求に約 40 トークン（推測）が、キャッシュされない分として加わる。
 - 候補の 1（会話の最初に一度だけ）との違い：依頼ごとに読み直す。そのため古くなるのは依頼の途中だけで、そのことを文に書いている（「when this turn started」）。
-- git の無いフォルダ、git が無い場合、答えが遅い場合は、何も入れない。
-- テスト：`git::tests::the_line_counts_files_and_names_no_file`、`git::tests::a_new_repository_and_a_detached_head_are_named`、`git::tests::a_real_repository_is_read_and_a_plain_folder_is_not`。
+- git の無いフォルダ、git が無い場合、答えが遅い場合、リポジトリの設定に clean フィルタがある場合は、何も入れない。
+- テスト：`git::tests::the_line_counts_files_and_names_no_file`、`git::tests::a_new_repository_and_a_detached_head_are_named`、`git::tests::a_real_repository_is_read_and_a_plain_folder_is_not`、`git::tests::reading_the_state_runs_no_program_the_repository_names`。
+
+## リポジトリの設定で命令を動かさせない（このプロジェクトの判断）
+
+この `git status` はサンドボックスの外で動く。一方、サンドボックスの中のシェルの命令はプロジェクトの `.git/config` や `.gitattributes` を書ける。そのため、設定に書いた命令が次のターンの `git status` でサンドボックスの外で動かないようにする。
+
+- `git status` で命令が動きうる設定（git の仕組みから。下の試験で 2 つを実際に確かめた）：
+  - `core.fsmonitor`：値が命令のパスなら、状態を読むたびにそれを動かす（フックとして、シェル経由）。→ `-c core.fsmonitor=false` で切る。試験で、そのままの `git status` は動かし、inocode の読み方では動かないことを確かめた。
+  - clean フィルタ（`filter.<名前>.clean`・`filter.<名前>.process` と、`.gitattributes` の `filter=<名前>`）：時刻の変わったファイルの中身を確かめるとき、フィルタを通してから比べるので、その命令が動く。フィルタの名前は自由なので `-c` で全部は消せない。→ 先に `git config --get-regexp '^filter\..*\.(clean|process)$'` で調べ、あれば `git status` を動かさず、git の行を入れない。試験で、フィルタの命令が動かないことを確かめた。
+  - フック（`core.hooksPath`）：`git status` はフックを動かさない。索引を書き直すと `post-index-change` が動くが、`--no-optional-locks`（と `GIT_OPTIONAL_LOCKS=0`）で索引を書かない。念のため `-c core.hooksPath=<空の装置>` も付ける。
+  - ページャ（`core.pager`・`pager.status`）：出力が端末でないので使われない。念のため `--no-pager`。
+  - 外部の diff（`diff.external`・`diff.<名前>.command`）と `textconv`：差分の本文を出すときだけ使う。porcelain の状態表示は本文を出さず、名前の変更の判定も本文をそのまま比べる（git の仕組みからの推定。試していない）。
+  - サブモジュール：`git status` はサブモジュールの中でも git を動かし、その設定（`.git/modules/...`）は上の clean フィルタの確認の外にある。→ `--ignore-submodules=all` で見ない。サブモジュールの変更は数に入らない。
+- システムとユーザー全体の設定は読まない（`GIT_CONFIG_NOSYSTEM=1`、`GIT_CONFIG_GLOBAL=<空の装置>`。Windows は `nul`、ほかは `/dev/null`）。ユーザーの設定のプロジェクト別の許可（`safe.directory`）も読まないので、別のユーザーの持つリポジトリでは git の行が出ない。
+- `include.path` で読み込む別のファイルも、`git config --get-regexp` は読み込んだうえで調べる。
 
 ## 検証済み・未検証
 

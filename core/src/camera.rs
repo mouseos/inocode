@@ -100,6 +100,15 @@ pub(crate) fn takes_pictures(arguments: &str) -> bool {
 
 /// Runs a camera call; images to show go to `shown`, files to `folder`.
 pub(crate) async fn run(arguments: &str, folder: &Path) -> Result<(String, Vec<Image>), String> {
+    run_until(arguments, folder, std::sync::Arc::default()).await
+}
+
+/// [`run`], where raising `stop` ends a video early.
+pub(crate) async fn run_until(
+    arguments: &str,
+    folder: &Path,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<(String, Vec<Image>), String> {
     let arguments: Arguments =
         serde_json::from_str(arguments).map_err(|error| format!("invalid arguments: {error}"))?;
     let folder = folder.to_path_buf();
@@ -107,7 +116,7 @@ pub(crate) async fn run(arguments: &str, folder: &Path) -> Result<(String, Vec<I
         "list" => list().map(|text| (text, Vec::new())),
         "controls" => describe(&arguments).map(|text| (text, Vec::new())),
         "photo" => photo(&arguments, &folder),
-        "video" => video(&arguments, &folder),
+        "video" => video(&arguments, &folder, &stop),
         other => Err(format!("unknown action {other}")),
     })
     .await
@@ -902,13 +911,26 @@ fn save_original(picture: &DynamicImage, folder: &Path) -> Result<PathBuf, Strin
     Ok(path)
 }
 
+/// How many times the frame grabbed `elapsed` into the recording is
+/// written, `written` frames having been written before: as many as bring
+/// the video to the frames `fps` gives that time, at least one for the
+/// first frame.
+fn frames_due(elapsed: Duration, fps: u32, written: u64) -> u64 {
+    let due = (elapsed.as_secs_f64() * f64::from(fps)).floor() as u64 + 1;
+    due.saturating_sub(written)
+}
+
 fn stamp() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |now| now.as_millis())
 }
 
-fn video(arguments: &Arguments, folder: &Path) -> Result<(String, Vec<Image>), String> {
+fn video(
+    arguments: &Arguments,
+    folder: &Path,
+    stop: &std::sync::atomic::AtomicBool,
+) -> Result<(String, Vec<Image>), String> {
     let seconds = arguments.seconds.unwrap_or(5.0).clamp(1.0, MAX_SECONDS);
     let (mut camera, set) = start(arguments)?;
     let first = grab(&mut camera)?;
@@ -940,8 +962,12 @@ fn video(arguments: &Arguments, folder: &Path) -> Result<(String, Vec<Image>), S
     let started = Instant::now();
     let mut frames = vec![first];
     let mut count = 0usize;
+    let mut written = 0u64;
     let mut kept: Vec<RgbImage> = Vec::new();
     while started.elapsed() < Duration::from_secs_f64(seconds) {
+        if stop.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
         let frame = match frames.pop() {
             Some(frame) => frame,
             None => grab(&mut camera)?,
@@ -949,9 +975,15 @@ fn video(arguments: &Arguments, folder: &Path) -> Result<(String, Vec<Image>), S
         if frame.dimensions() != (width, height) {
             continue;
         }
-        input
-            .write_all(frame.as_raw())
-            .map_err(|error| format!("ffmpeg stopped taking frames: {error}"))?;
+        // The file plays at `fps`: a camera that delivers fewer frames has
+        // each one repeated, and one that delivers more has some left out,
+        // so that the video lasts as long as the recording did.
+        for _ in 0..frames_due(started.elapsed(), fps, written) {
+            input
+                .write_all(frame.as_raw())
+                .map_err(|error| format!("ffmpeg stopped taking frames: {error}"))?;
+            written += 1;
+        }
         // A frame every quarter of the time is kept to be shown.
         let wanted = kept.len() as f64 * seconds / FRAMES_SHOWN as f64;
         if started.elapsed().as_secs_f64() >= wanted && kept.len() < FRAMES_SHOWN {
@@ -964,6 +996,10 @@ fn video(arguments: &Arguments, folder: &Path) -> Result<(String, Vec<Image>), S
     let output = ffmpeg
         .wait_with_output()
         .map_err(|error| format!("ffmpeg failed: {error}"))?;
+    if stop.load(std::sync::atomic::Ordering::Relaxed) {
+        let _ = std::fs::remove_file(&path);
+        return Err("the video was stopped with the turn; nothing was saved".into());
+    }
     if !output.status.success() {
         return Err(format!(
             "ffmpeg failed: {}",
@@ -983,10 +1019,11 @@ fn video(arguments: &Arguments, folder: &Path) -> Result<(String, Vec<Image>), S
     }
     Ok((
         format!(
-            "Recorded {count} frames of {width}×{height} at {fps} fps ({seconds} s) from {} \
-             to {}; {} of the frames are shown, in order.{}",
+            "Recorded {count} frames of {width}×{height} from {} to {}, a video of {:.1} s at \
+             {fps} fps; {} of the frames are shown, in order.{}",
             camera.info().human_name(),
             path.display(),
+            written as f64 / f64::from(fps),
             images.len(),
             controls_line(&set)
         ),
@@ -997,6 +1034,22 @@ fn video(arguments: &Arguments, folder: &Path) -> Result<(String, Vec<Image>), S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_slow_camera_has_its_frames_repeated_and_a_fast_one_thinned() {
+        let at = Duration::from_millis;
+        assert_eq!(frames_due(at(0), 30, 0), 1);
+        // A camera giving 5 frames a second into a 30 fps file.
+        assert_eq!(frames_due(at(200), 30, 1), 6);
+        assert_eq!(frames_due(at(400), 30, 7), 6);
+        // A camera faster than the file's rate.
+        assert_eq!(frames_due(at(10), 30, 1), 0);
+        let mut written = 0;
+        for tick in 0..10 {
+            written += frames_due(at(tick * 200), 30, written);
+        }
+        assert_eq!(written, 55, "1.8 s at 30 fps, and the first frame");
+    }
 
     #[test]
     fn only_photos_and_videos_wait_for_the_person() {
@@ -1044,7 +1097,12 @@ mod tests {
         let arguments: Arguments =
             serde_json::from_value(json!({"action": "video", "device": device(), "seconds": 2}))
                 .expect("arguments");
-        let (text, images) = video(&arguments, &folder).expect("video");
+        let (text, images) = video(
+            &arguments,
+            &folder,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .expect("video");
         println!("{text}");
         for image in images {
             println!("{}", image.path);

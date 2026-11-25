@@ -94,12 +94,21 @@ pub(crate) async fn run(
         Some(project) if path.is_relative() => project.join(path),
         _ => path.to_path_buf(),
     };
-    let language = arguments.language.as_deref().map(str::trim);
+    let language = match arguments.language.as_deref().map(str::trim) {
+        Some(language) if !language.is_empty() => Some(language.to_string()),
+        _ => default_language(settings).await,
+    };
     let text = match arguments.service.as_str() {
         "claude" => {
             let audio = pcm(&path).await?;
             let headers = crate::connectors::Account::Claude.headers(accounts).await?;
-            claude(&hosts.claude, headers, language.unwrap_or("en"), &audio).await?
+            // Claude's service takes the language alone, without a region.
+            let language = language
+                .as_deref()
+                .and_then(|tag| tag.split('-').next())
+                .unwrap_or("en")
+                .to_ascii_lowercase();
+            claude(&hosts.claude, headers, &language, &audio).await?
         }
         "chatgpt" => {
             let headers = crate::connectors::Account::ChatGpt
@@ -110,7 +119,13 @@ pub(crate) async fn run(
         "google" => {
             let key = google_key(settings).await?;
             let audio = pcm(&path).await?;
-            google(&hosts.google, &key, language.unwrap_or("en-US"), &audio).await?
+            google(
+                &hosts.google,
+                &key,
+                language.as_deref().unwrap_or("en-US"),
+                &audio,
+            )
+            .await?
         }
         other => {
             return Err(format!(
@@ -122,6 +137,37 @@ pub(crate) async fn run(
         "No speech was recognized.".to_string()
     } else {
         text
+    })
+}
+
+/// The language spoken when the call names none: the reply language of the
+/// settings when it is written as a language tag (such as `ja` or
+/// `ja-JP`), else the system's display language; `None` when neither gives
+/// a tag, and the services' own default (English) is used.
+async fn default_language(settings: &Path) -> Option<String> {
+    let configured = crate::settings::read(settings)
+        .await
+        .ok()
+        .and_then(|value| {
+            value
+                .get("language")?
+                .as_str()
+                .map(str::trim)
+                .map(str::to_string)
+        });
+    configured
+        .filter(|language| is_tag(language))
+        .or_else(|| crate::language::system().filter(|language| is_tag(language)))
+}
+
+/// Whether `text` is a language tag: a primary language of two or three
+/// letters, then subtags of letters and digits.
+fn is_tag(text: &str) -> bool {
+    let mut parts = text.split(['-', '_']);
+    parts.next().is_some_and(|primary| {
+        (2..=3).contains(&primary.len()) && primary.chars().all(|c| c.is_ascii_alphabetic())
+    }) && parts.all(|part| {
+        (1..=8).contains(&part.len()) && part.chars().all(|c| c.is_ascii_alphanumeric())
     })
 }
 
@@ -223,19 +269,7 @@ async fn claude(
             .map_err(failed)?;
         Ok::<_, String>(sender)
     };
-    let receive = async {
-        let mut heard = Heard::default();
-        loop {
-            match tokio::time::timeout(WAIT, receiver.next()).await {
-                Err(_) | Ok(None) => break,
-                Ok(Some(Err(error))) => return Err(format!("speech-to-text failed: {error}")),
-                Ok(Some(Ok(Message::Text(text)))) => heard.take(text.as_str())?,
-                Ok(Some(Ok(Message::Close(_)))) => break,
-                Ok(Some(Ok(_))) => {}
-            }
-        }
-        Ok(heard.text())
-    };
+    let receive = heard_to_the_end(&mut receiver, WAIT);
     let (sent, heard) = tokio::join!(send, receive);
     let heard = heard?;
     if let Ok(mut sender) = sent {
@@ -244,6 +278,32 @@ async fn claude(
         return Err(format!("cannot send the audio: {error}"));
     }
     Ok(heard)
+}
+
+/// The text Claude's speech-to-text sends until it closes. One that stops
+/// answering for `wait` has not finished, so what it sent is an error, not
+/// the transcript.
+async fn heard_to_the_end<S>(receiver: &mut S, wait: Duration) -> Result<String, String>
+where
+    S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
+{
+    let mut heard = Heard::default();
+    loop {
+        match tokio::time::timeout(wait, receiver.next()).await {
+            Err(_) => {
+                return Err(format!(
+                    "speech-to-text stopped answering for {} s before it finished; what it \
+                     had heard so far, which may be incomplete: {}",
+                    wait.as_secs_f64(),
+                    heard.text()
+                ))
+            }
+            Ok(None) | Ok(Some(Ok(Message::Close(_)))) => return Ok(heard.text()),
+            Ok(Some(Err(error))) => return Err(format!("speech-to-text failed: {error}")),
+            Ok(Some(Ok(Message::Text(text)))) => heard.take(text.as_str())?,
+            Ok(Some(Ok(_))) => {}
+        }
+    }
 }
 
 /// What Claude's speech-to-text has said: the finished utterances and the
@@ -631,6 +691,48 @@ mod tests {
             .take(r#"{"type":"TranscriptError","description":"bad audio"}"#)
             .unwrap_err();
         assert!(error.contains("bad audio"));
+    }
+
+    #[tokio::test]
+    async fn a_service_that_stops_answering_gives_no_transcript() {
+        let said = || {
+            futures_util::stream::iter([Ok(Message::text(
+                r#"{"type":"TranscriptText","data":"half a"}"#,
+            ))])
+        };
+        let mut silent = said().chain(futures_util::stream::pending());
+        let error = heard_to_the_end(&mut silent, Duration::from_millis(50))
+            .await
+            .expect_err("it never closed");
+        assert!(error.contains("may be incomplete: half a"), "{error}");
+        let mut closed = said().chain(futures_util::stream::iter([Ok(Message::Close(None))]));
+        assert_eq!(
+            heard_to_the_end(&mut closed, Duration::from_millis(50)).await,
+            Ok("half a".to_string())
+        );
+    }
+
+    #[test]
+    fn only_language_tags_are_taken_as_the_spoken_language() {
+        for tag in ["ja", "ja-JP", "en_US", "zh-Hant-TW"] {
+            assert!(is_tag(tag), "{tag}");
+        }
+        for name in ["Japanese", "日本語", "", "j", "ja-"] {
+            assert!(!is_tag(name), "{name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_settings_language_is_the_default_when_it_is_a_tag() {
+        let dir = tempfile::tempdir().expect("dir");
+        let settings = dir.path().join("settings.json");
+        std::fs::write(&settings, r#"{"language": "ja-JP"}"#).expect("write");
+        assert_eq!(default_language(&settings).await.as_deref(), Some("ja-JP"));
+        std::fs::write(&settings, r#"{"language": "Japanese"}"#).expect("write");
+        assert_eq!(
+            default_language(&settings).await,
+            crate::language::system().filter(|language| is_tag(language))
+        );
     }
 
     #[tokio::test]

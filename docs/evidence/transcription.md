@@ -58,6 +58,12 @@
   - Chromium の開発者は、この音声 API を Chrome の開発用と答えている（https://groups.google.com/a/chromium.org/g/chromium-dev/c/pdDDdYH2Hg4）。
   - 予告なく使えなくなることがある。
 
+## 待ち切りと言語の既定（このプロジェクトの判断）
+
+- Claude の文字起こしは、音を送り終えた後、サービスが接続を閉じるまで待つ。30 秒何も届かなければ、終わっていないとみなし、それまでに聞き取れた文を「不完全かもしれない」と添えた誤りとして返す（成功としては返さない）。
+- `language` を指定しないときの言語：`settings.json` の `language` が言語の印（`ja`、`ja-JP` のような、2〜3 文字の言語と、英数字の続き）ならそれ、そうでなければ OS の表示言語。どちらも無ければ Claude は `en`、Google は `en-US`。`language` に「Japanese」のような言語の名前が書いてあるときは、印ではないので使わない（名前から印への変換はしない）。Claude には地域を除いた言語（`ja-JP` なら `ja`）を送る。
+- テスト：`a_service_that_stops_answering_gives_no_transcript`、`only_language_tags_are_taken_as_the_spoken_language`、`the_settings_language_is_the_default_when_it_is_a_tag`。
+
 ## 音の変換
 
 Claude と Google には WAV を読み、全チャンネルの平均で 1 チャンネルにして、16kHz に変換して送る（変換は `audio.rs` と同じ簡単なもの）。長さは 600 秒まで。

@@ -6,9 +6,9 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -45,6 +45,10 @@ struct Config {
     /// the account has added is used unless it is turned off here.
     #[serde(default)]
     connectors: HashMap<String, ConnectorSetting>,
+    /// The variables of the environment that the installed plugins'
+    /// settings may use as `${NAME}`; the others are left empty.
+    #[serde(rename = "pluginVariables", default)]
+    plugin_variables: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -91,31 +95,100 @@ struct ServerConfig {
 #[derive(Default)]
 pub(crate) struct Tools {
     specs: Vec<ToolSpec>,
-    routes: HashMap<String, (Arc<Connection>, String)>,
+    routes: HashMap<String, (Arc<Slot>, String)>,
+    /// What went wrong when the servers started: servers that did not
+    /// start, tools left out, variables left empty.
+    problems: Vec<String>,
+    /// When `mcp.json` was last changed, as it was when these were loaded.
+    stamp: Option<SystemTime>,
+}
+
+/// One server's connection, and how to start it again.
+pub(crate) struct Slot {
+    server: String,
+    connection: Mutex<Arc<Connection>>,
+    /// `None` for a connection that cannot be made again.
+    source: Option<Source>,
+    restarted: AtomicBool,
+}
+
+impl Slot {
+    fn new(connection: Arc<Connection>, source: Option<Source>) -> Arc<Self> {
+        Arc::new(Self {
+            server: connection.server.clone(),
+            connection: Mutex::new(connection),
+            source,
+            restarted: AtomicBool::new(false),
+        })
+    }
+
+    fn current(&self) -> Arc<Connection> {
+        self.connection.lock().expect("slot lock").clone()
+    }
+
+    /// Starts a server this client runs once more, after it stopped; only
+    /// once for each load of the servers, so a server that keeps crashing
+    /// is not started again and again.
+    async fn restart(&self) -> Result<Arc<Connection>, String> {
+        if self.restarted.swap(true, Ordering::SeqCst) {
+            return Err("it was already started again once".into());
+        }
+        let source = self.source.as_ref().ok_or("it cannot be started again")?;
+        let connection = tokio::time::timeout(START_TIMEOUT, async {
+            let mut connection = source.connect()?;
+            connection.server = self.server.clone();
+            let connection = Arc::new(connection);
+            connection.list_tools().await?;
+            Ok::<_, String>(connection)
+        })
+        .await
+        .unwrap_or_else(|_| Err(format!("did not start within {START_TIMEOUT:?}")))?;
+        *self.connection.lock().expect("slot lock") = connection.clone();
+        Ok(connection)
+    }
+}
+
+/// When `config` was last changed; `None` when it is missing.
+fn modified(config: &Path) -> Option<SystemTime> {
+    std::fs::metadata(config)
+        .and_then(|meta| meta.modified())
+        .ok()
 }
 
 /// The servers in `mcp.json` beside the thread store and those of the
-/// installed plugins, started once and kept with the store until a plugin
-/// is installed, so the tool list stays the same from request to request.
+/// installed plugins, started once and kept with the store, so the tool
+/// list stays the same from request to request. They start anew after a
+/// plugin is installed or `mcp.json` changed.
 async fn loaded(store: &Store) -> Arc<Tools> {
     let config: PathBuf = store.files_folder().with_file_name("mcp.json");
     let accounts = crate::connectors::store_beside(store);
     let plugins = crate::plugins::folder(store);
+    let stamp = modified(&config);
     let mut kept = store.mcp().lock().await;
-    if let Some(tools) = kept.as_ref() {
+    if let Some(tools) = kept.as_ref().filter(|tools| tools.stamp == stamp) {
         return tools.clone();
     }
-    let tools = Arc::new(
-        load(
-            &config,
-            &accounts,
-            &plugins,
-            &crate::connectors::Hosts::default(),
-        )
-        .await,
-    );
+    // The servers of the old list stop once the calls still using them end.
+    *kept = None;
+    let mut tools = load(
+        &config,
+        &accounts,
+        &plugins,
+        &crate::connectors::Hosts::default(),
+    )
+    .await;
+    tools.stamp = stamp;
+    let tools = Arc::new(tools);
     *kept = Some(tools.clone());
     tools
+}
+
+/// What went wrong when the MCP servers started, for the model; `None`
+/// when nothing did or they have not started.
+pub(crate) async fn render_problems(store: &Store) -> Option<String> {
+    let kept = store.mcp().lock().await;
+    let problems = &kept.as_ref()?.problems;
+    (!problems.is_empty()).then(|| format!("MCP servers:\n- {}", problems.join("\n- ")))
 }
 
 /// The MCP tools to offer the model in a request after `messages`: all of
@@ -170,7 +243,7 @@ impl Tools {
         let mut servers: Vec<&str> = self
             .routes
             .values()
-            .map(|(connection, _)| connection.server.as_str())
+            .map(|(slot, _)| slot.server.as_str())
             .collect();
         servers.sort_unstable();
         servers.dedup();
@@ -310,7 +383,7 @@ pub(crate) async fn call(
     store: &Store,
     name: &str,
     arguments: &str,
-    mut cancel: tokio::sync::watch::Receiver<bool>,
+    cancel: tokio::sync::watch::Receiver<bool>,
     asking: Option<Asking<'_>>,
 ) -> Option<Result<String, String>> {
     if name == SEARCH {
@@ -320,7 +393,7 @@ pub(crate) async fn call(
         return None;
     }
     let tools = loaded(store).await;
-    let (connection, tool) = tools.routes.get(name)?;
+    let (slot, tool) = tools.routes.get(name)?;
     let arguments: Value = if arguments.trim().is_empty() {
         json!({})
     } else {
@@ -329,18 +402,73 @@ pub(crate) async fn call(
             Err(error) => return Some(Err(format!("invalid arguments: {error}"))),
         }
     };
-    let (sender, mut questions) = mpsc::unbounded_channel();
-    if asking.is_some() {
-        *connection.elicit.lock().expect("elicit lock") = Some(sender);
+    let connection = slot.current();
+    let answer = call_on(
+        store,
+        &connection,
+        tool,
+        &arguments,
+        &cancel,
+        asking.as_ref(),
+    )
+    .await;
+    let stopped = match &answer {
+        Err(error) if error == NOT_RUNNING => true,
+        Err(error) if error == STOPPED => false,
+        _ => return Some(answer),
+    };
+    if !matches!(connection.transport, Transport::Pipe(_)) {
+        return Some(answer);
     }
+    Some(match slot.restart().await {
+        // The call never reached the stopped server, so it is sent again.
+        Ok(connection) if stopped => {
+            call_on(
+                store,
+                &connection,
+                tool,
+                &arguments,
+                &cancel,
+                asking.as_ref(),
+            )
+            .await
+        }
+        Ok(_) => Err(format!(
+            "{STOPPED} during the call, which may have been partly done; it was started \
+             again, so the call can be made again if needed"
+        )),
+        Err(error) => Err(format!(
+            "{}; it could not be started again: {error}",
+            answer.err().unwrap_or_default()
+        )),
+    })
+}
+
+/// One call on `connection`, with the server's questions put to the person
+/// when `asking`.
+async fn call_on(
+    store: &Store,
+    connection: &Arc<Connection>,
+    tool: &str,
+    arguments: &Value,
+    cancel: &tokio::sync::watch::Receiver<bool>,
+    asking: Option<&Asking<'_>>,
+) -> Result<String, String> {
+    let (sender, mut questions) = mpsc::unbounded_channel();
+    let _waiting = Waiting::register(
+        &connection.elicit,
+        asking.map(|asking| asking.session),
+        asking.map(|_| sender),
+    );
     let request = connection.request("tools/call", json!({"name": tool, "arguments": arguments}));
     tokio::pin!(request);
+    let mut cancel = cancel.clone();
     let interrupted = cancel.clone();
-    let answer = loop {
+    loop {
         tokio::select! {
             answer = &mut request => break answer.and_then(|result| render(&result)),
             Some(question) = questions.recv() => {
-                let answer = match &asking {
+                let answer = match asking {
                     Some(asking) => {
                         ask_person(store, &connection.server, asking, question.params, interrupted.clone())
                             .await
@@ -351,9 +479,7 @@ pub(crate) async fn call(
             }
             () = crate::turn::cancelled(&mut cancel) => break Err("cancelled".into()),
         }
-    };
-    *connection.elicit.lock().expect("elicit lock") = None;
-    Some(answer)
+    }
 }
 
 /// Puts a server's question to the person and waits for the answer, for
@@ -550,26 +676,33 @@ pub(crate) async fn listed(store: &Store) -> Value {
         .into_iter()
         .map(|(name, settings)| shown(name, &settings, None))
         .collect();
-    for plugin in crate::plugins::Installed::all(&crate::plugins::folder(store)) {
-        for (name, settings) in plugin.servers() {
-            if let Ok(settings) = serde_json::from_value::<ServerConfig>(settings) {
-                servers.push(shown(name, &settings, Some(plugin.name())));
+    let installed = crate::plugins::Installed::all(&crate::plugins::folder(store));
+    for plugin in &installed {
+        for server in plugin.mcp_servers(&config.plugin_variables, ambiguous(&installed, plugin)) {
+            if let Ok(settings) = serde_json::from_value::<ServerConfig>(server.settings) {
+                servers.push(shown(server.name, &settings, Some(plugin.name())));
             }
         }
     }
-    let tools: Option<Vec<String>> = store
-        .mcp()
-        .lock()
-        .await
+    let kept = store.mcp().lock().await;
+    let tools: Option<Vec<String>> = kept
         .as_ref()
         .map(|tools| tools.specs.iter().map(|spec| spec.name.clone()).collect());
+    let problems: Option<Vec<String>> = kept.as_ref().map(|tools| tools.problems.clone());
+    drop(kept);
     let connectors: Value = config
         .connectors
         .iter()
         .map(|(name, setting)| (name.clone(), json!(setting.enabled)))
         .collect::<serde_json::Map<_, _>>()
         .into();
-    json!({ "servers": servers, "started": tools.is_some(), "tools": tools, "connectors": connectors })
+    json!({
+        "servers": servers,
+        "started": tools.is_some(),
+        "tools": tools,
+        "problems": problems,
+        "connectors": connectors,
+    })
 }
 
 async fn load(
@@ -584,14 +717,31 @@ async fn load(
         .into_iter()
         .map(|(name, settings)| (name, Source::Configured(settings)))
         .collect();
-    for plugin in crate::plugins::Installed::all(plugins) {
-        for (name, settings) in plugin.servers() {
-            match serde_json::from_value::<ServerConfig>(settings) {
+    let installed = crate::plugins::Installed::all(plugins);
+    for plugin in &installed {
+        let qualified = ambiguous(&installed, plugin);
+        for server in plugin.mcp_servers(&config.plugin_variables, qualified) {
+            let name = server.name;
+            if !server.unfilled.is_empty() {
+                tools.problems.push(format!(
+                    "server {name}: {} left empty (only variables listed in pluginVariables \
+                     of mcp.json are filled, and only when they are set)",
+                    server
+                        .unfilled
+                        .iter()
+                        .map(|variable| format!("${{{variable}}}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            match serde_json::from_value::<ServerConfig>(server.settings) {
                 Ok(mut settings) => {
                     settings.folder = Some(plugin.root().to_path_buf());
                     sources.push((name, Source::Configured(settings)));
                 }
-                Err(error) => eprintln!("MCP: server {name} is not valid: {error}"),
+                Err(error) => tools
+                    .problems
+                    .push(format!("server {name} is not valid: {error}")),
             }
         }
     }
@@ -622,15 +772,33 @@ async fn load(
         .await
         .unwrap_or_else(|_| Err(format!("did not start within {START_TIMEOUT:?}")));
         match started {
-            Ok((connection, listed)) if connector => {
-                let listed = by_app(&config, &server, listed);
-                add(&mut tools, &server, &connection, listed);
+            Ok((connection, listed)) => {
+                let listed = match connector {
+                    true => by_app(&config, &server, listed),
+                    false => listed,
+                };
+                let slot = Slot::new(connection, Some(source));
+                add(&mut tools, &server, &slot, listed);
             }
-            Ok((connection, listed)) => add(&mut tools, &server, &connection, listed),
-            Err(error) => eprintln!("MCP: server {server} is not available: {error}"),
+            Err(error) => {
+                eprintln!("MCP: server {server} is not available: {error}");
+                tools
+                    .problems
+                    .push(format!("server {server} did not start: {error}"));
+            }
         }
     }
     tools
+}
+
+/// Whether another installed plugin has `plugin`'s name, so that its
+/// servers' names carry its catalog.
+fn ambiguous(installed: &[crate::plugins::Installed], plugin: &crate::plugins::Installed) -> bool {
+    installed
+        .iter()
+        .filter(|other| other.name() == plugin.name())
+        .count()
+        > 1
 }
 
 /// Whether the person added this tool's app themselves. ChatGPT's apps list
@@ -671,15 +839,17 @@ fn by_app(config: &Config, server: &str, listed: Vec<Value>) -> Vec<Value> {
 }
 
 /// Adds a server's tools under names the providers accept; a tool whose
-/// name is already taken is left out.
-fn add(tools: &mut Tools, server: &str, connection: &Arc<Connection>, listed: Vec<Value>) {
+/// name is already taken is left out, and that is told.
+fn add(tools: &mut Tools, server: &str, slot: &Arc<Slot>, listed: Vec<Value>) {
     for tool in listed {
         let Some(original) = tool.get("name").and_then(Value::as_str) else {
             continue;
         };
         let name = tool_name(server, original);
         if tools.routes.contains_key(&name) {
-            eprintln!("MCP: tool {original} of {server} is left out: {name} is taken");
+            tools.problems.push(format!(
+                "tool {original} of server {server} is left out: the name {name} is taken"
+            ));
             continue;
         }
         let description = tool
@@ -700,7 +870,7 @@ fn add(tools: &mut Tools, server: &str, connection: &Arc<Connection>, listed: Ve
         });
         tools
             .routes
-            .insert(name, (connection.clone(), original.to_string()));
+            .insert(name, (slot.clone(), original.to_string()));
     }
 }
 
@@ -824,16 +994,67 @@ pub(crate) struct Elicitation {
     reply: oneshot::Sender<Value>,
 }
 
-type Elicit = Arc<Mutex<Option<mpsc::UnboundedSender<Elicitation>>>>;
+/// The calls waiting on a connection.
+type Elicit = Arc<Mutex<Vec<Waiter>>>;
+
+/// A call waiting on a connection: the thread it is made for, and where
+/// the server's questions go when they may be put to the person.
+struct Waiter {
+    call: u64,
+    session: Option<crate::store::SessionId>,
+    questions: Option<mpsc::UnboundedSender<Elicitation>>,
+}
+
+/// A call's place among the waiting calls, given up when the call ends.
+struct Waiting<'a> {
+    elicit: &'a Elicit,
+    call: u64,
+}
+
+impl<'a> Waiting<'a> {
+    fn register(
+        elicit: &'a Elicit,
+        session: Option<crate::store::SessionId>,
+        questions: Option<mpsc::UnboundedSender<Elicitation>>,
+    ) -> Self {
+        static CALLS: AtomicU64 = AtomicU64::new(0);
+        let call = CALLS.fetch_add(1, Ordering::Relaxed);
+        elicit.lock().expect("elicit lock").push(Waiter {
+            call,
+            session,
+            questions,
+        });
+        Self { elicit, call }
+    }
+}
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut waiting) = self.elicit.lock() {
+            waiting.retain(|waiter| waiter.call != self.call);
+        }
+    }
+}
 
 /// Hands a server's `elicitation/create` to the call that waits on the
-/// connection; it is answered with `cancel` when no call waits.
+/// connection. A question names no call, so it is put to the person only
+/// when every waiting call is for one and the same thread; otherwise, or
+/// when no call waits, it is answered with `cancel`.
 fn forward(elicit: &Elicit, params: Value) -> oneshot::Receiver<Value> {
     let (reply, answer) = oneshot::channel();
-    let waiting = elicit.lock().expect("elicit lock").clone();
-    match waiting {
-        Some(waiting) => {
-            let _ = waiting.send(Elicitation { params, reply });
+    let target = {
+        let waiting = elicit.lock().expect("elicit lock");
+        let session = waiting.first().and_then(|waiter| waiter.session);
+        let one_thread =
+            session.is_some() && waiting.iter().all(|waiter| waiter.session == session);
+        waiting
+            .first()
+            .filter(|_| one_thread)
+            .and_then(|waiter| waiter.questions.clone())
+    };
+    match target {
+        Some(questions) => {
+            let _ = questions.send(Elicitation { params, reply });
         }
         None => {
             let _ = reply.send(json!({"action": "cancel"}));
@@ -986,12 +1207,17 @@ impl Drop for Connection {
     }
 }
 
+/// The error of a request to a server that had stopped before it was sent.
+const NOT_RUNNING: &str = "the MCP server is not running";
+/// The error of a request whose server stopped before it answered.
+const STOPPED: &str = "the MCP server has stopped";
+
 impl Pipe {
     async fn request(&self, id: u64, message: &Value) -> Result<Value, String> {
         let (sender, receiver) = oneshot::channel();
         match self.pending.lock().expect("pending lock").as_mut() {
             Some(pending) => pending.insert(id, sender),
-            None => return Err("the MCP server has stopped".into()),
+            None => return Err(NOT_RUNNING.into()),
         };
         if let Err(error) = send(&self.writer, message).await {
             if let Some(pending) = self.pending.lock().expect("pending lock").as_mut() {
@@ -999,9 +1225,7 @@ impl Pipe {
             }
             return Err(error);
         }
-        receiver
-            .await
-            .unwrap_or_else(|_| Err("the MCP server has stopped".into()))
+        receiver.await.unwrap_or_else(|_| Err(STOPPED.into()))
     }
 }
 
@@ -1295,7 +1519,7 @@ async fn read(reader: impl AsyncRead + Unpin, writer: Writer, pending: Pending, 
     }
     let waiting = pending.lock().expect("pending lock").take();
     for (_, sender) in waiting.into_iter().flatten() {
-        let _ = sender.send(Err("the MCP server has stopped".into()));
+        let _ = sender.send(Err(STOPPED.into()));
     }
 }
 
@@ -1365,7 +1589,12 @@ mod tests {
 
         let listed = connection.list_tools().await.expect("tools");
         let mut tools = Tools::default();
-        add(&mut tools, "fake server", &connection, listed);
+        add(
+            &mut tools,
+            "fake server",
+            &Slot::new(connection, None),
+            listed,
+        );
         let names: Vec<&str> = tools.specs.iter().map(|spec| spec.name.as_str()).collect();
         assert_eq!(
             names,
@@ -1376,8 +1605,9 @@ mod tests {
             "Echo (tool echo.text of MCP server fake server)"
         );
 
-        let (connection, tool) = &tools.routes["mcp__fake_server__echo_text"];
-        let result = connection
+        let (slot, tool) = &tools.routes["mcp__fake_server__echo_text"];
+        let result = slot
+            .current()
             .request(
                 "tools/call",
                 json!({"name": tool, "arguments": {"say": "hi"}}),
@@ -1388,8 +1618,9 @@ mod tests {
             render(&result),
             Ok("hi\n(image of type image/png not shown)".into())
         );
-        let (connection, tool) = &tools.routes["mcp__fake_server__fail"];
-        let result = connection
+        let (slot, tool) = &tools.routes["mcp__fake_server__fail"];
+        let result = slot
+            .current()
             .request("tools/call", json!({"name": tool, "arguments": {}}))
             .await
             .expect("call");
@@ -1646,7 +1877,11 @@ mod tests {
         // A question on the call's event stream reaches whoever waits on
         // the connection, and the answer goes back as a POST.
         let (sender, mut questions) = mpsc::unbounded_channel::<Elicitation>();
-        *connection.elicit.lock().expect("elicit") = Some(sender);
+        let _waiting = Waiting::register(
+            &connection.elicit,
+            Some(crate::store::SessionId(1)),
+            Some(sender),
+        );
         tokio::spawn(async move {
             let question = questions.recv().await.expect("a question");
             assert_eq!(question.params["message"], "Who?");
@@ -1673,9 +1908,15 @@ mod tests {
         let listed = connection.list_tools().await.expect("tools");
         assert_eq!(listed.len(), 1);
         let mut tools = Tools::default();
-        add(&mut tools, "web", &connection, listed);
+        add(
+            &mut tools,
+            "web",
+            &Slot::new(connection.clone(), None),
+            listed,
+        );
         let (route, tool) = tools.routes.get("mcp__web__echo").expect("route");
         let result = route
+            .current()
             .request("tools/call", json!({"name": tool, "arguments": {}}))
             .await
             .and_then(|result| render(&result));
@@ -1819,6 +2060,127 @@ mod tests {
             render(&json!({"content": [], "structuredContent": {"n": 1}})),
             Ok("{\"n\":1}".into())
         );
+    }
+
+    /// A stdio server in Python with `add` and `crash`, which ends the
+    /// server without answering.
+    const CRASHING_SERVER: &str = r#"
+import json, sys
+for line in sys.stdin:
+    message = json.loads(line)
+    if "id" not in message or "method" not in message:
+        continue
+    method = message["method"]
+    if method == "initialize":
+        result = {"protocolVersion": "2025-11-25", "capabilities": {"tools": {}},
+                  "serverInfo": {"name": "calc", "version": "1"}}
+    elif method == "tools/list":
+        result = {"tools": [{"name": "add", "inputSchema": {"type": "object"}},
+                            {"name": "crash", "inputSchema": {"type": "object"}}]}
+    elif message["params"]["name"] == "crash":
+        sys.exit(1)
+    else:
+        a = message["params"]["arguments"]
+        result = {"content": [{"type": "text", "text": str(a["a"] + a["b"])}]}
+    print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": result}), flush=True)
+"#;
+
+    fn python() -> Option<&'static str> {
+        ["python3", "python"].into_iter().find(|name| {
+            std::process::Command::new(name)
+                .arg("--version")
+                .output()
+                .is_ok_and(|output| output.status.success())
+        })
+    }
+
+    #[tokio::test]
+    async fn a_crashed_server_is_started_again_once_and_a_changed_file_is_read_again() {
+        let Some(python) = python() else {
+            eprintln!("skipped: no Python to run the MCP server");
+            return;
+        };
+        let dir = tempfile::tempdir().expect("dir");
+        let script = dir.path().join("calc.py");
+        std::fs::write(&script, CRASHING_SERVER).expect("script");
+        let config = dir.path().join("mcp.json");
+        std::fs::write(
+            &config,
+            json!({"mcpServers": {
+                "calc": {"command": python, "args": [script]},
+                "broken": {"command": "inocode-no-such-command"}
+            }})
+            .to_string(),
+        )
+        .expect("config");
+        let store = Store::open(dir.path().join("inocode.db"))
+            .await
+            .expect("store");
+        let (_cancel, cancel) = tokio::sync::watch::channel(false);
+        let run = |name: &'static str, arguments: &'static str| {
+            let (store, cancel) = (store.clone(), cancel.clone());
+            async move {
+                call(&store, name, arguments, cancel, None)
+                    .await
+                    .expect("a tool")
+            }
+        };
+
+        assert_eq!(
+            run("mcp__calc__add", r#"{"a": 1, "b": 2}"#).await,
+            Ok("3".into())
+        );
+        let problems = render_problems(&store).await.expect("problems");
+        assert!(
+            problems.contains("server broken did not start"),
+            "{problems}"
+        );
+        let crashed = run("mcp__calc__crash", "{}").await.expect_err("crashed");
+        assert!(crashed.contains("it was started again"), "{crashed}");
+        assert_eq!(
+            run("mcp__calc__add", r#"{"a": 2, "b": 2}"#).await,
+            Ok("4".into())
+        );
+        let again = run("mcp__calc__crash", "{}").await.expect_err("crashed");
+        assert!(again.contains("already started again once"), "{again}");
+
+        // A changed mcp.json is read at the next use. Some file systems
+        // keep times to the second.
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        std::fs::write(
+            &config,
+            json!({"mcpServers": {"sum": {"command": python, "args": [script]}}}).to_string(),
+        )
+        .expect("config");
+        assert_eq!(
+            run("mcp__sum__add", r#"{"a": 3, "b": 4}"#).await,
+            Ok("7".into())
+        );
+        assert!(call(&store, "mcp__calc__add", "{}", cancel.clone(), None)
+            .await
+            .is_none());
+        assert_eq!(render_problems(&store).await, None);
+    }
+
+    #[test]
+    fn a_question_goes_to_the_one_thread_whose_calls_wait() {
+        let elicit = Elicit::default();
+        let (sender, mut questions) = mpsc::unbounded_channel();
+        let first = Waiting::register(&elicit, Some(crate::store::SessionId(1)), Some(sender));
+        let mut asked = forward(&elicit, json!({"message": "one"}));
+        let question = questions.try_recv().expect("the thread is asked");
+        assert_eq!(question.params["message"], "one");
+        drop(question);
+
+        let other = Waiting::register(&elicit, Some(crate::store::SessionId(2)), None);
+        let mut refused = forward(&elicit, json!({"message": "two"}));
+        assert_eq!(refused.try_recv(), Ok(json!({"action": "cancel"})));
+        assert!(questions.try_recv().is_err(), "no thread is asked");
+        drop((first, other));
+        assert!(elicit.lock().expect("elicit").is_empty());
+        let mut nobody = forward(&elicit, json!({}));
+        assert_eq!(nobody.try_recv(), Ok(json!({"action": "cancel"})));
+        let _ = asked.try_recv();
     }
 
     #[tokio::test]

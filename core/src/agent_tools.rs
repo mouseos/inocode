@@ -3,6 +3,8 @@
 //! for verified methods reused across projects (docs/evidence/method-memory.md),
 //! and `search` (docs/evidence/web-search.md).
 
+pub(crate) mod access;
+
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -205,6 +207,9 @@ pub(crate) type Answer = (String, bool);
 
 /// Runs one of the harness tools; `None` when `name` is not one of them.
 pub(crate) async fn run(context: &Context<'_>, name: &str, arguments: &str) -> Option<Answer> {
+    // The grammars are read once, by whichever tool first needs one.
+    outline::use_grammars(context.store.files_folder().join("grammars"));
+    let stop = Stop::default();
     let answer = match name {
         PLAN => plan(context, arguments).await,
         RECALL => recall(context, arguments).await,
@@ -235,7 +240,7 @@ pub(crate) async fn run(context: &Context<'_>, name: &str, arguments: &str) -> O
                 .files_folder()
                 .join("images")
                 .join(format!("thread-{}", context.session.0));
-            crate::camera::run(arguments, &folder)
+            crate::camera::run_until(arguments, &folder, stop.flag())
                 .await
                 .map(|(text, images)| {
                     context.shown.lock().expect("shown lock").extend(images);
@@ -248,7 +253,7 @@ pub(crate) async fn run(context: &Context<'_>, name: &str, arguments: &str) -> O
                 .files_folder()
                 .join("audio")
                 .join(format!("thread-{}", context.session.0));
-            crate::audio::run(arguments, context.folder, &folder).await
+            crate::audio::run_until(arguments, context.folder, &folder, stop.flag()).await
         }
         crate::transcribe::TRANSCRIBE => {
             let files = context.store.files_folder();
@@ -266,10 +271,7 @@ pub(crate) async fn run(context: &Context<'_>, name: &str, arguments: &str) -> O
         edit::EDIT => edit::edit(context.folder, arguments).await,
         edit::EDITS => edit::edits(context.folder, arguments).await,
         edit::WRITE => edit::write(context.folder, arguments).await,
-        find::FIND => {
-            outline::use_grammars(context.store.files_folder().join("grammars"));
-            find::run(context.folder, arguments).await
-        }
+        find::FIND => find::run(context.folder, arguments).await,
         fetch::FETCH => {
             let folder = context
                 .store
@@ -296,6 +298,23 @@ pub(crate) async fn run(context: &Context<'_>, name: &str, arguments: &str) -> O
         }
     };
     Some(answer.map_or_else(|message| (message, true), |text| (text, false)))
+}
+
+/// Raised when a call's future ends or is dropped, as when its turn is
+/// stopped, so that the work it left on another thread stops as well.
+#[derive(Default)]
+struct Stop(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Stop {
+    fn flag(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        self.0.clone()
+    }
+}
+
+impl Drop for Stop {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 fn place<'a>(context: &Context<'a>) -> shell::Place<'a> {
@@ -620,7 +639,10 @@ async fn lesson(context: &Context<'_>, arguments: &str) -> Result<String, String
     }
 }
 
-/// Saves a verified method as a shared procedure note, usable at once.
+/// Saves a method as a candidate procedure note of the project. Like a
+/// lesson, it is used in later work, and in other projects, only once the
+/// person approves it: its text comes from what the model read, which a
+/// web page or a repository may have written.
 async fn method(context: &Context<'_>, arguments: &str) -> Result<String, String> {
     #[derive(Deserialize)]
     struct Arguments {
@@ -661,7 +683,7 @@ async fn method(context: &Context<'_>, arguments: &str) -> Result<String, String
     let id = context
         .store
         .add_note(NewNote {
-            project: None,
+            project: context.project,
             kind: NoteKind::Procedure,
             title: cut_title(title),
             summary: title.to_string(),
@@ -673,12 +695,10 @@ async fn method(context: &Context<'_>, arguments: &str) -> Result<String, String
         })
         .await
         .map_err(|error| error.message)?;
-    context
-        .store
-        .set_status(id, "active")
-        .await
-        .map_err(|error| error.message)?;
-    Ok(format!("Saved method {}.", id.0))
+    Ok(format!(
+        "Saved method {} as a candidate. It is used in later work once the person approves it.",
+        id.0
+    ))
 }
 
 /// The tags of a method: `chosen` must be tags in use (`in_use`, with their
@@ -919,6 +939,15 @@ pub(crate) async fn render_lessons(
 mod tests {
     use super::*;
     use crate::conversation::Speaker;
+
+    #[test]
+    fn work_left_on_another_thread_is_told_to_stop_when_its_call_ends() {
+        let stop = Stop::default();
+        let flag = stop.flag();
+        assert!(!flag.load(std::sync::atomic::Ordering::Relaxed));
+        drop(stop);
+        assert!(flag.load(std::sync::atomic::Ordering::Relaxed));
+    }
 
     #[test]
     fn method_tags_are_chosen_from_those_in_use() {

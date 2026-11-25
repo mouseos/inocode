@@ -106,12 +106,14 @@ pub(crate) async fn edit(folder: Option<&Path>, arguments: &str) -> Result<Strin
         serde_json::from_str(arguments).map_err(|error| format!("invalid arguments: {error}"))?;
     let path = resolve(folder, &arguments.path)?;
     tokio::task::spawn_blocking(move || {
+        let _editing = EDITING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let text = read_text(&path)?;
         let done = replace(&text, &arguments.old, &arguments.new, arguments.all)
             .map_err(|problem| format!("{} {problem}", path.display()))?;
         new_syntax_errors(&path, Some(&text), &done.text)?;
-        std::fs::write(&path, &done.text)
-            .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
+        write_all(&[(path.clone(), text, done.text.clone())])?;
         let line = done.line;
         Ok(match done.count {
             _ if done.loose => format!(
@@ -149,6 +151,9 @@ pub(crate) async fn edits(folder: Option<&Path>, arguments: &str) -> Result<Stri
         planned.push((path, edit));
     }
     tokio::task::spawn_blocking(move || {
+        let _editing = EDITING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         // Each file's text before and after the replacements so far.
         let mut files: Vec<(std::path::PathBuf, String, String)> = Vec::new();
         let mut report = Vec::new();
@@ -191,23 +196,7 @@ pub(crate) async fn edits(folder: Option<&Path>, arguments: &str) -> Result<Stri
             new_syntax_errors(path, Some(before), after)
                 .map_err(|problem| format!("Nothing was changed: {problem}"))?;
         }
-        for (written, (path, _, after)) in files.iter().enumerate() {
-            std::fs::write(path, after).map_err(|error| {
-                let done: Vec<String> = files[..written]
-                    .iter()
-                    .map(|(path, _, _)| path.display().to_string())
-                    .collect();
-                format!(
-                    "cannot write {}: {error}; already written: {}",
-                    path.display(),
-                    if done.is_empty() {
-                        "none".to_string()
-                    } else {
-                        done.join(", ")
-                    }
-                )
-            })?;
-        }
+        write_all(&files)?;
         Ok(format!(
             "Made {} replacements in {} files:\n{}",
             report.len(),
@@ -224,6 +213,9 @@ pub(crate) async fn write(folder: Option<&Path>, arguments: &str) -> Result<Stri
         serde_json::from_str(arguments).map_err(|error| format!("invalid arguments: {error}"))?;
     let path = resolve(folder, &arguments.path)?;
     tokio::task::spawn_blocking(move || {
+        let _editing = EDITING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let existed = path.exists();
         if path.is_dir() {
             return Err(format!("{} is a folder", path.display()));
@@ -279,6 +271,49 @@ fn new_syntax_errors(path: &Path, before: Option<&str>, after: &str) -> Result<(
         errors.len(),
         at.join(", ")
     ))
+}
+
+/// Held while a file is read, changed and written, so that two calls of
+/// this process never write over each other's change.
+static EDITING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Writes each file's text after the change, once every file still holds
+/// the text it was changed from: what another program wrote meanwhile is
+/// not overwritten. When a file cannot be written, the ones already
+/// written get their text back, so the files change all together or not
+/// at all.
+fn write_all(files: &[(std::path::PathBuf, String, String)]) -> Result<(), String> {
+    for (path, before, _) in files {
+        if read_text(path).as_ref() != Ok(before) {
+            return Err(format!(
+                "Nothing was changed: {} changed while it was being edited; read it again and \
+                 make the change on what it holds now",
+                path.display()
+            ));
+        }
+    }
+    for (written, (path, _, after)) in files.iter().enumerate() {
+        if let Err(error) = std::fs::write(path, after) {
+            let lost: Vec<String> = files[..written]
+                .iter()
+                .filter(|(path, before, _)| std::fs::write(path, before).is_err())
+                .map(|(path, _, _)| path.display().to_string())
+                .collect();
+            return Err(match lost.is_empty() {
+                true => format!(
+                    "Nothing was changed: cannot write {}: {error}",
+                    path.display()
+                ),
+                false => format!(
+                    "cannot write {}: {error}; these files were written and could not be put \
+                     back: {}",
+                    path.display(),
+                    lost.join(", ")
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn read_text(path: &Path) -> Result<String, String> {
@@ -549,6 +584,54 @@ mod tests {
         write(folder, r#"{"path": "notes.txt", "content": "(("}"#)
             .await
             .expect("not checked");
+    }
+
+    #[test]
+    fn a_file_changed_meanwhile_is_not_written_over() {
+        let dir = tempfile::tempdir().expect("dir");
+        let (a, b) = (dir.path().join("a.txt"), dir.path().join("b.txt"));
+        std::fs::write(&a, "a\n").expect("write");
+        std::fs::write(&b, "changed by someone else\n").expect("write");
+        let error = write_all(&[
+            (a.clone(), "a\n".into(), "A\n".into()),
+            (b.clone(), "b\n".into(), "B\n".into()),
+        ])
+        .expect_err("b changed");
+        assert!(
+            error.contains("changed while it was being edited"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "a\n");
+        assert_eq!(
+            std::fs::read_to_string(&b).unwrap(),
+            "changed by someone else\n"
+        );
+    }
+
+    #[test]
+    fn a_failed_write_puts_the_written_files_back() {
+        let dir = tempfile::tempdir().expect("dir");
+        let a = dir.path().join("a.txt");
+        std::fs::write(&a, "a\n").expect("write");
+        let locked = dir.path().join("locked.txt");
+        std::fs::write(&locked, "b\n").expect("write");
+        let mut permissions = std::fs::metadata(&locked).expect("meta").permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&locked, permissions.clone()).expect("read-only");
+        if std::fs::write(&locked, "b\n").is_ok() {
+            // Read-only files are written anyway (as by root); nothing to see.
+            return;
+        }
+        let error = write_all(&[
+            (a.clone(), "a\n".into(), "A\n".into()),
+            (locked.clone(), "b\n".into(), "B\n".into()),
+        ])
+        .expect_err("the read-only file");
+        assert!(error.starts_with("Nothing was changed"), "{error}");
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "a\n");
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        let _ = std::fs::set_permissions(&locked, permissions);
     }
 
     #[tokio::test]

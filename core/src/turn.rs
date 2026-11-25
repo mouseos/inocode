@@ -167,6 +167,25 @@ pub struct Approvals {
 const DENIALS_IN_A_ROW: u32 = 3;
 const DENIALS_PER_TURN: u32 = 20;
 
+/// Why a call waits, and whether only the person may let it run (the
+/// reviewer of the `auto` mode never decides it).
+struct Need {
+    reason: String,
+    person: bool,
+}
+
+/// Whether the arguments of a call are the ones the person approved: the
+/// same JSON value, whatever its spacing and key order.
+fn same_arguments(approved: &str, arguments: &str) -> bool {
+    match (
+        serde_json::from_str::<serde_json::Value>(approved),
+        serde_json::from_str::<serde_json::Value>(arguments),
+    ) {
+        (Ok(approved), Ok(arguments)) => approved == arguments,
+        _ => approved == arguments,
+    }
+}
+
 /// The models of a turn. `main` is the conversation's model: a change of
 /// the thread's settings sends a new one, used from the next request on.
 /// A helper role that is `None` is done by the conversation's model.
@@ -733,6 +752,7 @@ impl Thread<'_> {
         let jobs = shell::render_jobs(&self.store.files_folder().join("logs"), self.session);
         let language = self.language.as_deref().map(crate::language::instruction);
         let skills = crate::plugins::render_skills(&crate::plugins::folder(self.store));
+        let mcp = crate::mcp::render_problems(self.store).await;
         let goal = self
             .goal
             .as_ref()
@@ -747,6 +767,7 @@ impl Thread<'_> {
             jobs.as_deref(),
             self.lessons.as_deref(),
             skills.as_deref(),
+            mcp.as_deref(),
             promises.as_deref(),
             language.as_deref(),
         ]
@@ -812,7 +833,7 @@ impl Thread<'_> {
         let approved = self
             .approved
             .iter()
-            .position(|(tool, args)| tool == name && args == arguments);
+            .position(|(tool, args)| tool == name && same_arguments(args, arguments));
         if let Some(index) = approved {
             self.approved.remove(index);
             for rule in &asked_rules {
@@ -851,31 +872,72 @@ impl Thread<'_> {
                 .await
                 .map_or_else(|message| (message, true), |text| (text, false));
         }
-        agent_tools::run(&context, name, arguments)
-            .await
-            .unwrap_or_else(|| (format!("no tool named {name} is available"), true))
+        // A tool that does not watch the turn's cancel signal itself is
+        // dropped when the turn is stopped; one that does (shell, MCP) is
+        // polled first, so its own answer wins.
+        let mut cancel = self.cancel.clone();
+        tokio::select! {
+            biased;
+            answer = agent_tools::run(&context, name, arguments) => {
+                answer.unwrap_or_else(|| (format!("no tool named {name} is available"), true))
+            }
+            () = cancelled(&mut cancel) => (
+                "Stopped with the turn before it finished.".to_string(),
+                true,
+            ),
+        }
     }
 
     /// Why a call needs approval in this mode, if it does; `asked_rules`
     /// are the `ask` rules it met that the person has not approved.
-    fn needs(&self, name: &str, arguments: &str, asked_rules: bool) -> Option<String> {
+    fn needs(&self, name: &str, arguments: &str, asked_rules: bool) -> Option<Need> {
+        let person = |reason: String| {
+            Some(Need {
+                reason,
+                person: true,
+            })
+        };
+        let review = |reason: String| {
+            Some(Need {
+                reason,
+                person: false,
+            })
+        };
         let command = (name == shell::SHELL)
             .then(|| shell::shell_arguments(arguments))
             .flatten();
         if asked_rules {
-            return Some("it falls under a project rule that asks first".into());
+            return Some(Need {
+                reason: "it falls under a project rule that asks first".into(),
+                // The camera, the microphone and plugin installs are never
+                // left to the reviewer.
+                person: matches!(
+                    name,
+                    crate::camera::CAMERA | crate::audio::AUDIO | crate::plugins::INSTALL
+                ),
+            });
         }
         if name == crate::plugins::INSTALL {
-            return Some("plugins are installed only with the person's approval".into());
+            return person("plugins are installed only with the person's approval".into());
         }
         if name == crate::camera::CAMERA && crate::camera::takes_pictures(arguments) {
-            return Some("photos and videos are taken only with the person's approval".into());
+            return person("photos and videos are taken only with the person's approval".into());
         }
         if name == crate::audio::AUDIO && crate::audio::records(arguments) {
-            return Some("sound is recorded only with the person's approval".into());
+            return person("sound is recorded only with the person's approval".into());
         }
         if self.sandboxed() && command.as_ref().is_some_and(|c| c.outside_sandbox) {
-            return Some("it asks to run outside the sandbox".into());
+            return review("it asks to run outside the sandbox".into());
+        }
+        let places =
+            agent_tools::access::Places::of(self.store, self.session, self.folder.as_deref());
+        if let Some(outside) = agent_tools::access::outside(name, arguments, &places) {
+            match self.mode {
+                _ if outside.writes || outside.secret => return person(outside.describe()),
+                Mode::Ask => return person(outside.describe()),
+                Mode::Auto => return review(outside.describe()),
+                Mode::OnRequest | Mode::Full => {}
+            }
         }
         let reads = command
             .as_ref()
@@ -883,17 +945,30 @@ impl Thread<'_> {
         // What an MCP tool does is not known here (its annotations are
         // untrusted), so a call to one is treated as a change.
         let mcp = name.starts_with(crate::mcp::PREFIX);
+        let types = name == shell::JOB && shell::job_types(arguments);
         let changes = matches!(
             name,
             crate::edit::EDIT | crate::edit::EDITS | crate::edit::WRITE
         ) || (name == shell::SHELL && !reads)
-            || mcp;
+            || mcp
+            || types;
+        let sends = matches!(
+            name,
+            crate::fetch::FETCH | crate::web_search::SEARCH | crate::transcribe::TRANSCRIBE
+        );
         match self.mode {
-            Mode::Ask if changes => Some("every change waits for the person in this mode".into()),
-            Mode::Auto if mcp => Some("calls to MCP tools are reviewed in this mode".into()),
-            Mode::Auto if name == shell::SHELL && !reads => {
-                Some("commands that change something are reviewed in this mode".into())
+            Mode::Ask if changes => person("every change waits for the person in this mode".into()),
+            Mode::Ask if sends => {
+                person("what is sent out waits for the person in this mode".into())
             }
+            Mode::Auto if mcp => review("calls to MCP tools are reviewed in this mode".into()),
+            Mode::Auto if name == shell::SHELL && !reads => {
+                review("commands that change something are reviewed in this mode".into())
+            }
+            Mode::Auto if types => {
+                review("input to a running command is reviewed in this mode".into())
+            }
+            Mode::Auto if sends => review("what is sent out is reviewed in this mode".into()),
             _ => None,
         }
     }
@@ -909,14 +984,11 @@ impl Thread<'_> {
         asked_rules: Vec<NoteId>,
         usage: &mut TurnUsage,
     ) -> Option<Answer> {
-        let reason = self.needs(name, arguments, !asked_rules.is_empty())?;
-        // The camera and plugin installs go to the person, never to the
-        // reviewer.
-        if self.mode == Mode::Auto
-            && name != crate::camera::CAMERA
-            && name != crate::audio::AUDIO
-            && name != crate::plugins::INSTALL
-        {
+        let Need { mut reason, person } = self.needs(name, arguments, !asked_rules.is_empty())?;
+        if name == crate::plugins::INSTALL {
+            reason.push_str(&crate::plugins::preview(self.store, arguments).await);
+        }
+        if self.mode == Mode::Auto && !person {
             if self.denials.0 >= DENIALS_IN_A_ROW || self.denials.1 >= DENIALS_PER_TURN {
                 let reason = "the reviewer refused too many calls in this turn".to_string();
                 return Some(self.hold(name, arguments, asked_rules, reason).await);
@@ -1856,6 +1928,20 @@ async fn steps(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_approved_call_matches_its_arguments_written_another_way() {
+        assert!(same_arguments(
+            r#"{"path":"a","content":"x"}"#,
+            "{\n  \"content\": \"x\",\n  \"path\": \"a\"\n}"
+        ));
+        assert!(!same_arguments(
+            r#"{"path":"a","content":"x"}"#,
+            r#"{"path":"a","content":"y"}"#
+        ));
+        assert!(same_arguments("not json", "not json"));
+        assert!(!same_arguments("not json", "not  json"));
+    }
 
     #[test]
     fn a_turn_goes_on_only_after_tool_calls_or_new_input() {

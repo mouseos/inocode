@@ -162,76 +162,744 @@ pub(crate) fn shell_arguments(arguments: &str) -> Option<ShellArguments> {
     serde_json::from_str(arguments).ok()
 }
 
+/// A program whose runs only read, with the flags known not to write,
+/// run another program or open a pager. A flag in `flags` ending in `*`
+/// takes any rest (`--format=*`, which also allows `--format` with its value
+/// as the next word); `short` lists the letters that may be
+/// combined after one `-`. `positional` says whether words that are not
+/// flags may follow.
+struct Reader {
+    name: &'static str,
+    short: &'static str,
+    flags: &'static [&'static str],
+    positional: bool,
+}
+
+const READERS: &[Reader] = &[
+    Reader {
+        name: "ls",
+        short: "1aAlhRrtSdFiGgnopsuvx",
+        flags: &[
+            "--all",
+            "--almost-all",
+            "--human-readable",
+            "--recursive",
+            "--reverse",
+            "--color*",
+            "--classify",
+            "--directory",
+            "--sort=*",
+            "--time=*",
+            "--full-time",
+            "--group-directories-first",
+            "--inode",
+            "--size",
+        ],
+        positional: true,
+    },
+    Reader {
+        name: "dir",
+        short: "1aAlhRrtSdF",
+        flags: &["--all", "--human-readable", "--recursive"],
+        positional: true,
+    },
+    Reader {
+        name: "pwd",
+        short: "LP",
+        flags: &[],
+        positional: false,
+    },
+    Reader {
+        name: "cat",
+        short: "nAbeEsTtv",
+        flags: &[
+            "--number",
+            "--show-all",
+            "--number-nonblank",
+            "--squeeze-blank",
+            "--show-ends",
+            "--show-tabs",
+        ],
+        positional: true,
+    },
+    Reader {
+        name: "head",
+        short: "nc0123456789qvz",
+        flags: &["--lines=*", "--bytes=*", "--quiet", "--silent", "--verbose"],
+        positional: true,
+    },
+    Reader {
+        name: "tail",
+        short: "nc0123456789qvz",
+        flags: &["--lines=*", "--bytes=*", "--quiet", "--silent", "--verbose"],
+        positional: true,
+    },
+    Reader {
+        name: "wc",
+        short: "lwcmL",
+        flags: &[
+            "--lines",
+            "--words",
+            "--bytes",
+            "--chars",
+            "--max-line-length",
+        ],
+        positional: true,
+    },
+    Reader {
+        name: "grep",
+        short: "rRinvwxclLoqsHhEFGzZ0123456789ABCe",
+        flags: &[
+            "--recursive",
+            "--ignore-case",
+            "--line-number",
+            "--invert-match",
+            "--word-regexp",
+            "--line-regexp",
+            "--count",
+            "--files-with-matches",
+            "--files-without-match",
+            "--only-matching",
+            "--quiet",
+            "--no-messages",
+            "--with-filename",
+            "--no-filename",
+            "--extended-regexp",
+            "--fixed-strings",
+            "--include=*",
+            "--exclude=*",
+            "--exclude-dir=*",
+            "--color*",
+            "--context=*",
+            "--after-context=*",
+            "--before-context=*",
+            "--regexp=*",
+            "--max-count=*",
+            "-A*",
+            "-B*",
+            "-C*",
+            "-m*",
+            "-e*",
+        ],
+        positional: true,
+    },
+    Reader {
+        name: "rg",
+        short: "iSFwxvcClLnNHIuo0123456789ABCetgsM",
+        flags: &[
+            "--ignore-case",
+            "--smart-case",
+            "--case-sensitive",
+            "--fixed-strings",
+            "--word-regexp",
+            "--line-regexp",
+            "--invert-match",
+            "--count",
+            "--count-matches",
+            "--files",
+            "--files-with-matches",
+            "--files-without-match",
+            "--line-number",
+            "--no-line-number",
+            "--with-filename",
+            "--no-filename",
+            "--hidden",
+            "--no-ignore",
+            "--no-ignore-vcs",
+            "--follow",
+            "--glob=*",
+            "--iglob=*",
+            "--type=*",
+            "--type-not=*",
+            "--type-list",
+            "--max-count=*",
+            "--max-depth=*",
+            "--max-columns=*",
+            "--context=*",
+            "--after-context=*",
+            "--before-context=*",
+            "--regexp=*",
+            "--multiline",
+            "--only-matching",
+            "--json",
+            "--color=*",
+            "--heading",
+            "--no-heading",
+            "--trim",
+            "--sort=*",
+            "--sortr=*",
+            "--stats",
+            "--column",
+            "--vimgrep",
+            "--unrestricted",
+            "-A*",
+            "-B*",
+            "-C*",
+            "-m*",
+            "-g*",
+            "-t*",
+            "-T*",
+            "-e*",
+            "-M*",
+        ],
+        positional: true,
+    },
+    Reader {
+        name: "find",
+        short: "LHP",
+        flags: &[
+            "-name",
+            "-iname",
+            "-path",
+            "-ipath",
+            "-wholename",
+            "-iwholename",
+            "-regex",
+            "-iregex",
+            "-type",
+            "-xtype",
+            "-maxdepth",
+            "-mindepth",
+            "-size",
+            "-mtime",
+            "-mmin",
+            "-atime",
+            "-amin",
+            "-ctime",
+            "-cmin",
+            "-newer",
+            "-empty",
+            "-print",
+            "-print0",
+            "-printf",
+            "-not",
+            "-and",
+            "-or",
+            "-a",
+            "-o",
+            "-prune",
+            "-follow",
+            "-depth",
+            "-xdev",
+            "-mount",
+            "-user",
+            "-group",
+            "-perm",
+            "-readable",
+            "-writable",
+            "-executable",
+            "-samefile",
+            "-links",
+            "-inum",
+            "-true",
+            "-false",
+            "-ls",
+        ],
+        positional: true,
+    },
+    Reader {
+        name: "fd",
+        short: "HIiFsgLadpelt0123456789",
+        flags: &[
+            "--hidden",
+            "--no-ignore",
+            "--ignore-case",
+            "--case-sensitive",
+            "--fixed-strings",
+            "--glob",
+            "--follow",
+            "--absolute-path",
+            "--full-path",
+            "--type=*",
+            "--extension=*",
+            "--max-depth=*",
+            "--min-depth=*",
+            "--exact-depth=*",
+            "--exclude=*",
+            "--size=*",
+            "--changed-within=*",
+            "--changed-before=*",
+            "--max-results=*",
+            "--color=*",
+            "--list-details",
+            "-t*",
+            "-e*",
+            "-d*",
+            "-E*",
+        ],
+        positional: true,
+    },
+    Reader {
+        name: "tree",
+        short: "adfFLilpshDCnJ0123456789",
+        flags: &[
+            "--gitignore",
+            "--noreport",
+            "--dirsfirst",
+            "-I*",
+            "-P*",
+            "-L*",
+        ],
+        positional: true,
+    },
+    Reader {
+        name: "stat",
+        short: "Lt",
+        flags: &["--dereference", "--terse"],
+        positional: true,
+    },
+    Reader {
+        name: "file",
+        short: "biLzk",
+        flags: &["--brief", "--mime", "--mime-type", "--dereference"],
+        positional: true,
+    },
+    Reader {
+        name: "which",
+        short: "a",
+        flags: &["--all"],
+        positional: true,
+    },
+    Reader {
+        name: "du",
+        short: "ahsckmxLd0123456789",
+        flags: &[
+            "--all",
+            "--human-readable",
+            "--summarize",
+            "--total",
+            "--max-depth=*",
+            "--apparent-size",
+            "-d*",
+        ],
+        positional: true,
+    },
+    Reader {
+        name: "df",
+        short: "ahHkTiPl",
+        flags: &[
+            "--all",
+            "--human-readable",
+            "--si",
+            "--print-type",
+            "--inodes",
+            "--local",
+        ],
+        positional: true,
+    },
+    Reader {
+        name: "date",
+        short: "uRI",
+        flags: &[
+            "--utc",
+            "--universal",
+            "--rfc-email",
+            "--iso-8601*",
+            "--rfc-3339=*",
+            "-I*",
+        ],
+        positional: false,
+    },
+    Reader {
+        name: "whoami",
+        short: "",
+        flags: &[],
+        positional: false,
+    },
+];
+
+/// PowerShell's reading cmdlets (and their usual aliases), whose
+/// parameters do not write files or run programs. `where` is
+/// `Where-Object` and `type` is `Get-Content` there.
+const POWERSHELL_READERS: &[&str] = &[
+    "get-childitem",
+    "gci",
+    "get-content",
+    "gc",
+    "get-location",
+    "gl",
+    "get-item",
+    "gi",
+    "select-string",
+    "sls",
+    "test-path",
+    "resolve-path",
+    "rvpa",
+    "get-command",
+    "gcm",
+    "where",
+    "type",
+];
+
+/// Git's reading subcommands with their flags. Options before the
+/// subcommand (`-c`, `--exec-path`, ...) are never taken as reading.
+const GIT_READERS: &[Reader] = &[
+    Reader {
+        name: "status",
+        short: "sbvzu",
+        flags: &[
+            "--short",
+            "--branch",
+            "--porcelain*",
+            "--long",
+            "--verbose",
+            "--untracked-files*",
+            "--ignored*",
+            "--show-stash",
+            "--no-renames",
+            "--ahead-behind",
+            "--no-ahead-behind",
+            "-u*",
+        ],
+        positional: true,
+    },
+    Reader {
+        name: "diff",
+        short: "pubwRWM0123456789",
+        flags: DIFF_FLAGS,
+        positional: true,
+    },
+    Reader {
+        name: "log",
+        short: "pnuiEFwM0123456789",
+        flags: LOG_FLAGS,
+        positional: true,
+    },
+    Reader {
+        name: "show",
+        short: "puswM0123456789",
+        flags: LOG_FLAGS,
+        positional: true,
+    },
+    Reader {
+        name: "blame",
+        short: "wesltcfnbM",
+        flags: &[
+            "--porcelain",
+            "--line-porcelain",
+            "--root",
+            "--show-name",
+            "--show-number",
+            "--show-email",
+            "--date=*",
+            "-L*",
+            "-M*",
+            "-C*",
+        ],
+        positional: true,
+    },
+    Reader {
+        name: "rev-parse",
+        short: "q",
+        flags: &[
+            "--show-toplevel",
+            "--show-prefix",
+            "--show-cdup",
+            "--abbrev-ref*",
+            "--short*",
+            "--verify",
+            "--quiet",
+            "--git-dir",
+            "--absolute-git-dir",
+            "--git-common-dir",
+            "--is-inside-work-tree",
+            "--is-inside-git-dir",
+            "--is-bare-repository",
+            "--is-shallow-repository",
+            "--symbolic",
+            "--symbolic-full-name",
+            "--all",
+            "--branches*",
+            "--tags*",
+            "--remotes*",
+        ],
+        positional: true,
+    },
+    Reader {
+        name: "ls-files",
+        short: "cdmoiskutvfz",
+        flags: &[
+            "--cached",
+            "--deleted",
+            "--modified",
+            "--others",
+            "--ignored",
+            "--stage",
+            "--killed",
+            "--unmerged",
+            "--exclude=*",
+            "--exclude-standard",
+            "--full-name",
+            "--directory",
+            "--error-unmatch",
+            "--recurse-submodules",
+            "-x*",
+        ],
+        positional: true,
+    },
+    Reader {
+        name: "grep",
+        short: "nivwlLcEFPhHoqzpW0123456789ABCe",
+        flags: &[
+            "--line-number",
+            "--ignore-case",
+            "--invert-match",
+            "--word-regexp",
+            "--files-with-matches",
+            "--files-without-match",
+            "--count",
+            "--extended-regexp",
+            "--fixed-strings",
+            "--perl-regexp",
+            "--cached",
+            "--untracked",
+            "--no-index",
+            "--heading",
+            "--break",
+            "--show-function",
+            "--function-context",
+            "--only-matching",
+            "--max-depth=*",
+            "--max-count=*",
+            "--context=*",
+            "--after-context=*",
+            "--before-context=*",
+            "--and",
+            "--or",
+            "--not",
+            "--all-match",
+            "--name-only",
+            "--no-color",
+            "--color*",
+            "-A*",
+            "-B*",
+            "-C*",
+            "-e*",
+            "-m*",
+        ],
+        positional: true,
+    },
+];
+
+const DIFF_FLAGS: &[&str] = &[
+    "--stat*",
+    "--numstat",
+    "--shortstat",
+    "--dirstat*",
+    "--name-only",
+    "--name-status",
+    "--cached",
+    "--staged",
+    "--patch",
+    "--no-patch",
+    "--unified=*",
+    "--ignore-all-space",
+    "--ignore-space-change",
+    "--ignore-blank-lines",
+    "--color*",
+    "--no-color",
+    "--word-diff*",
+    "--check",
+    "--summary",
+    "--find-renames*",
+    "--find-copies*",
+    "--no-renames",
+    "--minimal",
+    "--patience",
+    "--histogram",
+    "--relative*",
+    "--diff-filter=*",
+    "--merge-base",
+    "--no-index",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--raw",
+    "--abbrev*",
+    "--full-index",
+    "--binary",
+    "--quiet",
+    "--exit-code",
+    "-U*",
+    "-M*",
+    "--",
+];
+
+const LOG_FLAGS: &[&str] = &[
+    "--oneline",
+    "--max-count=*",
+    "--skip=*",
+    "--graph",
+    "--decorate*",
+    "--no-decorate",
+    "--all",
+    "--branches*",
+    "--tags*",
+    "--remotes*",
+    "--format=*",
+    "--pretty*",
+    "--author=*",
+    "--committer=*",
+    "--since=*",
+    "--until=*",
+    "--after=*",
+    "--before=*",
+    "--grep=*",
+    "--follow",
+    "--name-only",
+    "--name-status",
+    "--reverse",
+    "--first-parent",
+    "--merges",
+    "--no-merges",
+    "--abbrev-commit",
+    "--no-abbrev-commit",
+    "--date=*",
+    "--relative-date",
+    "--color*",
+    "--no-color",
+    "--stat*",
+    "--numstat",
+    "--shortstat",
+    "--patch",
+    "--no-patch",
+    "--left-right",
+    "--cherry-pick",
+    "--no-walk*",
+    "--topo-order",
+    "--date-order",
+    "--ignore-case",
+    "--regexp-ignore-case",
+    "--all-match",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--word-diff*",
+    "--unified=*",
+    "--diff-filter=*",
+    "--find-renames*",
+    "--summary",
+    "--raw",
+    "--full-history",
+    "--simplify-by-decoration",
+    "--show-signature",
+    "-L*",
+    "-U*",
+    "-S*",
+    "-G*",
+    "--",
+];
+
+/// The words of a command with its quotes removed, as the shell that runs
+/// it splits them: PowerShell keeps a backslash as a letter, sh takes it as an
+/// escape. `None` when a quote is not closed.
+fn words(command: &str, powershell: bool) -> Option<Vec<String>> {
+    let mut words = Vec::new();
+    let mut word: Option<String> = None;
+    let mut chars = command.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            c if c.is_whitespace() => {
+                words.extend(word.take());
+            }
+            '\'' => {
+                let text = word.get_or_insert_with(String::new);
+                loop {
+                    match chars.next()? {
+                        '\'' => break,
+                        c => text.push(c),
+                    }
+                }
+            }
+            '"' => {
+                let text = word.get_or_insert_with(String::new);
+                loop {
+                    match chars.next()? {
+                        '"' => break,
+                        '\\' if !powershell => text.push(chars.next()?),
+                        c => text.push(c),
+                    }
+                }
+            }
+            '\\' if !powershell => word.get_or_insert_with(String::new).push(chars.next()?),
+            c => word.get_or_insert_with(String::new).push(c),
+        }
+    }
+    words.extend(word);
+    Some(words)
+}
+
+/// Whether every word after the program is allowed for `reader`.
+fn allowed(reader: &Reader, arguments: &[String]) -> bool {
+    arguments.iter().all(|word| {
+        let flag = word.starts_with('-') && word.len() > 1;
+        if !flag {
+            return reader.positional;
+        }
+        let listed = reader
+            .flags
+            .iter()
+            .any(|allowed| match allowed.strip_suffix('*') {
+                Some(prefix) => {
+                    word.starts_with(prefix) || prefix.strip_suffix('=') == Some(word.as_str())
+                }
+                None => word == allowed,
+            });
+        let short = !word.starts_with("--")
+            && word[1..]
+                .chars()
+                .all(|letter| reader.short.contains(letter));
+        listed || short
+    })
+}
+
 /// Whether `command` only reads: one plain command (no chaining, pipes,
-/// redirections, substitutions or variables) whose program and first
-/// argument are on a list of reading commands, without a flag that deletes
-/// or runs something.
+/// redirections, substitutions, groups or variables) whose program, and
+/// for git its subcommand, is on a list of reading commands, with only
+/// flags known not to write, run another program or open a pager.
+/// Anything else counts as a change (docs/evidence/approval-modes.md).
 pub(crate) fn reads_only(command: &str) -> bool {
-    const READERS: &[&str] = &[
-        "ls",
-        "dir",
-        "pwd",
-        "cat",
-        "type",
-        "head",
-        "tail",
-        "wc",
-        "grep",
-        "rg",
-        "find",
-        "fd",
-        "tree",
-        "stat",
-        "file",
-        "which",
-        "where",
-        "du",
-        "df",
-        "date",
-        "whoami",
-        "get-childitem",
-        "get-content",
-        "get-location",
-        "get-item",
-        "select-string",
-        "test-path",
-        "resolve-path",
-        "get-command",
-    ];
-    const GIT_READERS: &[&str] = &[
-        "status",
-        "diff",
-        "log",
-        "show",
-        "blame",
-        "rev-parse",
-        "ls-files",
-        "grep",
-    ];
-    const UNSAFE: &[&str] = &[
-        "-delete", "-exec", "-execdir", "-ok", "-fprint", "-fls", "-fprintf",
-    ];
-    let command = command.trim();
-    if command.is_empty()
-        || command
-            .chars()
-            .any(|c| matches!(c, ';' | '&' | '|' | '>' | '<' | '`' | '$' | '\n' | '\r'))
-    {
+    reads_only_in(command, cfg!(windows))
+}
+
+fn reads_only_in(command: &str, powershell: bool) -> bool {
+    if command.chars().any(|c| {
+        matches!(
+            c,
+            ';' | '&' | '|' | '>' | '<' | '`' | '$' | '(' | ')' | '{' | '}' | '@' | '\n' | '\r'
+        )
+    }) {
         return false;
     }
-    let words: Vec<String> = command
-        .split_whitespace()
-        .map(str::to_ascii_lowercase)
-        .collect();
-    if words.iter().any(|word| UNSAFE.contains(&word.as_str())) {
+    let Some(words) = words(command, powershell) else {
         return false;
+    };
+    let Some((program, arguments)) = words.split_first() else {
+        return false;
+    };
+    let program = program.to_ascii_lowercase();
+    if program == "git" {
+        let Some((sub, arguments)) = arguments.split_first() else {
+            return false;
+        };
+        return GIT_READERS
+            .iter()
+            .find(|reader| reader.name == sub)
+            .is_some_and(|reader| allowed(reader, arguments));
     }
-    match words[0].as_str() {
-        "git" => words
-            .get(1)
-            .is_some_and(|sub| GIT_READERS.contains(&sub.as_str())),
-        program => READERS.contains(&program),
+    if powershell && POWERSHELL_READERS.contains(&program.as_str()) {
+        return true;
     }
+    READERS
+        .iter()
+        .find(|reader| reader.name == program)
+        .is_some_and(|reader| allowed(reader, arguments))
+}
+
+/// Whether a `job` call types into its command, which is a change like a
+/// command of its own.
+pub(crate) fn job_types(arguments: &str) -> bool {
+    parse::<JobArguments>(arguments).map_or(true, |arguments| {
+        arguments.input.is_some_and(|input| !input.is_empty()) || !arguments.keys.is_empty()
+    })
 }
 
 #[derive(Deserialize)]
@@ -360,9 +1028,7 @@ fn start(key: Key, folder: &Path, command: String, confined: bool) -> Result<Arc
     let logs = key.0.join(format!("thread-{}", key.1 .0));
     std::fs::create_dir_all(&logs)
         .map_err(|error| format!("could not create {}: {error}", logs.display()))?;
-    let log = logs.join(format!("job-{id}.log"));
-    let file = File::create(&log)
-        .map_err(|error| format!("could not create {}: {error}", log.display()))?;
+    let (log, file) = new_log(&logs, id)?;
 
     let pty = native_pty_system();
     let pair = pty
@@ -388,6 +1054,10 @@ fn start(key: Key, folder: &Path, command: String, confined: bool) -> Result<Arc
     let mut builder = CommandBuilder::from_argv(argv.into_iter().map(Into::into).collect());
     builder.cwd(folder);
     builder.env("TERM", "xterm-256color");
+    // A pager would wait for keys, and `less` runs commands typed into it.
+    for (name, value) in [("GIT_PAGER", "cat"), ("PAGER", "cat"), ("LESSSECURE", "1")] {
+        builder.env(name, value);
+    }
     for name in ["TMP", "TEMP", "TMPDIR"] {
         builder.env(name, &temp);
     }
@@ -445,6 +1115,26 @@ fn start(key: Key, folder: &Path, command: String, confined: bool) -> Result<Arc
             .send_replace(Some((code, waiter.started.elapsed())));
     });
     Ok(job)
+}
+
+/// A new log file for job `id`. Job numbers start again with each process,
+/// so the name also carries the start time, and an existing log is never
+/// replaced: the logs named in stored conversations keep their output.
+fn new_log(logs: &Path, id: u64) -> Result<(PathBuf, File), String> {
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S%.3f");
+    for attempt in 0u32.. {
+        let name = match attempt {
+            0 => format!("job-{id}-{stamp}.log"),
+            n => format!("job-{id}-{stamp}-{n}.log"),
+        };
+        let log = logs.join(name);
+        match File::options().write(true).create_new(true).open(&log) {
+            Ok(file) => return Ok((log, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(format!("could not create {}: {error}", log.display())),
+        }
+    }
+    unreachable!("some name is free")
 }
 
 /// The shell commands run in, as the model is told.
@@ -687,31 +1377,91 @@ mod tests {
 
     #[test]
     fn only_plain_reading_commands_count_as_reading() {
-        for command in [
-            "ls -la",
-            "git status",
-            "git log --oneline -5",
-            "Get-Content README.md",
-            "rg TODO src",
-            "find . -name '*.rs'",
-        ] {
-            assert!(reads_only(command), "{command}");
+        for powershell in [false, true] {
+            for command in [
+                "ls -la",
+                "git status",
+                "git log --oneline -5",
+                "git diff --stat HEAD~1",
+                "git grep -n TODO",
+                "rg -n TODO src",
+                "rg 'a b' --glob '*.rs'",
+                "find . -name '*.rs' -type f",
+                "fd -e rs src",
+                "head -n 20 README.md",
+            ] {
+                assert!(reads_only_in(command, powershell), "{command}");
+            }
+            for command in [
+                "mkdir x",
+                "git push",
+                "git branch -D old",
+                "git -c core.pager=sh log",
+                "git diff --output=x",
+                "git diff --ext-diff",
+                "git grep -O TODO",
+                "git grep -Ovim TODO",
+                "rg --pre ./evil TODO",
+                "rg --pre=./evil TODO",
+                "rg -z TODO",
+                "fd -x rm",
+                "fd --exec rm",
+                "find . -name x -delete",
+                "find . -exec rm {} ;",
+                "find . -fprint out",
+                "file -C -m x",
+                "date 010100002030",
+                "cat a > b",
+                "ls | xargs rm",
+                "ls; rm -rf .",
+                "cat $(echo x)",
+                "Get-Content (Remove-Item x)",
+                "Get-Content @(Remove-Item x)",
+                "Get-Content $env:USERPROFILE\\.ssh\\id_rsa",
+                "rg 'unclosed",
+                "",
+            ] {
+                assert!(!reads_only_in(command, powershell), "{command}");
+            }
         }
-        for command in [
-            "mkdir x",
-            "git push",
-            "git branch -D old",
-            "find . -name x -delete",
-            "find . -exec rm {} ;",
-            "cat a > b",
-            "ls | xargs rm",
-            "ls; rm -rf .",
-            "cat $(echo x)",
-            "Get-Content $env:USERPROFILE\\.ssh\\id_rsa",
-            "",
-        ] {
-            assert!(!reads_only(command), "{command}");
-        }
+        assert!(reads_only_in("Get-ChildItem -Recurse -Filter *.rs", true));
+        assert!(reads_only_in("Get-Content src\\main.rs", true));
+        assert!(!reads_only_in("Get-ChildItem -Recurse", false));
+        assert!(
+            !reads_only_in("rg -\\-pre=x TODO", false),
+            "an escape makes --pre"
+        );
+        assert!(
+            !reads_only_in("rg --'pre'=x TODO", true),
+            "quotes make --pre"
+        );
+    }
+
+    #[test]
+    fn typing_into_a_job_is_a_change_and_waiting_is_not() {
+        assert!(job_types(r#"{"id": 1, "input": "!sh\n"}"#));
+        assert!(job_types(r#"{"id": 1, "keys": ["Enter"]}"#));
+        assert!(!job_types(r#"{"id": 1, "wait_seconds": 5}"#));
+        assert!(!job_types(r#"{"id": 1, "stop": true, "input": ""}"#));
+        assert!(job_types("not json"));
+    }
+
+    #[test]
+    fn a_log_is_never_replaced() {
+        let dir = tempfile::tempdir().expect("dir");
+        std::fs::write(dir.path().join("old.log"), "kept").expect("write");
+        let (first, _) = new_log(dir.path(), 1).expect("log");
+        let (second, _) = new_log(dir.path(), 1).expect("log");
+        assert_ne!(first, second);
+        let name = first.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(
+            name.starts_with("job-1-") && name.ends_with(".log"),
+            "{name}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("old.log")).unwrap(),
+            "kept"
+        );
     }
 
     #[test]

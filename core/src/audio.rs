@@ -3,6 +3,7 @@
 //! sound is not analysed. Design: docs/evidence/audio-recording.md.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -87,6 +88,16 @@ pub(crate) async fn run(
     project: Option<&Path>,
     folder: &Path,
 ) -> Result<String, String> {
+    run_until(arguments, project, folder, Arc::default()).await
+}
+
+/// [`run`], where raising `stop` ends a recording, and nothing is saved.
+pub(crate) async fn run_until(
+    arguments: &str,
+    project: Option<&Path>,
+    folder: &Path,
+    stop: Arc<AtomicBool>,
+) -> Result<String, String> {
     let arguments: Arguments =
         serde_json::from_str(arguments).map_err(|error| format!("invalid arguments: {error}"))?;
     match arguments.action.as_str() {
@@ -95,7 +106,7 @@ pub(crate) async fn run(
             .map_err(|error| error.to_string())?,
         "record" => {
             let target = target(&arguments, project, folder)?;
-            tokio::task::spawn_blocking(move || record(&arguments, &target))
+            tokio::task::spawn_blocking(move || record(&arguments, &target, &stop))
                 .await
                 .map_err(|error| error.to_string())?
         }
@@ -349,7 +360,7 @@ fn convert(samples: &[f32], config: &SupportedStreamConfig, wanted: &Wanted) -> 
         .collect()
 }
 
-fn record(arguments: &Arguments, target: &Path) -> Result<String, String> {
+fn record(arguments: &Arguments, target: &Path, stop: &AtomicBool) -> Result<String, String> {
     let seconds = arguments.seconds.unwrap_or(5.0);
     if !(0.1..=MAX_SECONDS).contains(&seconds) {
         return Err(format!("seconds must be from 0.1 to {MAX_SECONDS}"));
@@ -360,7 +371,7 @@ fn record(arguments: &Arguments, target: &Path) -> Result<String, String> {
         .map_err(|error| format!("the device has no input format: {error}"))?;
     let wanted = wanted(arguments, &default)?;
     let config = stream_config(&device, &wanted)?;
-    let recorded = capture(&device, &config, seconds)?;
+    let recorded = capture(&device, &config, seconds, stop)?;
     let samples = convert(&recorded, &config, &wanted);
     let converted =
         if config.sample_rate() == wanted.sample_rate && config.channels() == wanted.channels {
@@ -399,6 +410,7 @@ fn capture(
     device: &Device,
     config: &SupportedStreamConfig,
     seconds: f64,
+    stop: &AtomicBool,
 ) -> Result<Vec<f32>, String> {
     let stream_config: StreamConfig = config.config();
     let wanted = (seconds * f64::from(stream_config.sample_rate)).round() as usize
@@ -430,6 +442,9 @@ fn capture(
         }
         if let Some(error) = failure.lock().expect("failure").take() {
             return Err(format!("recording failed: {error}"));
+        }
+        if stop.load(Ordering::Relaxed) {
+            return Err("the recording was stopped with the turn; nothing was saved".into());
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -684,6 +699,9 @@ mod tests {
         let call = std::env::var("INOCODE_AUDIO_CALL").expect("INOCODE_AUDIO_CALL");
         let file = std::env::var("INOCODE_AUDIO_FILE").expect("INOCODE_AUDIO_FILE");
         let arguments: Arguments = serde_json::from_str(&call).expect("arguments");
-        println!("{}", record(&arguments, Path::new(&file)).expect("record"));
+        println!(
+            "{}",
+            record(&arguments, Path::new(&file), &AtomicBool::new(false)).expect("record")
+        );
     }
 }

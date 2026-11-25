@@ -67,6 +67,45 @@ pub enum Decision {
     Block(Vec<NoteId>),
 }
 
+/// The texts of a call's arguments that rule patterns are matched in: each
+/// string value of the JSON arguments, decoded, or the whole text when it
+/// is not JSON. Runs of spaces become one space and a backslash becomes `/`, in
+/// the texts and in the patterns alike, so that neither the JSON escapes
+/// nor spacing nor the way a path is written lets a call past a rule.
+fn rule_texts(arguments: &str) -> Vec<String> {
+    fn strings(value: &serde_json::Value, texts: &mut Vec<String>) {
+        match value {
+            serde_json::Value::String(text) => texts.push(normalized(text)),
+            serde_json::Value::Array(items) => items.iter().for_each(|item| strings(item, texts)),
+            serde_json::Value::Object(fields) => {
+                fields.values().for_each(|item| strings(item, texts))
+            }
+            _ => {}
+        }
+    }
+    match serde_json::from_str::<serde_json::Value>(arguments) {
+        Ok(value) => {
+            let mut texts = Vec::new();
+            strings(&value, &mut texts);
+            texts
+        }
+        Err(_) => vec![normalized(arguments)],
+    }
+}
+
+fn normalized(text: &str) -> String {
+    text.replace('\\', "/")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Whether `pattern` is in one of `texts` (made by [`rule_texts`]).
+fn fires(pattern: &str, texts: &[String]) -> bool {
+    let pattern = normalized(pattern);
+    !pattern.is_empty() && texts.iter().any(|text| text.contains(&pattern))
+}
+
 /// Where an event happened in a conversation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct At {
@@ -323,7 +362,8 @@ impl Store {
         arguments: &str,
         at: Option<At>,
     ) -> Result<Decision, ErrorInfo> {
-        let (tool, arguments) = (tool.to_string(), arguments.to_string());
+        let tool = tool.to_string();
+        let texts = rule_texts(arguments);
         self.write(move |db| {
             let fired: Vec<(NoteId, String)> = {
                 let mut statement = db
@@ -349,10 +389,7 @@ impl Store {
                     let (id, patterns, action) = row.map_err(store_error)?;
                     let patterns: Vec<String> = serde_json::from_str(&patterns)
                         .map_err(|error| ErrorInfo::new("store", error.to_string()))?;
-                    if patterns
-                        .iter()
-                        .any(|pattern| !pattern.is_empty() && arguments.contains(pattern.as_str()))
-                    {
+                    if patterns.iter().any(|pattern| fires(pattern, &texts)) {
                         fired.push((id, action));
                     }
                 }
@@ -897,6 +934,35 @@ mod tests {
                 .await
                 .is_err());
         });
+    }
+
+    #[test]
+    fn patterns_are_matched_in_the_decoded_argument_values() {
+        let shell =
+            |command: &str| rule_texts(&serde_json::json!({ "command": command }).to_string());
+        assert!(fires("rm -rf", &shell("rm   -rf /")));
+        assert!(fires(
+            "rm -rf",
+            &rule_texts(r#"{"command": "rm\u0020-rf /"}"#)
+        ));
+        assert!(fires(
+            "C:\\Users\\me\\.ssh",
+            &rule_texts(r#"{"path": "C:\\Users\\me\\.ssh\\id_rsa"}"#)
+        ));
+        assert!(fires(
+            ".ssh/id_rsa",
+            &rule_texts(r#"{"path": "C:\\Users\\me\\.ssh\\id_rsa"}"#)
+        ));
+        assert!(fires(
+            ".env",
+            &rule_texts(r#"{"edits": [{"path": "a/.env", "old": "", "new": ""}]}"#)
+        ));
+        assert!(!fires("command", &shell("ls")), "keys are not matched");
+        assert!(
+            fires("git push", &rule_texts("git push origin main")),
+            "plain text"
+        );
+        assert!(!fires("  ", &shell("anything")));
     }
 
     #[test]

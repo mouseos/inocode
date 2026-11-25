@@ -187,29 +187,35 @@ async fn install_from(
         })?;
     let target = installed_at(root, &entry.catalog, &entry.name);
     let staging = target.with_file_name(format!(".{}.partial", entry.name));
-    let download = root
-        .join("downloads")
-        .join(format!("{}-{}", entry.catalog, entry.name));
+    let previewed = preview_at(root, entry);
     let _ = std::fs::remove_dir_all(&staging);
-    let copied = fetch_source(entry, &download).await.and_then(|source| {
-        copy_folder(&source, &staging).map_err(|error| format!("cannot copy the plugin: {error}"))
-    });
-    let _ = std::fs::remove_dir_all(&download);
+    if let Some(parent) = staging.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("cannot make {}: {error}", parent.display()))?;
+    }
+    // What the person was shown when they approved is what is installed.
+    let copied = match previewed.is_dir() {
+        true => std::fs::rename(&previewed, &staging)
+            .map_err(|error| format!("cannot take the shown plugin: {error}")),
+        false => stage(entry, root, &staging).await,
+    };
     if let Err(error) = copied {
         let _ = std::fs::remove_dir_all(&staging);
         return Err(error);
     }
-    let _ = std::fs::remove_dir_all(&target);
-    std::fs::rename(&staging, &target)
-        .map_err(|error| format!("cannot put the plugin in place: {error}"))?;
+    replace(&staging, &target)?;
 
-    let plugin = Installed::at(entry.name.clone(), target.clone());
+    let plugin = Installed::at(entry.name.clone(), entry.catalog.clone(), target.clone());
     let skills: Vec<String> = plugin
         .skills()
         .into_iter()
         .map(|skill| skill.name)
         .collect();
-    let servers: Vec<String> = plugin.servers().into_iter().map(|(name, _)| name).collect();
+    let servers: Vec<String> = plugin
+        .mcp_servers(&[], false)
+        .into_iter()
+        .map(|server| server.name)
+        .collect();
     let mut answer = format!(
         "Installed {}@{} in {}.",
         entry.name,
@@ -238,6 +244,160 @@ async fn install_from(
         answer.push_str(&format!(" Not used here: {}.", unused.join(", ")));
     }
     Ok(answer)
+}
+
+/// Copies the plugin's files into `staging`.
+async fn stage(entry: &Entry, root: &Path, staging: &Path) -> Result<(), String> {
+    let download = root
+        .join("downloads")
+        .join(format!("{}-{}", entry.catalog, entry.name));
+    let copied = fetch_source(entry, &download).await.and_then(|source| {
+        copy_folder(&source, staging).map_err(|error| format!("cannot copy the plugin: {error}"))
+    });
+    let _ = std::fs::remove_dir_all(&download);
+    copied
+}
+
+/// Puts `staging` in place of `target`; the plugin installed before stays
+/// when that fails.
+fn replace(staging: &Path, target: &Path) -> Result<(), String> {
+    let old = target.with_file_name(format!(
+        ".{}.old",
+        target.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    let _ = std::fs::remove_dir_all(&old);
+    let had = target.exists();
+    if had {
+        std::fs::rename(target, &old)
+            .map_err(|error| format!("cannot move the installed plugin aside: {error}"))?;
+    }
+    if let Err(error) = std::fs::rename(staging, target) {
+        if had {
+            let _ = std::fs::rename(&old, target);
+        }
+        let _ = std::fs::remove_dir_all(staging);
+        return Err(format!("cannot put the plugin in place: {error}"));
+    }
+    let _ = std::fs::remove_dir_all(&old);
+    Ok(())
+}
+
+/// Where a plugin shown for approval waits until it is installed.
+fn preview_at(root: &Path, entry: &Entry) -> PathBuf {
+    root.join("previews")
+        .join(format!("{}-{}", entry.catalog, entry.name))
+}
+
+/// What the person is shown before approving `plugin_install`: the
+/// commands its MCP servers run, the addresses they reach, and the
+/// variables of the environment they ask for. The plugin is fetched for
+/// this and kept, so that the approved files are the ones installed.
+pub(crate) async fn preview(store: &Store, arguments: &str) -> String {
+    preview_in(&folder(store), &official(), arguments)
+        .await
+        .unwrap_or_else(|error| format!(". Its contents could not be shown: {error}"))
+}
+
+async fn preview_in(root: &Path, catalogs: &[Catalog], arguments: &str) -> Result<String, String> {
+    #[derive(Deserialize)]
+    struct Arguments {
+        plugin: String,
+    }
+    let arguments: Arguments =
+        serde_json::from_str(arguments).map_err(|error| format!("invalid arguments: {error}"))?;
+    let (name, catalog) = arguments
+        .plugin
+        .rsplit_once('@')
+        .ok_or("give the plugin as name@catalog")?;
+    let (entries, _) = entries(root, catalogs).await;
+    let entry = entries
+        .iter()
+        .find(|entry| entry.name == name && entry.catalog == catalog)
+        .ok_or_else(|| format!("no plugin {name} in catalog {catalog}"))?;
+    let previewed = preview_at(root, entry);
+    let _ = std::fs::remove_dir_all(&previewed);
+    if let Err(error) = stage(entry, root, &previewed).await {
+        let _ = std::fs::remove_dir_all(&previewed);
+        return Err(error);
+    }
+    let plugin = Installed::at(entry.name.clone(), entry.catalog.clone(), previewed);
+    Ok(describe(&plugin))
+}
+
+/// The servers of `plugin` as the person reads them before approving.
+fn describe(plugin: &Installed) -> String {
+    let mut lines = Vec::new();
+    for (name, settings) in plugin.listed() {
+        let text = |key: &str| settings.get(key).and_then(Value::as_str);
+        let mut line = match (text("command"), text("url")) {
+            (Some(command), _) => {
+                let args: Vec<&str> = settings
+                    .get("args")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect();
+                format!(
+                    "MCP server {name} runs `{}` outside the sandbox",
+                    std::iter::once(command)
+                        .chain(args)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )
+            }
+            (None, Some(url)) => format!(
+                "MCP server {name} connects to {}",
+                reqwest::Url::parse(url)
+                    .ok()
+                    .and_then(|url| url.host_str().map(str::to_string))
+                    .unwrap_or_else(|| url.to_string())
+            ),
+            (None, None) => format!("MCP server {name} names neither a command nor an address"),
+        };
+        let mut variables = Vec::new();
+        variables_in(&settings, &mut variables);
+        variables.retain(|variable| !ROOT_VARIABLES.contains(&variable.as_str()));
+        variables.sort();
+        variables.dedup();
+        if !variables.is_empty() {
+            line.push_str(&format!(
+                " and asks for the variables {} (filled only when listed in pluginVariables of mcp.json)",
+                variables.join(", ")
+            ));
+        }
+        lines.push(line);
+    }
+    let unused: Vec<&str> = ["agents", "hooks"]
+        .into_iter()
+        .filter(|part| plugin.root.join(part).exists())
+        .collect();
+    if !unused.is_empty() {
+        lines.push(format!("not used here: {}", unused.join(", ")));
+    }
+    match lines.is_empty() {
+        true => ". It has no MCP servers".to_string(),
+        false => format!(". It brings: {}", lines.join("; ")),
+    }
+}
+
+/// The names of the `${NAME}`s in `value`.
+fn variables_in(value: &Value, names: &mut Vec<String>) {
+    match value {
+        Value::String(text) => {
+            let mut rest = text.as_str();
+            while let Some(start) = rest.find("${") {
+                let Some(length) = rest[start..].find('}') else {
+                    break;
+                };
+                names.push(rest[start + 2..start + length].to_string());
+                rest = &rest[start + length + 1..];
+            }
+        }
+        Value::Array(items) => items.iter().for_each(|item| variables_in(item, names)),
+        Value::Object(fields) => fields.values().for_each(|item| variables_in(item, names)),
+        _ => {}
+    }
 }
 
 /// The folder of the plugin's own files: from the catalog's checkout, or
@@ -468,9 +628,21 @@ fn manifest(folder: &Path) -> Value {
 /// An installed plugin.
 pub(crate) struct Installed {
     name: String,
+    catalog: String,
     root: PathBuf,
     manifest: Value,
 }
+
+/// An MCP server of an installed plugin, as `mcp.json` would list it.
+pub(crate) struct Server {
+    pub name: String,
+    pub settings: Value,
+    /// The `${NAME}`s left empty: not listed in `pluginVariables`, or unset.
+    pub unfilled: Vec<String>,
+}
+
+/// The variables every plugin's settings may use: its own folder.
+const ROOT_VARIABLES: [&str; 2] = ["CLAUDE_PLUGIN_ROOT", "PLUGIN_ROOT"];
 
 pub(crate) struct Skill {
     pub name: String,
@@ -479,10 +651,11 @@ pub(crate) struct Skill {
 }
 
 impl Installed {
-    fn at(name: String, root: PathBuf) -> Self {
+    fn at(name: String, catalog: String, root: PathBuf) -> Self {
         let manifest = manifest(&root);
         Self {
             name,
+            catalog,
             root,
             manifest,
         }
@@ -500,6 +673,10 @@ impl Installed {
             let Ok(found) = std::fs::read_dir(&catalog) else {
                 continue;
             };
+            let catalog_name = catalog
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
             let mut found: Vec<_> = found
                 .flatten()
                 .filter(|item| item.path().is_dir())
@@ -508,7 +685,7 @@ impl Installed {
                 .collect();
             found.sort();
             for (name, path) in found {
-                plugins.push(Self::at(name, path));
+                plugins.push(Self::at(name, catalog_name.clone(), path));
             }
         }
         plugins
@@ -561,10 +738,8 @@ impl Installed {
         skills
     }
 
-    /// Its MCP servers as `mcp.json` would list them, named
-    /// `plugin_<plugin>_<server>`, with `${CLAUDE_PLUGIN_ROOT}` and other
-    /// `${NAME}`s filled in.
-    pub(crate) fn servers(&self) -> Vec<(String, Value)> {
+    /// Its MCP servers as its files list them, by their own names.
+    fn listed(&self) -> Vec<(String, Value)> {
         let listed = match self.manifest.get("mcpServers") {
             Some(Value::Object(servers)) => Value::Object(servers.clone()),
             Some(Value::String(path)) => read_json(inside(&self.root, path).ok()),
@@ -580,11 +755,40 @@ impl Installed {
         servers
             .into_iter()
             .filter(|(_, settings)| settings.is_object())
+            .collect()
+    }
+
+    /// Its MCP servers by name and settings, no variable of the
+    /// environment filled in.
+    pub(crate) fn servers(&self) -> Vec<(String, Value)> {
+        self.mcp_servers(&[], false)
+            .into_iter()
+            .map(|server| (server.name, server.settings))
+            .collect()
+    }
+
+    /// Its MCP servers as `mcp.json` would list them, named
+    /// `plugin_<plugin>_<server>` (with the catalog before the plugin's
+    /// name when `qualified`, for a name installed from two catalogs),
+    /// with `${CLAUDE_PLUGIN_ROOT}` and the `variables` the person listed
+    /// filled in. Any other `${NAME}` is left empty: a plugin chosen by the
+    /// model must not send the person's environment where it likes.
+    pub(crate) fn mcp_servers(&self, variables: &[String], qualified: bool) -> Vec<Server> {
+        self.listed()
+            .into_iter()
             .map(|(server, settings)| {
-                (
-                    format!("plugin_{}_{server}", self.name),
-                    fill(settings, &self.root),
-                )
+                let mut unfilled = Vec::new();
+                let settings = fill(settings, &self.root, variables, &mut unfilled);
+                unfilled.sort();
+                unfilled.dedup();
+                Server {
+                    name: match qualified {
+                        true => format!("plugin_{}_{}_{server}", self.catalog, self.name),
+                        false => format!("plugin_{}_{server}", self.name),
+                    },
+                    settings,
+                    unfilled,
+                }
             })
             .collect()
     }
@@ -619,25 +823,29 @@ fn read_json(path: Option<PathBuf>) -> Value {
         .unwrap_or(Value::Null)
 }
 
-/// Replaces `${CLAUDE_PLUGIN_ROOT}` with the plugin's folder and other
-/// `${NAME}`s with the environment's values (empty when unset).
-fn fill(value: Value, root: &Path) -> Value {
+/// Replaces `${CLAUDE_PLUGIN_ROOT}` with the plugin's folder and the
+/// `${NAME}`s of `variables` with the environment's values; the others,
+/// and listed ones that are unset, become empty and go to `unfilled`.
+fn fill(value: Value, root: &Path, variables: &[String], unfilled: &mut Vec<String>) -> Value {
     match value {
-        Value::String(text) => Value::String(fill_text(&text, root)),
-        Value::Array(items) => {
-            Value::Array(items.into_iter().map(|item| fill(item, root)).collect())
-        }
+        Value::String(text) => Value::String(fill_text(&text, root, variables, unfilled)),
+        Value::Array(items) => Value::Array(
+            items
+                .into_iter()
+                .map(|item| fill(item, root, variables, unfilled))
+                .collect(),
+        ),
         Value::Object(fields) => Value::Object(
             fields
                 .into_iter()
-                .map(|(key, item)| (key, fill(item, root)))
+                .map(|(key, item)| (key, fill(item, root, variables, unfilled)))
                 .collect(),
         ),
         other => other,
     }
 }
 
-fn fill_text(text: &str, root: &Path) -> String {
+fn fill_text(text: &str, root: &Path, variables: &[String], unfilled: &mut Vec<String>) -> String {
     let mut filled = String::new();
     let mut rest = text;
     while let Some(start) = rest.find("${") {
@@ -646,9 +854,18 @@ fn fill_text(text: &str, root: &Path) -> String {
         };
         filled.push_str(&rest[..start]);
         let name = &rest[start + 2..start + length];
-        match name {
-            "CLAUDE_PLUGIN_ROOT" | "PLUGIN_ROOT" => filled.push_str(&root.to_string_lossy()),
-            name => filled.push_str(&std::env::var(name).unwrap_or_default()),
+        if ROOT_VARIABLES.contains(&name) {
+            filled.push_str(&root.to_string_lossy());
+        } else {
+            let value = variables
+                .iter()
+                .any(|listed| listed == name)
+                .then(|| std::env::var(name).ok())
+                .flatten();
+            match value {
+                Some(value) => filled.push_str(&value),
+                None => unfilled.push(name.to_string()),
+            }
         }
         rest = &rest[start + length + 1..];
     }
@@ -778,6 +995,52 @@ mod tests {
         }
     }
 
+    #[test]
+    fn only_listed_variables_are_filled() {
+        std::env::set_var("INOCODE_TEST_PLUGIN_LISTED", "listed-value");
+        std::env::set_var("INOCODE_TEST_PLUGIN_SECRET", "secret-value");
+        let mut unfilled = Vec::new();
+        let filled = fill(
+            json!({
+                "url": "https://example.invalid/${INOCODE_TEST_PLUGIN_SECRET}",
+                "headers": {"x": "${INOCODE_TEST_PLUGIN_LISTED} ${INOCODE_TEST_PLUGIN_UNSET}"},
+                "args": ["${CLAUDE_PLUGIN_ROOT}/run"]
+            }),
+            Path::new("/plugin"),
+            &[
+                "INOCODE_TEST_PLUGIN_LISTED".to_string(),
+                "INOCODE_TEST_PLUGIN_UNSET".to_string(),
+            ],
+            &mut unfilled,
+        );
+        assert_eq!(filled["url"], "https://example.invalid/");
+        assert_eq!(filled["headers"]["x"], "listed-value ");
+        assert_eq!(filled["args"][0], "/plugin/run");
+        unfilled.sort();
+        assert_eq!(
+            unfilled,
+            ["INOCODE_TEST_PLUGIN_SECRET", "INOCODE_TEST_PLUGIN_UNSET"]
+        );
+    }
+
+    #[test]
+    fn a_failed_replacement_keeps_the_installed_plugin() {
+        let temp = tempfile::tempdir().expect("temp");
+        let target = temp.path().join("installed").join("notes");
+        write(&target.join("old.txt"), "old");
+        let missing = temp.path().join("no-staging");
+        assert!(replace(&missing, &target).is_err());
+        assert_eq!(
+            std::fs::read_to_string(target.join("old.txt")).expect("kept"),
+            "old"
+        );
+        let staging = temp.path().join("staging");
+        write(&staging.join("new.txt"), "new");
+        replace(&staging, &target).expect("replace");
+        assert!(target.join("new.txt").exists() && !target.join("old.txt").exists());
+        assert!(!temp.path().join("installed").join(".notes.old").exists());
+    }
+
     #[tokio::test]
     async fn plugins_are_found_installed_and_used() {
         let temp = tempfile::tempdir().expect("temp");
@@ -811,7 +1074,7 @@ mod tests {
                 ),
                 (
                     "plugins/notes/.mcp.json",
-                    r#"{"mcpServers":{"store":{"command":"${CLAUDE_PLUGIN_ROOT}/server","args":["--root","${CLAUDE_PLUGIN_ROOT}"]}}}"#,
+                    r#"{"mcpServers":{"store":{"command":"${CLAUDE_PLUGIN_ROOT}/server","args":["--root","${CLAUDE_PLUGIN_ROOT}"],"env":{"TOKEN":"${NOTES_TOKEN}"}}}}"#,
                 ),
                 ("plugins/notes/commands/new.md", "Make a note."),
             ],
@@ -854,9 +1117,18 @@ mod tests {
             .await
             .is_err());
 
+        let shown = preview_in(&root, &catalogs, r#"{"plugin": "notes@test-catalog"}"#)
+            .await
+            .expect("preview");
+        assert!(
+            shown.contains("MCP server store runs `${CLAUDE_PLUGIN_ROOT}/server --root ${CLAUDE_PLUGIN_ROOT}` outside the sandbox")
+                && shown.contains("asks for the variables NOTES_TOKEN"),
+            "{shown}"
+        );
         let installed = install_from(&root, &catalogs, r#"{"plugin": "notes@test-catalog"}"#)
             .await
             .expect("install");
+        assert!(!root.join("previews").join("test-catalog-notes").exists());
         assert!(installed.contains("notes:write-note"), "{installed}");
         assert!(installed.contains("plugin_notes_store"), "{installed}");
         assert!(!installed.contains("Not used here"), "{installed}");
@@ -887,12 +1159,16 @@ mod tests {
             .iter()
             .find(|plugin| plugin.name == "notes")
             .expect("notes");
-        let servers = notes.servers();
+        let servers = notes.mcp_servers(&[], false);
         assert_eq!(servers.len(), 1);
-        assert_eq!(servers[0].0, "plugin_notes_store");
+        assert_eq!(servers[0].name, "plugin_notes_store");
         let place = notes.root().to_string_lossy().into_owned();
-        assert_eq!(servers[0].1["command"], format!("{place}/server"));
-        assert_eq!(servers[0].1["args"][1], place);
+        assert_eq!(servers[0].settings["command"], format!("{place}/server"));
+        assert_eq!(servers[0].settings["args"][1], place);
+        assert_eq!(
+            notes.mcp_servers(&[], true)[0].name,
+            "plugin_test-catalog_notes_store"
+        );
 
         let again: Value = serde_json::from_str(
             &search_in(&root, &catalogs, r#"{"query": "notes"}"#)

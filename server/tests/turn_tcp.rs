@@ -309,10 +309,13 @@ async fn explore_answers_with_places_found_by_a_helper_that_only_reads() {
         let project = database().with_extension("project");
         std::fs::create_dir_all(&project).expect("project");
         std::fs::write(project.join("a.txt"), "first\nthe needle is here\n").expect("file");
+        let outside = project.with_extension("outside.txt");
+        std::fs::write(&outside, "kept outside\n").expect("outside");
         let mock = scripted(vec![
             tool_turn("e1", "explore", json!({"question": "where is the needle?"})),
             tool_turn("f1", "find", json!({"pattern": "needle"})),
             tool_turn("w1", "write", json!({"path": "b.txt", "content": "x"})),
+            tool_turn("r1", "read", json!({"path": outside.to_string_lossy()})),
             vec![
                 sse_delta("a.txt:2-2 the needle"),
                 finish("stop"),
@@ -329,7 +332,7 @@ async fn explore_answers_with_places_found_by_a_helper_that_only_reads() {
         assert_eq!(tool_results(&events), ["a.txt:2-2 the needle"]);
         assert_eq!(events.last().unwrap()["event"], "completed");
         let chats = chats(&mock);
-        assert_eq!(chats.len(), 5);
+        assert_eq!(chats.len(), 6);
         // The helper has its own instructions and only the reading tools.
         let helper = &chats[1].body;
         assert!(helper["messages"][0]["content"]
@@ -352,10 +355,15 @@ async fn explore_answers_with_places_found_by_a_helper_that_only_reads() {
             "{refused}"
         );
         assert!(!project.join("b.txt").exists());
+        // It cannot ask the person, so it reads nothing outside the project.
+        let kept = chats[4].body["messages"].to_string();
+        assert!(kept.contains("only the project is searched here"), "{kept}");
+        assert!(!kept.contains("kept outside"), "{kept}");
         // What the helper read stays out of the asking model's context.
-        let after = chats[4].body["messages"].to_string();
+        let after = chats[5].body["messages"].to_string();
         assert!(!after.contains("the needle is here"), "{after}");
         let _ = std::fs::remove_dir_all(&project);
+        let _ = std::fs::remove_file(&outside);
     })
     .await;
 }
@@ -1153,7 +1161,7 @@ async fn method_tags_must_be_in_use_unless_given_as_new() {
 }
 
 #[tokio::test]
-async fn methods_are_shared_across_projects_and_recalled_whole() {
+async fn approved_methods_are_shared_across_projects_and_recalled_whole() {
     with_timeout(async {
         let base = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
             "inocode-methods-{}-{}",
@@ -1189,7 +1197,7 @@ async fn methods_are_shared_across_projects_and_recalled_whole() {
             tool_turn("r1", "recall", json!({"query": "INOF firmware"})),
         ])
         .await;
-        let (core, _store) = core_and_store(&mock).await;
+        let (core, store) = core_and_store(&mock).await;
         let (addr, _stop, _handle) = start_server(core).await;
         let mut client = connect(addr).await;
         let mut threads = Vec::new();
@@ -1206,8 +1214,28 @@ async fn methods_are_shared_across_projects_and_recalled_whole() {
 
         let events = turn(&mut client, 3, threads[0], "unpack the INOF firmware").await;
         let results = tool_results(&events);
-        assert!(results[0].starts_with("Saved method"), "{}", results[0]);
+        assert!(
+            results[0]
+                .ends_with("as a candidate. It is used in later work once the person approves it."),
+            "{}",
+            results[0]
+        );
         assert_eq!(results[1], "identifier, title, and steps must not be empty");
+        // What the model saved waits, in its project, until the person
+        // approves it and shares it.
+        let saved = inocode_core::store::NoteId(
+            results[0]
+                .trim_start_matches("Saved method ")
+                .split(' ')
+                .next()
+                .and_then(|id| id.parse().ok())
+                .expect("the method's id"),
+        );
+        let note = store.note(saved).await.expect("note").expect("saved");
+        assert_eq!(note.status, "candidate");
+        assert!(note.project.is_some());
+        store.set_status(saved, "active").await.expect("approve");
+        store.share(saved).await.expect("share");
 
         let events = turn(&mut client, 4, threads[1], "unpack this INOF firmware").await;
         let recalled = &tool_results(&events)[0];
@@ -2216,6 +2244,68 @@ async fn the_model_asks_to_run_outside_the_sandbox_and_the_person_decides() {
         .await;
         assert!(tool_results(&events)[0].contains("exit code 0"));
         assert!(outside.is_dir(), "approved, it ran outside the sandbox");
+        let _ = std::fs::remove_dir_all(&outside);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn writes_outside_the_project_wait_for_the_person_in_every_mode_but_full() {
+    with_timeout(async {
+        let (project, outside) = project_and_outside("write-outside");
+        std::fs::create_dir_all(&outside).expect("outside");
+        let target = outside.join("note.txt");
+        let escape = json!({"path": target.to_string_lossy(), "content": "x"});
+        let mock = scripted(vec![
+            tool_turn("w1", "write", json!({"path": "inside.txt", "content": "x"})),
+            tool_turn("w2", "write", escape.clone()),
+            vec![sse_delta("asked"), finish("stop"), sse_done()],
+            tool_turn("w3", "write", escape.clone()),
+            vec![sse_delta("asked"), finish("stop"), sse_done()],
+            tool_turn("w4", "write", escape.clone()),
+        ])
+        .await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = project_thread(&mut client, &project).await;
+
+        let events = turn(&mut client, 2, thread, "write the notes").await;
+        let results = tool_results(&events);
+        assert!(results[0].starts_with("Created"), "{}", results[0]);
+        assert!(
+            results[1].starts_with(
+                "Held for the person's approval: it writes outside the project folder"
+            ),
+            "{}",
+            results[1]
+        );
+        assert!(!target.exists());
+
+        let events = turn_with(
+            &mut client,
+            3,
+            json!({"thread_id": thread, "prompt": "write it", "mode": "auto"}),
+        )
+        .await;
+        assert!(tool_results(&events)[0].starts_with("Held for the person's approval"));
+        assert!(
+            review_requests(&mock).is_empty(),
+            "the reviewer never decides it"
+        );
+        assert!(!target.exists());
+
+        // The approval names the same call written another way.
+        let approved = serde_json::to_string_pretty(&escape).expect("json");
+        let events = turn_with(
+            &mut client,
+            4,
+            json!({"thread_id": thread, "prompt": "go ahead",
+                   "approve": [{"tool": "write", "arguments": approved}]}),
+        )
+        .await;
+        assert!(tool_results(&events)[0].starts_with("Created"));
+        assert_eq!(std::fs::read_to_string(&target).expect("written"), "x");
         let _ = std::fs::remove_dir_all(&outside);
     })
     .await;

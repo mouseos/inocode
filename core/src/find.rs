@@ -35,7 +35,8 @@ pub(crate) fn spec() -> ToolSpec {
             matching the glob. files also limits the other searches (e.g. \"*.rs\", \
             \"src/**\"). Shows up to 50 results as path:line: text, with the total; narrow \
             the search when there are more. A matching line inside a function, method or \
-            type shows its name as path:line (in name): text. Respects .gitignore."
+            type shows its name as path:line (in name): text. Respects .gitignore; hidden \
+            files and folders are searched, the .git folder is not."
             .into(),
         parameters: json!({
             "type": "object",
@@ -135,6 +136,8 @@ fn walk<'s>(
 ) {
     WalkBuilder::new(root)
         .require_git(false)
+        .hidden(false)
+        .filter_entry(|entry| entry.file_name() != ".git")
         .build_parallel()
         .run(|| {
             let mut each = visit();
@@ -404,6 +407,24 @@ README.md:3 (in Parser):"
         assert_eq!(
             text,
             format!("src{separator}lib.rs:1: pub fn parse(text: &str) -> u32 {{\n(1 results)")
+        );
+    }
+
+    #[test]
+    fn hidden_files_are_searched_and_the_git_folder_is_not() {
+        let dir = project();
+        std::fs::create_dir_all(dir.path().join(".github/workflows")).expect("hidden");
+        std::fs::write(
+            dir.path().join(".github/workflows/ci.yml"),
+            "run: hidden-needle\n",
+        )
+        .expect("workflow");
+        std::fs::create_dir_all(dir.path().join(".git")).expect("git");
+        std::fs::write(dir.path().join(".git/config"), "hidden-needle\n").expect("config");
+        let text = find(dir.path(), json!({"pattern": "hidden-needle"}));
+        assert!(
+            text.contains("ci.yml:1") && text.ends_with("(1 results)"),
+            "{text}"
         );
     }
 
