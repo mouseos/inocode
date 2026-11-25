@@ -27,13 +27,7 @@ pub(crate) fn instruction(language: &str) -> String {
 }
 
 async fn configured(settings: &Path) -> Result<Option<String>, String> {
-    let text = match tokio::fs::read_to_string(settings).await {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.to_string()),
-    };
-    let value: serde_json::Value =
-        serde_json::from_str(&text).map_err(|error| error.to_string())?;
+    let value = crate::settings::read(settings).await?;
     match value.get("language") {
         None | Some(serde_json::Value::Null) => Ok(None),
         Some(serde_json::Value::String(language)) => {

@@ -1024,15 +1024,6 @@ async fn work<T: Send + 'static>(
     }
 }
 
-/// Bumped whenever the settings are written, so that a running turn sees
-/// a change at once.
-static SETTINGS_WRITTEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-/// How many times the settings were written by this process.
-pub(crate) fn settings_written() -> u64 {
-    SETTINGS_WRITTEN.load(std::sync::atomic::Ordering::SeqCst)
-}
-
 /// The translator for `service`, `google_key` and `models`, made once per
 /// process so that loaded models and open connections are kept.
 pub(crate) fn shared(
@@ -1115,15 +1106,7 @@ impl Settings {
 
     /// The settings in the file at `path`; the defaults when it is missing.
     pub(crate) async fn read(path: &Path) -> Result<Self, String> {
-        match tokio::fs::read_to_string(path).await {
-            Ok(text) => {
-                let value: Value =
-                    serde_json::from_str(&text).map_err(|error| error.to_string())?;
-                Self::from_value(&value)
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(error) => Err(error.to_string()),
-        }
+        Self::from_value(&crate::settings::read(path).await?)
     }
 }
 
@@ -1158,35 +1141,20 @@ fn tag(name: &str) -> Option<String> {
 /// leaving the rest of the file as it is, and gives back the result.
 pub(crate) async fn update(path: &Path, patch: &Value) -> Result<Settings, String> {
     let patch = patch.as_object().ok_or("the settings are not an object")?;
-    let mut value = match tokio::fs::read_to_string(path).await {
-        Ok(text) => serde_json::from_str(&text).map_err(|error| error.to_string())?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => json!({}),
-        Err(error) => return Err(error.to_string()),
-    };
-    let file = value
-        .as_object_mut()
-        .ok_or("the settings file is not an object")?;
-    let section = file.entry("translation").or_insert_with(|| json!({}));
-    if section.is_null() {
-        *section = json!({});
-    }
-    let section = section
-        .as_object_mut()
-        .ok_or("\"translation\" is not an object")?;
-    for (name, field) in patch {
-        section.insert(name.clone(), field.clone());
-    }
-    let settings = Settings::from_value(&value)?;
-    let text = serde_json::to_string_pretty(&value).map_err(|error| error.to_string())?;
-    let temporary = path.with_extension("json.tmp");
-    tokio::fs::write(&temporary, text)
-        .await
-        .map_err(|error| error.to_string())?;
-    tokio::fs::rename(&temporary, path)
-        .await
-        .map_err(|error| error.to_string())?;
-    SETTINGS_WRITTEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    Ok(settings)
+    crate::settings::update(path, |file| {
+        let section = file.entry("translation").or_insert_with(|| json!({}));
+        if section.is_null() {
+            *section = json!({});
+        }
+        let section = section
+            .as_object_mut()
+            .ok_or("\"translation\" is not an object")?;
+        for (name, field) in patch {
+            section.insert(name.clone(), field.clone());
+        }
+        Settings::from_value(&Value::Object(file.clone()))
+    })
+    .await
 }
 
 #[cfg(test)]

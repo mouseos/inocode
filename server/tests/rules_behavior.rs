@@ -10,6 +10,8 @@
 //! the environment. `INOCODE_EXPERIMENT_MODELS` (comma-separated) runs
 //! several models of that provider.
 
+mod support;
+
 use std::collections::BTreeSet;
 use std::time::Duration;
 
@@ -125,7 +127,7 @@ async fn decide(llm: &Llm, system: String, scenario: &Value) -> Result<String, S
 async fn whole_document_versus_retrieved_lines() {
     let fixtures: Value =
         serde_json::from_str(include_str!("fixtures/rules_behavior.json")).expect("fixtures");
-    let base = LlmConfig::from_env().expect("provider");
+    let base = support::live_config();
     let models: Vec<String> = std::env::var("INOCODE_EXPERIMENT_MODELS")
         .map(|list| {
             list.split(',')

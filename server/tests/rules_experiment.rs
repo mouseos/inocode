@@ -11,12 +11,13 @@
 //! needs a provider credential; run by hand with the provider in the
 //! environment; `INOCODE_EXPERIMENT_SKIP_EXTRACTION=1` runs A and A2 only.
 
+mod support;
+
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use inocode_core::store::{ProjectId, Store};
-use inocode_core::Llm;
 use serde_json::Value;
 
 const KS: [usize; 3] = [1, 3, 5];
@@ -179,7 +180,7 @@ fn report(label: &str, score: &Score, imported: usize, import_time: Duration) {
 async fn paragraphs_versus_extraction() {
     let scenarios: Value =
         serde_json::from_str(include_str!("fixtures/rules_scenarios.json")).expect("scenarios");
-    let llm = Arc::new(Llm::from_env().expect("provider"));
+    let llm = Arc::new(support::live_llm());
     let path = database();
     let store = Store::open(&path).await.expect("store");
     for entry in scenarios["documents"].as_array().expect("documents") {

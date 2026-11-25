@@ -798,10 +798,10 @@ mod tests {
         &'static str,
     );
 
-    /// Has the provider configured in the environment judge each case as
-    /// claimed `claim`, and prints the verdicts.
+    /// Has the provider the test-only `INOCODE_TEST_*` variables name judge
+    /// each case as claimed `claim`, and prints the verdicts.
     async fn judge(label: &str, claim: ClaimKind, cases: Vec<Case>) {
-        let llm = Llm::from_env().expect("provider");
+        let llm = crate::llm::live_test_llm();
         let base = std::env::temp_dir().join(format!("inocode-{label}-{}", std::process::id()));
         std::fs::create_dir_all(&base).expect("base");
         let store = crate::store::Store::open(base.join("inocode.db"))

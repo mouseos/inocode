@@ -171,7 +171,7 @@ async fn rules_are_extracted_from_the_whole_document() {
 #[tokio::test]
 #[ignore = "requires a provider credential; run by hand"]
 async fn live_extraction_of_the_fixture_documents() {
-    let llm = Arc::new(Llm::from_env().expect("provider"));
+    let llm = Arc::new(support::live_llm());
     let documents = [
         (
             "AGENTS.md",

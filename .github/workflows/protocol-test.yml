@@ -132,9 +132,11 @@ jobs:
           rustup default stable
           rustc --version
 
-      # The key is only read into an environment variable. It is never written
-      # to a file or to the log, and the test prints generated text lengths only.
-      # A missing key fails the job: an unexecuted live check is not a success.
+      # The key is only read into the test-only variable INOCODE_TEST_API_KEY;
+      # the test helper keeps it in a credential store in the test's own
+      # temporary folder. It is never written to the log, and the test prints
+      # generated text lengths only. A missing key fails the job: an
+      # unexecuted live check is not a success.
       - name: Check the provider credential
         shell: bash
         env:
@@ -152,7 +154,7 @@ jobs:
       - name: Live Logfare generation and streaming over TCP
         shell: bash
         env:
-          LOGFARE_API_KEY: ${{ secrets.LOGFARE_API_KEY }}
+          INOCODE_TEST_API_KEY: ${{ secrets.LOGFARE_API_KEY }}
         run: |
           set -o pipefail
           cargo test --release -p inocode-server --test live_api -- --ignored --nocapture --test-threads=1 | tee live-api.log
@@ -171,9 +173,10 @@ jobs:
           fi
 
       # The Messages live check against the official Anthropic API. Per project
-      # decision only Haiku models are used. The credential is passed as
-      # LOGFARE_API_KEY, the one environment variable the server reads. It runs
-      # even when the Logfare step failed, so its result is always observable.
+      # decision only Haiku models are used. The test chooses the anthropic
+      # kind; the test-only variables give the key, endpoint and model. It
+      # runs even when the Logfare step failed, so its result is always
+      # observable.
       - name: Live official Anthropic Messages generation and streaming over TCP
         if: always()
         shell: bash
@@ -189,10 +192,9 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
-          LOGFARE_API_KEY="${CLAUDE_API_KEY}" \
-          INOCODE_LLM_BASE_URL="https://api.anthropic.com" \
-          INOCODE_LLM_PROVIDER="anthropic" \
-          INOCODE_LLM_MODEL="claude-haiku-5-5" \
+          INOCODE_TEST_API_KEY="${CLAUDE_API_KEY}" \
+          INOCODE_TEST_BASE_URL="https://api.anthropic.com" \
+          INOCODE_TEST_MODEL="claude-haiku-5-5" \
           cargo test --release -p inocode-server --test live_api logfare_messages_api_generates_and_streams_text_over_tcp -- --ignored --exact --nocapture --test-threads=1 | tee official-api.log
           if grep -q "live claude-haiku-5-5 messages:" official-api.log; then
             grep "live claude-haiku-5-5 messages:" official-api.log >> "$GITHUB_STEP_SUMMARY"

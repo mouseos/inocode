@@ -54,57 +54,93 @@ TCP 上で動く JSON / 生バイナリ混在のフレームプロトコルラ�
 
 ## 設定
 
-| 環境変数 | 既定 | 用途 |
-| --- | --- | --- |
-| `LOGFARE_API_KEY` | なし（必須） | プロバイダーの API キー |
-| `INOCODE_LLM_PROVIDER` | `openai` | 接続方式: `openai`（`/chat/completions`、Bearer 認証）, `anthropic`（`/messages`、`x-api-key` ＋ `anthropic-version: 2023-06-01`）, `responses`（`/responses`、Bearer 認証）またはサブスクリプション/OAuth 方式の `claude-oauth` / `gpt-oauth` / `muse-code` / `deepai`（下記） |
-| `INOCODE_LLM_BASE_URL` | `https://logfare.ai/v1`（方式ごとの既定は下表） | API Base URL |
-| `INOCODE_LLM_MODEL` | `logfare/auto`（方式ごとの既定は下表） | モデル名 |
-| `INOCODE_COMPACT_MODEL` | 作業中のモデル | 圧縮の要約を書くモデル（同じ接続方式・同じ認証）。作業中のモデルと同じなら、要約の要求でキャッシュが効く |
-| `INOCODE_EXPLORE_MODEL` | 作業中のモデル | 道具 `explore` の探索役のモデル（同じ接続方式・同じ認証）。探索役は `find`・`read` だけを使い、場所と行の範囲を返す（[docs/evidence/explore-subagent.md](docs/evidence/explore-subagent.md)） |
-| `INOCODE_PORT` | `8787` | 待ち受けポート（待ち受けは常に `127.0.0.1`） |
-| `INOCODE_LLM_REASONING` | モデルの既定値（一覧にあれば）、なければ `medium` | 思考の深さ: `none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`（`ultra` は `max`）。受け付けない値は接続先のエラーをそのまま返す |
-| `INOCODE_LLM_REASONING_SUMMARY` | `auto` | 思考の要約: `auto` / `concise` / `detailed` / `none` |
+設定は `~/.inocode/settings.json`（`inocode.db` と同じフォルダー）の 1 つのファイルに書く。環境変数では設定しない。API キーとログインの認証情報はこのファイルに書かず、認証情報の保管場所（`~/.inocode/auth.json`）に置く。設計と根拠：[docs/evidence/account-pool.md](docs/evidence/account-pool.md)。
 
-Anthropic 方式の `max_tokens` は思考の指定に応じて決まる（思考なしで 8192。思考トークンが `max_tokens` を共有するため。`docs/evidence/anthropic-messages.md`、`docs/evidence/reasoning-controls.md` 参照）。Logfare の `/v1/messages` は Anthropic Messages API 互換なので、`INOCODE_LLM_PROVIDER=anthropic` を設定するだけで切り替わる。TCP プロトコル、イベント形式、`cancel` の意味は全方式で同じ。
-
-### サブスクリプション / OAuth ログイン
-
-`claude-oauth`（Claude Pro/Max）、`gpt-oauth`（ChatGPT/Codex）、`muse-code`（Meta Muse Code）は認証情報ストア `~/.inocode/auth.json` を使う。最初に一度だけログインする:
-
-```bash
-cargo run --release -p inocode-server -- login claude       # ブラウザで承認（失敗時は --code でコード貼り付け）
-cargo run --release -p inocode-server -- login gpt          # ブラウザで承認
-cargo run --release -p inocode-server -- login muse-code    # デバイスコードをブラウザで承認
+```json
+{
+  "providers": {
+    "logfare": {"kind": "openai", "default_model": "logfare/auto"},
+    "claude-oauth": {"kind": "claude-oauth", "reasoning": {"effort": "medium"}},
+    "local": {"kind": "openai", "base_url": "http://localhost:11434/v1", "default_model": "qwen3",
+              "models": ["qwen3"], "translation": {"outgoing": true, "model_language": "English"}}
+  },
+  "default": {"provider": "claude-oauth", "model": "claude-sonnet-5", "effort": "high", "summary": "auto"},
+  "roles": {
+    "compact": {"model": "claude-haiku-5-5"},
+    "explore": {"provider": "logfare", "model": "logfare/auto"},
+    "colleague": {"provider": "claude-oauth", "model": "claude-opus-5-5", "effort": "high"}
+  },
+  "server": {"port": 8787, "sandbox": true}
+}
 ```
 
-ログイン後は `INOCODE_LLM_PROVIDER` を切り替えるだけで使える（API キー変数は不要）:
+- `providers`：id ごとのプロバイダー。
+  - `kind`：`openai`（`/chat/completions`、Bearer）、`anthropic`（`/messages`、`x-api-key` ＋ `anthropic-version: 2023-06-01`）、`responses`（`/responses`、Bearer）、ログインで使う `claude-oauth` / `gpt-oauth` / `muse-code` / `deepai`（下表）。
+  - `base_url`：省くと種類ごとの既定。`https` か、`http://localhost`・`127.0.0.1`・`[::1]` だけ。
+  - `default_model`：省くと種類ごとの既定。`models`：使うモデルの一覧。省くと接続先から取る。
+  - `reasoning`：このプロバイダーのモデルの思考の深さ（`none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`、`ultra` は `max`）と要約（`auto` / `concise` / `detailed` / `none`）の既定。省くと、深さはモデルの一覧の既定、なければ `medium`。
+  - `translation`：英語などしか話せないモデル向けに、送る文を訳す設定（`outgoing`、`model_language`）。値は保存するが、送る文の翻訳はまだ実装していない。
+  - `disabled`：`true` で使わない。`client_version`：ChatGPT のモデル一覧に名乗る版（既定は全部が見える `99.0.0`）。
+- `default`：新しい会話のプロバイダー・モデル・思考の深さ・要約。会話は始めたときの `default` を持ち続け、`thread/settings` で会話ごとに変えられる。
+- `roles`：補助役のモデル。`review`（`auto` モードの審査）、`compact`（圧縮の要約）、`explore`（道具 `explore`）、`check`（ゴールの判定。省くと同僚、なければ会話のモデル）、`colleague`（行き詰まったときの同僚。省くと同僚なし）。各 `{provider, model, effort}`。`provider` を省くと会話と同じプロバイダー、`model` を省くと会話と同じモデル（`provider` を書いたときはそのプロバイダーの既定）。役ごと省くと会話のモデルが行う。
+- `server`：`port`（既定 `8787`、待ち受けは常に `127.0.0.1`）、`sandbox`（既定 `true`）。起動時の `--port N`・`--sandbox on|off` がこれより優先する。
 
-| `INOCODE_LLM_PROVIDER` | API 形式と既定エンドポイント | 既定モデル | 認証 |
+最初に起動したとき `providers` が無ければ、保存済みの認証情報から作る：`logfare` の API キーがあれば `logfare`（`openai`、`https://logfare.ai/v1`、`logfare/auto`）、ログイン済みの種類ごとにその種類の名前の項目。`default` は最初のもの。
+
+| `kind` | API 形式と既定エンドポイント | 既定モデル | 認証 |
 | --- | --- | --- | --- |
+| `openai` / `anthropic` / `responses` | 各形式、`https://logfare.ai/v1` | `logfare/auto` | `inocode-server key set <id>` で保存した API キー |
 | `claude-oauth` | Anthropic Messages、`https://api.anthropic.com/v1/messages` | `claude-sonnet-5` | OAuth Bearer（失効前に自動更新） |
 | `gpt-oauth` | OpenAI Responses、`https://chatgpt.com/backend-api/codex/responses` | `gpt-5.2-codex` | OAuth Bearer ＋ `chatgpt-account-id` |
 | `muse-code` | OpenAI Responses、`https://api.meta.ai/v1/responses` | `muse-spark-1.3` | 保存済みサブスクリプションキー（`LLM|`） |
 | `deepai` | モデルごとに Chat Completions または Responses、`https://api.deepai.org/deepai_code` | `glm-5.3-flash` | 保存済み `api-key` ＋チェックイン（`docs/evidence/deepai-code-provider.md`） |
 
-> `gpt-oauth` のモデル一覧は ChatGPT アカウントごとに異なります（既定の `gpt-5.2-codex` が一覧にないアカウントでは `model_not_found` になります）。`inocode-server models` で利用可能なモデルを確認し、`INOCODE_LLM_MODEL` で選んでください。
+Anthropic 方式の `max_tokens` は思考の指定に応じて決まる（思考なしで 8192。思考トークンが `max_tokens` を共有するため。`docs/evidence/anthropic-messages.md`、`docs/evidence/reasoning-controls.md` 参照）。TCP プロトコル、イベント形式、`cancel` の意味は全方式で同じ。
 
-認証情報はファイルに保存される（秘密値は Debug 出力・ログに出ない）。トークンは要求時に失効を確認し、期限切れなら更新トークンで自動更新する。
+### API キーとログイン
+
+```bash
+cargo run --release -p inocode-server -- key set logfare      # キーを入力（画面に出さない）。パイプでも渡せる
+cargo run --release -p inocode-server -- login claude       # ブラウザで承認（失敗時は --code でコード貼り付け）
+cargo run --release -p inocode-server -- login gpt          # ブラウザで承認
+cargo run --release -p inocode-server -- login muse-code    # デバイスコードをブラウザで承認
+cargo run --release -p inocode-server -- login deepai
+```
+
+- キーは認証情報の保管場所に `api-key/<プロバイダーの id>` という名前で保存する。
+- ログインすると、その種類のプロバイダーが `providers` に無ければ足す（`default` が空ならそれにする）。
+- 認証情報の値は Debug 出力・ログに出ない。トークンは要求時に失効を確認し、期限切れなら更新トークンで自動更新する。
+
+> `gpt-oauth` のモデル一覧は ChatGPT アカウントごとに異なります（既定の `gpt-5.2-codex` が一覧にないアカウントでは `model_not_found` になります）。`inocode-server models gpt-oauth` で利用可能なモデルを確認し、`default_model` か会話の `model` で選んでください。
+
+### 設定のプロトコル
+
+| メソッド | params | result |
+| --- | --- | --- |
+| `providers/list` | なし | `{providers: [{id, kind, …設定, effective_base_url, effective_default_model, credential}], default}`。`credential` は認証情報があるか（読めなければ `null`） |
+| `providers/add` | `{id, kind, base_url?, default_model?, models?, reasoning?, translation?, disabled?, client_version?}` | `{provider}`。同じ id、知らない種類、`https` でも localhost でもない URL は `invalid_params` |
+| `providers/update` | `{id, …変える項目}`。`null` で既定に戻す | `{provider}` |
+| `providers/remove` | `{id}` | `{removed: id}`。`default` か役が選んでいれば `provider_in_use`（どこで選んでいるかを書く） |
+| `models/list` | `{provider}` | `{models: [...]}`（`models` と同じ形）。`models` を書いたプロバイダーはその一覧 |
+| `models` | `{thread_id?}` | 会話（なければ `default`）のプロバイダーのモデル |
+| `thread/settings` | `{thread_id, provider?, model?, effort?, summary?, mode?}`。変える項目が無ければ読むだけ。`null` で `default` に戻す | `{thread_id, provider, model, effort, summary, mode}` |
+| `settings/get` | なし | `{default, roles, server}` |
+| `settings/set` | `{default?, roles?, server?}`。各項目を 1 段だけ上書き、`null` で消す | `{default, roles, server}`。`providers` は `providers/*` で変える |
+
+- 会話のプロバイダーやモデルを変えると、次のモデルへの要求から使う（ターンの途中でも）。プロバイダーだけ変えると、モデルはそのプロバイダーの既定になる。
+- `mode` は、`turn/start` が `mode` を書かないときの承認モード。
+- 使えない選択（キーが無い、止めたプロバイダー）は保存せずにエラーを返す。
 
 ### モデル一覧の取得
 
-`models` で接続先が提供するモデル一覧を取得できる。CLI では:
+`models/list`（プロバイダーを指定）と `models`（会話のプロバイダー）で、接続先が提供するモデル一覧を取得できる。CLI では:
 
 ```bash
-cargo run --release -p inocode-server -- models
+cargo run --release -p inocode-server -- models            # default のプロバイダー
+cargo run --release -p inocode-server -- models logfare
 ```
 
-TCP プロトコルでは `models` メソッド（即時応答、`{"id": n, "method": "models"}`）で、応答の `result.models` に `id` / `display_name` / `owned_by` が入る。エンドポイントは方式ごとに OpenAI 標準の `{base}/models`（Muse・GPT・Chat Completions）または Anthropic の `{base}/v1/models?limit=1000`（Messages）で、認証は chat と同一（Muse は `LLM|` キー、OAuth は保存済みトークン）。取得は常に実通信で行い、応答は 16 MiB で上限を切る。
-
-```bash
-export LOGFARE_API_KEY=...            # 環境変数からのみ読む。リポジトリに書かない
-cargo run --release -p inocode-server
-```
+応答の `result.models` に `id` / `display_name` / `owned_by` / `reasoning_levels` / `default_reasoning` が入る。エンドポイントは方式ごとに OpenAI 標準の `{base}/models`（Muse・GPT・Chat Completions）または Anthropic の `{base}/v1/models?limit=1000`（Messages）で、認証は chat と同一（Muse は `LLM|` キー、OAuth は保存済みトークン）。取得は常に実通信で行い、応答は 16 MiB で上限を切る。
 
 ### MCP サーバー
 
@@ -153,13 +189,14 @@ Claude でサインインしていれば claude.ai のコネクタ、ChatGPT で
 
 ### 行き詰まったときの同僚
 
-`settings.json` に同僚のモデルを書くと、同じ呼び出しを 3 回したときや、探す・編集・実行のどれかだけを 7 手続けたときに、そのモデルに次の一手を聞き、作業中のモデルに伝える（助言の後 5 手は聞かない）。1 ターンで 2 回助言の後もまだ行き詰まれば、人に質問として回す。着手中のローカル issue（道具 `issue`）が 2 ターン続けて未完了なら、次のターンの始めに同僚に聞き、2 回の助言の後も未完了が続けば人に回す。書かなければ同僚はいない:
+`settings.json` の `roles.colleague` に同僚のモデルを書くと、同じ呼び出しを 3 回したときや、探す・編集・実行のどれかだけを 7 手続けたときに、そのモデルに次の一手を聞き、作業中のモデルに伝える（助言の後 5 手は聞かない）。1 ターンで 2 回助言の後もまだ行き詰まれば、人に質問として回す。着手中のローカル issue（道具 `issue`）が 2 ターン続けて未完了なら、次のターンの始めに同僚に聞き、2 回の助言の後も未完了が続けば人に回す。書かなければ同僚はいない:
 
 ```json
-{"colleague": {"model": "claude-haiku-4-5", "provider": "claude-oauth"}}
+{"roles": {"colleague": {"provider": "claude-oauth", "model": "claude-haiku-4-5"}}}
 ```
 
-- `provider` を省くと、作業中のモデルと同じ提供元・同じ認証。`openai`・`anthropic`・`responses` では鍵を環境変数 `INOCODE_COLLEAGUE_API_KEY` に置き、必要なら `base_url` を書く。
+- `provider` を省くと、作業中のモデルと同じプロバイダー。`provider` は `providers` の id。
+- 前からの書き方 `{"colleague": {"model": …, "provider": …, "base_url": …}}` も、`roles.colleague` が無いときに読む。この `provider` は `providers` の id か、ログインの種類の名前（`claude-oauth` など）。
 - 設計と根拠：[docs/evidence/colleague-review.md](docs/evidence/colleague-review.md)。
 
 ### 画像とカメラ
@@ -206,13 +243,27 @@ cargo test --workspace --release
 ```
 
 - 統合テストは実際の TCP 接続とループバックの模擬 HTTP API を使う。実 API は叩かない。
-- 実 Logfare API の確認は `server/tests/live_api.rs`（既定で `ignored`）。
+- 実 API の確認は `server/tests/live_*.rs` と core の一部のテスト（既定で `ignored`）。
+
+### 実 API のテスト（テスト専用の環境変数）
+
+実 API のテストだけは、接続先をテスト専用の環境変数で選ぶ。製品はこれを読まない。テストの補助（`server/tests/support/mod.rs` の `live_core`・`live_llm`、`core/src/llm.rs` の `live_test_llm`）が、一時フォルダーに `settings.json` を書き、キーはそのフォルダーの認証情報の保管場所に入れる（利用者の `~/.inocode` には書かない）。
+
+| 変数 | 既定 | 用途 |
+| --- | --- | --- |
+| `INOCODE_TEST_PROVIDER` | `openai`（Messages のテストは `anthropic`） | プロバイダーの種類（`kind` と同じ名前） |
+| `INOCODE_TEST_BASE_URL` | 種類の既定 | エンドポイント |
+| `INOCODE_TEST_MODEL` | 種類の既定 | モデル |
+| `INOCODE_TEST_REASONING` | モデルの既定 | 思考の深さ |
+| `INOCODE_TEST_API_KEY` | なし（`openai`・`anthropic`・`responses` では必須） | API キー。ログインの種類は、この機械でログイン済みの認証情報を使う |
 
 ```bash
-LOGFARE_API_KEY=... cargo test --release -p inocode-server --test live_api -- --ignored --nocapture
+INOCODE_TEST_API_KEY=... cargo test --release -p inocode-server --test live_api -- --ignored --nocapture
+INOCODE_TEST_PROVIDER=claude-oauth INOCODE_TEST_MODEL=claude-haiku-5-5 cargo test --release -p inocode-server --test live_api logfare_generates_and_streams_text_over_tcp -- --ignored --exact --nocapture
 ```
 
-- `.github/workflows/protocol-test.yml` は手動実行のみ。Ubuntu / Windows / macOS で fmt・clippy・build・test を回し、`LOGFARE_API_KEY` がある場合は実 API の生成とストリーミングも 3 OS で確認する。キー未設定のときは実 API ジョブが失敗する（未実施を成功扱いにしない）。キーはログに出力しない。
+- `live_tool_search` だけは、利用者の `~/.inocode/settings.json` の `default` で動く（アカウントのコネクタを使うため）。
+- `.github/workflows/protocol-test.yml` は手動実行のみ。Ubuntu / Windows / macOS で fmt・clippy・build・test を回し、`LOGFARE_API_KEY` のシークレットがある場合は `INOCODE_TEST_API_KEY` として渡して実 API の生成とストリーミングも 3 OS で確認する。キー未設定のときは実 API ジョブが失敗する（未実施を成功扱いにしない）。キーはログに出力しない。
 
 ## 記録
 

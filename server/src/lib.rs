@@ -247,6 +247,18 @@ async fn dispatch(
             ));
             true
         }
+        "providers/list" | "providers/add" | "providers/update" | "providers/remove"
+        | "models/list" | "thread/settings" | "settings/get" | "settings/set" => {
+            // Settings and credential files, and for models/list an HTTP
+            // round trip: off the read loop like the store requests.
+            tokio::spawn(settings_request(
+                request,
+                stream_id,
+                Arc::clone(core),
+                queue.clone(),
+            ));
+            true
+        }
         "cancel" => cancel(request, stream_id, queue, in_flight).await,
         "models/catalog" => {
             // Fetches prices and scores: off the read loop, like discovery.
@@ -316,12 +328,22 @@ async fn dispatch(
             // Discovery is an HTTP round trip: it runs beside the read loop,
             // like `chat`, so the connection keeps reading `cancel` and other
             // requests while the provider answers.
-            tokio::spawn(list_models(
-                request.id,
-                stream_id,
-                Arc::clone(core),
-                queue.clone(),
-            ));
+            let thread = match request
+                .params
+                .as_ref()
+                .and_then(|params| params.get("thread_id"))
+            {
+                None | Some(Value::Null) => Ok(None),
+                Some(_) => request.thread().map(Some),
+            };
+            let (id, core, queue) = (request.id, Arc::clone(core), queue.clone());
+            tokio::spawn(async move {
+                let models = match thread {
+                    Ok(thread) => core.models(None, thread).await,
+                    Err(error) => Err(error),
+                };
+                let _ = send(&queue, stream_id, models_payload(id, models)).await;
+            });
             true
         }
         _ => {
@@ -332,8 +354,9 @@ async fn dispatch(
     }
 }
 
-async fn list_models(id: u64, stream_id: u64, core: Arc<Core>, queue: mpsc::Sender<Outgoing>) {
-    let payload = match core.models().await {
+/// The answer to `models` and `models/list`.
+fn models_payload(id: u64, models: Result<Vec<inocode_core::ModelInfo>, ErrorInfo>) -> Value {
+    match models {
         Ok(models) => {
             let listed: Vec<Value> = models
                 .iter()
@@ -359,6 +382,51 @@ async fn list_models(id: u64, stream_id: u64, core: Arc<Core>, queue: mpsc::Send
         }
         Err(error) => {
             json!({ "id": id, "error": error })
+        }
+    }
+}
+
+async fn settings_request(
+    request: Request,
+    stream_id: u64,
+    core: Arc<Core>,
+    queue: mpsc::Sender<Outgoing>,
+) {
+    let params = request.params.clone().unwrap_or_else(|| json!({}));
+    let payload = if request.method == "models/list" {
+        let models = match params.get("provider") {
+            Some(Value::String(provider)) => core.models(Some(provider), None).await,
+            _ => Err(ErrorInfo::new(
+                "invalid_params",
+                "requires a \"provider\" string",
+            )),
+        };
+        models_payload(request.id, models)
+    } else {
+        let result = match request.method.as_str() {
+            "providers/list" => core.providers().await,
+            "providers/add" => core.add_provider(&params).await,
+            "providers/update" => core.update_provider(&params).await,
+            "providers/remove" => core.remove_provider(&params).await,
+            "settings/get" => core.get_settings().await,
+            "settings/set" => core.set_settings(&params).await,
+            // `thread/settings` with nothing but the thread reads; any
+            // other field is a change.
+            _ => match request.thread() {
+                Ok(thread)
+                    if params
+                        .as_object()
+                        .is_some_and(|fields| fields.keys().any(|name| name != "thread_id")) =>
+                {
+                    core.set_thread_settings(thread, &params).await
+                }
+                Ok(thread) => core.thread_settings(thread).await,
+                Err(error) => Err(error),
+            },
+        };
+        match result {
+            Ok(result) => json!({ "id": request.id, "result": result }),
+            Err(error) => json!({ "id": request.id, "error": error }),
         }
     };
     // A closed connection has nobody to answer.
@@ -551,7 +619,7 @@ async fn start_turn(
 ) -> bool {
     let parsed = request.thread().and_then(|thread| {
         let prompt = (request.prompt()?.to_string(), request.reply_to()?);
-        Ok((thread, prompt, request.approvals()?))
+        Ok((thread, prompt, (request.approvals()?, request.names_mode())))
     });
     let (thread, prompt, allowed) = match parsed {
         Ok(parsed) => parsed,
@@ -591,15 +659,36 @@ async fn start_turn(
 async fn run_turn(
     id: u64,
     thread: inocode_core::store::SessionId,
-    ((prompt, reply_to), approvals): ((String, Option<i64>), inocode_core::turn::Approvals),
+    ((prompt, reply_to), (mut approvals, names_mode)): (
+        (String, Option<i64>),
+        (inocode_core::turn::Approvals, bool),
+    ),
     stream_id: u64,
     core: Arc<Core>,
     queue: mpsc::Sender<Outgoing>,
     in_flight: InFlight,
     cancelled: watch::Receiver<bool>,
 ) {
-    let steer = match core.begin_turn(thread).await {
-        Ok(steer) => steer,
+    if !names_mode {
+        match core.thread_mode(thread).await {
+            Ok(Some(mode)) => approvals.mode = mode,
+            Ok(None) => {}
+            Err(error) => {
+                settle(
+                    id,
+                    stream_id,
+                    &queue,
+                    &in_flight,
+                    cancelled,
+                    Terminal::Failed(error),
+                )
+                .await;
+                return;
+            }
+        }
+    }
+    let claim = match core.begin_turn(thread).await {
+        Ok(claim) => claim,
         Err(error) => {
             settle(
                 id,
@@ -628,7 +717,7 @@ async fn run_turn(
             prompt,
             reply_to,
             approvals,
-            steer,
+            claim,
             cancelled.clone(),
             events,
         );

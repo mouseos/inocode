@@ -20,6 +20,8 @@
 //! calls a real model; `INOCODE_EXPERIMENT_MODELS` (comma-separated) runs
 //! several models of the configured provider.
 
+mod support;
+
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::Duration;
 
@@ -428,7 +430,7 @@ async fn fewer_tokens_at_the_same_accuracy() {
     }
     sets.push(("long (AGENTS.md + both)".to_string(), long, all));
 
-    let base = LlmConfig::from_env().expect("provider");
+    let base = support::live_config();
     let models: Vec<String> = std::env::var("INOCODE_EXPERIMENT_MODELS")
         .map(|list| {
             list.split(',')
@@ -613,7 +615,7 @@ async fn crossover_by_length() {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(1);
-    let base = LlmConfig::from_env().expect("provider");
+    let base = support::live_config();
     let models: Vec<String> = std::env::var("INOCODE_EXPERIMENT_MODELS")
         .map(|list| {
             list.split(',')

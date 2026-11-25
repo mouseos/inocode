@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use crate::conversation::{AssistantPart, Body, Message};
 use crate::ErrorInfo;
 
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
 /// Tool results above this size are stored once in `blobs` and referenced.
 const BLOB_THRESHOLD: usize = 16 * 1024;
 /// Text indexed per message; the rest stays readable but unsearchable.
@@ -220,9 +220,19 @@ CREATE TABLE promises(
 );
 "#;
 
+/// The provider, model, reasoning and approval mode a thread chose
+/// (docs/evidence/account-pool.md), as JSON written by the harness.
+const SCHEMA_V9: &str = r#"
+CREATE TABLE thread_settings(
+    session_id INTEGER PRIMARY KEY REFERENCES sessions(id),
+    settings TEXT NOT NULL,
+    updated INTEGER NOT NULL
+);
+"#;
+
 /// Schema steps; step `i` brings the database to version `i + 1`.
-const MIGRATIONS: [&str; 8] = [
-    SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8,
+const MIGRATIONS: [&str; 9] = [
+    SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9,
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -675,6 +685,38 @@ impl Store {
         self.read(Duration::from_secs(5), move |db| {
             db.query_row(
                 "SELECT goal FROM goals WHERE session_id = ?1",
+                [session.0],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(store_error)
+        })
+        .await
+    }
+
+    /// Replaces what `session` chose to run on (JSON written by the
+    /// harness).
+    pub async fn set_thread_settings(
+        &self,
+        session: SessionId,
+        settings: String,
+    ) -> Result<(), ErrorInfo> {
+        self.write(move |db| {
+            db.execute(
+                "INSERT INTO thread_settings(session_id, settings, updated) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(session_id) DO UPDATE SET settings = ?2, updated = ?3",
+                params![session.0, settings, now()],
+            )
+            .map(drop)
+            .map_err(store_error)
+        })
+        .await
+    }
+
+    pub async fn thread_settings(&self, session: SessionId) -> Result<Option<String>, ErrorInfo> {
+        self.read(Duration::from_secs(5), move |db| {
+            db.query_row(
+                "SELECT settings FROM thread_settings WHERE session_id = ?1",
                 [session.0],
                 |row| row.get(0),
             )
@@ -2086,5 +2128,40 @@ mod migration {
                 row.get::<_, i64>(0)
             })
             .expect("the version 2 tables exist");
+        connection
+            .query_row("SELECT COUNT(*) FROM thread_settings", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("the version 9 table exists");
+    }
+
+    #[test]
+    fn a_thread_keeps_its_settings() {
+        let dir = tempfile::tempdir().expect("dir");
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let store = Store::open(dir.path().join("t.db")).await.expect("open");
+                let session = store.start_session(None, "").await.expect("session");
+                assert_eq!(store.thread_settings(session).await.expect("read"), None);
+                store
+                    .set_thread_settings(session, "{\"model\":\"a\"}".into())
+                    .await
+                    .expect("set");
+                store
+                    .set_thread_settings(session, "{\"model\":\"b\"}".into())
+                    .await
+                    .expect("replace");
+                assert_eq!(
+                    store
+                        .thread_settings(session)
+                        .await
+                        .expect("read")
+                        .as_deref(),
+                    Some("{\"model\":\"b\"}")
+                );
+            });
     }
 }

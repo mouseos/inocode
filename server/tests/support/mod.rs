@@ -433,3 +433,133 @@ pub fn reply_for(request: &MockRequest) -> String {
         .unwrap_or("unknown");
     format!("reply[{prompt}]")
 }
+
+/// The provider the live tests run on, from test-only variables (README,
+/// "Live tests"): `INOCODE_TEST_PROVIDER`, a provider kind (`kind` when
+/// unset, else `openai`); `INOCODE_TEST_BASE_URL`; `INOCODE_TEST_MODEL`;
+/// `INOCODE_TEST_REASONING`, the effort; and `INOCODE_TEST_API_KEY`, the key
+/// of a static-key kind. Sign-in kinds use the credentials signed in on
+/// this machine.
+pub struct LiveProvider {
+    pub provider: inocode_core::settings::Provider,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub api_key: Option<String>,
+}
+
+pub const LIVE_PROVIDER_ID: &str = "live";
+
+pub fn live_provider(kind: Option<inocode_core::settings::Kind>) -> LiveProvider {
+    use inocode_core::settings::{Kind, Provider};
+    let variable = |name: &str| {
+        std::env::var(name)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+    };
+    let kind = match variable("INOCODE_TEST_PROVIDER") {
+        Some(name) => Kind::parse(&name).expect("INOCODE_TEST_PROVIDER names a provider kind"),
+        None => kind.unwrap_or(Kind::OpenAi),
+    };
+    let mut provider = Provider::new(kind);
+    provider.base_url = variable("INOCODE_TEST_BASE_URL");
+    let api_key = variable("INOCODE_TEST_API_KEY");
+    assert!(
+        !kind.uses_api_key() || api_key.is_some(),
+        "INOCODE_TEST_API_KEY is required for the {} kind",
+        kind.name()
+    );
+    LiveProvider {
+        provider,
+        model: variable("INOCODE_TEST_MODEL"),
+        effort: variable("INOCODE_TEST_REASONING"),
+        api_key,
+    }
+}
+
+/// The model the live provider runs.
+pub fn live_model(kind: Option<inocode_core::settings::Kind>) -> String {
+    let live = live_provider(kind);
+    live.model
+        .unwrap_or_else(|| live.provider.default_model().to_string())
+}
+
+/// A core whose settings, beside `database`, name the live provider as the
+/// default; a static key is kept in a credential store beside it, never in
+/// the user's.
+pub async fn live_core(
+    database: &std::path::Path,
+    kind: Option<inocode_core::settings::Kind>,
+) -> Core {
+    let live = live_provider(kind);
+    let folder = database.parent().expect("the database has a folder");
+    std::fs::create_dir_all(folder).expect("folder");
+    let mut default = json!({ "provider": LIVE_PROVIDER_ID });
+    if let Some(model) = &live.model {
+        default["model"] = json!(model);
+    }
+    if let Some(effort) = &live.effort {
+        default["effort"] = json!(effort);
+    }
+    std::fs::write(
+        folder.join("settings.json"),
+        json!({
+            "providers": { LIVE_PROVIDER_ID: live.provider },
+            "default": default,
+        })
+        .to_string(),
+    )
+    .expect("settings");
+    let store = inocode_core::store::Store::open(database)
+        .await
+        .expect("store");
+    let core = Core::new().with_store(store);
+    match &live.api_key {
+        Some(key) => {
+            let path = folder.join("auth.json");
+            let mut credentials =
+                inocode_core::oauth::Store::load(path.clone()).expect("credentials");
+            credentials
+                .update(
+                    &inocode_core::settings::api_key_name(LIVE_PROVIDER_ID),
+                    |credential| credential.api_key = Some(key.clone()),
+                )
+                .expect("store the key");
+            core.with_credentials(path)
+        }
+        None => core,
+    }
+}
+
+/// A client for the live provider, for tests that talk to it directly.
+pub fn live_llm() -> inocode_core::Llm {
+    inocode_core::Llm::new(live_config()).expect("client")
+}
+
+/// The client settings of the live provider.
+pub fn live_config() -> inocode_core::LlmConfig {
+    let live = live_provider(None);
+    let model = live
+        .model
+        .clone()
+        .unwrap_or_else(|| live.provider.default_model().to_string());
+    let reasoning = inocode_core::reasoning::Reasoning {
+        effort: live.effort.as_deref().map(|effort| {
+            inocode_core::reasoning::Effort::parse(effort).expect("INOCODE_TEST_REASONING")
+        }),
+        ..Default::default()
+    };
+    inocode_core::LlmConfig::for_provider(
+        &live.provider,
+        &model,
+        live.api_key.unwrap_or_default(),
+        reasoning,
+        None,
+    )
+}
+
+/// A fresh folder for a live test's database and settings.
+pub fn live_folder(label: &str) -> std::path::PathBuf {
+    let folder = std::env::temp_dir().join(format!("inocode-live-{label}-{}", std::process::id()));
+    std::fs::create_dir_all(&folder).expect("folder");
+    folder
+}

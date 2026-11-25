@@ -1,6 +1,4 @@
-//! Compaction by a model named in `INOCODE_COMPACT_MODEL`. The variable is
-//! set for this whole test process, so these tests live apart from the
-//! other turn tests.
+//! Compaction by the model the `compact` role of the settings names.
 
 mod support;
 
@@ -14,17 +12,23 @@ use support::*;
 
 const SMALL: &str = "small-model";
 
+/// A fresh database path, in a folder of its own whose settings name the
+/// small model for compaction.
 fn database() -> std::path::PathBuf {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let index = NEXT.fetch_add(1, Ordering::SeqCst);
-    std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!(
-        "inocode-compaction-{}-{index}.db",
-        std::process::id()
-    ))
+    let folder = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("inocode-compaction-{}-{index}", std::process::id()));
+    std::fs::create_dir_all(&folder).expect("folder");
+    std::fs::write(
+        folder.join("settings.json"),
+        json!({"roles": {"compact": {"model": SMALL}}}).to_string(),
+    )
+    .expect("settings");
+    folder.join("inocode.db")
 }
 
 async fn core_for(mock: &MockApi) -> Arc<Core> {
-    std::env::set_var("INOCODE_COMPACT_MODEL", SMALL);
     let llm = Llm::new(LlmConfig {
         provider: ProviderKind::OpenAi,
         auth: inocode_core::oauth::AuthKind::ApiKey,

@@ -1,7 +1,7 @@
 //! A turn that has to find an account connector's tool with `tool_search`
-//! and call it, against the provider configured in the environment
-//! (`INOCODE_LLM_PROVIDER`, `INOCODE_LLM_MODEL`, …). Ignored because it needs
-//! network access and a signed-in account; run it by hand.
+//! and call it, on the default provider of `~/.inocode/settings.json`.
+//! Ignored because it needs network access and a signed-in account; run it
+//! by hand.
 
 use inocode_core::store::Store;
 use inocode_core::{turn, Core};
@@ -21,13 +21,13 @@ async fn a_deferred_connector_tool_is_found_and_called() {
     let project = std::env::temp_dir().join(format!("inocode-live-search-{}", std::process::id()));
     std::fs::create_dir_all(&project).expect("project");
     let store = Store::open(&database).await.expect("store");
-    let core = Core::from_env().with_store(store);
+    let core = Core::new().with_store(store);
     let thread = core
         .start_thread(Some(&project.to_string_lossy()))
         .await
         .expect("thread");
 
-    let steer = core.begin_turn(thread).await.expect("turn");
+    let claim = core.begin_turn(thread).await.expect("turn");
     let (_cancel_sender, cancel) = watch::channel(false);
     let (events, mut received) = mpsc::channel(1024);
     let printer = tokio::spawn(async move {
@@ -54,7 +54,7 @@ async fn a_deferred_connector_tool_is_found_and_called() {
                 .to_string(),
             None,
             turn::Approvals::default(),
-            steer,
+            claim,
             cancel,
             events,
         )

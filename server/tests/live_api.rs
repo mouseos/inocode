@@ -1,6 +1,8 @@
 //! Live check against the real provider. The `live-api` workflow job runs it on
-//! Linux, Windows, and macOS with `LOGFARE_API_KEY` supplied by the repository
-//! secret; it is ignored otherwise because it needs network access and a key.
+//! Linux, Windows, and macOS with the repository secret passed as the
+//! test-only `INOCODE_TEST_API_KEY` (support::live_core keeps it in a
+//! credential store of the test's own); it is ignored otherwise because it
+//! needs network access and a key.
 
 mod support;
 
@@ -8,7 +10,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use inocode_core::Core;
+use inocode_core::settings::Kind;
 use serde_json::{json, Value};
 use support::*;
 
@@ -90,10 +92,11 @@ fn print_result(
 }
 
 #[tokio::test]
-#[ignore = "requires LOGFARE_API_KEY; run by the live-api workflow job"]
+#[ignore = "requires INOCODE_TEST_API_KEY; run by the live-api workflow job"]
 async fn logfare_generates_and_streams_text_over_tcp() {
     with_timeout_of(LIVE_TIMEOUT, async {
-        let core = Arc::new(Core::from_env());
+        let database = live_folder("api-chat").join("inocode.db");
+        let core = Arc::new(live_core(&database, None).await);
         let (addr, _stop, _handle) = start_server(core).await;
         let mut client = connect(addr).await;
 
@@ -104,14 +107,70 @@ async fn logfare_generates_and_streams_text_over_tcp() {
     .await;
 }
 
+/// A turn of a thread that runs on the settings' default, answering a
+/// question whose answer is known.
+#[tokio::test]
+#[ignore = "requires a provider credential; run by hand"]
+async fn a_turn_answers_on_the_provider_the_settings_choose() {
+    with_timeout_of(LIVE_TIMEOUT, async {
+        let database = live_folder("api-turn").join("inocode.db");
+        let core = Arc::new(live_core(&database, None).await);
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = call(&mut client, 1, json!({"id": 1, "method": "thread/start"})).await
+            ["result"]["thread_id"]
+            .as_i64()
+            .expect("thread id");
+        let chosen = call(
+            &mut client,
+            2,
+            json!({"id": 2, "method": "thread/settings", "params": {"thread_id": thread}}),
+        )
+        .await;
+        client
+            .1
+            .write_json(
+                3,
+                &json!({"id": 3, "method": "turn/start", "params": {
+                    "thread_id": thread,
+                    "prompt": "What is 2 + 3? Reply with the number only.",
+                }}),
+            )
+            .await
+            .expect("send");
+        let mut text = String::new();
+        let started = Instant::now();
+        let last = loop {
+            let event = next_message(&mut client, 3).await;
+            match event["event"].as_str().unwrap_or_default() {
+                "delta" => text.push_str(event["text"].as_str().unwrap_or_default()),
+                "completed" | "failed" | "cancelled" => break event,
+                _ => {}
+            }
+        };
+        assert_eq!(last["event"], "completed", "{last}");
+        assert!(text.contains('5'), "the answer was {text:?}");
+        println!(
+            "live turn: provider={} model={} reason={} answer={:?} total={}ms",
+            chosen["result"]["provider"],
+            chosen["result"]["model"],
+            last["reason"],
+            text.trim(),
+            started.elapsed().as_millis()
+        );
+    })
+    .await;
+}
+
 #[tokio::test]
 #[ignore = "requires a provider credential; run by the live-api workflow jobs"]
 async fn logfare_messages_api_generates_and_streams_text_over_tcp() {
     with_timeout_of(LIVE_TIMEOUT, async {
-        // The provider must be selected through the same environment variable
-        // the deployment uses, and the base URL and model stay the defaults.
-        std::env::set_var("INOCODE_LLM_PROVIDER", "anthropic");
-        let core = Arc::new(Core::from_env());
+        // The provider is selected through the settings, as a deployment
+        // does; the base URL and model stay the kind's unless the test
+        // variables name others.
+        let database = live_folder("api-messages").join("inocode.db");
+        let core = Arc::new(live_core(&database, Some(Kind::Anthropic)).await);
         let (addr, _stop, _handle) = start_server(core).await;
         let mut client = connect(addr).await;
 
@@ -120,8 +179,7 @@ async fn logfare_messages_api_generates_and_streams_text_over_tcp() {
         let prompt =
             "Write a story about the ocean in Japanese, at least 300 words, with paragraphs.";
         let (deltas, text, first_delta, completed, kinds) = run_chat(&mut client, 1, prompt).await;
-        let model_name = std::env::var("INOCODE_LLM_MODEL")
-            .unwrap_or_else(|_| inocode_core::DEFAULT_MODEL.to_string());
+        let model_name = live_model(Some(Kind::Anthropic));
         println!(
             "live {model_name} messages kinds: {}",
             kinds
@@ -151,14 +209,13 @@ async fn logfare_messages_api_generates_and_streams_text_over_tcp() {
 /// and prints which event types and delta types arrive. Generated text is never
 /// printed.
 #[tokio::test]
-#[ignore = "requires LOGFARE_API_KEY; run by the live-api workflow job"]
+#[ignore = "requires INOCODE_TEST_API_KEY; run by the live-api workflow job"]
 async fn logfare_messages_stream_event_kinds() {
     with_timeout_of(LIVE_TIMEOUT, async {
-        let api_key = std::env::var("LOGFARE_API_KEY").expect("LOGFARE_API_KEY");
-        let base = std::env::var("INOCODE_LLM_BASE_URL")
-            .unwrap_or_else(|_| inocode_core::DEFAULT_BASE_URL.to_string());
-        let model = std::env::var("INOCODE_LLM_MODEL")
-            .unwrap_or_else(|_| inocode_core::DEFAULT_MODEL.to_string());
+        let live = live_provider(Some(Kind::Anthropic));
+        let api_key = live.api_key.clone().expect("INOCODE_TEST_API_KEY");
+        let base = live.provider.base_url().to_string();
+        let model = live_model(Some(Kind::Anthropic));
         let client = reqwest::Client::new();
         // Same URL convention as the implementation: the official Anthropic
         // client receives a base without /v1 and appends /v1/messages.
