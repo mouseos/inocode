@@ -1,10 +1,14 @@
 //! Translation of text into another language, for any part of inocode that
 //! shows text in the person's language: the services the browsers' page
-//! translation uses, code left as written, and text that streams in
-//! translated in order as it comes. Wire facts and the choices made:
-//! docs/evidence/translation.md.
+//! translation uses or Firefox's models run here offline, code left as
+//! written, and text that streams in translated in order as it comes.
+//! Wire facts and the choices made: docs/evidence/translation.md.
 
-use std::path::Path;
+mod firefox;
+mod marian;
+mod sentencepiece;
+
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -24,6 +28,7 @@ const LONGEST_CHUNK: usize = 400;
 pub enum Service {
     Edge,
     Google,
+    Firefox,
 }
 
 impl Service {
@@ -31,7 +36,16 @@ impl Service {
         match name {
             "edge" => Some(Self::Edge),
             "google" => Some(Self::Google),
+            "firefox" => Some(Self::Firefox),
             _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Edge => "edge",
+            Self::Google => "google",
+            Self::Firefox => "firefox",
         }
     }
 }
@@ -41,6 +55,8 @@ impl Service {
 pub struct Hosts {
     pub edge: String,
     pub google: String,
+    /// The Remote Settings server Firefox's models are listed on.
+    pub firefox: String,
 }
 
 impl Default for Hosts {
@@ -48,6 +64,7 @@ impl Default for Hosts {
         Self {
             edge: "https://edge.microsoft.com/translate/translatetext".into(),
             google: "https://translate-pa.googleapis.com/v1/translateHtml".into(),
+            firefox: firefox::SETTINGS.into(),
         }
     }
 }
@@ -58,29 +75,73 @@ pub struct Translator {
     google_key: String,
     hosts: Hosts,
     client: reqwest::Client,
+    /// Firefox's models, kept on disk and, once loaded, in memory.
+    firefox: firefox::Firefox,
 }
 
 impl Translator {
-    pub fn new(service: Service, google_key: Option<String>, hosts: Hosts) -> Self {
+    /// `models` is the folder Firefox's models are kept in.
+    pub fn new(
+        service: Service,
+        google_key: Option<String>,
+        hosts: Hosts,
+        models: PathBuf,
+    ) -> Self {
+        let client = reqwest::Client::builder()
+            // Edge's service refuses requests without one.
+            .user_agent(concat!("inocode/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .unwrap_or_default();
         Self {
             service,
             google_key: google_key.unwrap_or_else(|| GOOGLE_KEY.to_string()),
+            firefox: firefox::Firefox::new(models, hosts.firefox.clone(), client.clone()),
             hosts,
-            client: reqwest::Client::builder()
-                // Edge's service refuses requests without one.
-                .user_agent(concat!("inocode/", env!("CARGO_PKG_VERSION")))
-                .build()
-                .unwrap_or_default(),
+            client,
         }
     }
 
     /// Each of `texts` in the language `to` (a tag such as `ja`), in the
     /// same order; code in backticks is left as written.
-    pub async fn translate(&self, texts: &[String], to: &str) -> Result<Vec<String>, ErrorInfo> {
+    /// Gets ready to translate from `from` to `to`: Firefox's models are
+    /// fetched now rather than with the first text; the services need
+    /// nothing.
+    pub async fn prepare(&self, from: &str, to: &str) -> Result<(), ErrorInfo> {
         match self.service {
-            Service::Edge => self.around_code(texts, to).await,
-            Service::Google => self.with_code_marked(texts, to).await,
+            Service::Firefox => self.firefox.prepare(from, to).await,
+            Service::Edge | Service::Google => Ok(()),
         }
+    }
+
+    /// A text whose script shows it is already in `to` is given back as it
+    /// is, without being sent.
+    pub async fn translate(&self, texts: &[String], to: &str) -> Result<Vec<String>, ErrorInfo> {
+        let target = primary(to);
+        let mut out: Vec<Option<String>> = texts
+            .iter()
+            .map(|text| {
+                script_language(text)
+                    .is_some_and(|language| primary(language) == target)
+                    .then(|| text.clone())
+            })
+            .collect();
+        let sent: Vec<String> = texts
+            .iter()
+            .zip(&out)
+            .filter(|(_, kept)| kept.is_none())
+            .map(|(text, _)| text.clone())
+            .collect();
+        if !sent.is_empty() {
+            let translated = match self.service {
+                Service::Edge | Service::Firefox => self.around_code(&sent, to).await?,
+                Service::Google => self.with_code_marked(&sent, to).await?,
+            };
+            let mut translated = translated.into_iter();
+            for slot in out.iter_mut().filter(|slot| slot.is_none()) {
+                *slot = translated.next();
+            }
+        }
+        Ok(out.into_iter().map(Option::unwrap_or_default).collect())
     }
 
     /// Google leaves text in a `notranslate` span as it is, so each text
@@ -126,6 +187,7 @@ impl Translator {
         } else {
             match self.service {
                 Service::Edge => self.edge(&sent, to).await?,
+                Service::Firefox => self.firefox.translate(&sent, to).await?,
                 Service::Google => {
                     let escaped: Vec<String> = sent.iter().map(|text| escape(text)).collect();
                     let answers = self.google(&escaped, to).await?;
@@ -216,6 +278,40 @@ impl Translator {
             })
             .collect()
     }
+}
+
+/// The language of `text` when its script tells it: Japanese for kana,
+/// Korean for Hangul, Simplified Chinese for other Han characters; `None`
+/// when there are none or Latin letters outnumber them three to one (a
+/// word of a Latin-script language takes several letters where these take
+/// one or two characters), since the script does not tell Latin-script
+/// languages apart (docs/evidence/translation.md).
+pub(crate) fn script_language(text: &str) -> Option<&'static str> {
+    let (mut kana, mut hangul, mut han, mut latin) = (0, 0, 0, 0);
+    for char in text.chars() {
+        match char as u32 {
+            0x3040..=0x30FF | 0x31F0..=0x31FF | 0xFF66..=0xFF9F => kana += 1,
+            0x1100..=0x11FF | 0x3130..=0x318F | 0xAC00..=0xD7AF => hangul += 1,
+            0x3400..=0x4DBF | 0x4E00..=0x9FFF => han += 1,
+            _ if char.is_ascii_alphabetic() => latin += 1,
+            _ => {}
+        }
+    }
+    let written = kana + hangul + han;
+    if written == 0 || written * 3 < latin {
+        None
+    } else if kana > 0 {
+        Some("ja")
+    } else if hangul > 0 {
+        Some("ko")
+    } else {
+        Some("zh-Hans")
+    }
+}
+
+/// The language subtag of `tag`: `zh` for `zh-Hant`.
+fn primary(tag: &str) -> &str {
+    tag.split(['-', '_']).next().unwrap_or(tag)
 }
 
 /// Google answers 502 to a quoted attribute, so the class is unquoted.
@@ -711,8 +807,22 @@ mod tests {
             }
         );
         assert!(Settings::from_value(&json!({"translation": {"service": "deepl"}})).is_err());
+        let firefox = Settings::from_value(&json!({"translation": {"service": "firefox"}}));
+        assert_eq!(firefox.unwrap().service, Service::Firefox);
         assert!(Settings::from_value(&json!({"translation": {"thinking": "yes"}})).is_err());
         assert!(Settings::from_value(&json!({"translation": 3})).is_err());
+    }
+
+    #[test]
+    fn the_script_tells_only_the_languages_it_can() {
+        assert_eq!(script_language("まず src/main.rs を確認する。"), Some("ja"));
+        assert_eq!(script_language("設定を確認する。"), Some("ja"));
+        assert_eq!(script_language("需要检查代码。"), Some("zh-Hans"));
+        assert_eq!(script_language("사용자가 코드를 고친다."), Some("ko"));
+        assert_eq!(script_language("Ich muss die Datei prüfen."), None);
+        assert_eq!(script_language("Run the 测试 suite now"), None);
+        assert_eq!(script_language("12:25"), None);
+        assert_eq!(primary("zh-Hant"), "zh");
     }
 
     #[test]
@@ -809,7 +919,9 @@ mod tests {
             Hosts {
                 edge: edge.to_string(),
                 google: String::new(),
+                firefox: String::new(),
             },
+            PathBuf::new(),
         );
         let (out, mut received) = mpsc::channel(16);
         let streamer = Streamer::start(translator, "ja".into(), out, |piece| piece);
@@ -838,6 +950,18 @@ mod tests {
         // Pushed before the first translation started, so sent together.
         assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
 
+        let pieces = stream(&edge, &["もう日本語です。", "And English."]).await;
+        let joined: String = pieces.iter().map(|piece| piece.text.as_str()).collect();
+        assert_eq!(joined, "もう日本語です。AND ENGLISH.");
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 2);
+        let pieces = stream(&edge, &["日本語だけ。"]).await;
+        assert_eq!(pieces[0].text, "日本語だけ。");
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "sent text already in Japanese"
+        );
+
         let pieces = stream(&edge, &["This will fail. ", "So `this`."]).await;
         let joined: String = pieces.iter().map(|piece| piece.text.as_str()).collect();
         assert_eq!(joined, "This will fail. So `this`.");
@@ -845,12 +969,18 @@ mod tests {
     }
 
     /// Translates through the real services: `INOCODE_TRANSLATE_SERVICE`
-    /// (`edge` or `google`).
+    /// (`edge`, `google` or `firefox`, which keeps its models in the
+    /// temporary folder).
     #[tokio::test]
     #[ignore = "sends text to a translation service; run by hand"]
     async fn translates_here() {
         let service = std::env::var("INOCODE_TRANSLATE_SERVICE").unwrap_or_else(|_| "edge".into());
-        let translator = Translator::new(Service::parse(&service).unwrap(), None, Hosts::default());
+        let translator = Translator::new(
+            Service::parse(&service).unwrap(),
+            None,
+            Hosts::default(),
+            std::env::temp_dir().join("inocode-firefox-models"),
+        );
         let texts = vec![
             "I should check `src/main.rs` before running the tests.".to_string(),
             "The user wants a & b <now>.".to_string(),

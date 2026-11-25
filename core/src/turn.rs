@@ -531,6 +531,7 @@ async fn thinking_translator(
         settings.service,
         settings.google_key,
         crate::translate::Hosts::default(),
+        path.with_file_name("translation-models"),
     );
     Some((translator, to))
 }

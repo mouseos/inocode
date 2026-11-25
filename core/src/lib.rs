@@ -640,12 +640,27 @@ impl Core {
         let settings = translate::update(&path, patch)
             .await
             .map_err(|error| ErrorInfo::new("invalid_params", error))?;
+        if settings.thinking && settings.service == translate::Service::Firefox {
+            // Models take seconds to fetch the first time; fetching them now
+            // keeps the first turn's thinking from waiting on it.
+            let language = language::default(&path).await;
+            if let Some(to) = translate::target(&settings, language.as_deref()) {
+                let translator = translate::Translator::new(
+                    settings.service,
+                    None,
+                    translate::Hosts::default(),
+                    path.with_file_name("translation-models"),
+                );
+                tokio::spawn(async move {
+                    if let Err(error) = translator.prepare("en", &to).await {
+                        eprintln!("inocode: translation models: {}", error.message);
+                    }
+                });
+            }
+        }
         Ok(json!({
             "thinking": settings.thinking,
-            "service": match settings.service {
-                translate::Service::Edge => "edge",
-                translate::Service::Google => "google",
-            },
+            "service": settings.service.name(),
             "to": settings.to,
         }))
     }
