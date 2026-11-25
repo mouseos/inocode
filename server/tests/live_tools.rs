@@ -316,3 +316,147 @@ async fn thinking_is_translated_while_turned_on() {
     })
     .await;
 }
+
+/// Coding questions whose thinking is translated and scored.
+const QUESTIONS: [&str; 5] = [
+    "Why does this Rust code fail to compile, and how do I fix it? \
+     fn main() { let s = String::from(\"a\"); let t = s; println!(\"{} {}\", s, t); }",
+    "Plan how to add cursor-based pagination to GET /api/users in an Express app backed by \
+     PostgreSQL. Keep it short.",
+    "After `git rebase main`, src/lib.rs has conflicts and `cargo test` fails with \
+     `cannot find function parse_config`. What should I check, in order?",
+    "A Python service times out under load: requests pile up and memory grows. List the most \
+     likely causes and how to confirm each one.",
+    "Should a CLI read its config from ~/.config/tool/config.toml or from the current folder \
+     first? Weigh the trade-offs briefly.",
+];
+
+/// The model's thinking for `question`.
+async fn thinking_for(llm: &Llm, question: &str) -> String {
+    let conversation = Conversation {
+        system: None,
+        messages: vec![message(
+            0,
+            Body::User {
+                from: Speaker::Person,
+                parts: vec![question.to_string()],
+            },
+        )],
+    };
+    let mut stream = llm.converse(&conversation, &[]).await.expect("start");
+    let mut thinking = String::new();
+    while let Some(piece) = stream.next_piece().await.expect("stream") {
+        if let inocode_core::Piece::Thinking(delta) = piece {
+            thinking.push_str(&delta);
+        }
+    }
+    thinking
+}
+
+/// GEMBA-DA without a reference (Kocmi and Federmann, EAMT 2023), word for
+/// word: a score from 0 to 100 for how much meaning `translation` keeps.
+async fn gemba_score(llm: &Llm, source: &str, translation: &str) -> Option<f64> {
+    let prompt = format!(
+        "Score the following translation from English to Japanese on a continuous scale from \
+         0 to 100, where a score of zero means \"no meaning preserved\" and score of one hundred \
+         means \"perfect meaning and grammar\".\n\nEnglish source: \"{source}\"\nJapanese \
+         translation: \"{translation}\"\nScore: "
+    );
+    let conversation = Conversation {
+        system: None,
+        messages: vec![message(
+            0,
+            Body::User {
+                from: Speaker::Person,
+                parts: vec![prompt],
+            },
+        )],
+    };
+    let (text, _) = turn(llm, &conversation, &[]).await;
+    let digits: String = text
+        .trim()
+        .chars()
+        .skip_while(|c| !c.is_ascii_digit())
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    digits
+        .parse()
+        .ok()
+        .filter(|score| (0.0..=100.0).contains(score))
+}
+
+/// Translates the thinking of real coding questions into Japanese with
+/// each service in `INOCODE_TRANSLATE_SERVICES` (comma-separated; all four
+/// by default) and scores every piece with GEMBA-DA by the configured
+/// model. Writes every piece and score to `INOCODE_TRANSLATION_REPORT`
+/// when it is set.
+#[tokio::test]
+#[ignore = "requires a provider credential and sends the thinking to translation services; run by hand"]
+async fn thinking_translations_are_scored() {
+    use inocode_core::translate::{Chunker, Hosts, Service, Translator};
+    let llm = Llm::from_env().expect("provider");
+    let services: Vec<Service> = std::env::var("INOCODE_TRANSLATE_SERVICES")
+        .unwrap_or_else(|_| "google,edge,firefox,chromium".into())
+        .split(',')
+        .map(|name| Service::parse(name.trim()).expect("service"))
+        .collect();
+    let models = std::env::temp_dir().join("inocode-eval-models");
+    let mut pieces = Vec::new();
+    for question in QUESTIONS {
+        let thinking = thinking_for(&llm, question).await;
+        let mut chunker = Chunker::default();
+        let mut cut: Vec<String> = Vec::new();
+        cut.extend(chunker.push(&thinking));
+        cut.extend(chunker.finish());
+        // The stream cuts at sentence ends as the thinking arrives; one cut
+        // of the whole may hold several sentences, so split those too.
+        for chunk in cut {
+            let mut sentences = Chunker::default();
+            for word in chunk.split_inclusive(' ') {
+                pieces.extend(sentences.push(word));
+            }
+            pieces.extend(sentences.finish());
+        }
+    }
+    let pieces: Vec<String> = pieces
+        .into_iter()
+        .map(|piece| piece.trim().to_string())
+        .filter(|piece| piece.chars().filter(|c| c.is_alphabetic()).count() >= 3)
+        .collect();
+    println!("pieces: {}", pieces.len());
+    let mut report = Vec::new();
+    for service in services {
+        let translator = Translator::new(service, None, Hosts::default(), models.clone());
+        let started = std::time::Instant::now();
+        let translated = translator
+            .translate(&pieces, "ja")
+            .await
+            .expect("translate");
+        let seconds = started.elapsed().as_secs_f64();
+        let mut scores = Vec::new();
+        for (source, translation) in pieces.iter().zip(&translated) {
+            let score = gemba_score(&llm, source, translation).await;
+            report.push(json!({"service": service.name(), "source": source,
+                "translation": translation, "score": score}));
+            if let Some(score) = score {
+                scores.push(score);
+            }
+        }
+        scores.sort_by(f64::total_cmp);
+        let mean = scores.iter().sum::<f64>() / scores.len().max(1) as f64;
+        let below = |line: f64| scores.iter().filter(|&&score| score < line).count();
+        println!(
+            "RESULT service={} scored={}/{} mean={mean:.1} median={:.1} below50={} below70={} \
+             translate_seconds={seconds:.2}",
+            service.name(),
+            scores.len(),
+            pieces.len(),
+            scores.get(scores.len() / 2).copied().unwrap_or(f64::NAN),
+            below(50.0),
+            below(70.0),
+        );
+    }
+    if let Ok(path) = std::env::var("INOCODE_TRANSLATION_REPORT") {
+        std::fs::write(path, serde_json::to_string_pretty(&report).unwrap()).expect("report");
+    }
+}

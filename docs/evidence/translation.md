@@ -203,7 +203,40 @@ Chrome が組み込みの翻訳 API（Translator API）のために取ってく�
 - `thinking_is_translated_while_turned_on`（`INOCODE_TRANSLATE_SERVICE=chromium`、Claude OAuth `claude-haiku-5-5`（high）、release ビルド、言語パックは試験の中で初めて取得）：思考 34 件、訳 4 件。オフ後のターンは訳 0 件。全体 8.62 秒。
 - 訳の例：「9:47 に 2 時間 38 分が 12:25 になると、日本語で答えます。 算術がチェックアウトされるので、ここにはツールは必要ありません。」（"checks out" を直訳している）。
 
+## 流し方の決め事（inocode の判断）
+
+- 翻訳部品は、方式・Google の鍵・モデルの置き場所が同じなら、プロセスで 1 つを使い回す（`translate::shared`）。読み込んだモデルと開いた接続が、ターンをまたいで残る。
+- オンオフはターンの途中でも効く。`settings/translation` で設定を書くたびに数を 1 つ増やし（`settings_written`）、ターンは思考の塊が届くたびにその数を見て、変わっていれば設定を読み直す。オンにすればその塊から訳し、オフにすれば訳しかけの分も捨てる。`settings.json` を手で書き換えた場合は、次のターンから効く（ファイルの変更は見張っていない）。
+- 思考を受け取る側は、翻訳を待たない。訳を待つ塊が 32 個を超えたら、古いものから原文のまま `error`（`translation_behind`）を付けて出す。モデルの流れは止めず、溜まる量に上限を置く。
+- 答えが終わった後に待つのは 10 秒。それまでに訳せなかった分は、原文のまま `error`（`translation_timeout`）を付けて出す。黙って捨てない。
+- 試験：`translate::tests::a_stalled_service_lets_the_text_through_as_written`（答えない相手に 40 文を流し、32 個を超えた分が `translation_behind`、残りが `translation_timeout` で、原文が順番どおり全部出ること）、`translate::tests::the_same_settings_share_one_translator`、`turn::tests::a_change_of_the_settings_is_seen_by_a_running_turn`。
+
+## 訳の正確さの測り方
+
+- 目的：訳を読んで、思考の内容を正しく理解できるか。Bergamot や Chrome の訳との一致ではなく、意味が保たれているかを測る（ユーザーの指示「内容を理解できるか正確性を測れ」、2026-11-25）。
+- 方法：GEMBA-DA（Kocmi, Federmann, "Large Language Models Are State-of-the-Art Evaluators of Translation Quality", EAMT 2023, arXiv 2302.14520, https://arxiv.org/abs/2302.14520）。原文と訳文を見せ、0（意味が全く保たれていない）〜100（意味も文法も完全）で点を付けさせる。人の参照訳は使わない形にした。
+  - 論文の結果：GPT-4 で、方式どうしの優劣の判定が人の評価と 89.8%（参照訳なしで 87.6%）一致し、当時の他の指標より良かった。一方で 1 文ごとの点は人の評価との一致が弱い（Kendall の τ 0.36〜0.38）と論文自身が書いている。小さなモデル（GPT-2、Ada、Babbage、Curie）は評価役にならなかった。
+  - 限界：inocode では採点役を Claude Haiku 5.5 にした（ユーザーが自由に使ってよいと決めたモデル）。GPT-4 と同じ精度で採点できるかは確かめていない。参照訳なしの指示文の正確な原文は、論文の付録からは太字の区別が読めず確認できていないので、参照訳の部分を取り除いた形にした。1 文ごとの点ではなく、方式ごとの平均で比べる。
+- 原文：Claude Haiku 5.5（high）に、コーディングの質問 5 問を考えさせたときの実際の思考。流れるときと同じ区切り方（`Chunker`）で文に分け、英字が 3 文字未満の塊は除いた。
+- 手で動かす試験：`server/tests/live_tools.rs` の `thinking_translations_are_scored`。
+
+### 結果（2026-11-25、Windows 11、release ビルド、思考 32 塊、採点役 Claude Haiku 5.5（high））
+
+| 方式 | 平均 | 中央値 | 50 未満 | 70 未満 | 32 塊を訳す時間 |
+|---|---|---|---|---|---|
+| Google | 87.7 | 92.0 | 1 | 2 | 0.31 秒 |
+| Edge | 73.2 | 82.0 | 5 | 12 | 0.39 秒 |
+| Chromium のモデル | 67.2 | 82.0 | 10 | 12 | 7.74 秒（言語パックの取得を含む） |
+| Firefox のモデル | 61.4 | 62.0 | 10 | 17 | 4.00 秒（モデルの取得を含む） |
+
+- 点の低かった例（原文の頭／訳）：
+  - 全方式：「The println!」だけの塊（Google 30、Edge 8、Firefox 18）。`println!` の `!` を文の終わりとみなして切ったため。区切り方の問題。
+  - Google（70）：「`let t = s;` moves the String…」→「`let `let t = s;` Stringを移動するので…」。コードの一部が重なって出た。原因は調べていない。
+  - Edge（35）：`parse_config` の前後を別々に訳したため、「本線や支店で取り消されたり異動になったり」と意味が崩れた。
+  - Firefox（12）：「`cfg(test)`古物や文化財がないかどうか…」。コードで切られた短い断片を訳すと崩れる。
+  - Chromium（15・25）：長い文の後半が丸ごと抜けた（「残りの原因について説明します。」だけになった）。
+- 読み取れること（inocode の判断）：Google は思考の内容をほぼ正しく伝える。Edge・Firefox・Chromium は、コードの前後を別々に訳す作りで文が断片になり、点が下がっている。Chromium は長い文で内容を落とす。点は 1 回の採点で、採点役による誤差を含む。
+
 ## 未実装・未検証
 
-- オンライン方式の速さ・精度の測定はしていない。
-- 動いているターンの途中でのオンオフは効かない（次のターンから）。
+- オンライン方式の速さの体系的な測定はしていない。

@@ -27,7 +27,7 @@ const WAIT: Duration = Duration::from_secs(20);
 const LONGEST_CHUNK: usize = 400;
 
 /// A translation service.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Service {
     Edge,
     Google,
@@ -525,92 +525,209 @@ pub struct Translated {
     pub error: Option<ErrorInfo>,
 }
 
-/// Translates text pushed in as it streams, sending each piece, wrapped
-/// by `wrap`, to `out` in the order it came. Pieces that pile up while a
-/// translation is under way go together in the next one.
-pub struct Streamer {
-    pieces: Option<mpsc::UnboundedSender<String>>,
-    task: JoinHandle<()>,
+/// The most ready pieces a stream keeps waiting for a translation; older
+/// ones go out as written, so a slow service never holds the whole stream.
+const MOST_WAITING: usize = 32;
+
+/// What a stream holds that has not gone out yet.
+#[derive(Default)]
+struct Backlog {
+    chunker: Chunker,
+    ready: std::collections::VecDeque<String>,
+    /// The pieces being translated, in order, until each goes out.
+    in_flight: std::collections::VecDeque<String>,
+    closed: bool,
 }
 
-impl Streamer {
-    pub fn start<T: Send + 'static>(
-        translator: Translator,
+type Shared = std::sync::Arc<std::sync::Mutex<Backlog>>;
+
+fn lock(backlog: &Shared) -> std::sync::MutexGuard<'_, Backlog> {
+    backlog
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Translates text pushed in as it streams, sending each piece, wrapped
+/// by `wrap`, to `out` in the order it came. Pieces that pile up while a
+/// translation is under way go together in the next one. Pushing never
+/// waits on the translation.
+pub struct Streamer<T> {
+    backlog: Shared,
+    wake: std::sync::Arc<tokio::sync::Notify>,
+    task: JoinHandle<()>,
+    out: mpsc::Sender<T>,
+    wrap: fn(Translated) -> T,
+}
+
+impl<T: Send + 'static> Streamer<T> {
+    pub fn start(
+        translator: std::sync::Arc<Translator>,
         to: String,
         out: mpsc::Sender<T>,
         wrap: fn(Translated) -> T,
     ) -> Self {
-        let (pieces, mut received) = mpsc::unbounded_channel::<String>();
-        let task = tokio::spawn(async move {
-            let mut chunker = Chunker::default();
-            let mut ended = false;
-            while !ended {
-                let mut ready = Vec::new();
-                match received.recv().await {
-                    Some(text) => ready.extend(chunker.push(&text)),
-                    None => ended = true,
-                }
-                loop {
-                    match received.try_recv() {
-                        Ok(text) => ready.extend(chunker.push(&text)),
-                        Err(mpsc::error::TryRecvError::Empty) => break,
-                        Err(mpsc::error::TryRecvError::Disconnected) => {
-                            ended = true;
-                            break;
-                        }
-                    }
-                }
-                if ended {
-                    ready.extend(chunker.finish());
-                }
-                if ready.is_empty() {
-                    continue;
-                }
-                let translated = match translator.translate(&ready, &to).await {
-                    Ok(texts) => texts
-                        .into_iter()
-                        .map(|text| Translated { text, error: None })
-                        .collect(),
-                    Err(error) => ready
-                        .into_iter()
-                        .map(|text| Translated {
-                            text,
-                            error: Some(error.clone()),
-                        })
-                        .collect::<Vec<_>>(),
-                };
-                for piece in translated {
-                    if out.send(wrap(piece)).await.is_err() {
-                        return;
-                    }
-                }
-            }
-        });
+        let backlog = Shared::default();
+        let wake = std::sync::Arc::new(tokio::sync::Notify::new());
+        let task = tokio::spawn(work(
+            translator,
+            to,
+            backlog.clone(),
+            wake.clone(),
+            out.clone(),
+            wrap,
+        ));
         Self {
-            pieces: Some(pieces),
+            backlog,
+            wake,
             task,
+            out,
+            wrap,
         }
     }
 
-    pub fn push(&self, text: String) {
-        if let Some(pieces) = &self.pieces {
-            let _ = pieces.send(text);
+    pub fn push(&self, text: &str) {
+        let mut backlog = lock(&self.backlog);
+        if let Some(piece) = backlog.chunker.push(text) {
+            backlog.ready.push_back(piece);
         }
+        drop(backlog);
+        self.wake.notify_one();
     }
 
-    /// Translates what is left and waits for it, at most `wait`.
+    /// Translates what is left and waits for it, at most `wait`; what is
+    /// still untranslated then goes out as written.
     pub async fn finish(mut self, wait: Duration) {
-        self.pieces = None;
-        if tokio::time::timeout(wait, &mut self.task).await.is_err() {
-            self.task.abort();
+        lock(&self.backlog).closed = true;
+        self.wake.notify_one();
+        if tokio::time::timeout(wait, &mut self.task).await.is_ok() {
+            return;
+        }
+        self.task.abort();
+        let left: Vec<String> = {
+            let mut backlog = lock(&self.backlog);
+            let mut left: Vec<String> = backlog.in_flight.drain(..).collect();
+            left.extend(backlog.ready.drain(..));
+            left.extend(backlog.chunker.finish());
+            left
+        };
+        let error = ErrorInfo::new(
+            "translation_timeout",
+            format!("not translated within {} seconds", wait.as_secs()),
+        );
+        for text in left {
+            let piece = Translated {
+                text,
+                error: Some(error.clone()),
+            };
+            if self.out.send((self.wrap)(piece)).await.is_err() {
+                return;
+            }
         }
     }
 }
 
-impl Drop for Streamer {
+impl<T> Drop for Streamer<T> {
     fn drop(&mut self) {
         self.task.abort();
     }
+}
+
+async fn work<T: Send + 'static>(
+    translator: std::sync::Arc<Translator>,
+    to: String,
+    backlog: Shared,
+    wake: std::sync::Arc<tokio::sync::Notify>,
+    out: mpsc::Sender<T>,
+    wrap: fn(Translated) -> T,
+) {
+    loop {
+        let (behind, batch, closed) = {
+            let mut backlog = lock(&backlog);
+            if backlog.closed {
+                let rest = backlog.chunker.finish();
+                backlog.ready.extend(rest);
+            }
+            let extra = backlog.ready.len().saturating_sub(MOST_WAITING);
+            let behind: Vec<String> = backlog.ready.drain(..extra).collect();
+            let batch: Vec<String> = backlog.ready.drain(..).collect();
+            backlog.in_flight = batch.iter().cloned().collect();
+            (behind, batch, backlog.closed)
+        };
+        let error = ErrorInfo::new(
+            "translation_behind",
+            "the translation fell too far behind the stream",
+        );
+        for text in behind {
+            let piece = Translated {
+                text,
+                error: Some(error.clone()),
+            };
+            if out.send(wrap(piece)).await.is_err() {
+                return;
+            }
+        }
+        if batch.is_empty() {
+            if closed {
+                return;
+            }
+            wake.notified().await;
+            continue;
+        }
+        let translated: Vec<Translated> = match translator.translate(&batch, &to).await {
+            Ok(texts) => texts
+                .into_iter()
+                .map(|text| Translated { text, error: None })
+                .collect(),
+            Err(error) => batch
+                .into_iter()
+                .map(|text| Translated {
+                    text,
+                    error: Some(error.clone()),
+                })
+                .collect(),
+        };
+        for piece in translated {
+            if out.send(wrap(piece)).await.is_err() {
+                return;
+            }
+            lock(&backlog).in_flight.pop_front();
+        }
+    }
+}
+
+/// Bumped whenever the settings are written, so that a running turn sees
+/// a change at once.
+static SETTINGS_WRITTEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many times the settings were written by this process.
+pub(crate) fn settings_written() -> u64 {
+    SETTINGS_WRITTEN.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// The translator for `service`, `google_key` and `models`, made once per
+/// process so that loaded models and open connections are kept.
+pub(crate) fn shared(
+    service: Service,
+    google_key: Option<String>,
+    models: PathBuf,
+) -> std::sync::Arc<Translator> {
+    type Key = (Service, Option<String>, PathBuf);
+    type Made = std::sync::Mutex<std::collections::HashMap<Key, std::sync::Arc<Translator>>>;
+    static MADE: std::sync::OnceLock<Made> = std::sync::OnceLock::new();
+    let mut made = MADE
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    made.entry((service, google_key.clone(), models.clone()))
+        .or_insert_with(|| {
+            std::sync::Arc::new(Translator::new(
+                service,
+                google_key,
+                Hosts::default(),
+                models,
+            ))
+        })
+        .clone()
 }
 
 /// The `translation` settings of `settings.json`.
@@ -739,6 +856,7 @@ pub(crate) async fn update(path: &Path, patch: &Value) -> Result<Settings, Strin
     tokio::fs::rename(&temporary, path)
         .await
         .map_err(|error| error.to_string())?;
+    SETTINGS_WRITTEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     Ok(settings)
 }
 
@@ -948,9 +1066,12 @@ mod tests {
             PathBuf::new(),
         );
         let (out, mut received) = mpsc::channel(16);
-        let streamer = Streamer::start(translator, "ja".into(), out, |piece| piece);
+        let streamer =
+            Streamer::start(std::sync::Arc::new(translator), "ja".into(), out, |piece| {
+                piece
+            });
         for piece in pieces {
-            streamer.push(piece.to_string());
+            streamer.push(piece);
         }
         streamer.finish(Duration::from_secs(10)).await;
         let mut translated = Vec::new();
@@ -958,6 +1079,62 @@ mod tests {
             translated.push(piece);
         }
         translated
+    }
+
+    /// Text left untranslated goes out as written: the oldest at once when
+    /// too much waits, the rest when the wait at the end runs out.
+    #[tokio::test]
+    async fn a_stalled_service_lets_the_text_through_as_written() {
+        // Takes connections and never answers.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let edge = format!("http://{}/translate", listener.local_addr().unwrap());
+        let translator = Translator::new(
+            Service::Edge,
+            None,
+            Hosts {
+                edge,
+                google: String::new(),
+                firefox: String::new(),
+                chromium: String::new(),
+            },
+            PathBuf::new(),
+        );
+        let (out, mut received) = mpsc::channel(64);
+        let streamer =
+            Streamer::start(std::sync::Arc::new(translator), "ja".into(), out, |piece| {
+                piece
+            });
+        let sentences: Vec<String> = (0..40).map(|n| format!("Sentence {n}. ")).collect();
+        for sentence in &sentences {
+            streamer.push(sentence);
+        }
+        streamer.finish(Duration::from_millis(300)).await;
+        let mut pieces = Vec::new();
+        while let Ok(piece) = received.try_recv() {
+            pieces.push(piece);
+        }
+        let joined: String = pieces.iter().map(|piece| piece.text.as_str()).collect();
+        assert_eq!(joined, sentences.concat());
+        let codes: Vec<&str> = pieces
+            .iter()
+            .map(|piece| piece.error.as_ref().map_or("", |error| error.code))
+            .collect();
+        let count = |wanted: &str| codes.iter().filter(|&&code| code == wanted).count();
+        // The space after the last sentence is a piece of its own.
+        assert_eq!(pieces.len(), 41);
+        assert_eq!(count("translation_behind"), 41 - MOST_WAITING);
+        assert_eq!(count("translation_timeout"), MOST_WAITING);
+        drop(listener);
+    }
+
+    #[tokio::test]
+    async fn the_same_settings_share_one_translator() {
+        let folder = PathBuf::from("shared-test-models");
+        let one = shared(Service::Firefox, None, folder.clone());
+        let two = shared(Service::Firefox, None, folder.clone());
+        assert!(std::sync::Arc::ptr_eq(&one, &two));
+        let other = shared(Service::Firefox, None, PathBuf::from("other-test-models"));
+        assert!(!std::sync::Arc::ptr_eq(&one, &other));
     }
 
     #[tokio::test]

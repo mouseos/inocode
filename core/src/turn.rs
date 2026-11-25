@@ -501,9 +501,57 @@ struct Thread<'a> {
     goal_mark: u64,
     /// The project's git state when the turn started.
     git: Option<String>,
+    /// Whether and how the thinking is translated.
+    thinking_translation: ThinkingTranslation,
+}
+
+/// The translation of the thinking as the settings last read give it.
+struct ThinkingTranslation {
+    settings: PathBuf,
+    language: Option<String>,
+    /// [`crate::translate::settings_written`] when the settings were read.
+    read_at: u64,
     /// The translator and language the thinking is translated into, when
     /// that is turned on.
-    thinking_translation: Option<(crate::translate::Translator, String)>,
+    current: Option<(std::sync::Arc<crate::translate::Translator>, String)>,
+}
+
+impl ThinkingTranslation {
+    async fn read(settings: PathBuf, language: Option<String>) -> Self {
+        let read_at = crate::translate::settings_written();
+        let current = thinking_translator(&settings, language.as_deref()).await;
+        Self {
+            settings,
+            language,
+            read_at,
+            current,
+        }
+    }
+
+    /// Reads the settings again when this process wrote them since; `true`
+    /// when it did.
+    async fn refresh(&mut self) -> bool {
+        if crate::translate::settings_written() == self.read_at {
+            return false;
+        }
+        self.read_at = crate::translate::settings_written();
+        self.current = thinking_translator(&self.settings, self.language.as_deref()).await;
+        true
+    }
+
+    fn start(
+        &self,
+        events: &mpsc::Sender<TurnEvent>,
+    ) -> Option<crate::translate::Streamer<TurnEvent>> {
+        self.current.clone().map(|(translator, to)| {
+            crate::translate::Streamer::start(
+                translator,
+                to,
+                events.clone(),
+                TurnEvent::ThinkingTranslation,
+            )
+        })
+    }
 }
 
 /// How long a turn waits, after the model's answer ends, for the rest of
@@ -515,7 +563,7 @@ const TRANSLATION_WAIT: std::time::Duration = std::time::Duration::from_secs(10)
 async fn thinking_translator(
     path: &Path,
     language: Option<&str>,
-) -> Option<(crate::translate::Translator, String)> {
+) -> Option<(std::sync::Arc<crate::translate::Translator>, String)> {
     let settings = match crate::translate::Settings::read(path).await {
         Ok(settings) => settings,
         Err(error) => {
@@ -527,10 +575,9 @@ async fn thinking_translator(
         return None;
     }
     let to = crate::translate::target(&settings, language)?;
-    let translator = crate::translate::Translator::new(
+    let translator = crate::translate::shared(
         settings.service,
         settings.google_key,
-        crate::translate::Hosts::default(),
         path.with_file_name("translation-models"),
     );
     Some((translator, to))
@@ -1581,9 +1628,9 @@ async fn open<'a>(
         Some(folder) => crate::git::state(folder).await,
         None => None,
     };
-    let thinking_translation = thinking_translator(
-        &store.files_folder().with_file_name("settings.json"),
-        language.as_deref(),
+    let thinking_translation = ThinkingTranslation::read(
+        store.files_folder().with_file_name("settings.json"),
+        language.clone(),
     )
     .await;
     Ok(Thread {
@@ -1707,14 +1754,8 @@ async fn steps(
             None => return Ending::Interrupted,
         };
         let mut failure = None;
-        let translation = thread.thinking_translation.clone().map(|(translator, to)| {
-            crate::translate::Streamer::start(
-                translator,
-                to,
-                thread.events.clone(),
-                TurnEvent::ThinkingTranslation,
-            )
-        });
+        thread.thinking_translation.refresh().await;
+        let mut translation = thread.thinking_translation.start(&thread.events);
         let mut interrupted = false;
         loop {
             tokio::select! {
@@ -1723,8 +1764,13 @@ async fn steps(
                         let _ = thread.events.send(TurnEvent::Delta(text)).await;
                     }
                     Ok(Some(crate::llm::Piece::Thinking(text))) => {
+                        // Turned on or off while the model thinks: from
+                        // this piece on.
+                        if thread.thinking_translation.refresh().await {
+                            translation = thread.thinking_translation.start(&thread.events);
+                        }
                         if let Some(translation) = &translation {
-                            translation.push(text.clone());
+                            translation.push(&text);
                         }
                         let _ = thread.events.send(TurnEvent::Thinking(text)).await;
                     }
@@ -1882,6 +1928,32 @@ mod tests {
             now(time),
             "Now: 2026-11-23 14:05 Monday, UTC+09:00 (the person's local time)."
         );
+    }
+
+    #[tokio::test]
+    async fn a_change_of_the_settings_is_seen_by_a_running_turn() {
+        let folder =
+            std::env::temp_dir().join(format!("inocode-turn-translation-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let settings = folder.join("settings.json");
+        std::fs::write(&settings, r#"{"translation": {"thinking": false}}"#).unwrap();
+        let mut translation =
+            ThinkingTranslation::read(settings.clone(), Some("ja-JP".into())).await;
+        assert!(translation.current.is_none());
+        crate::translate::update(&settings, &serde_json::json!({"thinking": true}))
+            .await
+            .unwrap();
+        assert!(translation.refresh().await);
+        assert_eq!(
+            translation.current.as_ref().map(|(_, to)| to.as_str()),
+            Some("ja")
+        );
+        crate::translate::update(&settings, &serde_json::json!({"thinking": false}))
+            .await
+            .unwrap();
+        assert!(translation.refresh().await);
+        assert!(translation.current.is_none());
+        std::fs::remove_dir_all(&folder).unwrap();
     }
 
     #[test]

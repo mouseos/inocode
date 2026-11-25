@@ -650,10 +650,9 @@ impl Core {
             // keeps the first turn's thinking from waiting on it.
             let language = language::default(&path).await;
             if let Some(to) = translate::target(&settings, language.as_deref()) {
-                let translator = translate::Translator::new(
+                let translator = translate::shared(
                     settings.service,
-                    None,
-                    translate::Hosts::default(),
+                    settings.google_key.clone(),
                     path.with_file_name("translation-models"),
                 );
                 tokio::spawn(async move {
