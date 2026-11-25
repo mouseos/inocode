@@ -319,6 +319,15 @@ pub struct EventPayload {
     pub questions: Option<Vec<turn::Asked>>,
 }
 
+fn translation_service(name: &str) -> Result<translate::Service, ErrorInfo> {
+    translate::Service::parse(name).ok_or_else(|| {
+        ErrorInfo::new(
+            "invalid_params",
+            format!("unknown translation service {name:?}"),
+        )
+    })
+}
+
 impl EventPayload {
     pub fn started(id: u64) -> Self {
         Self::new(id, "started")
@@ -666,6 +675,65 @@ impl Core {
             "thinking": settings.thinking,
             "service": settings.service.name(),
             "to": settings.to,
+        }))
+    }
+
+    /// The folder translation models are kept in, beside the database.
+    fn translation_models_folder(&self) -> Result<std::path::PathBuf, ErrorInfo> {
+        Ok(self
+            .store()?
+            .files_folder()
+            .with_file_name("translation-models"))
+    }
+
+    /// The translation models kept on disk.
+    pub async fn translation_models(&self) -> Result<Value, ErrorInfo> {
+        let models = translate::installed(&self.translation_models_folder()?).await;
+        let listed: Vec<Value> = models
+            .into_iter()
+            .map(|model| {
+                json!({
+                    "service": model.service.name(),
+                    "from": model.from,
+                    "to": model.to,
+                    "version": model.version,
+                    "bytes": model.bytes,
+                    "license": model.license,
+                })
+            })
+            .collect();
+        Ok(json!({ "models": listed }))
+    }
+
+    /// Deletes the kept model `{service, from, to}` of `params`.
+    pub async fn remove_translation_model(&self, params: &Value) -> Result<Value, ErrorInfo> {
+        let text = |name: &str| {
+            params[name].as_str().ok_or_else(|| {
+                ErrorInfo::new("invalid_params", format!("\"{name}\" must be a string"))
+            })
+        };
+        let service = translation_service(text("service")?)?;
+        let removed = translate::remove(
+            &self.translation_models_folder()?,
+            service,
+            text("from")?,
+            text("to")?,
+        )
+        .await?;
+        Ok(json!({ "removed": removed }))
+    }
+
+    /// The languages the service `{service}` of `params` translates.
+    pub async fn translation_languages(&self, params: &Value) -> Result<Value, ErrorInfo> {
+        let name = params["service"]
+            .as_str()
+            .ok_or_else(|| ErrorInfo::new("invalid_params", "\"service\" must be a string"))?;
+        let languages =
+            translate::languages(translation_service(name)?, &translate::Hosts::default()).await?;
+        Ok(json!({
+            "from": languages.from,
+            "to": languages.to,
+            "direct": languages.direct,
         }))
     }
 

@@ -273,6 +273,25 @@ async fn dispatch(
             });
             true
         }
+        "translation/models" | "translation/models/remove" | "translation/languages" => {
+            // File and HTTP work, off the read loop like the store requests.
+            let (id, core, queue) = (request.id, Arc::clone(core), queue.clone());
+            let method = request.method.clone();
+            let params = request.params.clone().unwrap_or_else(|| json!({}));
+            tokio::spawn(async move {
+                let result = match method.as_str() {
+                    "translation/models" => core.translation_models().await,
+                    "translation/models/remove" => core.remove_translation_model(&params).await,
+                    _ => core.translation_languages(&params).await,
+                };
+                let payload = match result {
+                    Ok(result) => json!({ "id": id, "result": result }),
+                    Err(error) => json!({ "id": id, "error": error }),
+                };
+                let _ = send(&queue, stream_id, payload).await;
+            });
+            true
+        }
         "stats/models" => {
             // A store read, off the read loop like the thread requests.
             tokio::spawn(model_stats(

@@ -2672,3 +2672,57 @@ async fn goal_requests_check_their_parameters() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn translation_models_are_listed_and_removed_over_the_protocol() {
+    with_timeout(async {
+        let mock = scripted(Vec::new()).await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+
+        let listed = call(
+            &mut client,
+            1,
+            json!({"id": 1, "method": "translation/models"}),
+        )
+        .await;
+        assert_eq!(listed["result"]["models"], json!([]), "{listed}");
+
+        let removed = call(
+            &mut client,
+            2,
+            json!({"id": 2, "method": "translation/models/remove",
+                "params": {"service": "firefox", "from": "en", "to": "ja"}}),
+        )
+        .await;
+        assert_eq!(removed["result"]["removed"], false, "{removed}");
+
+        let refused = call(
+            &mut client,
+            3,
+            json!({"id": 3, "method": "translation/models/remove",
+                "params": {"service": "firefox", "from": "../x", "to": "ja"}}),
+        )
+        .await;
+        assert!(refused["error"].is_object(), "{refused}");
+
+        let unknown = call(
+            &mut client,
+            4,
+            json!({"id": 4, "method": "translation/languages", "params": {"service": "deepl"}}),
+        )
+        .await;
+        assert_eq!(unknown["error"]["code"], "invalid_params", "{unknown}");
+
+        let languages = call(
+            &mut client,
+            5,
+            json!({"id": 5, "method": "translation/languages", "params": {"service": "chromium"}}),
+        )
+        .await;
+        let to = languages["result"]["to"].as_array().expect("languages");
+        assert!(to.iter().any(|language| language == "ja"), "{languages}");
+    })
+    .await;
+}
