@@ -30,6 +30,8 @@ fn store_path(name: &str) -> std::path::PathBuf {
 
 fn llm_for(mock: &MockApi, model: &str, name: &str) -> Llm {
     let path = store_path(name);
+    // Temporary stores in tests: no OS store entries, no passphrase.
+    inocode_core::secrets::set_mode(inocode_core::secrets::StoreMode::Plaintext);
     let mut store = Store::load(path.clone()).expect("load the test store");
     store
         .save(

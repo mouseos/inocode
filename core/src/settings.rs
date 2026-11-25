@@ -372,6 +372,20 @@ pub struct Server {
     /// Whether shell commands are confined; on when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<bool>,
+    /// Where credentials are kept: `auto` (the default), `keyring`,
+    /// `encrypted-file` or `plaintext` (docs/evidence/account-pool.md).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<String>,
+}
+
+impl Server {
+    /// The credential store mode the settings choose.
+    pub fn credential_store(&self) -> Result<crate::secrets::StoreMode, String> {
+        self.credentials.as_deref().map_or(
+            Ok(crate::secrets::StoreMode::Auto),
+            crate::secrets::StoreMode::parse,
+        )
+    }
 }
 
 /// The sections of the file this module owns.
@@ -430,6 +444,9 @@ impl Settings {
 
     /// Every field is valid and every provider named is configured.
     fn check(&self) -> Result<(), String> {
+        self.server
+            .credential_store()
+            .map_err(|error| format!("\"server.credentials\": {error}"))?;
         for (id, provider) in self.providers.iter().flatten() {
             check_id(id)?;
             provider.check(id)?;

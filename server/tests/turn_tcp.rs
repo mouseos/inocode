@@ -2398,6 +2398,8 @@ async fn a_deepai_account_uses_its_own_review_service() {
         })
         .await;
         let credentials = database().with_extension("auth.json");
+        // Temporary stores in tests: no OS store entries, no passphrase.
+        inocode_core::secrets::set_mode(inocode_core::secrets::StoreMode::Plaintext);
         let mut auth = inocode_core::oauth::Store::load(credentials.clone()).expect("auth store");
         auth.save(
             "deepai",

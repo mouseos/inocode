@@ -29,6 +29,8 @@ fn folder() -> std::path::PathBuf {
 async fn core_with(folder: &std::path::Path, settings: Value) -> Arc<Core> {
     std::fs::write(folder.join("settings.json"), settings.to_string()).expect("settings");
     let credentials = folder.join("auth.json");
+    // Temporary stores in tests: no OS store entries, no passphrase.
+    inocode_core::secrets::set_mode(inocode_core::secrets::StoreMode::Plaintext);
     let mut store = inocode_core::oauth::Store::load(credentials.clone()).expect("credentials");
     for id in ["mock", "second", "listed"] {
         store

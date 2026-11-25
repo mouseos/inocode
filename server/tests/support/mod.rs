@@ -516,6 +516,8 @@ pub async fn live_core(
     match &live.api_key {
         Some(key) => {
             let path = folder.join("auth.json");
+            // A temporary store: no OS store entries, no passphrase.
+            inocode_core::secrets::set_mode(inocode_core::secrets::StoreMode::Plaintext);
             let mut credentials =
                 inocode_core::oauth::Store::load(path.clone()).expect("credentials");
             credentials

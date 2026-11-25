@@ -170,6 +170,8 @@ fn credential_for_store() -> Credential {
 }
 
 fn write_store(path: &std::path::Path, provider: &str, credential: Credential) {
+    // Temporary stores in tests: no OS store entries, no passphrase.
+    inocode_core::secrets::set_mode(inocode_core::secrets::StoreMode::Plaintext);
     let mut store = Store::load(path.to_path_buf()).expect("load the test store");
     store.save(provider, credential).expect("write the store");
 }

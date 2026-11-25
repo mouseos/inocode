@@ -53,10 +53,44 @@ fn main() -> io::Result<()> {
         settings::Server::default()
     });
     sandbox::configure(flags.sandbox.or(server.sandbox).unwrap_or(true), None);
+    match server.credential_store() {
+        Ok(mode) => inocode_core::secrets::set_mode(mode),
+        Err(error) => {
+            return Err(invalid(format!(
+                "settings.json: server.credentials: {error}"
+            )))
+        }
+    }
+    unlock_credentials()?;
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
         .block_on(command(words, flags.port.or(server.port)))
+}
+
+/// Opens the credential store once, asking for its passphrase at the
+/// terminal when it is sealed with one, so that later reads do not fail
+/// for want of it. The passphrase is never read from the environment.
+fn unlock_credentials() -> io::Result<()> {
+    let path = Store::default_path().map_err(io::Error::other)?;
+    let Err(error) = Store::load(path.clone()) else {
+        return Ok(());
+    };
+    if !error.contains("locked") {
+        return Err(io::Error::other(error));
+    }
+    for _ in 0..3 {
+        eprint!("Passphrase for the credential store: ");
+        let passphrase = inocode_core::hidden_input::read_line_hidden()?;
+        eprintln!();
+        inocode_core::secrets::unlock(&passphrase).map_err(io::Error::other)?;
+        match Store::load(path.clone()) {
+            Ok(_) => return Ok(()),
+            Err(error) => eprintln!("{error}"),
+        }
+    }
+    inocode_core::secrets::lock();
+    Err(io::Error::other("the credential store stays locked"))
 }
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -225,7 +259,7 @@ async fn key_command(provider: &str) -> io::Result<()> {
         }
     }
     println!("API key for {provider}:");
-    let key = inocode_core::secret::read_line_hidden()?;
+    let key = inocode_core::hidden_input::read_line_hidden()?;
     let key = key.trim();
     if key.is_empty() {
         return Err(invalid("no key was given"));
