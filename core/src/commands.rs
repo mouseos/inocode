@@ -164,6 +164,7 @@ use Kind::{Choice as Of, Number, Path as File, Text};
 use When::{AfterTurn, NextRequest, Now};
 
 const NUMBER: &[Arg] = &[arg("number", Number)];
+const ACCOUNT: &[Arg] = &[arg("provider", Text), arg("account", Text)];
 const MODES: &[&str] = &["ask", "on-request", "auto", "full"];
 const EFFORTS: &[&str] = &[
     "none", "minimal", "low", "medium", "high", "xhigh", "max", "default",
@@ -492,20 +493,82 @@ pub const BUILTINS: &[Builtin] = &[
         )],
         None,
     ),
-    missing(
+    builtin(
         "login",
-        "Sign in to a provider.",
-        "signing in is not possible over the protocol yet; use `inocode-server login`",
+        "Sign in to a provider; a second account of the same provider is added beside the first.",
+        &[
+            form(
+                "Start signing in to the provider (this thread's when none is given) and show \
+                 the page to open or the code to enter; code is for Claude when no browser \
+                 can return to this machine.",
+                &[
+                    optional("provider", Text),
+                    optional("mode", Of(&["callback", "code", "device"])),
+                ],
+                Now,
+            ),
+            sub(
+                "code",
+                "Give a sign-in the code the provider showed.",
+                &[arg("login", Text), arg("code", Text)],
+                Now,
+            ),
+            sub(
+                "status",
+                "Whether a sign-in finished.",
+                &[arg("login", Text)],
+                Now,
+            ),
+            sub("cancel", "Stop a sign-in.", &[arg("login", Text)], Now),
+        ],
+        None,
     ),
-    missing(
+    builtin(
         "logout",
-        "Sign out of an account.",
-        "signing out is not possible over the protocol yet",
+        "Sign out: remove an account of this thread's provider and its stored secret.",
+        &[form(
+            "Remove the account named, or the one this thread's provider uses.",
+            &[optional("account", Text)],
+            Now,
+        )],
+        None,
     ),
-    missing(
+    builtin(
         "accounts",
-        "The accounts and how they are pooled.",
-        "the account registry does not exist yet (docs/evidence/account-pool.md)",
+        "The accounts of the sign-in providers: which one is used, pausing, naming and removing them.",
+        &[
+            sub(
+                "list",
+                "Every provider's accounts, or one provider's.",
+                &[optional("provider", Text)],
+                Now,
+            ),
+            sub(
+                "use",
+                "Make the provider use the account from its next request on.",
+                ACCOUNT,
+                Now,
+            ),
+            sub("pause", "Stop using the account, keeping it.", ACCOUNT, Now),
+            sub("resume", "Use a paused account again.", ACCOUNT, Now),
+            sub(
+                "rename",
+                "Give the account an alias.",
+                &[
+                    arg("provider", Text),
+                    arg("account", Text),
+                    arg("alias", Text),
+                ],
+                Now,
+            ),
+            sub(
+                "remove",
+                "Remove the account and its stored secret.",
+                ACCOUNT,
+                Now,
+            ),
+        ],
+        Some("list"),
     ),
     builtin(
         "usage",
@@ -1511,6 +1574,14 @@ impl Core {
             })
     }
 
+    /// The provider of the settings this thread's requests use.
+    async fn thread_provider(&self, thread: SessionId) -> Result<String, ErrorInfo> {
+        self.thread_settings(thread).await?["provider"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| invalid("this thread uses no provider of the settings; name one"))
+    }
+
     /// The commands, for `commands/list`: those of `thread`'s project too
     /// when it is given.
     pub async fn commands(&self, thread: Option<SessionId>) -> Result<Value, ErrorInfo> {
@@ -1825,6 +1896,65 @@ impl Core {
                 self.update_provider(&patch).await?
             }
             ("providers", _) => self.remove_provider(&json!({ "id": value(0) })).await?,
+            ("login", None) => {
+                let provider = match value(0) {
+                    Some(provider) => provider.to_string(),
+                    None => self.thread_provider(thread).await?,
+                };
+                self.login_start(&json!({ "provider": provider, "mode": value(1) }))
+                    .await?
+            }
+            ("login", Some("code")) => {
+                self.login_code(&json!({ "login_id": value(0), "code": value(1) }))
+                    .await?
+            }
+            ("login", Some("status")) => {
+                self.login_status(&json!({ "login_id": value(0) })).await?
+            }
+            ("login", Some(_)) => self.login_cancel(&json!({ "login_id": value(0) })).await?,
+            ("logout", _) => {
+                let provider = self.thread_provider(thread).await?;
+                let account = match value(0) {
+                    Some(account) => account.to_string(),
+                    None => self.accounts_list(&json!({ "provider": provider })).await?["accounts"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .find(|account| account["active"] == true)
+                        .and_then(|account| account["id"].as_str())
+                        .map(str::to_string)
+                        .ok_or_else(|| {
+                            invalid(format!(
+                                "{provider} uses no single account; name the account to sign out of"
+                            ))
+                        })?,
+                };
+                self.remove_account(&json!({ "provider": provider, "account": account }))
+                    .await?
+            }
+            ("accounts", Some("list")) => {
+                self.accounts_list(&json!({ "provider": value(0) })).await?
+            }
+            ("accounts", Some("use")) => {
+                self.use_account(&json!({ "provider": value(0), "account": value(1) }))
+                    .await?
+            }
+            ("accounts", Some(pause @ ("pause" | "resume"))) => {
+                self.pause_account(&json!({
+                    "provider": value(0), "account": value(1), "paused": pause == "pause",
+                }))
+                .await?
+            }
+            ("accounts", Some("rename")) => {
+                self.rename_account(&json!({
+                    "provider": value(0), "account": value(1), "alias": value(2),
+                }))
+                .await?
+            }
+            ("accounts", _) => {
+                self.remove_account(&json!({ "provider": value(0), "account": value(1) }))
+                    .await?
+            }
             ("models", _) => self.model_catalog(value(0), false).await?,
             ("usage", _) => serde_json::to_value(self.usage().await?)
                 .map_err(|error| ErrorInfo::new("internal", error.to_string()))?,

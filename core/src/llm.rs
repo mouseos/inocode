@@ -151,6 +151,10 @@ pub struct Llm {
     codex_client_version: Option<String>,
     /// See [`Llm::with_stream_idle`].
     stream_idle: Duration,
+    /// See [`Llm::with_account`].
+    account: Option<String>,
+    /// See [`Llm::with_token_url`].
+    token_url: Option<String>,
 }
 
 /// The HTTP client of a [`Llm`]: a read that waits longer than `idle` for
@@ -188,7 +192,23 @@ impl Llm {
             bytes_per_token: std::sync::Mutex::new(std::collections::HashMap::new()),
             siblings: std::sync::Mutex::new(std::collections::HashMap::new()),
             codex_client_version: None,
+            account: None,
+            token_url: None,
         })
+    }
+
+    /// Refreshes sign-ins at `token_url` instead of the provider's token
+    /// endpoint.
+    pub fn with_token_url(mut self, token_url: Option<String>) -> Self {
+        self.token_url = token_url;
+        self
+    }
+
+    /// Signs in with the stored account `account` of a sign-in kind instead
+    /// of the only usable one (`oauth::choose_account`).
+    pub fn with_account(mut self, account: Option<String>) -> Self {
+        self.account = account;
+        self
     }
 
     /// Asks the ChatGPT models endpoint as `version` instead of the version
@@ -351,6 +371,10 @@ impl Llm {
         })?
         .with_codex_client_version(self.codex_client_version.clone())
         .with_stream_idle(self.stream_idle)
+        .map(|llm| {
+            llm.with_account(self.account.clone())
+                .with_token_url(self.token_url.clone())
+        })
     }
 
     /// Whether the provider is a DeepAI account, which has its own tool
@@ -548,12 +572,54 @@ impl Llm {
     /// Loads the credential for an OAuth kind, refreshing it first when it is
     /// expired. Static-key kinds never touch the store.
     async fn credential(&self) -> Result<Credential, ErrorInfo> {
-        let path = match &self.config.auth_store_path {
-            Some(path) => path.clone(),
+        crate::oauth::fresh(
+            self.store_path()?,
+            self.config.auth,
+            self.account.as_deref(),
+            self.token_url.as_deref(),
+        )
+        .await
+        .map(|(_, credential)| credential)
+    }
+
+    fn store_path(&self) -> Result<std::path::PathBuf, ErrorInfo> {
+        match &self.config.auth_store_path {
+            Some(path) => Ok(path.clone()),
             None => crate::oauth::Store::default_path()
-                .map_err(|error| ErrorInfo::new("provider_config", error))?,
+                .map_err(|error| ErrorInfo::new("provider_config", error)),
+        }
+    }
+
+    /// After the model API refused the credential `rejected` (HTTP 401): a
+    /// sign-in that refreshes is refreshed, which marks the account as
+    /// needing a new sign-in when the refresh is refused too; a static key
+    /// is marked at once. The request itself still fails.
+    async fn refused(&self, rejected: &Credential) {
+        let Ok(path) = self.store_path() else {
+            return;
         };
-        crate::oauth::fresh(path, self.config.auth).await
+        let name = self.config.auth.store_name();
+        match self.config.auth {
+            AuthKind::ApiKey => {}
+            AuthKind::ClaudeOauth | AuthKind::GptOauth => {
+                let _ = crate::oauth::renew(
+                    path,
+                    self.config.auth,
+                    self.account.as_deref(),
+                    &rejected.access,
+                    self.token_url.as_deref(),
+                )
+                .await;
+            }
+            AuthKind::MuseSubscription | AuthKind::DeepAi => {
+                let chosen = crate::oauth::Store::load(path.clone())
+                    .ok()
+                    .and_then(|store| store.choose(name, self.account.as_deref()).ok());
+                if let Some(account) = chosen {
+                    let _ = crate::oauth::mark_needs_reauth(&path, name, &account);
+                }
+            }
+        }
     }
 
     fn url(&self, path: &str) -> String {
@@ -588,6 +654,7 @@ impl Llm {
         let destination = destination(ProviderKind::Anthropic, &self.config);
         let summary = self.config.reasoning.summary;
         let mut request = self.client.post(self.anthropic_url());
+        let mut signed_in = None;
         if self.config.auth == AuthKind::ClaudeOauth {
             // OAuth bearers are only accepted with the beta opt-in and the
             // Claude Code identity block ahead of the conversation.
@@ -607,6 +674,7 @@ impl Llm {
             request = request
                 .bearer_auth(&credential.access)
                 .header("anthropic-beta", beta);
+            signed_in = Some(credential);
         } else {
             request = request.header("x-api-key", &self.config.api_key);
             if let Some(beta) = crate::reasoning::anthropic_beta(&destination, summary) {
@@ -620,6 +688,9 @@ impl Llm {
             .send()
             .await
             .map_err(|error| ErrorInfo::new("provider_http", format!("request failed: {error}")))?;
+        if let (401, Some(credential)) = (response.status().as_u16(), &signed_in) {
+            self.refused(credential).await;
+        }
         require_success(response).await
     }
 
@@ -730,7 +801,8 @@ impl Llm {
         tools: &[ToolSpec],
         output: Option<&JsonOutput>,
     ) -> Result<ChatStream, ErrorInfo> {
-        let api_key = deepai_api_key(&self.credential().await?)?;
+        let credential = self.credential().await?;
+        let api_key = deepai_api_key(&credential)?;
         let base = &self.config.base_url;
         let route = session
             .route(&self.client, base, &api_key, &self.config.model)
@@ -771,6 +843,9 @@ impl Llm {
                 .map_err(|error| {
                     ErrorInfo::new("provider_http", format!("request failed: {error}"))
                 })?;
+            if response.status().as_u16() == 401 {
+                self.refused(&credential).await;
+            }
             match crate::deepai::admission(response).await {
                 crate::deepai::Admission::Answered(response) => {
                     let response = crate::deepai::require_lane(response).await?;
@@ -797,29 +872,40 @@ impl Llm {
             .client
             .post(self.responses_url())
             .header("accept", "text/event-stream");
+        let mut signed_in = None;
         let request = match self.config.auth {
             AuthKind::ApiKey => request.bearer_auth(&self.config.api_key),
             // The Muse account token must never be sent to the model API
             // (measured 401); its minted key is the bearer.
-            AuthKind::MuseSubscription => request
-                .bearer_auth(muse_api_key(&self.credential().await?)?)
-                .header("user-agent", crate::oauth::MUSE_USER_AGENT)
-                .header("x-api-version", crate::oauth::MUSE_API_VERSION),
+            AuthKind::MuseSubscription => {
+                let credential = self.credential().await?;
+                let request = request
+                    .bearer_auth(muse_api_key(&credential)?)
+                    .header("user-agent", crate::oauth::MUSE_USER_AGENT)
+                    .header("x-api-version", crate::oauth::MUSE_API_VERSION);
+                signed_in = Some(credential);
+                request
+            }
             // The ChatGPT account access token is the bearer.
             _ => {
                 let credential = self.credential().await?;
                 let request = request.bearer_auth(&credential.access);
-                if self.config.auth == AuthKind::GptOauth {
+                let request = if self.config.auth == AuthKind::GptOauth {
                     request.header("chatgpt-account-id", chatgpt_account_id(&credential)?)
                 } else {
                     request
-                }
+                };
+                signed_in = Some(credential);
+                request
             }
         };
         let response =
             request.json(body).send().await.map_err(|error| {
                 ErrorInfo::new("provider_http", format!("request failed: {error}"))
             })?;
+        if let (401, Some(credential)) = (response.status().as_u16(), &signed_in) {
+            self.refused(credential).await;
+        }
         require_success(response).await
     }
 

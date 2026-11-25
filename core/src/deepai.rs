@@ -749,7 +749,12 @@ pub async fn exchange_code(endpoints: &SignInEndpoints, code: &str) -> Result<Cr
         access: String::new(),
         refresh: String::new(),
         expires_at_ms: None,
-        account_id: None,
+        // The account's name tells a second sign-in of it from another one.
+        account_id: payload
+            .get("username")
+            .and_then(Value::as_str)
+            .filter(|name| !name.trim().is_empty())
+            .map(str::to_string),
         email: None,
         api_key: Some(api_key.to_string()),
         oauth_access_token: None,

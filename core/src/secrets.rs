@@ -34,6 +34,30 @@ const CHUNK: usize = 2048;
 /// Secrets by provider, then account.
 pub(crate) type Accounts = BTreeMap<String, BTreeMap<String, Value>>;
 
+/// What is known about one stored account besides its secret. It is kept
+/// in the store's file next to the secrets, outside any encryption, so it
+/// must never hold a secret.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AccountInfo {
+    /// The person's name for the account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+    /// Kept, but not used for requests.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub paused: bool,
+    /// Its sign-in was refused; it is not used until it signs in again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub needs_reauth: bool,
+    /// When it was added, in milliseconds since the Unix epoch; unknown for
+    /// accounts stored before this was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_ms: Option<u64>,
+}
+
+/// [`AccountInfo`] by provider, then account.
+pub(crate) type Index = BTreeMap<String, BTreeMap<String, AccountInfo>>;
+
 /// Where a store keeps its secrets: the `credentials.store` setting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StoreMode {
@@ -303,6 +327,8 @@ enum Envelope {
 struct StoreFile {
     format: String,
     version: u32,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    account_info: Index,
     #[serde(flatten)]
     envelope: Envelope,
 }
@@ -311,6 +337,7 @@ struct StoreFile {
 pub(crate) struct Contents {
     pub(crate) stored: Stored,
     pub(crate) accounts: Accounts,
+    pub(crate) info: Index,
 }
 
 /// One store: the file at `path` and, for the OS credential store, its
@@ -344,13 +371,19 @@ impl Vault {
 
     /// Reads every account, after moving the store to the backend its mode
     /// selects when it is elsewhere (the original plain `auth.json` included).
+    #[cfg(test)]
     pub(crate) fn load(&self) -> Result<Accounts, String> {
+        Ok(self.load_contents()?.accounts)
+    }
+
+    /// [`Vault::load`] with what is known about each account.
+    pub(crate) fn load_contents(&self) -> Result<Contents, String> {
         let contents = self.read()?;
         if self.move_to(&contents.stored).is_none() {
-            return Ok(contents.accounts);
+            return Ok(contents);
         }
         let _lock = lock_store(&self.path)?;
-        Ok(self.load_locked()?.accounts)
+        self.load_locked()
     }
 
     /// [`Vault::load`] for a caller holding [`lock_store`].
@@ -360,7 +393,13 @@ impl Vault {
             return Ok(contents);
         };
         let stored = self
-            .write(target, &contents.accounts, None, &contents.stored)
+            .write(
+                target,
+                &contents.accounts,
+                &contents.info,
+                None,
+                &contents.stored,
+            )
             .map_err(|error| {
                 format!(
                     "the credentials in {} were not moved to {}, and the file was left as it was: {error}",
@@ -371,11 +410,12 @@ impl Vault {
         Ok(Contents {
             stored,
             accounts: contents.accounts,
+            info: contents.info,
         })
     }
 
-    /// Stores `contents` after its `provider`/`account` secret changed. The
-    /// caller holds [`lock_store`] and read `contents` with
+    /// Stores `contents` after its `provider`/`account` secret changed or
+    /// was removed. The caller holds [`lock_store`] and read `contents` with
     /// [`Vault::load_locked`].
     pub(crate) fn save_locked(
         &self,
@@ -390,6 +430,7 @@ impl Vault {
         self.write(
             target,
             &contents.accounts,
+            &contents.info,
             Some((provider, account)),
             &contents.stored,
         )
@@ -425,12 +466,13 @@ impl Vault {
         &self,
         target: Backend,
         accounts: &Accounts,
+        info: &Index,
         changed: Option<(&str, &str)>,
         previous: &Stored,
     ) -> Result<Stored, String> {
-        match self.write_to(target, accounts, changed, previous) {
+        match self.write_to(target, accounts, info, changed, previous) {
             Err(error) if target == Backend::Keyring && self.mode == StoreMode::Auto => self
-                .write_to(self.sealed, accounts, None, previous)
+                .write_to(self.sealed, accounts, info, None, previous)
                 .map_err(|second| format!("{error}; and then {second}")),
             result => result,
         }
@@ -440,15 +482,17 @@ impl Vault {
         &self,
         target: Backend,
         accounts: &Accounts,
+        info: &Index,
         changed: Option<(&str, &str)>,
         previous: &Stored,
     ) -> Result<Stored, String> {
         let stored = if target == Backend::Keyring {
-            self.write_keyring(accounts, changed, previous)?
+            self.write_keyring(accounts, info, changed, previous)?
         } else {
-            let (bytes, stored) = self.encode(target, accounts, previous)?;
+            let (bytes, stored) = self.encode(target, accounts, info, previous)?;
             write_verified(&self.path, &bytes, |written| {
-                if self.decode(written)?.accounts == *accounts {
+                let read = self.decode(written)?;
+                if read.accounts == *accounts && read.info == *info {
                     Ok(())
                 } else {
                     Err("the written copy reads back different".to_string())
@@ -471,6 +515,7 @@ impl Vault {
     fn write_keyring(
         &self,
         accounts: &Accounts,
+        info: &Index,
         changed: Option<(&str, &str)>,
         previous: &Stored,
     ) -> Result<Stored, String> {
@@ -511,23 +556,37 @@ impl Vault {
                 written.push(name);
             }
         }
-        if old_names != Some(&names) {
-            let index = StoreFile {
-                format: FORMAT.to_string(),
-                version: VERSION,
-                envelope: Envelope::Keyring {
-                    prefix: prefix.clone(),
-                    accounts: names.clone(),
-                },
-            };
-            let bytes = serde_json::to_vec_pretty(&index).map_err(|e| e.to_string())?;
-            write_verified(&self.path, &bytes, |written| {
-                if self.decode(written)?.accounts == *accounts {
-                    Ok(())
-                } else {
-                    Err("the OS credential store reads back different".to_string())
+        // Written even when only `info` changed: the file is the only place
+        // that keeps it.
+        let index = StoreFile {
+            format: FORMAT.to_string(),
+            version: VERSION,
+            account_info: info.clone(),
+            envelope: Envelope::Keyring {
+                prefix: prefix.clone(),
+                accounts: names.clone(),
+            },
+        };
+        let bytes = serde_json::to_vec_pretty(&index).map_err(|e| e.to_string())?;
+        write_verified(&self.path, &bytes, |written| {
+            let read = self.decode(written)?;
+            if read.accounts == *accounts && read.info == *info {
+                Ok(())
+            } else {
+                Err("the OS credential store reads back different".to_string())
+            }
+        })?;
+        // Entries of removed accounts go only once the index no longer
+        // lists them, so a reader never finds a listed entry missing.
+        for (provider, accounts) in old_names.into_iter().flatten() {
+            for account in accounts {
+                if !names
+                    .get(provider)
+                    .is_some_and(|kept| kept.contains(account))
+                {
+                    let _ = delete_secret(&*self.keyring, &entry_name(&prefix, provider, account));
                 }
-            })?;
+            }
         }
         Ok(Stored::Keyring { prefix, names })
     }
@@ -548,6 +607,7 @@ impl Vault {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Contents {
                 stored: Stored::Missing,
                 accounts: Accounts::new(),
+                info: Index::new(),
             }),
             Err(error) => Err(format!(
                 "cannot read the credential store {}: {error}",
@@ -579,6 +639,7 @@ impl Vault {
             return Ok(Contents {
                 stored: Stored::Legacy,
                 accounts,
+                info: Index::new(),
             });
         }
         let file: StoreFile = serde_json::from_value(value).map_err(|e| invalid(e.to_string()))?;
@@ -641,13 +702,18 @@ impl Vault {
                 (Stored::Passphrase(kdf), accounts)
             }
         };
-        Ok(Contents { stored, accounts })
+        Ok(Contents {
+            stored,
+            accounts,
+            info: file.account_info,
+        })
     }
 
     fn encode(
         &self,
         target: Backend,
         accounts: &Accounts,
+        info: &Index,
         previous: &Stored,
     ) -> Result<(Vec<u8>, Stored), String> {
         let (envelope, stored) = match target {
@@ -699,6 +765,7 @@ impl Vault {
         let file = StoreFile {
             format: FORMAT.to_string(),
             version: VERSION,
+            account_info: info.clone(),
             envelope,
         };
         Ok((
@@ -1621,6 +1688,116 @@ mod tests {
         let loaded = store.load().unwrap();
         assert_eq!(loaded["gpt-oauth"], sample("two")["gpt-oauth"]);
         assert_eq!(loaded["claude-oauth"], accounts["claude-oauth"]);
+    }
+
+    #[test]
+    fn account_info_is_kept_beside_the_secrets_and_a_removed_account_leaves_no_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.json");
+        let keyring = Arc::new(MemoryKeyring::default());
+        let store = vault(
+            &path,
+            StoreMode::Keyring,
+            false,
+            keyring.clone(),
+            Backend::Passphrase,
+            None,
+        );
+        let mut accounts = sample("one");
+        accounts.get_mut("gpt-oauth").unwrap().insert(
+            "ab12cd34".to_string(),
+            serde_json::json!({"access": "second-secret"}),
+        );
+        let info = AccountInfo {
+            alias: Some("work".into()),
+            paused: true,
+            needs_reauth: false,
+            added_ms: Some(5),
+        };
+        {
+            let _lock = lock_store(&path).unwrap();
+            let mut contents = store.load_locked().unwrap();
+            contents.accounts = accounts.clone();
+            contents.info = BTreeMap::from([(
+                "gpt-oauth".to_string(),
+                BTreeMap::from([("ab12cd34".to_string(), info.clone())]),
+            )]);
+            store
+                .save_locked(&contents, "gpt-oauth", "ab12cd34")
+                .unwrap();
+        }
+        let loaded = store.load_contents().unwrap();
+        assert_eq!(loaded.accounts, accounts);
+        assert_eq!(loaded.info["gpt-oauth"]["ab12cd34"], info);
+        let file = std::fs::read_to_string(&path).unwrap();
+        assert!(file.contains("\"work\"") && !file.contains("second-secret"));
+        assert!(keyring
+            .entries
+            .lock()
+            .unwrap()
+            .keys()
+            .any(|name| name.contains("ab12cd34")));
+
+        {
+            let _lock = lock_store(&path).unwrap();
+            let mut contents = store.load_locked().unwrap();
+            contents
+                .accounts
+                .get_mut("gpt-oauth")
+                .unwrap()
+                .remove("ab12cd34");
+            contents.info.clear();
+            store
+                .save_locked(&contents, "gpt-oauth", "ab12cd34")
+                .unwrap();
+        }
+        let loaded = store.load_contents().unwrap();
+        assert_eq!(loaded.accounts, sample("one"));
+        assert!(loaded.info.is_empty());
+        let entries = keyring.entries.lock().unwrap();
+        assert!(
+            entries.keys().all(|name| !name.contains("ab12cd34")),
+            "{:?}",
+            entries.keys()
+        );
+        assert!(entries
+            .keys()
+            .any(|name| name.contains("gpt-oauth/default")));
+    }
+
+    #[test]
+    fn account_info_round_trips_in_the_sealed_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth.json");
+        let store = vault(
+            &path,
+            StoreMode::EncryptedFile,
+            false,
+            Arc::new(MemoryKeyring::default()),
+            Backend::Passphrase,
+            Some("pass"),
+        );
+        let _lock = lock_store(&path).unwrap();
+        let mut contents = store.load_locked().unwrap();
+        contents.accounts = sample("sealed-secret");
+        contents.info = BTreeMap::from([(
+            "gpt-oauth".to_string(),
+            BTreeMap::from([(
+                DEFAULT_ACCOUNT.to_string(),
+                AccountInfo {
+                    needs_reauth: true,
+                    ..AccountInfo::default()
+                },
+            )]),
+        )]);
+        store
+            .save_locked(&contents, "gpt-oauth", DEFAULT_ACCOUNT)
+            .unwrap();
+        let loaded = store.load_locked().unwrap();
+        assert!(loaded.info["gpt-oauth"][DEFAULT_ACCOUNT].needs_reauth);
+        assert!(!std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("sealed-secret"));
     }
 
     #[test]

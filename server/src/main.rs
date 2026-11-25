@@ -14,8 +14,9 @@
 //! connection must send it first (docs/evidence/server-auth.md).
 //!
 //! `login claude|gpt|muse-code|deepai` runs the interactive subscription/OAuth
-//! login instead of serving, storing the credential in the credential store
-//! and adding the provider to the settings. `key set <provider-id>` stores
+//! login instead of serving, storing the credential as an account of the
+//! kind (a new one, or the one that signs in the same person) and adding
+//! the provider to the settings. `key set <provider-id>` stores
 //! the API key of a static-key provider, read from standard input. `models
 //! [provider-id]` lists a provider's models; `usage` prints the default
 //! account's usage (rate-limit windows or the DeepAI Theos allowance).
@@ -359,8 +360,10 @@ async fn key_command(provider: &str) -> io::Result<()> {
 /// Runs one login flow and stores its credential. Tokens and keys are never
 /// printed; only provider names and the storage path are.
 async fn login_command(provider: Option<&str>, option: Option<&str>) -> io::Result<()> {
-    let mut store =
-        Store::load(Store::default_path().map_err(io::Error::other)?).map_err(io::Error::other)?;
+    // Read first, so a store that cannot be used stops the login before
+    // the person approves anything.
+    let path = Store::default_path().map_err(io::Error::other)?;
+    Store::load(path.clone()).map_err(io::Error::other)?;
     let (kind, credential) = match provider {
         Some("claude") => {
             let code_mode = option == Some("--code");
@@ -428,13 +431,26 @@ async fn login_command(provider: Option<&str>, option: Option<&str>) -> io::Resu
         }
     };
     let name = kind.auth().store_name();
-    store.save(name, credential).map_err(io::Error::other)?;
-    println!("credential for {name} stored in {:?}", store.path());
-    if settings::add_signed_in(&settings_path()?, kind)
-        .await
-        .map_err(io::Error::other)?
-    {
+    let completed =
+        inocode_core::accounts::complete_login(&path, Some(&settings_path()?), kind, credential)
+            .await
+            .map_err(io::Error::other)?;
+    let account = &completed.signed_in.account;
+    if completed.signed_in.added {
+        println!("account {account} of {name} added to {path:?}");
+    } else {
+        println!("account {account} of {name} signed in again; its credential was replaced");
+    }
+    if completed.provider_added {
         println!("provider {} added to {:?}", kind.name(), settings_path()?);
+    }
+    let accounts = Store::load(path).map_err(io::Error::other)?.accounts(name);
+    if accounts.len() > 1 {
+        println!(
+            "{name} has {} accounts; a provider without an active account cannot choose \
+             among them: choose one with accounts/use or /accounts use",
+            accounts.len()
+        );
     }
     Ok(())
 }

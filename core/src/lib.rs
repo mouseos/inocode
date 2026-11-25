@@ -5,6 +5,7 @@
 //! with a stream of [`EventPayload`] events. The core knows nothing about TCP,
 //! framing, or connections, so the server owns all transport concerns.
 
+pub mod accounts;
 mod agent_tools;
 mod ask;
 mod audio;
@@ -570,6 +571,8 @@ pub struct Core {
     /// new one and an unchanged one keeps its connections and check-in.
     clients: Mutex<HashMap<String, Arc<Llm>>>,
     started: Started,
+    /// Sign-ins started over the protocol.
+    logins: accounts::Logins,
 }
 
 impl Default for Core {
@@ -604,6 +607,7 @@ impl Core {
             credentials: None,
             clients: Mutex::new(HashMap::new()),
             started: Started::default(),
+            logins: accounts::Logins::new(accounts::LoginEndpoints::default()),
         }
     }
 
@@ -757,7 +761,9 @@ impl Core {
         let client = Arc::new(
             Llm::new(config)?
                 .with_codex_client_version(provider.client_version.clone())
-                .with_stream_idle(idle)?,
+                .with_stream_idle(idle)?
+                .with_account(provider.active_account.clone())
+                .with_token_url(self.logins.token_url(provider.kind)),
         );
         Ok(self.clients_lock().entry(key).or_insert(client).clone())
     }

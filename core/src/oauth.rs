@@ -108,12 +108,32 @@ impl fmt::Debug for Credential {
     }
 }
 
-/// The credentials of the store at `~/.inocode/auth.json`, keyed by provider
-/// name; each is that provider's [`crate::secrets::DEFAULT_ACCOUNT`]. The
-/// manual `Debug` keeps credentials out of any derived output.
+/// One stored account of a provider kind as the account registry shows it:
+/// what identifies and describes it, never its secret.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Account {
+    pub id: String,
+    pub info: crate::secrets::AccountInfo,
+    pub email: Option<String>,
+    pub account_id: Option<String>,
+}
+
+/// What storing a finished sign-in did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedIn {
+    pub account: String,
+    /// `false` when it replaced the credential of an account with the same
+    /// identity.
+    pub added: bool,
+}
+
+/// The credentials of the store at `~/.inocode/auth.json`, by provider name
+/// and account, and what is known about each account. The manual `Debug`
+/// keeps credentials out of any derived output.
 pub struct Store {
     path: PathBuf,
-    entries: BTreeMap<String, Credential>,
+    entries: BTreeMap<String, BTreeMap<String, Credential>>,
+    info: crate::secrets::Index,
     vault: crate::secrets::Vault,
 }
 
@@ -149,16 +169,57 @@ impl Store {
         let default_location = Self::default_path()
             .is_ok_and(|default| crate::secrets::same_location(&default, &path));
         let vault = crate::secrets::Vault::new(path.clone(), mode, default_location);
-        let entries = credentials(&vault.load()?, &path)?;
+        let contents = vault.load_contents()?;
+        let entries = credentials(&contents.accounts, &path)?;
         Ok(Self {
             path,
             entries,
+            info: contents.info,
             vault,
         })
     }
 
+    /// A credential of `provider`: its default account's, else its first
+    /// account's. Enough to tell whether the provider is signed in at all.
     pub fn credential(&self, provider: &str) -> Option<&Credential> {
-        self.entries.get(provider)
+        let accounts = self.entries.get(provider)?;
+        accounts
+            .get(crate::secrets::DEFAULT_ACCOUNT)
+            .or_else(|| accounts.values().next())
+    }
+
+    /// The credential of one account of `provider`.
+    pub fn account_credential(&self, provider: &str, account: &str) -> Option<&Credential> {
+        self.entries.get(provider)?.get(account)
+    }
+
+    /// The accounts of `provider`, the earliest added first (those added
+    /// before the time was recorded before all others).
+    pub fn accounts(&self, provider: &str) -> Vec<Account> {
+        let mut accounts: Vec<Account> = self
+            .entries
+            .get(provider)
+            .into_iter()
+            .flatten()
+            .map(|(id, credential)| Account {
+                id: id.clone(),
+                info: self
+                    .info
+                    .get(provider)
+                    .and_then(|info| info.get(id))
+                    .cloned()
+                    .unwrap_or_default(),
+                email: credential.email.clone(),
+                account_id: credential.account_id.clone(),
+            })
+            .collect();
+        accounts.sort_by(|a, b| (a.info.added_ms, &a.id).cmp(&(b.info.added_ms, &b.id)));
+        accounts
+    }
+
+    /// The account of `provider` a request uses: see [`choose_account`].
+    pub fn choose(&self, provider: &str, active: Option<&str>) -> Result<String, crate::ErrorInfo> {
+        choose_account(provider, &self.accounts(provider), active)
     }
 
     /// The file this store persists to.
@@ -166,64 +227,343 @@ impl Store {
         &self.path
     }
 
-    /// Persists one provider's credential.
+    /// Persists the credential of `provider`'s default account.
     ///
-    /// The store is re-read first and only this provider's entry is replaced,
-    /// so entries written by another process since this store was loaded (a
+    /// The store is re-read first and only this account is replaced, so
+    /// entries written by another process since this store was loaded (a
     /// login running next to a server that refreshed a token) are kept.
     pub fn save(&mut self, provider: &str, credential: Credential) -> Result<(), String> {
         self.update(provider, |stored| *stored = credential)
     }
 
-    /// Edits one provider's credential as currently stored and persists it
-    /// the same way as [`Store::save`].
+    /// Edits the credential of `provider`'s default account as currently
+    /// stored and persists it the same way as [`Store::save`].
     pub fn update<F>(&mut self, provider: &str, edit: F) -> Result<(), String>
     where
         F: FnOnce(&mut Credential),
     {
+        self.update_account(provider, crate::secrets::DEFAULT_ACCOUNT, edit)
+    }
+
+    /// Edits the credential of one account of `provider`, made empty first
+    /// when there is none, as [`Store::update`] does.
+    pub fn update_account<F>(
+        &mut self,
+        provider: &str,
+        account: &str,
+        edit: F,
+    ) -> Result<(), String>
+    where
+        F: FnOnce(&mut Credential),
+    {
+        let path = self.path.clone();
+        self.change(provider, |contents| {
+            let mut credential = match contents
+                .accounts
+                .get(provider)
+                .and_then(|accounts| accounts.get(account))
+            {
+                Some(stored) => parse_credential(stored, provider, &path)?,
+                None => empty_credential(),
+            };
+            edit(&mut credential);
+            let value = serde_json::to_value(&credential).map_err(|e| e.to_string())?;
+            contents
+                .accounts
+                .entry(provider.to_string())
+                .or_default()
+                .insert(account.to_string(), value);
+            Ok((account.to_string(), ()))
+        })
+    }
+
+    /// Changes what is known about an existing account of `provider`.
+    pub fn edit_info<F>(&mut self, provider: &str, account: &str, edit: F) -> Result<(), String>
+    where
+        F: FnOnce(&mut crate::secrets::AccountInfo),
+    {
+        self.change(provider, |contents| {
+            if !contents
+                .accounts
+                .get(provider)
+                .is_some_and(|accounts| accounts.contains_key(account))
+            {
+                return Err(format!("{provider} has no account {account}"));
+            }
+            edit(
+                contents
+                    .info
+                    .entry(provider.to_string())
+                    .or_default()
+                    .entry(account.to_string())
+                    .or_default(),
+            );
+            Ok((account.to_string(), ()))
+        })
+    }
+
+    /// Removes one account of `provider`, its secret included.
+    pub fn remove_account(&mut self, provider: &str, account: &str) -> Result<(), String> {
+        self.change(provider, |contents| {
+            let removed = contents
+                .accounts
+                .get_mut(provider)
+                .and_then(|accounts| accounts.remove(account));
+            if removed.is_none() {
+                return Err(format!("{provider} has no account {account}"));
+            }
+            if contents
+                .accounts
+                .get(provider)
+                .is_some_and(BTreeMap::is_empty)
+            {
+                contents.accounts.remove(provider);
+            }
+            if let Some(info) = contents.info.get_mut(provider) {
+                info.remove(account);
+                if info.is_empty() {
+                    contents.info.remove(provider);
+                }
+            }
+            Ok((account.to_string(), ()))
+        })
+    }
+
+    /// Stores the credential of a finished sign-in of `provider`: over the
+    /// account that signs in the same person ([`same_identity`]), which
+    /// then no longer needs a new sign-in, else as a new account. The first
+    /// account of a provider is its default account.
+    pub fn add_signed_in(
+        &mut self,
+        provider: &str,
+        credential: Credential,
+    ) -> Result<SignedIn, String> {
+        let path = self.path.clone();
+        self.change(provider, |contents| {
+            let accounts = contents.accounts.entry(provider.to_string()).or_default();
+            let mut matched = None;
+            for (id, stored) in accounts.iter() {
+                if same_identity(&parse_credential(stored, provider, &path)?, &credential) {
+                    matched = Some(id.clone());
+                    break;
+                }
+            }
+            let (account, added, credential) = match matched {
+                Some(id) => {
+                    let old = parse_credential(&accounts[&id], provider, &path)?;
+                    let mut credential = credential;
+                    credential.email = credential.email.or(old.email);
+                    credential.account_id = credential.account_id.or(old.account_id);
+                    (id, false, credential)
+                }
+                None => (new_account_id(accounts)?, true, credential),
+            };
+            let value = serde_json::to_value(&credential).map_err(|e| e.to_string())?;
+            accounts.insert(account.clone(), value);
+            let info = contents
+                .info
+                .entry(provider.to_string())
+                .or_default()
+                .entry(account.clone())
+                .or_default();
+            info.needs_reauth = false;
+            if added {
+                info.added_ms = Some(now_ms());
+            }
+            Ok((account.clone(), SignedIn { account, added }))
+        })
+    }
+
+    /// Applies `edit` to the store as currently stored, under its lock,
+    /// and persists it; `edit` names the account it changed.
+    fn change<T>(
+        &mut self,
+        provider: &str,
+        edit: impl FnOnce(&mut crate::secrets::Contents) -> Result<(String, T), String>,
+    ) -> Result<T, String> {
         let _lock = crate::secrets::lock_store(&self.path)?;
         let mut contents = self.vault.load_locked()?;
-        let account = crate::secrets::DEFAULT_ACCOUNT;
-        let mut credential = match contents
-            .accounts
-            .get(provider)
-            .and_then(|accounts| accounts.get(account))
-        {
-            Some(stored) => parse_credential(stored, provider, &self.path)?,
-            None => Credential {
-                access: String::new(),
-                refresh: String::new(),
-                expires_at_ms: None,
-                account_id: None,
-                email: None,
-                api_key: None,
-                oauth_access_token: None,
-            },
-        };
-        edit(&mut credential);
-        let value = serde_json::to_value(&credential).map_err(|e| e.to_string())?;
-        contents
-            .accounts
-            .entry(provider.to_string())
-            .or_default()
-            .insert(account.to_string(), value);
-        self.vault.save_locked(&contents, provider, account)?;
+        let (account, result) = edit(&mut contents)?;
+        self.vault.save_locked(&contents, provider, &account)?;
         self.entries = credentials(&contents.accounts, &self.path)?;
-        Ok(())
+        self.info = contents.info;
+        Ok(result)
     }
 }
 
-/// Each provider's [`crate::secrets::DEFAULT_ACCOUNT`] credential.
+fn empty_credential() -> Credential {
+    Credential {
+        access: String::new(),
+        refresh: String::new(),
+        expires_at_ms: None,
+        account_id: None,
+        email: None,
+        api_key: None,
+        oauth_access_token: None,
+    }
+}
+
+/// An unused id for a new account: the default account's name for the
+/// first, else eight random hex digits.
+fn new_account_id(accounts: &BTreeMap<String, Value>) -> Result<String, String> {
+    if accounts.is_empty() {
+        return Ok(crate::secrets::DEFAULT_ACCOUNT.to_string());
+    }
+    loop {
+        let mut bytes = [0u8; 4];
+        getrandom::getrandom(&mut bytes).map_err(|e| e.to_string())?;
+        let id: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        if !accounts.contains_key(&id) {
+            return Ok(id);
+        }
+    }
+}
+
+/// Whether two credentials sign in the same person. Every identity field
+/// both know (email, ignoring case; account id) must agree, and at least
+/// one must be known to both. Both are compared because neither is enough
+/// alone: a ChatGPT account id names a workspace, which several people
+/// share, and one person may sign in to several workspaces with one email.
+pub fn same_identity(a: &Credential, b: &Credential) -> bool {
+    let email = |credential: &Credential| {
+        credential
+            .email
+            .as_deref()
+            .map(str::trim)
+            .filter(|email| !email.is_empty())
+            .map(str::to_lowercase)
+    };
+    let id = |credential: &Credential| {
+        credential
+            .account_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+    };
+    let emails = (email(a), email(b));
+    let ids = (id(a), id(b));
+    let agree = |pair: &(Option<String>, Option<String>)| match pair {
+        (Some(x), Some(y)) => Some(x == y),
+        _ => None,
+    };
+    matches!(
+        (agree(&emails), agree(&ids)),
+        (Some(true), None | Some(true)) | (None, Some(true))
+    )
+}
+
+/// The account of `provider` a request uses: `active` when it is set, else
+/// the only account that is neither paused nor waiting for a new sign-in.
+/// A paused account, one that needs a new sign-in, an unknown `active`, or
+/// several usable accounts with none chosen are errors that say what to do.
+pub fn choose_account(
+    provider: &str,
+    accounts: &[Account],
+    active: Option<&str>,
+) -> Result<String, crate::ErrorInfo> {
+    use crate::ErrorInfo;
+    let unusable = |account: &Account| {
+        let name = describe_account(account);
+        if account.info.needs_reauth {
+            Some(ErrorInfo::new(
+                "account_needs_reauth",
+                format!(
+                    "the {provider} account {name} was refused and needs a new sign-in: \
+                     run /login {provider}, or choose another account with /accounts use"
+                ),
+            ))
+        } else if account.info.paused {
+            Some(ErrorInfo::new(
+                "account_paused",
+                format!(
+                    "the {provider} account {name} is paused: resume it with /accounts resume, \
+                     or choose another account with /accounts use"
+                ),
+            ))
+        } else {
+            None
+        }
+    };
+    if accounts.is_empty() {
+        return Err(ErrorInfo::new(
+            "provider_config",
+            format!(
+                "no stored credential for {provider}; sign in with /login {provider} \
+                 (or `inocode-server login`)"
+            ),
+        ));
+    }
+    if let Some(active) = active {
+        let account = accounts
+            .iter()
+            .find(|account| account.id == active)
+            .ok_or_else(|| {
+                ErrorInfo::new(
+                    "account_unknown",
+                    format!(
+                        "the active account {active} of {provider} is not stored; \
+                         choose one of /accounts list with /accounts use"
+                    ),
+                )
+            })?;
+        return match unusable(account) {
+            Some(error) => Err(error),
+            None => Ok(account.id.clone()),
+        };
+    }
+    let usable: Vec<&Account> = accounts
+        .iter()
+        .filter(|account| unusable(account).is_none())
+        .collect();
+    match usable.as_slice() {
+        [only] => Ok(only.id.clone()),
+        [] if accounts.len() == 1 => Err(unusable(&accounts[0]).expect("unusable")),
+        [] => Err(ErrorInfo::new(
+            "account_unavailable",
+            format!(
+                "every {provider} account is paused or needs a new sign-in; \
+                 see /accounts list"
+            ),
+        )),
+        several => Err(ErrorInfo::new(
+            "account_ambiguous",
+            format!(
+                "{provider} has several accounts ({}) and none is chosen; \
+                 choose one with /accounts use",
+                several
+                    .iter()
+                    .map(|account| describe_account(account))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )),
+    }
+}
+
+/// The account's id, with its alias or email when it has one.
+fn describe_account(account: &Account) -> String {
+    match account.info.alias.as_deref().or(account.email.as_deref()) {
+        Some(name) => format!("{} ({name})", account.id),
+        None => account.id.clone(),
+    }
+}
+
+/// Each provider's accounts' credentials.
 fn credentials(
     accounts: &crate::secrets::Accounts,
     path: &std::path::Path,
-) -> Result<BTreeMap<String, Credential>, String> {
+) -> Result<BTreeMap<String, BTreeMap<String, Credential>>, String> {
     accounts
         .iter()
-        .filter_map(|(provider, accounts)| {
-            accounts
-                .get(crate::secrets::DEFAULT_ACCOUNT)
-                .map(|stored| Ok((provider.clone(), parse_credential(stored, provider, path)?)))
+        .map(|(provider, accounts)| {
+            let parsed = accounts
+                .iter()
+                .map(|(account, stored)| {
+                    Ok((account.clone(), parse_credential(stored, provider, path)?))
+                })
+                .collect::<Result<_, String>>()?;
+            Ok((provider.clone(), parsed))
         })
         .collect()
 }
@@ -241,44 +581,51 @@ fn parse_credential(
     })
 }
 
-/// The credential stored at `path` for `auth`, refreshed first when it has
-/// expired.
-pub(crate) async fn fresh(path: PathBuf, auth: AuthKind) -> Result<Credential, crate::ErrorInfo> {
-    renewed(path, auth, None, None).await
+/// The account of `auth` at `path` a request uses ([`choose_account`] with
+/// `active`) and its credential, refreshed first when it has expired.
+/// `token_url` replaces the provider's token endpoint in tests.
+pub(crate) async fn fresh(
+    path: PathBuf,
+    auth: AuthKind,
+    active: Option<&str>,
+    token_url: Option<&str>,
+) -> Result<(String, Credential), crate::ErrorInfo> {
+    renewed(path, auth, active, None, token_url).await
 }
 
-/// The stored credential for `auth` after refreshing it even though it has
-/// not expired, unless it no longer holds `rejected`: another request
-/// already replaced the token a service refused. Refreshing asks for the
-/// current scopes, which is how a sign-in made before a scope was added
-/// gains it. `token_url` replaces the provider's token endpoint in tests.
+/// [`fresh`] after refreshing the credential even though it has not
+/// expired, unless it no longer holds `rejected`: another request already
+/// replaced the token a service refused. Refreshing asks for the current
+/// scopes, which is how a sign-in made before a scope was added gains it.
+/// `token_url` replaces the provider's token endpoint in tests.
 pub(crate) async fn renew(
     path: PathBuf,
     auth: AuthKind,
+    active: Option<&str>,
     rejected: &str,
     token_url: Option<&str>,
-) -> Result<Credential, crate::ErrorInfo> {
-    renewed(path, auth, Some(rejected), token_url).await
+) -> Result<(String, Credential), crate::ErrorInfo> {
+    renewed(path, auth, active, Some(rejected), token_url).await
 }
 
 async fn renewed(
     path: PathBuf,
     auth: AuthKind,
+    active: Option<&str>,
     rejected: Option<&str>,
     token_url: Option<&str>,
-) -> Result<Credential, crate::ErrorInfo> {
+) -> Result<(String, Credential), crate::ErrorInfo> {
     use crate::ErrorInfo;
     let store =
         Store::load(path.clone()).map_err(|error| ErrorInfo::new("provider_config", error))?;
     let name = auth.store_name();
-    let credential = store.credential(name).cloned().ok_or_else(|| {
-        ErrorInfo::new(
-            "provider_config",
-            format!("no stored credential for {name}; run the login first"),
-        )
-    })?;
+    let account = store.choose(name, active)?;
+    let credential = store
+        .account_credential(name, &account)
+        .cloned()
+        .ok_or_else(|| ErrorInfo::new("internal", "the chosen account has no credential"))?;
     if is_fresh(&credential, now_ms()) && rejected.is_none() {
-        return Ok(credential);
+        return Ok((account, credential));
     }
     if matches!(
         auth,
@@ -286,7 +633,7 @@ async fn renewed(
     ) {
         // The Muse and DeepAI keys are static; the Muse account token
         // exists only to mint its key.
-        return Ok(credential);
+        return Ok((account, credential));
     }
     let mut endpoints = if auth == AuthKind::GptOauth {
         FlowEndpoints::chatgpt()
@@ -296,21 +643,58 @@ async fn renewed(
     if let Some(url) = token_url {
         endpoints.token_url = url.to_string();
     }
-    refresh_stored(path, name, rejected, |refresh| async move {
-        if auth == AuthKind::GptOauth {
-            refresh_gpt(&endpoints, &refresh).await
-        } else {
-            refresh_claude(&endpoints, &refresh).await
+    let refreshed = refresh_stored(
+        path.clone(),
+        name,
+        &account,
+        rejected,
+        |refresh| async move {
+            if auth == AuthKind::GptOauth {
+                refresh_gpt(&endpoints, &refresh).await
+            } else {
+                refresh_claude(&endpoints, &refresh).await
+            }
+        },
+    )
+    .await;
+    match refreshed {
+        Ok(credential) => Ok((account, credential)),
+        Err(RefreshError::Store(error)) => Err(ErrorInfo::new("provider_config", error)),
+        Err(RefreshError::Refresh(error)) if refresh_refused(&error) => {
+            let _ = mark_needs_reauth(&path, name, &account);
+            Err(ErrorInfo::new(
+                "provider_http",
+                format!(
+                    "credential refresh failed: {error}; the {name} account {account} needs a \
+                     new sign-in: run /login {name}"
+                ),
+            ))
         }
-    })
-    .await
-    .map_err(|error| match error {
-        RefreshError::Store(error) => ErrorInfo::new("provider_config", error),
-        RefreshError::Refresh(error) => ErrorInfo::new(
+        Err(RefreshError::Refresh(error)) => Err(ErrorInfo::new(
             "provider_http",
             format!("credential refresh failed: {error}"),
-        ),
-    })
+        )),
+    }
+}
+
+/// Whether the token endpoint refused the refresh token itself (HTTP 400,
+/// 401 or 403, as for `invalid_grant`), not just failed to answer: only
+/// then can a new sign-in alone fix it.
+fn refresh_refused(error: &str) -> bool {
+    error
+        .strip_prefix(TOKEN_STATUS_PREFIX)
+        .and_then(|status| status.parse::<u16>().ok())
+        .is_some_and(|status| matches!(status, 400 | 401 | 403))
+}
+
+/// Marks one account as refused, so requests stop using it until it signs
+/// in again.
+pub(crate) fn mark_needs_reauth(
+    path: &std::path::Path,
+    provider: &str,
+    account: &str,
+) -> Result<(), String> {
+    Store::load(path.to_path_buf())?.edit_info(provider, account, |info| info.needs_reauth = true)
 }
 
 /// Whether `credential` can be used at `now_ms` without a refresh.
@@ -333,7 +717,7 @@ pub(crate) enum RefreshError {
     Refresh(String),
 }
 
-/// Refreshes one provider's stored credential, at most once at a time across
+/// Refreshes one account's stored credential, at most once at a time across
 /// this process and others.
 ///
 /// Rotating refresh tokens are single-use: two requests that both found the
@@ -345,6 +729,7 @@ pub(crate) enum RefreshError {
 pub(crate) async fn refresh_stored<F, Fut>(
     path: PathBuf,
     provider: &str,
+    account: &str,
     rejected: Option<&str>,
     refresh: F,
 ) -> Result<Credential, RefreshError>
@@ -352,11 +737,16 @@ where
     F: FnOnce(String) -> Fut,
     Fut: std::future::Future<Output = Result<Credential, String>>,
 {
-    let lock = crate::secrets::open_lock_file(&crate::secrets::sibling(
-        &path,
-        &format!(".refresh.{provider}.lock"),
-    ))
-    .map_err(RefreshError::Store)?;
+    // The default account keeps the lock name of the single account a
+    // provider had, so an older process refreshing it still takes the same
+    // lock.
+    let suffix = if account == crate::secrets::DEFAULT_ACCOUNT {
+        format!(".refresh.{provider}.lock")
+    } else {
+        format!(".refresh.{provider}.{account}.lock")
+    };
+    let lock = crate::secrets::open_lock_file(&crate::secrets::sibling(&path, &suffix))
+        .map_err(RefreshError::Store)?;
     let deadline = tokio::time::Instant::now() + REFRESH_LOCK_WAIT;
     loop {
         match lock.try_lock() {
@@ -377,11 +767,14 @@ where
         }
     }
     let mut store = Store::load(path).map_err(RefreshError::Store)?;
-    let current = store.credential(provider).cloned().ok_or_else(|| {
-        RefreshError::Store(format!(
-            "no stored credential for {provider}; run the login first"
-        ))
-    })?;
+    let current = store
+        .account_credential(provider, account)
+        .cloned()
+        .ok_or_else(|| {
+            RefreshError::Store(format!(
+                "no stored credential for {provider} account {account}; run the login first"
+            ))
+        })?;
     let replaced = rejected.is_some_and(|token| token != current.access);
     if is_fresh(&current, now_ms()) && (rejected.is_none() || replaced) {
         return Ok(current);
@@ -390,18 +783,21 @@ where
         .await
         .map_err(RefreshError::Refresh)?;
     store
-        .update(provider, |stored| {
+        .update_account(provider, account, |stored| {
             stored.access = new.access;
             stored.refresh = new.refresh;
             stored.expires_at_ms = new.expires_at_ms;
         })
         .map_err(RefreshError::Store)?;
-    store.credential(provider).cloned().ok_or_else(|| {
-        RefreshError::Store(format!("the {provider} credential vanished after saving"))
-    })
+    store
+        .account_credential(provider, account)
+        .cloned()
+        .ok_or_else(|| {
+            RefreshError::Store(format!("the {provider} credential vanished after saving"))
+        })
 }
 
-/// PKCE verifier/challenge pair (RFC 7636 `S256`).
+// PKCE verifier/challenge pair (RFC 7636 `S256`).
 pub struct Pkce {
     pub verifier: String,
     pub challenge: String,
@@ -730,6 +1126,10 @@ async fn post_token_form(
     .await
 }
 
+/// How a token endpoint's refusal begins; [`refresh_refused`] reads the
+/// status after it.
+const TOKEN_STATUS_PREFIX: &str = "token request returned HTTP ";
+
 async fn send_token_request(request: reqwest::RequestBuilder) -> Result<Value, String> {
     let response = request
         .header("accept", "application/json")
@@ -739,7 +1139,7 @@ async fn send_token_request(request: reqwest::RequestBuilder) -> Result<Value, S
     let status = response.status();
     if !status.is_success() {
         // Never echo the body: it can carry request material.
-        return Err(format!("token request returned HTTP {}", status.as_u16()));
+        return Err(format!("{TOKEN_STATUS_PREFIX}{}", status.as_u16()));
     }
     let bytes = read_success_body(response, "token response").await?;
     serde_json::from_slice(&bytes).map_err(|_| "token response was not valid JSON".to_string())
@@ -1045,7 +1445,13 @@ pub async fn gpt_login_finish(
     credential.email = token
         .get("email")
         .and_then(Value::as_str)
-        .map(str::to_string);
+        .map(str::to_string)
+        .or_else(|| {
+            jwt_payload(id_token)?
+                .get("email")?
+                .as_str()
+                .map(str::to_string)
+        });
     Ok(credential)
 }
 
@@ -1426,6 +1832,7 @@ mod tests {
         let mut store = Store {
             path: path.clone(),
             entries: BTreeMap::new(),
+            info: BTreeMap::new(),
             vault: crate::secrets::Vault::new(path.clone(), crate::secrets::mode(), false),
         };
         assert!(store.save("gpt-oauth", sample_credential("a")).is_err());
@@ -1544,7 +1951,7 @@ mod tests {
                 let path = path.clone();
                 let calls = std::sync::Arc::clone(&calls);
                 tokio::spawn(async move {
-                    refresh_stored(path, "gpt-oauth", None, |refresh| async move {
+                    refresh_stored(path, "gpt-oauth", "default", None, |refresh| async move {
                         assert_eq!(refresh, "rt-1", "only the stored token is spent");
                         calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1578,6 +1985,155 @@ mod tests {
         std::fs::remove_file(&path).expect("remove");
         let _ = std::fs::remove_file(crate::secrets::sibling(&path, ".lock"));
         let _ = std::fs::remove_file(crate::secrets::sibling(&path, ".refresh.gpt-oauth.lock"));
+    }
+
+    fn person(email: Option<&str>, id: Option<&str>) -> Credential {
+        Credential {
+            email: email.map(str::to_string),
+            account_id: id.map(str::to_string),
+            ..sample_credential("a")
+        }
+    }
+
+    #[test]
+    fn identity_needs_one_shared_field_and_no_disagreeing_one() {
+        let same = |a: Credential, b: Credential| same_identity(&a, &b);
+        assert!(same(
+            person(Some("A@Example.test"), None),
+            person(Some(" a@example.test"), Some("x"))
+        ));
+        assert!(same(person(None, Some("acct")), person(None, Some("acct"))));
+        // One email in two workspaces is two accounts.
+        assert!(!same(
+            person(Some("a@example.test"), Some("team")),
+            person(Some("a@example.test"), Some("personal"))
+        ));
+        // Two people in one workspace are two accounts.
+        assert!(!same(
+            person(Some("a@example.test"), Some("team")),
+            person(Some("b@example.test"), Some("team"))
+        ));
+        assert!(!same(person(None, None), person(None, None)));
+        assert!(!same(
+            person(Some("a@example.test"), None),
+            person(None, Some("x"))
+        ));
+    }
+
+    fn listed(id: &str, paused: bool, needs_reauth: bool) -> Account {
+        Account {
+            id: id.to_string(),
+            info: crate::secrets::AccountInfo {
+                paused,
+                needs_reauth,
+                ..Default::default()
+            },
+            email: None,
+            account_id: None,
+        }
+    }
+
+    #[test]
+    fn the_active_account_or_the_only_usable_one_is_chosen() {
+        let choose = |accounts: &[Account], active: Option<&str>| {
+            choose_account("claude-oauth", accounts, active).map_err(|error| error.code)
+        };
+        assert_eq!(choose(&[], None), Err("provider_config"));
+        let one = [listed("default", false, false)];
+        assert_eq!(choose(&one, None), Ok("default".to_string()));
+        assert_eq!(choose(&one, Some("other")), Err("account_unknown"));
+        let two = [listed("default", false, false), listed("b", false, false)];
+        assert_eq!(choose(&two, None), Err("account_ambiguous"));
+        assert_eq!(choose(&two, Some("b")), Ok("b".to_string()));
+        let one_usable = [listed("default", true, false), listed("b", false, false)];
+        assert_eq!(choose(&one_usable, None), Ok("b".to_string()));
+        assert_eq!(choose(&one_usable, Some("default")), Err("account_paused"));
+        let refused = [listed("default", false, true)];
+        assert_eq!(choose(&refused, None), Err("account_needs_reauth"));
+        let none_usable = [listed("default", true, false), listed("b", false, true)];
+        assert_eq!(choose(&none_usable, None), Err("account_unavailable"));
+    }
+
+    #[test]
+    fn sign_ins_add_or_update_accounts_and_their_info_persists() {
+        let path = temp_store_path("accounts");
+        let mut store = Store::load(path.clone()).expect("load");
+        let first = store
+            .add_signed_in("claude-oauth", person(Some("a@example.test"), Some("u-a")))
+            .expect("first");
+        assert_eq!(
+            first,
+            SignedIn {
+                account: "default".into(),
+                added: true
+            }
+        );
+        let other = store
+            .add_signed_in("claude-oauth", person(Some("b@example.test"), Some("u-b")))
+            .expect("second");
+        assert!(other.added);
+        assert_ne!(other.account, "default");
+        store
+            .edit_info("claude-oauth", "default", |info| info.needs_reauth = true)
+            .expect("mark");
+        let again = store
+            .add_signed_in(
+                "claude-oauth",
+                Credential {
+                    access: "renewed".into(),
+                    ..person(Some("A@example.test"), None)
+                },
+            )
+            .expect("again");
+        assert_eq!(
+            again,
+            SignedIn {
+                account: "default".into(),
+                added: false
+            }
+        );
+        store
+            .edit_info("claude-oauth", &other.account, |info| {
+                info.alias = Some("work".into())
+            })
+            .expect("alias");
+        let reloaded = Store::load(path.clone()).expect("reload");
+        let accounts = reloaded.accounts("claude-oauth");
+        assert_eq!(accounts.len(), 2);
+        assert_eq!(accounts[0].id, "default", "the earliest first");
+        assert!(!accounts[0].info.needs_reauth, "a new sign-in clears it");
+        assert_eq!(accounts[0].account_id.as_deref(), Some("u-a"), "kept");
+        assert!(accounts[0].info.added_ms.is_some());
+        assert_eq!(accounts[1].info.alias.as_deref(), Some("work"));
+        assert_eq!(
+            reloaded
+                .account_credential("claude-oauth", "default")
+                .map(|c| c.access.as_str()),
+            Some("renewed")
+        );
+        let mut store = reloaded;
+        store
+            .remove_account("claude-oauth", &other.account)
+            .expect("remove");
+        assert!(store
+            .remove_account("claude-oauth", &other.account)
+            .is_err());
+        assert!(store.edit_info("claude-oauth", "nobody", |_| {}).is_err());
+        let reloaded = Store::load(path.clone()).expect("reload");
+        assert_eq!(reloaded.accounts("claude-oauth").len(), 1);
+        let file = std::fs::read_to_string(&path).expect("file");
+        assert!(!file.contains("work"), "the removed account's info is gone");
+        std::fs::remove_file(&path).expect("remove");
+        let _ = std::fs::remove_file(crate::secrets::sibling(&path, ".lock"));
+    }
+
+    #[test]
+    fn only_a_refusal_of_the_refresh_token_asks_for_a_new_sign_in() {
+        assert!(refresh_refused("token request returned HTTP 400"));
+        assert!(refresh_refused("token request returned HTTP 401"));
+        assert!(!refresh_refused("token request returned HTTP 429"));
+        assert!(!refresh_refused("token request returned HTTP 503"));
+        assert!(!refresh_refused("token request failed: connection refused"));
     }
 
     #[test]

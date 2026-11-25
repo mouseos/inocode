@@ -400,9 +400,24 @@ async fn dispatch(
             ));
             true
         }
-        "providers/list" | "providers/add" | "providers/update" | "providers/remove"
-        | "models/list" | "models/visibility" | "thread/settings" | "settings/get"
-        | "settings/set" => {
+        "providers/list"
+        | "providers/add"
+        | "providers/update"
+        | "providers/remove"
+        | "models/list"
+        | "models/visibility"
+        | "thread/settings"
+        | "settings/get"
+        | "settings/set"
+        | "accounts/list"
+        | "accounts/login/start"
+        | "accounts/login/code"
+        | "accounts/login/cancel"
+        | "accounts/login/status"
+        | "accounts/rename"
+        | "accounts/pause"
+        | "accounts/remove"
+        | "accounts/use" => {
             // Settings and credential files, and for models/list an HTTP
             // round trip: off the read loop like the store requests.
             tokio::spawn(settings_request(
@@ -618,6 +633,15 @@ async fn settings_request(
             "settings/get" => core.get_settings().await,
             "settings/set" => core.set_settings(&params).await,
             "models/visibility" => core.set_model_visibility(&params).await,
+            "accounts/list" => core.accounts_list(&params).await,
+            "accounts/login/start" => core.login_start(&params).await,
+            "accounts/login/code" => core.login_code(&params).await,
+            "accounts/login/cancel" => core.login_cancel(&params).await,
+            "accounts/login/status" => core.login_status(&params).await,
+            "accounts/rename" => core.rename_account(&params).await,
+            "accounts/pause" => core.pause_account(&params).await,
+            "accounts/remove" => core.remove_account(&params).await,
+            "accounts/use" => core.use_account(&params).await,
             // `thread/settings` with nothing but the thread reads; any
             // other field is a change.
             _ => match request.thread() {

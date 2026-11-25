@@ -169,8 +169,8 @@ async fn the_list_has_every_built_in_command_and_the_projects_under_their_prefix
         assert_eq!(forms[1]["sub"], "status");
         assert_eq!(forms[1]["when"], "now");
         assert_eq!(named("model")["forms"][0]["when"], "next_request");
-        assert_eq!(named("login")["available"], false);
-        assert!(named("login")["reason"].is_string());
+        assert_eq!(named("estimate")["available"], false);
+        assert!(named("estimate")["reason"].is_string());
         assert_eq!(named("user:hello")["short"], "hello");
         assert_eq!(named("project:goal"), Value::Null, "no thread, no project");
 
@@ -287,8 +287,8 @@ async fn commands_check_their_arguments_and_report_what_is_missing() {
         assert_eq!(wrong["error"]["code"], "invalid_arguments");
         let unconfirmed = command(&mut client, 4, thread, "/delete").await;
         assert_eq!(unconfirmed["error"]["code"], "invalid_arguments");
-        let login = command(&mut client, 5, thread, "/login").await;
-        assert_eq!(login["error"]["code"], "unavailable");
+        let estimate = command(&mut client, 5, thread, "/estimate this").await;
+        assert_eq!(estimate["error"]["code"], "unavailable");
         let edit = command(&mut client, 6, thread, "/rules edit 1 x").await;
         assert_eq!(edit["error"]["code"], "unavailable");
         let no_slash = command(&mut client, 7, thread, "plan").await;

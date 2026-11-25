@@ -53,9 +53,11 @@ impl Account {
     /// The headers that sign a request in with this account, from the
     /// credential at `store`, refreshed when it has expired.
     pub(crate) async fn headers(self, store: &Path) -> Result<reqwest::header::HeaderMap, String> {
-        let credential = crate::oauth::fresh(store.to_path_buf(), self.auth())
-            .await
-            .map_err(|error| error.message)?;
+        let active = active_account(store, self.auth());
+        let (_, credential) =
+            crate::oauth::fresh(store.to_path_buf(), self.auth(), active.as_deref(), None)
+                .await
+                .map_err(|error| error.message)?;
         self.sign(&credential)
     }
 
@@ -115,6 +117,19 @@ fn signed_in(store: &Path, account: Account) -> bool {
         .unwrap_or(false)
 }
 
+/// The account connector requests sign in with: the active account of the
+/// first provider of its kind the settings use, when one is chosen.
+fn active_account(store: &Path, auth: AuthKind) -> Option<String> {
+    let value = crate::settings::read_blocking(&store.with_file_name("settings.json")).ok()?;
+    let settings = crate::settings::Settings::from_value(&value).ok()?;
+    settings
+        .providers
+        .iter()
+        .flatten()
+        .filter(|(_, provider)| provider.kind.auth() == auth && !provider.disabled)
+        .find_map(|(_, provider)| provider.active_account.clone())
+}
+
 /// How long listing claude.ai's connectors may take.
 const LIST_TIMEOUT: Duration = Duration::from_secs(20);
 /// Pages of connectors read at most.
@@ -169,9 +184,14 @@ async fn claude(store: &Path, hosts: &Hosts) -> Result<Vec<Server>, String> {
     );
     let mut connectors = Vec::new();
     let mut page: Option<String> = None;
-    let mut credential = crate::oauth::fresh(store.to_path_buf(), AuthKind::ClaudeOauth)
-        .await
-        .map_err(|error| error.message)?;
+    let (account, mut credential) = crate::oauth::fresh(
+        store.to_path_buf(),
+        AuthKind::ClaudeOauth,
+        active_account(store, AuthKind::ClaudeOauth).as_deref(),
+        hosts.claude_token.as_deref(),
+    )
+    .await
+    .map_err(|error| error.message)?;
     let mut renewed = false;
     let mut read_pages = 0;
     while read_pages < LIST_PAGES {
@@ -203,11 +223,13 @@ async fn claude(store: &Path, hosts: &Hosts) -> Result<Vec<Server>, String> {
                 credential = crate::oauth::renew(
                     store.to_path_buf(),
                     AuthKind::ClaudeOauth,
+                    Some(&account),
                     &credential.access,
                     hosts.claude_token.as_deref(),
                 )
                 .await
-                .map_err(|error| error.message)?;
+                .map_err(|error| error.message)?
+                .1;
                 continue;
             }
             return Err(match status.as_u16() {

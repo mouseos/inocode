@@ -1,7 +1,7 @@
 # スラッシュコマンド
 
 - **対象と範囲：** inocode のエンジンが持つスラッシュコマンドの仕組みと、組み込みコマンドの一覧。UI（CLI・GUI）は、この一覧をエンジンから受け取って表示し、入力をエンジンに渡す。
-- **関連ソースコード：** `core/src/commands.rs`（コマンドの一覧、名前の決まり、引数の読み取り、各コマンドの実行）、`core/src/store_threads.rs`（会話の一覧・名前・写し・削除、会話の使用量、メモの一覧）、`core/src/turn.rs`（`compact_now`、ターン中のモードの切り替え）、`core/src/lib.rs`（`Core::turn_running`、最後のターンが残した保留と質問、`command` の出来事）、`core/src/mcp.rs`（`listed`、MCP の質問の中身を覚える）、`core/src/plugins.rs`（`commands/*.md` を読む）、`server/src/lib.rs`（`commands/list`・`command/run`・`thread/list`）、`server/tests/commands_tcp.rs`。
+- **関連ソースコード：** `core/src/commands.rs`（コマンドの一覧、名前の決まり、引数の読み取り、各コマンドの実行）、`core/src/store_threads.rs`（会話の一覧・名前・写し・削除、会話の使用量、メモの一覧）、`core/src/turn.rs`（`compact_now`、ターン中のモードの切り替え）、`core/src/lib.rs`（`Core::turn_running`、最後のターンが残した保留と質問、`command` の出来事）、`core/src/mcp.rs`（`listed`、MCP の質問の中身を覚える）、`core/src/plugins.rs`（`commands/*.md` を読む）、`server/src/lib.rs`（`commands/list`・`command/run`・`thread/list`）、`server/tests/commands_tcp.rs`。`/login`・`/logout`・`/accounts` は `core/src/accounts.rs` を呼び、試験は `server/tests/accounts_tcp.rs`。
 - **根拠の状態：** UNSUPPORTED_APPROVED。学術的な裏付けは調べていない（操作の入口の設計）。ユーザーの指示（2026-11-25）：
   - 「スラッシュコマンドからゴールを制御しないとだめでしょ」
   - 「スラッシュコマンドをもっと定義してからやるべき」
@@ -207,6 +207,9 @@
 | `/roles [役 モデル・default]` | `settings/set` の `roles` |
 | `/providers`・`add 〈id〉 〈種類〉`・`set 〈id〉 〈欄〉 〈値〉`・`remove 〈id〉` | `providers/*` |
 | `/models [プロバイダ]` | `models/catalog` |
+| `/login [プロバイダ] [callback・code・device]`・`code 〈番号〉 〈コード〉`・`status 〈番号〉`・`cancel 〈番号〉` | `accounts/login/*`。プロバイダを書かなければこの会話のプロバイダ。結果の `url`（と Muse の `user_code`）を人が開く。`code` は Claude でブラウザがこの機械に戻れないとき。〈番号〉は結果の `login_id` |
+| `/logout [アカウント]` | この会話のプロバイダのアカウントを `accounts/remove` で消す（秘密も消える）。書かなければ、いまそのプロバイダが使っているアカウント |
+| `/accounts`・`list [プロバイダ]`・`use 〈プロバイダ〉 〈アカウント〉`・`pause`・`resume`・`remove 〈プロバイダ〉 〈アカウント〉`・`rename 〈プロバイダ〉 〈アカウント〉 〈別名〉` | `accounts/*`。アカウントは id か別名で書ける。何も付けなければ `list` |
 | `/usage`・`/stats [日数]` | `usage`・`stats/models`。`/stats` の時刻はサーバーの時間帯で数える |
 | `/status` | 会話の概要、モデルとモード、走っているか、この会話の要求のトークンの合計、目標 |
 | `/translate`・`thinking`・`answer`・`service`・`to`・`models [remove …]`・`languages [方式]` | `settings/translation`・`translation/*` |
@@ -223,8 +226,6 @@
 
 | コマンド | 足りないもの |
 |---|---|
-| `/login`・`/logout` | プロトコルでサインイン・サインアウトする方法が無い（`inocode-server login` だけ） |
-| `/accounts` | アカウントの登録簿がまだ無い（`account-pool.md`） |
 | `/estimate` | 見積もりの機能がまだ無い（`effort-estimates.md`） |
 | `/attach` | `turn/start` が文字しか運べない |
 | `/rules edit` | ルールの文を、強制の設定を保ったまま直す保存の仕組みが無い |
@@ -235,7 +236,8 @@
 - `/translate answer` は設定を保存するだけ。答えの翻訳はまだ無いので、結果の `note` にそう書く。
 - `/plugins` の外す・有効無効、`/mcp` の有効無効、`/providers` の一覧以外の細かな操作（隠す等）はコマンドに無い。
 - `/model` からのモデルの設定（思考の深さの既定、送る文の翻訳、モデルの言語）は無い。
-- `/status` のアカウントは、アカウントの登録簿が無いので出さない。
+- `/status` にアカウントは出さない（アカウントは `/accounts list` で見る）。
+- `/accounts` の優先度とプールの方式は、プールがまだ無いので無い（`account-pool.md`）。
 - 保留と質問の一覧は、サーバーが動いている間だけ覚えている（再起動で消える）。
 
 ### 道具とコマンドの照合（決まり 6）

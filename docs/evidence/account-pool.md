@@ -6,7 +6,7 @@
   - 1 つのプロバイダに複数のアカウント（OAuth・API キー）を持ち、送るたびに選ぶプール。
   - 認証情報の保存方法。
   - 環境変数での設定をやめる。
-- **関連ソースコード：** 設定ファイルは `core/src/settings.rs`、クライアントの作り方と会話ごとの選択は `core/src/lib.rs`（`Core`）、`core/src/llm.rs`（`LlmConfig::for_provider`）、会話の設定の保存は `core/src/store.rs`（版 9）、プロトコルは `server/src/lib.rs`、コマンド（`key set`、`--port`、`--sandbox`）は `server/src/main.rs`、キーの入力は `core/src/secret.rs`。認証情報は `core/src/oauth.rs`（`~/.inocode/auth.json`）。アカウントのプールは未実装。
+- **関連ソースコード：** 設定ファイルは `core/src/settings.rs`、クライアントの作り方と会話ごとの選択は `core/src/lib.rs`（`Core`）、`core/src/llm.rs`（`LlmConfig::for_provider`）、会話の設定の保存は `core/src/store.rs`（版 9）、プロトコルは `server/src/lib.rs`、コマンド（`key set`、`--port`、`--sandbox`）は `server/src/main.rs`、キーの入力は `core/src/secret.rs`。認証情報は `core/src/oauth.rs`（`~/.inocode/auth.json`）。アカウントの登録簿は `core/src/accounts.rs`・`core/src/oauth.rs`（`Store`）・`core/src/secrets.rs`（`AccountInfo`）。アカウントのプール（送るたびに選ぶ仕組み）は未実装。
 - **根拠の状態：** UNSUPPORTED_APPROVED。学術的な裏付けは調べていない（使い勝手と互換のための仕組み）。ユーザーの指示（2026-11-25）：
   - 「環境変数での制御はだめ」
   - 「モデル登録やGPTなどoauth系opencodex同様のプールはできるのか？CRUDできるのか？それもかんがえて」
@@ -44,7 +44,9 @@
 ### できたこと
 
 - 設定の保存場所、プロバイダ・モデルの登録・一覧・変更・削除、会話ごとの選択、環境変数での設定の廃止。
-- まだ：アカウントのプール（1 つのプロバイダに複数のアカウント）、認証情報を平文にしない保存（別の作業で `core/src/oauth.rs` の中を置き換え中）、スラッシュコマンド、見積もり。
+- 認証情報を平文にしない保存（下の「認証情報の保存先」）、スラッシュコマンド（`slash-commands.md`）。
+- アカウントの登録（1 つのプロバイダの種類に複数のアカウント。下の「アカウントの登録」）。
+- まだ：アカウントのプール（送るたびにアカウントを選ぶ・切り替える）、見積もり。
 
 ### 設定ファイル
 
@@ -213,7 +215,7 @@
   - サーバーの起動時にパスフレーズを尋ねる部分やプロトコルの呼び出しはまだない（サーバー側は別の人の担当範囲）。
 - 鍵は保存しない。ファイルには Argon2id の設定（64 MiB・3 回・4 レーン、RFC 9106 第 4 節の 2 番目の推奨）、16 バイトの乱数ソルト、24 バイトの乱数ノンスだけを書く。これらの見出し部分も暗号の認証対象（AAD）に入れたので、書き換えると復号に失敗する。メモリーやパスの数値が大きすぎる見出しは読む前に断る（1 GiB・64 回・16 レーンまで）。
 - 鍵の作成は遅い（わざと）。同じ見出しの鍵はプロセスの中で 1 回だけ作り、メモリーに置いておく。
-- 保存の単位は（プロバイダ、アカウント）。今の 1 種類 1 件は、アカウント名 `default`。
+- 保存の単位は（プロバイダ、アカウント）。種類ごとの最初のアカウントの名前は `default`（下の「アカウントの登録」）。
   - OS の保管庫：サービス名 `inocode`、項目名 `<プロバイダ>/<アカウント>`（例 `gpt-oauth/default`）。ファイル `auth.json` には、どのアカウントがあるかの一覧（秘密は含まない）だけが残る。
   - 暗号化ファイル・平文：`auth.json` の中にプロバイダ → アカウント → 認証情報の形で入る。
 - 大きな値の分割：Windows の資格情報は 1 件 2,560 バイトまでなので、2,048 バイトずつ分けて `<項目名>#<世代>.<番号>` に入れ、本体の項目には世代・個数・SHA-256 を書く。新しい世代を全部書いてから本体を差し替え、古い世代を消すので、読む側が新旧を混ぜることはない（混ざったら SHA-256 が合わず、読み直す）。
@@ -256,3 +258,110 @@
 - macOS のキーチェーンと Linux の Secret Service での実際の動作（この機械は Windows だけ）。Linux 用のコードはこの機械ではコンパイルもしていない。
 - Linux で Tokio の中から呼んだときに別スレッドにしたことで止まらないこと（ソースを読んだだけ）。
 - Argon2id の設定での実際の所要時間。
+
+## アカウントの登録（実装済み）
+
+- **対象と範囲：** ログインで使う 4 つの種類（`claude-oauth`・`gpt-oauth`・`muse-code`・`deepai`）に、それぞれ複数のアカウントを持たせる。プロトコルとスラッシュコマンドからのログイン、一覧、別名、一時停止、削除、使うアカウントの選択。API キーの種類（`openai`・`anthropic`・`responses`）は 1 プロバイダ 1 キーのまま。送るたびにアカウントを選び替えるプールは範囲外（まだ）。
+- **関連ソースコード：** `core/src/accounts.rs`（プロトコルの処理、ログインの進行、ログインの完了を CLI と共通にした `complete_login`）、`core/src/oauth.rs`（`Store` のアカウントの操作、`same_identity`、`choose_account`、更新が断られたときの印）、`core/src/secrets.rs`（`AccountInfo` と、ファイルへの保存、消したアカウントの OS の保管庫の項目の削除）、`core/src/settings.rs`（`active_account`、`forget_account`）、`core/src/llm.rs`（`with_account`、401 のときの扱い）、`core/src/connectors.rs`、`core/src/commands.rs`、`server/src/lib.rs`、`server/src/main.rs`（`login`）、`core/src/deepai.rs`（`username` を記録）。
+- **根拠の状態：** UNSUPPORTED_APPROVED（上の「方針」のユーザー判断。作る順の「アカウント」の段）。学術研究での裏付けは調べていない。
+
+### 保存の形
+
+- アカウントの id：種類ごとの最初のアカウントは `default`（前からある 1 件はそのまま `default` として使える）。2 件目からは乱数の 16 進 8 桁。
+- 秘密でない情報（`AccountInfo`）：`alias`（別名）、`paused`（一時停止）、`needs_reauth`（ログインし直しが要る）、`added_ms`（足した時刻、ミリ秒。前からある `default` は不明なので無い）。認証情報の保管場所のファイル（`auth.json`）の最上位の `account_info` に、種類 → アカウント → 情報の形で置く。保存方式（OS の保管庫・DPAPI・パスフレーズ・平文）によらず、ここは暗号化しない。秘密は入れない。
+- メールアドレスとアカウント番号（Claude の `account.uuid`、ChatGPT の `chatgpt_account_id`、Muse の `user_id`、DeepAI の `username`）は、前と同じく認証情報の中にあり、一覧のときだけ読み出して見せる。`account_info` には書かない（暗号化したファイルでは、メールアドレスを平文に出さないため）。
+- ChatGPT のメールアドレス：トークンの応答に `email` が無ければ、`id_token` の `email` を読む（同じ人かを判定するため）。DeepAI：ログインの応答の `username` を `account_id` に入れる。
+- ファイルの形式の版は 2 のまま。`account_info` は省けるので、前のファイルはそのまま読める。前の版の inocode は `account_info` を読まず、書き直すと消す（アカウントの秘密は残る）。
+- OS の保管庫のとき、目次のファイルは毎回書き直す（`account_info` の変化を残すため）。アカウントを消したら、目次から外した後で、そのアカウントの保管庫の項目を消す。
+
+### 同じ人の判定
+
+- 新しいログインの認証情報を、同じ種類の各アカウントと比べる。メールアドレス（大文字小文字・前後の空白を無視）とアカウント番号のうち、両方が知っているものが全部一致し、少なくとも 1 つは両方が知っているとき、同じ人とみなす。
+- 両方を見る理由：ChatGPT のアカウント番号はワークスペースの番号で、同じチームの別の人と同じになる。逆に 1 人が 1 つのメールアドレスで個人とチームの 2 つのワークスペースに入れる（別の上限）。
+- 同じ人なら、そのアカウントの認証情報を新しいものに置き換え、`needs_reauth` を外す。新しい応答に無いメールアドレス・番号は前のものを残す。別名・一時停止・足した時刻は変えない。
+- どれとも同じでなければ新しいアカウントとして足す。どちらにも何も分からないとき（前の DeepAI の `default` など）は別人とみなすので、足される。
+
+### 使うアカウントの選び方
+
+- 設定のプロバイダに `active_account`（アカウントの id）を足した。`accounts/use` か `providers/update` で変える。API キーの種類には書けない。
+- 要求のたびに認証情報の保管場所を読み、次で選ぶ（`oauth::choose_account`）：
+  - `active_account` があれば、そのアカウント。無い・一時停止・ログインし直しが要るなら誤り（ほかへは移らない）。
+  - 無ければ、一時停止でもログインし直しでもないアカウントが 1 つだけならそれ。
+- 誤りのコードと案内（どれもターンは `failed`）：
+  - アカウントが 1 つも無い：`provider_config`（`/login` を案内。前と同じコード）。
+  - `account_ambiguous`：使えるアカウントが複数あり、どれも選ばれていない。`/accounts use` を案内し、候補の id と別名かメールアドレスを並べる。
+  - `account_paused`：`/accounts resume` か `/accounts use` を案内。
+  - `account_needs_reauth`：`/login 〈種類〉` か `/accounts use` を案内。
+  - `account_unknown`：`active_account` のアカウントが無い。
+  - `account_unavailable`：全部が一時停止かログインし直し。
+- ログインは `active_account` を変えない（判断：ログインで知らないうちに使うアカウントが替わらないように）。そのため、アカウントが 1 つのプロバイダで 2 つ目にログインすると、選ぶまで `account_ambiguous` になる。CLI の `login` はそのとき「選んでください」と出す。
+- `active_account` を変えると、設定の中身が変わるのでクライアントが作り直され、次の要求から効く。
+- コネクタ（`/connectors`）は、その種類の止めていないプロバイダのうち、最初に `active_account` を持つものの選択を使う。無ければ同じ規則。
+
+### ログインし直しが要る印
+
+- トークンの更新で、トークンの窓口が HTTP 400・401・403 を返したとき（更新トークンが断られたとき）に付ける。つながらない・429・5xx では付けない（ログインし直しでは直らないため）。
+- モデルの API が 401 を返したとき：Claude・ChatGPT は、断られたトークンでの更新を一度試す（それも断られれば上のとおり印が付く。更新できれば印は付けない）。Muse・DeepAI は更新できないので、すぐ付ける。その要求自体は失敗のまま（もう一度送ることはしない）。
+- 同じ人でログインし直すと外れる。
+
+### プロトコル
+
+| メソッド | params | result |
+|---|---|---|
+| `accounts/list` | `{provider?}` | `{accounts: [{id, alias, provider, kind, paused, needs_reauth, added, email, account_id, active}]}` |
+| `accounts/login/start` | `{provider, mode?}` | `{login_id, provider, kind, mode, url, user_code?, status, expires_in}` |
+| `accounts/login/code` | `{login_id, code}` | `accounts/login/status` と同じ（交換が終わるまで最大 60 秒待つ） |
+| `accounts/login/status` | `{login_id}` | `{login_id, …, status: waiting・done・failed・cancelled, account?, added?, error?}` |
+| `accounts/login/cancel` | `{login_id}` | 同じ形（`status: cancelled`） |
+| `accounts/rename` | `{provider, account, alias}`（`null` か空で外す） | `{account: {…}}` |
+| `accounts/pause` | `{provider, account, paused}` | `{account: {…}}` |
+| `accounts/remove` | `{provider, account}` | `{removed, kind}` |
+| `accounts/use` | `{provider, account}`（`null` で選択を外す） | `{provider, active_account}` |
+
+- `provider`：設定のプロバイダの id。無ければ種類の名前（`claude-oauth` など）、CLI と同じ `claude`・`gpt`・`muse` も受ける。API キーのプロバイダは `invalid_params`。`accounts/use` だけは設定のプロバイダの id が要る。
+- `account`：アカウントの id。合わなければ別名（大文字小文字を無視）。無ければ `account_unknown`。別名は 1〜64 文字、制御文字なし、同じ種類のほかのアカウントの id・別名と重ならないこと（`invalid_params`）。
+- `accounts/list`：`provider` を付けなければ、設定のログインのプロバイダごとのアカウントと、プロバイダの無い種類のアカウント（`provider: null`）。同じ種類のプロバイダが 2 つあれば、同じアカウントがそれぞれの行に出る。`active` は、そのプロバイダの要求がいま使うアカウント（上の選び方で決まるもの）。`added` はミリ秒か `null`。秘密は返さない。
+- `accounts/remove`：認証情報（OS の保管庫の項目も）を消し、そのアカウントを `active_account` にしていたプロバイダからその選択を外す。
+- `accounts/login/start` の `mode`：
+  - Claude：`callback`（既定。ブラウザがこの機械の待ち受けポートに戻る）か `code`（Anthropic の画面に出る `code#state` を `accounts/login/code` で渡す）。CLI の `login claude` と `login claude --code` と同じ。
+  - ChatGPT：`callback` だけ（CLI と同じ）。
+  - DeepAI：`callback` だけ（CLI と同じ）。
+  - Muse Code：`device` だけ。`url`（Meta の確認ページ）と `user_code` を返し、裏で承認を待って鍵を作る（CLI と同じ）。
+  - ほかの組み合わせは `invalid_params`。
+- 終わったログインは `complete_login` を通る：同じ人なら更新、違えば追加し、設定にその種類のプロバイダが無ければ足す（前と同じ）。CLI の `inocode-server login` も同じ関数を通り、足したか更新したかとアカウントの id を出す。
+- 進行中のログインはサーバーのメモリーにだけ置く。待つのは最長 15 分（Muse の確認コードの既定の寿命 900 秒。ブラウザの戻りは前からの 300 秒で切れる）、結果は始めてから 25 分まで読める。それを過ぎるか、サーバーを起動し直すと `unknown_login`。ログインは人がその場で承認する短い作業で、待っているもの（この機械のポート、PKCE の値、確認コード）もプロセスと一緒に消えるので、保存しない（判断）。
+- 本番の接続先は `LoginEndpoints::default()`。試験は `Core::with_login_endpoints` で模擬の窓口を渡す。トークンの更新の窓口も同じ値を使う（`Llm::with_token_url`）。
+
+### スラッシュコマンド
+
+- `/login`・`/logout`・`/accounts` を使えるようにした（`slash-commands.md` の表）。どれもターンの途中でも使える（`now`）。
+
+### 試験
+
+- 単体：
+  - `oauth::tests::identity_needs_one_shared_field_and_no_disagreeing_one`（同じ人の判定。ワークスペース違い・同じワークスペースの別人）。
+  - `oauth::tests::the_active_account_or_the_only_usable_one_is_chosen`（選び方と誤りのコード）。
+  - `oauth::tests::sign_ins_add_or_update_accounts_and_their_info_persists`（最初は `default`、同じ人は更新で `needs_reauth` が外れる、番号を残す、別名、削除、知らないアカウントは誤り、消したアカウントの情報がファイルから消える）。
+  - `oauth::tests::only_a_refusal_of_the_refresh_token_asks_for_a_new_sign_in`。
+  - `secrets::tests::account_info_is_kept_beside_the_secrets_and_a_removed_account_leaves_no_entry`（まねの OS の保管庫。情報がファイルに残り、秘密はファイルに出ず、消したアカウントの項目が保管庫から消える）、`secrets::tests::account_info_round_trips_in_the_sealed_file`（パスフレーズのファイル）。
+  - `accounts::tests`：id・別名での指定、別名の重なり、名前の解決。
+- プロトコル（`server/tests/accounts_tcp.rs`、模擬の Claude の認可・トークン・メッセージの窓口、実 TCP）：
+  - コードの方式でログイン → `default` が足される → 一覧（秘密が無い、`active`）→ ターンがそのトークンで送られる。同じ人でもう一度 → 更新（`added: false`、1 件のまま）。別の人 → 2 件目 → ターンは `account_ambiguous`。別名、別名の重なりは誤り、別名で `accounts/use` → そのトークンで送られる。一時停止 → `account_paused`、再開。削除 → 秘密がファイルから消え、`active_account` も外れ、残った 1 件で送られる。知らないアカウント、API キーのプロバイダ、合わない方式は誤り。
+  - メッセージの窓口が 401 を返し、更新も 400 で断られる → `needs_reauth` が付き、次のターンは `account_needs_reauth`。同じ人でログインし直すと外れる。
+  - ブラウザの戻り（待ち受けポートへの GET）でログインが終わる。`callback` の方式にコードは渡せない。途中のログインを止めると `cancelled`、その後のコードも `cancelled` のまま。知らない `login_id` は `unknown_login`。
+  - コマンド：`/login claude code`・`/login code`・`/login`（会話のプロバイダ）・`/login status`・`/login cancel`・`/accounts`・`/accounts rename`（空白を含む別名）・`use`・`pause`・`resume`・`list 〈プロバイダ〉`・`/logout`（使っているアカウントを消す）・消えたアカウントの `remove` は `account_unknown`。
+
+### 実際の機械での確認
+
+- 2026-11-25、この機械（Windows 11、認証情報は Windows の資格情報マネージャー）。試験 `accounts_tcp::live_the_machines_accounts_are_listed_and_used`（手で動かす）を `INOCODE_TEST_PROVIDER=claude-oauth`、`INOCODE_TEST_MODEL=claude-haiku-5-5` で、`HTTPS_PROXY`・`HTTP_PROXY` を外して実行。設定は一時フォルダー（プロバイダ `live`、種類 `claude-oauth`）、認証情報はこの機械のもの。
+- `accounts/list`：前からある 4 件がそれぞれ `default` として出た。`claude-oauth`（プロバイダ `live`、`active: true`、メールアドレスあり）、`gpt-oauth`・`muse-code`・`deepai`（設定にプロバイダが無いので `provider: null`、どれも `active: true`）。`gpt-oauth` と `deepai` はメールアドレスが記録されていない（前のログインが記録していなかったため）。どれも一時停止・ログインし直しなし、足した時刻は不明（`null`）。
+- 同じ会話で 1 ターン（「hi」）：`completed`、日本語のあいさつが返った。全体で約 2.5 秒。
+- 実行後の `~/.inocode/auth.json`：形式 `inocode-credentials` 版 2、`backend: keyring`、4 件の目次のまま。`account_info` は書かれていない（何も変えていないため）。本物のアカウントの名前の変更・削除・ログインはしていない。
+
+### 確かめていないこと
+
+- 本物の窓口でのログイン（ブラウザの承認が要るので、プロトコルからは動かしていない）。ChatGPT・Muse・DeepAI のプロトコルからのログインは模擬の試験も無い（ログインの各関数は `oauth_flows.rs` に前からの試験がある）。
+- ChatGPT の `id_token` の `email` を読む部分は、本物の `id_token` に `email` があるか確かめていない。DeepAI の `username` も本物の応答では見ていない。
+- 401 の扱いは Claude でだけ試した。Muse・DeepAI で 401 のときにすぐ印を付ける動きは試していない。
+- 2 つの inocode のプロセスが同時に同じアカウントの情報を書くときは、前からのファイルのロックで順番になるはずだが、試験していない。
+- DeepAI の、料金のかかる要求を 1 つずつにする枠は、まだ認証情報の保管場所ごとで、アカウントごとではない。

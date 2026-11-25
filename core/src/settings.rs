@@ -314,6 +314,10 @@ pub struct Provider {
     /// The `client_version` the ChatGPT models endpoint is asked as.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_version: Option<String>,
+    /// The stored account of a sign-in kind its requests use; without it,
+    /// the kind's only usable account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_account: Option<String>,
 }
 
 impl Provider {
@@ -329,6 +333,7 @@ impl Provider {
             hidden: false,
             hidden_models: Vec::new(),
             client_version: None,
+            active_account: None,
         }
     }
 
@@ -361,6 +366,16 @@ impl Provider {
         check_effort(self.reasoning.effort.as_deref())
             .and_then(|()| check_summary(self.reasoning.summary.as_deref()))
             .map_err(|error| format!("provider {id}: {error}"))?;
+        if let Some(account) = &self.active_account {
+            if self.kind.uses_api_key() {
+                return Err(format!(
+                    "provider {id}: \"active_account\" is only for the sign-in kinds"
+                ));
+            }
+            if account.trim().is_empty() {
+                return Err(format!("provider {id}: \"active_account\" is empty"));
+            }
+        }
         if let Some(language) = self
             .translation
             .as_ref()
@@ -909,6 +924,31 @@ pub async fn add_signed_in(path: &Path, kind: Kind) -> Result<bool, String> {
             }
         }
         Ok(true)
+    })
+    .await
+}
+
+/// Forgets the account `account` of the sign-in kind `kind` wherever a
+/// provider made it its active account, after it was removed.
+pub async fn forget_account(path: &Path, kind: Kind, account: &str) -> Result<(), String> {
+    edit_settings(path, |file| {
+        let settings = Settings::from_value(&Value::Object(file.clone()))?;
+        let using: Vec<String> = settings
+            .providers
+            .iter()
+            .flatten()
+            .filter(|(_, provider)| {
+                provider.kind == kind && provider.active_account.as_deref() == Some(account)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        let providers = providers_of(file)?;
+        for id in using {
+            if let Some(entry) = providers.get_mut(&id).and_then(Value::as_object_mut) {
+                entry.remove("active_account");
+            }
+        }
+        Ok(())
     })
     .await
 }
