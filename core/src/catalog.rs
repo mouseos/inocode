@@ -201,6 +201,25 @@ pub(crate) async fn cached(
     }
 }
 
+/// The data of the copy of `key` kept in `folder` by an earlier fetch,
+/// read without fetching, however old.
+pub(crate) fn kept(folder: &Path, key: &str) -> Option<Value> {
+    let bytes = std::fs::read(folder.join(format!("{key}.json"))).ok()?;
+    let copy: Value = serde_json::from_slice(&bytes).ok()?;
+    copy.get("data").filter(|data| !data.is_null()).cloned()
+}
+
+/// The benchmark rows kept in `folder`, by metric, read without fetching.
+pub(crate) fn kept_boards(folder: &Path) -> Vec<(String, Vec<Value>)> {
+    USES.iter()
+        .flat_map(|(_, metrics)| metrics.iter())
+        .filter_map(|metric| match kept(folder, &format!("scores-{metric}")) {
+            Some(Value::Array(rows)) => Some((metric.to_string(), rows)),
+            _ => None,
+        })
+        .collect()
+}
+
 async fn fetch(client: &reqwest::Client, url: &str) -> Option<Value> {
     let mut response = client
         .get(url)
@@ -234,7 +253,7 @@ fn without_date(id: &str) -> &str {
 }
 
 /// The catalog providers a model id belongs to, by its prefix.
-fn providers_of(id: &str) -> &'static [&'static str] {
+pub(crate) fn providers_of(id: &str) -> &'static [&'static str] {
     let id = normalized(id);
     let table: [(&[&str], &'static [&'static str]); 12] = [
         (&["claude"], &["anthropic"]),

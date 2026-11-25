@@ -387,6 +387,79 @@ pub const BUILTINS: &[Builtin] = &[
         &[form("The colleague.", &[], Now)],
         None,
     ),
+    Builtin {
+        name: "members",
+        aliases: &["profiles"],
+        description: "The members, models with a role, the agent may hand tasks to or ask for \
+                      review; adding, changing and removing them.",
+        forms: &[
+            sub(
+                "list",
+                "The members, the ones allowed in this project, and the tasks this thread \
+                 handed to them.",
+                &[],
+                Now,
+            ),
+            sub(
+                "add",
+                "Add a member: a name, provider/model (or a model of this thread's \
+                 provider), and its role in words.",
+                &[
+                    arg("name", Text),
+                    arg("model", Text),
+                    optional("role", Text),
+                ],
+                Now,
+            ),
+            sub(
+                "set",
+                "Change a member's provider, model, effort (default removes it) or role.",
+                &[
+                    arg("name", Text),
+                    arg("field", Of(&["provider", "model", "effort", "role"])),
+                    arg("value", Text),
+                ],
+                Now,
+            ),
+            sub("remove", "Remove a member.", &[arg("name", Text)], Now),
+        ],
+        bare: Some("list"),
+        unavailable: None,
+    },
+    builtin(
+        "allow",
+        "Which members and models may be called: the default list, this project's list and \
+         the repository's .inocode/models.json.",
+        &[
+            sub(
+                "show",
+                "The lists, the repository file's state, and the list in effect here.",
+                &[],
+                Now,
+            ),
+            sub(
+                "default",
+                "Set the default list: member names or provider/model, separated by spaces or \
+                 commas; none empties it.",
+                &[arg("entries", Text)],
+                Now,
+            ),
+            sub(
+                "project",
+                "Set this project's list, which replaces the default here; default removes it.",
+                &[arg("entries", Text)],
+                Now,
+            ),
+            sub(
+                "approve",
+                "Use the repository's .inocode/models.json as it is now; a changed file asks \
+                 again.",
+                &[],
+                Now,
+            ),
+        ],
+        Some("show"),
+    ),
     builtin(
         "mode",
         "Show or change the approval mode.",
@@ -778,6 +851,7 @@ const SHOWN_BY: &[(&str, &str)] = &[
     (crate::goal::GOAL, "goal"),
     (crate::ask::ASK, "answer"),
     (crate::plugins::INSTALL, "plugins"),
+    (crate::company::DELEGATE, "members"),
 ];
 
 /// Model tools that keep no record of their own: they read, act, or write
@@ -800,6 +874,7 @@ const RECORDS_NOTHING: &[&str] = &[
     crate::shell::SHELL,
     crate::shell::JOB,
     crate::mcp::SEARCH,
+    crate::company::REVIEW,
 ];
 
 const INIT_PROMPT: &str = "Write an AGENTS.md file at the root of this project for coding \
@@ -1609,7 +1684,7 @@ impl Core {
     }
 
     /// The provider of the settings this thread's requests use.
-    async fn thread_provider(&self, thread: SessionId) -> Result<String, ErrorInfo> {
+    pub(crate) async fn thread_provider(&self, thread: SessionId) -> Result<String, ErrorInfo> {
         self.thread_settings(thread).await?["provider"]
             .as_str()
             .map(str::to_string)
@@ -1849,6 +1924,8 @@ impl Core {
             ("notes", sub) => self.notes(project, sub, values).await?,
             ("rules", sub) => self.rules(thread, project, sub, value(0)).await?,
             ("colleague", _) => self.colleague(thread).await?,
+            ("members", sub) => self.members_command(thread, sub, values).await?,
+            ("allow", sub) => self.allow_command(thread, sub, values).await?,
             ("mode", _) => match value(0) {
                 None => json!({ "mode": self.thread_settings(thread).await?["mode"] }),
                 Some(mode) => {
@@ -2961,6 +3038,8 @@ mod tests {
             .map(|spec| spec.name)
             .collect();
         tools.push(crate::mcp::SEARCH.to_string());
+        tools.push(crate::company::DELEGATE.to_string());
+        tools.push(crate::company::REVIEW.to_string());
         tools.sort();
         tools.dedup();
         for tool in &tools {

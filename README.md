@@ -233,6 +233,17 @@ Claude でサインインしていれば claude.ai のコネクタ、ChatGPT で
 
 - 設計と根拠：[docs/evidence/effort-estimates.md](docs/evidence/effort-estimates.md)。
 
+### 社員（任せる・レビューを頼む）
+
+モデルに役割を付けた「社員」を `settings.json` の `members` に登録し、呼んでよい社員とモデルを `allow`（既定と、プロジェクトのフォルダごと。リポジトリの `.inocode/models.json` は承認した中身だけ）に書く。一覧に社員がいると、モデルは `delegate`（社員が同じ道具で別の会話として仕事をし、報告・編集したファイル・トークンを返す。1 段まで、予算付き）と `review`（別の会社の社員が読んで指摘を返す）を使える。`/members`（別名 `/profiles`）、`/allow` か:
+
+```json
+{"id": 1, "method": "members/add", "params": {"name": "glm-reviewer", "provider": "zai", "model": "glm-5.3", "role": "常に他社のコードを疑うレビュー役"}}
+{"id": 2, "method": "allow/set", "params": {"default": ["glm-reviewer", "claude/claude-haiku-5-5"]}}
+```
+
+- 設計と根拠：[docs/evidence/company.md](docs/evidence/company.md)。
+
 ### 返答の言語
 
 モデルは、OS の表示言語で返答する。話しかけた文から言語を推定はしない。会話の中で別の言語を頼むと、最後に頼んだ言語に変わる。OS と違う言語を既定にするには、`~/.inocode/settings.json`（`inocode.db` と同じフォルダー）に書く:

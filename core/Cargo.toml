@@ -13,7 +13,7 @@ dom_query = "0.29"
 flacenc = { version = "0.5", default-features = false }
 dom_smoothie = "0.19"
 flate2 = "1"
-futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+futures-util = { version = "0.3", default-features = false, features = ["alloc", "sink"] }
 getrandom = "0.2"
 globset = "0.4"
 grep-regex = "0.1"

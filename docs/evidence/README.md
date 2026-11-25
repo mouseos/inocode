@@ -85,7 +85,7 @@
 | [slash-commands.md](slash-commands.md) | スラッシュコマンドの仕組みと組み込みコマンドの一覧（定義の案、確認待ち） | UNSUPPORTED_APPROVED | 未実装 |
 | [account-pool.md](account-pool.md) | プロバイダ・モデル・アカウントの登録とアカウントのプール、認証情報の保存、環境変数をやめる | UNSUPPORTED_APPROVED | 設定ファイル・プロバイダの登録・会話ごとの選択は実装済み。プールは未実装 |
 | [effort-estimates.md](effort-estimates.md) | 作業の時間とトークンの見積もり（過去の実測から） | RESEARCH_SUPPORTED（作業中の出し直し、査読前）／UNSUPPORTED_APPROVED | 実装済み（`core/src/estimate.rs`、`estimate`、`/estimate`） |
-| [company.md](company.md) | 会社の仕組み（役割付きの社員、自動の指名、並行、同僚のレビューと助言、予算） | RESEARCH_SUPPORTED（別会社のレビュー・厳しいレビュー・行き詰まりの助言）／UNSUPPORTED_APPROVED | 未実装 |
+| [company.md](company.md) | 会社の仕組み（役割付きの社員、自動の指名、並行、同僚のレビューと助言、予算） | RESEARCH_SUPPORTED（別会社のレビュー・厳しいレビュー・行き詰まりの助言）／UNSUPPORTED_APPROVED | 実装済み（`core/src/company.rs`、`delegate`・`review`、`members/*`・`allow/*`、`/members`・`/allow`） |
 
 ## 状態の判定
 

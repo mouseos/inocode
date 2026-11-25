@@ -18,7 +18,7 @@ pub use crate::store_pool::{PoolBinding, PoolCooldown};
 pub use crate::store_threads::{SessionUsage, ThreadSummary};
 use crate::ErrorInfo;
 
-const SCHEMA_VERSION: i64 = 13;
+const SCHEMA_VERSION: i64 = 14;
 /// Tool results above this size are stored once in `blobs` and referenced.
 const BLOB_THRESHOLD: usize = 16 * 1024;
 /// Text indexed per message; the rest stays readable but unsearchable.
@@ -339,10 +339,23 @@ CREATE INDEX tasks_started ON tasks(started);
 CREATE INDEX tasks_goal ON tasks(session_id, goal_seq);
 "#;
 
+/// The thread a member worked in on a task the thread `parent` delegated
+/// to it (docs/evidence/company.md).
+const SCHEMA_V14: &str = r#"
+CREATE TABLE delegations(
+    session_id INTEGER PRIMARY KEY,
+    parent INTEGER NOT NULL,
+    member TEXT NOT NULL,
+    task TEXT NOT NULL,
+    created INTEGER NOT NULL
+);
+CREATE INDEX delegations_parent ON delegations(parent);
+"#;
+
 /// Schema steps; step `i` brings the database to version `i + 1`.
-const MIGRATIONS: [&str; 13] = [
+const MIGRATIONS: [&str; 14] = [
     SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9,
-    SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13,
+    SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14,
 ];
 
 /// A thread id never given before (`SCHEMA_V10`).

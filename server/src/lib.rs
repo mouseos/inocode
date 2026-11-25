@@ -424,7 +424,14 @@ async fn dispatch(
         | "pool/get"
         | "pool/set"
         | "pool/reset_affinity"
-        | "pool/status" => {
+        | "pool/status"
+        | "members/list"
+        | "members/add"
+        | "members/update"
+        | "members/remove"
+        | "allow/get"
+        | "allow/set"
+        | "allow/approve_repository" => {
             // Settings and credential files, and for models/list an HTTP
             // round trip: off the read loop like the store requests.
             tokio::spawn(settings_request(
@@ -666,6 +673,13 @@ async fn settings_request(
             "pool/set" => core.pool_set(&params).await,
             "pool/reset_affinity" => core.pool_reset_affinity(&params).await,
             "pool/status" => core.pool_status(&params).await,
+            "members/list" => core.members().await,
+            "members/add" => core.add_member(&params).await,
+            "members/update" => core.update_member(&params).await,
+            "members/remove" => core.remove_member(&params).await,
+            "allow/get" => core.allow(&params).await,
+            "allow/set" => core.set_allow(&params).await,
+            "allow/approve_repository" => core.approve_repository(&params).await,
             // `thread/settings` with nothing but the thread reads; any
             // other field is a change.
             _ => match request.thread() {

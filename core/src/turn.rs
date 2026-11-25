@@ -205,6 +205,12 @@ pub struct Models {
     /// An approval mode the person chose while the turn runs, used from
     /// the next request on.
     pub mode: watch::Receiver<Option<Mode>>,
+    /// The members the turn may hand work to or ask for review
+    /// (docs/evidence/company.md).
+    pub company: Option<std::sync::Arc<crate::company::Company>>,
+    /// Set for a member's run of a delegated task: the tokens it may use.
+    /// Such a run cannot delegate further.
+    pub budget: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -216,6 +222,10 @@ pub struct Outcome {
     /// What went wrong beside the work without ending the turn, such as a
     /// colleague that could not be asked or requests that were not logged.
     pub warnings: Vec<String>,
+    /// The files the edit tools named.
+    pub edited: Vec<String>,
+    /// The turn was stopped for using up its token budget.
+    pub over_budget: bool,
 }
 
 /// Questions the model asked the person with `ask`, as the form they make.
@@ -239,6 +249,7 @@ pub struct Prompt {
 /// with `recall`.
 const QUOTE_CHARS: usize = 2_000;
 const REPLY_KIND: &str = "reply";
+const BUDGET_KIND: &str = "budget";
 const ESCALATION_KIND: &str = "escalation";
 /// Characters of a turn's last words kept with an unfinished attempt.
 const ATTEMPT_CHARS: usize = 1_000;
@@ -556,6 +567,10 @@ struct Thread<'a> {
     /// had used before this turn and when the turn started
     /// (docs/evidence/effort-estimates.md).
     forecast: Option<(crate::estimate::Forecast, u64, std::time::Instant)>,
+    company: Option<std::sync::Arc<crate::company::Company>>,
+    /// See [`Models::budget`].
+    budget: Option<u64>,
+    over_budget: bool,
 }
 
 /// The translation of the thinking as the settings last read give it: one
@@ -938,6 +953,11 @@ impl Thread<'_> {
         if name == crate::goal::GOAL {
             return self.claim(arguments).await;
         }
+        if name == crate::company::REVIEW {
+            if let Some(company) = self.company.clone() {
+                return crate::company::review(&company, llm, &context, arguments, usage).await;
+            }
+        }
         if name == crate::explore::EXPLORE {
             let explorer = self.explorer.clone();
             let model = explorer.as_deref().unwrap_or(llm);
@@ -1213,7 +1233,8 @@ impl Thread<'_> {
     /// turn ends with the questions of `ask`.
     async fn escalate(&mut self, question: &str, options: &[&str]) -> Result<(), ErrorInfo> {
         // A goal runs without asking the person; its limits stop it instead.
-        if self.goal_active() {
+        // A member's run cannot ask the person; the lead reads its report.
+        if self.goal_active() || self.budget.is_some() {
             return Ok(());
         }
         let note = format!(
@@ -1571,6 +1592,136 @@ impl Thread<'_> {
         (content + &warning, true)
     }
 
+    /// Answers the `delegate` calls among `parts`, by call id, with how
+    /// long each took: at the same time when [`crate::company::together`]
+    /// allows it, else one after another. Each passes the project's rules
+    /// first; what a member's run held for the person is held here too.
+    async fn delegate_all(
+        &mut self,
+        parts: &[AssistantPart],
+        usage: &mut TurnUsage,
+    ) -> HashMap<String, (Answer, std::time::Duration)> {
+        let calls: Vec<(&str, &str)> = parts
+            .iter()
+            .filter_map(|part| match part {
+                AssistantPart::ToolCall {
+                    call_id,
+                    name,
+                    arguments,
+                    ..
+                } if name == crate::company::DELEGATE => {
+                    Some((call_id.as_str(), arguments.as_str()))
+                }
+                _ => None,
+            })
+            .collect();
+        let mut answers = HashMap::new();
+        if calls.is_empty() {
+            return answers;
+        }
+        let refused = |text: &str| ((text.to_string(), true), std::time::Duration::ZERO);
+        let company = match (&self.company, self.budget) {
+            (_, Some(_)) => {
+                for (call, _) in calls {
+                    let text = "Not run: a member cannot hand its task on; do it, or say in \
+                                your report what is left.";
+                    answers.insert(call.to_string(), refused(text));
+                }
+                return answers;
+            }
+            (None, None) => {
+                for (call, _) in calls {
+                    answers.insert(
+                        call.to_string(),
+                        refused("no tool named delegate is available"),
+                    );
+                }
+                return answers;
+            }
+            (Some(company), None) => company.clone(),
+        };
+        let mut runnable = Vec::new();
+        for (call, arguments) in calls {
+            match self
+                .store
+                .check(self.project, crate::company::DELEGATE, arguments, None)
+                .await
+            {
+                Ok(Decision::Allow) => runnable.push((call, arguments)),
+                Ok(Decision::Block(rules)) => {
+                    let titles = self.titles(&rules).await;
+                    let text = format!("Blocked by the project rule: {}.", titles.join("; "));
+                    answers.insert(call.to_string(), ((text, true), std::time::Duration::ZERO));
+                }
+                Ok(Decision::Ask(rules))
+                    if rules.iter().all(|rule| self.allowed.contains(rule)) =>
+                {
+                    for rule in &rules {
+                        self.record_allowed(*rule, Actor::Person, crate::company::DELEGATE)
+                            .await;
+                    }
+                    runnable.push((call, arguments));
+                }
+                Ok(Decision::Ask(rules)) => {
+                    let reason = "it falls under a project rule that asks first".to_string();
+                    let answer = self
+                        .hold(crate::company::DELEGATE, arguments, rules, reason)
+                        .await;
+                    answers.insert(call.to_string(), (answer, std::time::Duration::ZERO));
+                }
+                Err(error) => {
+                    let text = format!("Not run: the rule check failed ({}).", error.message);
+                    answers.insert(call.to_string(), ((text, true), std::time::Duration::ZERO));
+                }
+            }
+        }
+        let lead = crate::company::Lead {
+            store: self.store,
+            session: self.session,
+            project: self.project,
+            mode: self.mode,
+            cancel: self.cancel.clone(),
+            reviewer: self.reviewer.clone(),
+            compactor: self.compactor.clone(),
+            explorer: self.explorer.clone(),
+            checker: self.checker.clone(),
+            colleague: self.colleague.clone(),
+            company,
+            request: self.request.clone(),
+        };
+        let plans: Vec<(bool, Vec<String>)> = runnable
+            .iter()
+            .map(|(_, arguments)| crate::company::plan(arguments))
+            .collect();
+        let mut done = Vec::new();
+        if crate::company::together(&plans) {
+            let started = std::time::Instant::now();
+            let runs = runnable
+                .iter()
+                .map(|(_, arguments)| crate::company::delegate(&lead, arguments));
+            let finished = futures_util::future::join_all(runs).await;
+            for ((call, _), delegated) in runnable.iter().zip(finished) {
+                done.push((call.to_string(), delegated, started.elapsed()));
+            }
+        } else {
+            for (call, arguments) in &runnable {
+                let started = std::time::Instant::now();
+                let delegated = crate::company::delegate(&lead, arguments).await;
+                done.push((call.to_string(), delegated, started.elapsed()));
+            }
+        }
+        for (call, delegated, took) in done {
+            usage.requests += delegated.usage.requests;
+            usage.input += delegated.usage.input;
+            usage.output += delegated.usage.output;
+            usage.cached += delegated.usage.cached;
+            self.held.extend(delegated.held);
+            self.warnings.extend(delegated.warnings);
+            answers.insert(call, (delegated.answer, took));
+        }
+        answers
+    }
+
     /// Results for the calls of an assistant message. Calls run only when
     /// the model stopped to have them run; the calls of an answer cut at
     /// its length limit may be incomplete and are refused.
@@ -1579,6 +1730,10 @@ impl Thread<'_> {
             return Vec::new();
         };
         let stop = *stop;
+        let mut delegated = match stop {
+            StopReason::ToolUse | StopReason::Completed => self.delegate_all(parts, usage).await,
+            _ => HashMap::new(),
+        };
         let mut results = Vec::new();
         for part in parts {
             let AssistantPart::ToolCall {
@@ -1596,8 +1751,17 @@ impl Thread<'_> {
                         self.goal_calls += 1;
                     }
                     let started = std::time::Instant::now();
-                    let answer = self.answer(llm, body, name, arguments, usage).await;
-                    self.tally.add(name, arguments, started.elapsed());
+                    let answer = match delegated.remove(call_id) {
+                        Some((answer, took)) => {
+                            self.tally.add(name, arguments, took);
+                            answer
+                        }
+                        None => {
+                            let answer = self.answer(llm, body, name, arguments, usage).await;
+                            self.tally.add(name, arguments, started.elapsed());
+                            answer
+                        }
+                    };
                     if name == crate::ask::ASK && !answer.1 {
                         if let Ok((questions, _)) = crate::ask::check(arguments) {
                             self.asked.push((call_id.clone(), questions));
@@ -1688,6 +1852,11 @@ pub async fn run(
             thread.explorer = models.explorer;
             thread.checker = models.checker.or_else(|| models.colleague.clone());
             thread.colleague = models.colleague;
+            if let Some(company) = &models.company {
+                thread.warnings.extend(company.warnings.iter().cloned());
+            }
+            thread.company = models.company.filter(|company| !company.members.is_empty());
+            thread.budget = models.budget;
             if let Some(window) = llm.context_window().await {
                 thread.shorten_people(window);
             }
@@ -1700,6 +1869,8 @@ pub async fn run(
                 held: Vec::new(),
                 questions: Vec::new(),
                 warnings: Vec::new(),
+                edited: Vec::new(),
+                over_budget: false,
             }
         }
     };
@@ -1760,6 +1931,7 @@ pub async fn run(
             error.message
         ));
     }
+    let edited: Vec<String> = thread.tally.edited.iter().cloned().collect();
     task.end(&mut thread, &usage, &ending).await;
     let mut questions: Vec<Asked> = thread
         .asked
@@ -1776,6 +1948,8 @@ pub async fn run(
         held: thread.held,
         questions,
         warnings: thread.warnings,
+        edited,
+        over_budget: thread.over_budget,
     }
 }
 
@@ -2054,7 +2228,36 @@ async fn open<'a>(
         thinking_translation,
         tally: Default::default(),
         forecast: None,
+        company: None,
+        budget: None,
+        over_budget: false,
     })
+}
+
+/// Adds the company's tools. A member's run (`delegated`) reports to the
+/// lead instead of asking the person, and cannot hand its task on: one
+/// level of delegation only, so that tasks are not passed down a chain.
+fn company_tools(
+    harness: &mut Vec<ToolSpec>,
+    company: Option<&crate::company::Company>,
+    delegated: bool,
+) {
+    if delegated {
+        harness.retain(|tool| tool.name != crate::ask::ASK);
+    }
+    if let Some(company) = company {
+        if !delegated {
+            harness.push(crate::company::delegate_spec(company));
+        }
+        harness.push(crate::company::review_spec(company));
+    }
+}
+
+/// Whether a member's run with `budget` stops after a step that would go
+/// on: its tokens, input and output, reached the budget.
+fn over_budget(budget: Option<u64>, usage: &TurnUsage, step: Option<&Step>) -> bool {
+    let going_on = matches!(step, Some(Step::Continue | Step::Resume));
+    budget.is_some_and(|budget| going_on && usage.input + usage.output >= budget)
 }
 
 async fn steps(
@@ -2072,6 +2275,11 @@ async fn steps(
         harness.retain(|tool| tool.name != crate::ask::ASK);
         harness.push(crate::goal::spec());
     }
+    company_tools(
+        &mut harness,
+        thread.company.as_deref(),
+        thread.budget.is_some(),
+    );
     let mut opening = Vec::new();
     if thread.conversation.messages.is_empty() {
         match open_issues(thread.store, thread.project).await {
@@ -2211,6 +2419,20 @@ async fn steps(
             if let Err(error) = thread.ask_colleague(call, cancel, usage).await {
                 return Ending::Failed(error);
             }
+        }
+        if over_budget(thread.budget, usage, step.as_ref()) {
+            thread.over_budget = true;
+            let note = Body::User {
+                from: Speaker::Harness(BUDGET_KIND.to_string()),
+                parts: vec![format!(
+                    "Stopped: this delegated task used up its budget of {} tokens.",
+                    thread.budget.unwrap_or_default()
+                )],
+            };
+            if let Err(error) = thread.record(vec![note]).await {
+                return Ending::Failed(error);
+            }
+            return Ending::Interrupted;
         }
         match step {
             None => return Ending::Failed(failure.expect("no step only after a failure")),
@@ -2413,6 +2635,86 @@ mod tests {
         let texts: Vec<&str> = pieces.iter().map(|piece| piece.text.as_str()).collect();
         assert_eq!(texts, ["First thought.", " Unfinished"]);
         assert!(pieces.iter().all(|piece| piece.error.is_some()));
+    }
+
+    fn company() -> crate::company::Company {
+        let llm = Llm::new(crate::LlmConfig {
+            provider: crate::ProviderKind::OpenAi,
+            auth: crate::oauth::AuthKind::ApiKey,
+            base_url: "http://127.0.0.1:9".into(),
+            model: "member-model".into(),
+            api_key: "key".into(),
+            auth_store_path: None,
+            reasoning: Default::default(),
+        })
+        .unwrap();
+        crate::company::Company {
+            members: vec![crate::company::Member {
+                profile: crate::company::Profile {
+                    name: "member".into(),
+                    role: "implements simple logic".into(),
+                    provider: "p".into(),
+                    model: "member-model".into(),
+                    vendor: "p".into(),
+                    price: None,
+                    quality: Vec::new(),
+                    tokens_per_second: None,
+                },
+                effort: None,
+                llm: std::sync::Arc::new(llm),
+            }],
+            max_budget: 1_000,
+            warnings: Vec::new(),
+        }
+    }
+
+    fn names(tools: &[ToolSpec]) -> Vec<&str> {
+        tools.iter().map(|tool| tool.name.as_str()).collect()
+    }
+
+    #[test]
+    fn a_members_run_can_review_but_not_delegate_or_ask_the_person() {
+        let company = company();
+        let mut lead = agent_tools::specs(false);
+        company_tools(&mut lead, Some(&company), false);
+        let lead = names(&lead);
+        assert!(lead.contains(&"delegate") && lead.contains(&"review") && lead.contains(&"ask"));
+        let mut member = agent_tools::specs(false);
+        company_tools(&mut member, Some(&company), true);
+        let member = names(&member);
+        assert!(member.contains(&"review"), "{member:?}");
+        assert!(
+            !member.contains(&"delegate") && !member.contains(&"ask"),
+            "{member:?}"
+        );
+        assert!(
+            member.contains(&"edit") && member.contains(&"shell"),
+            "{member:?}"
+        );
+        let mut alone = agent_tools::specs(false);
+        company_tools(&mut alone, None, false);
+        assert!(!names(&alone).contains(&"delegate"));
+        let description = crate::company::delegate_spec(&company).description;
+        assert!(description.contains("- member | implements simple logic | p/member-model"));
+    }
+
+    #[test]
+    fn a_members_run_stops_once_its_tokens_reach_the_budget() {
+        let usage = TurnUsage {
+            input: 700,
+            output: 300,
+            ..Default::default()
+        };
+        assert!(over_budget(Some(1_000), &usage, Some(&Step::Continue)));
+        assert!(over_budget(Some(1_000), &usage, Some(&Step::Resume)));
+        assert!(!over_budget(Some(1_001), &usage, Some(&Step::Continue)));
+        // An answer that ends the run is kept; a run without a budget goes on.
+        assert!(!over_budget(
+            Some(10),
+            &usage,
+            Some(&Step::Finish(Ending::Completed))
+        ));
+        assert!(!over_budget(None, &usage, Some(&Step::Continue)));
     }
 
     #[test]

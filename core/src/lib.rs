@@ -16,6 +16,7 @@ pub mod catalog;
 mod colleague;
 pub mod commands;
 mod compaction;
+pub mod company;
 mod connectors;
 pub mod conversation;
 pub mod deepai;
@@ -874,10 +875,12 @@ impl Core {
     async fn helpers(
         &self,
         conversation: &Choice,
+        project: Option<&str>,
         main: watch::Receiver<Arc<Llm>>,
         chosen_mode: watch::Receiver<Option<turn::Mode>>,
     ) -> Result<turn::Models, ErrorInfo> {
         let settings = self.settings().await?;
+        let company = self.company(&settings, project).await?;
         let current = main.borrow().clone();
         let roles = &settings.roles;
         // Made whatever the mode, since the person may switch to `auto`
@@ -906,6 +909,8 @@ impl Core {
             colleague,
             main,
             mode: chosen_mode,
+            company,
+            budget: None,
         })
     }
 
@@ -1635,6 +1640,8 @@ impl Core {
             held: Vec::new(),
             questions: Vec::new(),
             warnings: Vec::new(),
+            edited: Vec::new(),
+            over_budget: false,
         };
         let store = match self.store() {
             Ok(store) => store,
@@ -1644,7 +1651,14 @@ impl Core {
             (Ok(settings), Ok(chosen)) => Choice::of(&chosen, &settings.default),
             (Err(error), _) | (_, Err(error)) => return failed(error),
         };
-        let models = match self.helpers(&conversation, claim.model, claim.mode).await {
+        let project = match store.session_project(thread).await {
+            Ok(project) => project.map(|(_, key)| key),
+            Err(error) => return failed(error),
+        };
+        let models = match self
+            .helpers(&conversation, project.as_deref(), claim.model, claim.mode)
+            .await
+        {
             Ok(models) => models,
             Err(error) => return failed(error),
         };

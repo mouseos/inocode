@@ -184,6 +184,7 @@ impl Store {
                 "waiting",
                 "elicitations",
                 "thread_lineage",
+                "delegations",
             ] {
                 tx.execute(
                     &format!("DELETE FROM {table} WHERE session_id = ?1"),
@@ -356,6 +357,56 @@ impl Store {
             let rows = statement
                 .query_map([id.0], |row| {
                     Ok((NoteId(row.get(0)?), row.get(1)?, row.get::<_, i64>(2)? == 1))
+                })
+                .map_err(store_error)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(store_error)
+        })
+        .await
+    }
+
+    /// Links the thread `session`, made for a delegated task, to the
+    /// thread `parent` that delegated it to `member`.
+    pub(crate) async fn record_delegation(
+        &self,
+        session: SessionId,
+        parent: SessionId,
+        member: &str,
+        task: &str,
+    ) -> Result<(), ErrorInfo> {
+        let (member, task) = (member.to_string(), task.to_string());
+        self.write(move |db| {
+            db.execute(
+                "INSERT INTO delegations(session_id, parent, member, task, created)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![session.0, parent.0, member, task, now()],
+            )
+            .map(drop)
+            .map_err(store_error)
+        })
+        .await
+    }
+
+    /// The threads `parent` delegated tasks to, the latest first: the
+    /// thread, the member, the task and when.
+    pub async fn delegations(
+        &self,
+        parent: SessionId,
+    ) -> Result<Vec<(SessionId, String, String, i64)>, ErrorInfo> {
+        self.read(Duration::from_secs(5), move |db| {
+            let mut statement = db
+                .prepare_cached(
+                    "SELECT session_id, member, task, created FROM delegations
+                     WHERE parent = ?1 ORDER BY created DESC, session_id DESC",
+                )
+                .map_err(store_error)?;
+            let rows = statement
+                .query_map([parent.0], |row| {
+                    Ok((
+                        SessionId(row.get(0)?),
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                    ))
                 })
                 .map_err(store_error)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(store_error)

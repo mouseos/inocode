@@ -199,6 +199,8 @@
 | `/notes`・`search`・`show`・`edit`・`tag`・`vote`・`retire` | 手法メモ（`lesson`・`method`）。`edit` は新しいメモを作って古いものを `supersede` で置き換える（古いものは履歴として残る） |
 | `/rules`・`import`・`off 〈番号〉` | ルールの一覧（強さ付き）、`AGENTS.md` を `import_rules` で取り込む、使わない印 |
 | `/colleague` | 同僚の設定（`roles.colleague`）と、この会話の同僚の助言 |
+| `/members`（別名 `/profiles`）・`list`・`add 〈名前〉 〈プロバイダ/モデル〉 [役割]`・`set 〈名前〉 〈provider・model・effort・role〉 〈値〉`・`remove 〈名前〉` | `members/*`。何も付けなければ `list`：社員、この会話のプロジェクトで許された一覧、この会話が任せた仕事（任された会話の番号）。`add` でプロバイダを書かなければこの会話のプロバイダ。`set … effort default` で深さの指定を外す（`company.md`） |
+| `/allow`・`show`・`default 〈一覧〉`・`project 〈一覧〉`・`approve` | `allow/*`。一覧は社員の名前か `プロバイダ/モデル` を空白かカンマで区切る。`default none` で既定を空に、`project default` でこのプロジェクトの一覧を外す。`approve` はリポジトリの `.inocode/models.json` を今の中身で承認する（`company.md`） |
 | `/mode [モード]` | 会話の設定の `mode` |
 | `/approve`・`/deny [番号・all]` | 最後のターンが保留した呼び出しの一覧。番号を付けると、承認（`approve` にその呼び出しだけを入れたターン。その呼び出しが当たった規則は許さないので、同じ規則に当たる別の呼び出しはまた保留になる）または拒否を伝えるターンを始める。一覧はデータベースから読み、次のターンが終わるまで残る（ターンが始められなかったときも消えない） |
 | `/answer [番号 答え]` | 最後のターンの `ask` の質問と、走っているターンが待つ MCP の質問の一覧（サーバーを起動し直す前の MCP の質問は `expired: true` で出し、答えると `expired` の誤りを返して消す）。`ask` には `reply_to` 付きのターンで答え、MCP には JSON の内容・`decline`・`cancel` で答える |
