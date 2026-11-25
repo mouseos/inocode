@@ -171,6 +171,7 @@ const EFFORTS: &[&str] = &[
 ];
 const ROLES: &[&str] = &["review", "compact", "explore", "check", "colleague"];
 const ON_OFF: &[&str] = &["on", "off"];
+const STRATEGIES: &[&str] = &["quota", "round-robin", "fill-first", "reset-first"];
 const SERVICES: &[&str] = &["google", "edge", "firefox", "chromium"];
 const SPEECH: &[&str] = &["claude", "chatgpt", "google"];
 
@@ -535,7 +536,7 @@ pub const BUILTINS: &[Builtin] = &[
     ),
     builtin(
         "accounts",
-        "The accounts of the sign-in providers: which one is used, pausing, naming and removing them.",
+        "The accounts of the sign-in providers: which one is used, pausing, naming and removing them, and the pool that chooses among them.",
         &[
             sub(
                 "list",
@@ -545,7 +546,7 @@ pub const BUILTINS: &[Builtin] = &[
             ),
             sub(
                 "use",
-                "Make the provider use the account from its next request on.",
+                "Make the provider prefer the account from its next request on.",
                 ACCOUNT,
                 Now,
             ),
@@ -565,6 +566,34 @@ pub const BUILTINS: &[Builtin] = &[
                 "remove",
                 "Remove the account and its stored secret.",
                 ACCOUNT,
+                Now,
+            ),
+            sub(
+                "priority",
+                "Set the account's pool tier, -100 to 100; higher tiers are used first.",
+                &[
+                    arg("provider", Text),
+                    arg("account", Text),
+                    arg("priority", Number),
+                ],
+                Now,
+            ),
+            sub(
+                "clear-cooldown",
+                "Let the pool use the account again after it refused on quota.",
+                ACCOUNT,
+                Now,
+            ),
+            sub(
+                "strategy",
+                "How the provider's pool places new conversations on its accounts.",
+                &[arg("provider", Text), arg("strategy", Of(STRATEGIES))],
+                Now,
+            ),
+            sub(
+                "status",
+                "The pool: each account's usage, cooldown and threads.",
+                &[optional("provider", Text)],
                 Now,
             ),
         ],
@@ -1639,9 +1668,11 @@ impl Core {
                     return Err(unavailable(reason));
                 }
                 allowed(form.when, running)?;
-                let ran = self
-                    .builtin(thread, command.name, form.sub, &values, &registry)
-                    .await?;
+                let ran = crate::pool::in_thread(
+                    thread,
+                    self.builtin(thread, command.name, form.sub, &values, &registry),
+                )
+                .await?;
                 Ok(match ran {
                     Ran::Result(mut result) => {
                         if let Some(fields) = result.as_object_mut() {
@@ -1950,6 +1981,28 @@ impl Core {
                     "provider": value(0), "account": value(1), "alias": value(2),
                 }))
                 .await?
+            }
+            ("accounts", Some("priority")) => {
+                let priority = value(2)
+                    .and_then(|priority| priority.parse::<i64>().ok())
+                    .ok_or_else(|| invalid("give the priority as a number"))?;
+                self.set_account_priority(&json!({
+                    "provider": value(0), "account": value(1), "priority": priority,
+                }))
+                .await?
+            }
+            ("accounts", Some("clear-cooldown")) => {
+                self.clear_account_cooldown(&json!({
+                    "provider": value(0), "account": value(1),
+                }))
+                .await?
+            }
+            ("accounts", Some("strategy")) => {
+                self.pool_set(&json!({ "provider": value(0), "strategy": value(1) }))
+                    .await?
+            }
+            ("accounts", Some("status")) => {
+                self.pool_status(&json!({ "provider": value(0) })).await?
             }
             ("accounts", _) => {
                 self.remove_account(&json!({ "provider": value(0), "account": value(1) }))

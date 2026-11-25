@@ -131,8 +131,8 @@ impl LlmConfig {
 pub struct Llm {
     client: reqwest::Client,
     config: LlmConfig,
-    /// Check-in, catalog and slot state of a DeepAI account.
-    deepai: Option<Box<crate::deepai::Session>>,
+    /// Check-in, catalog and slot state of each DeepAI account, by account.
+    deepai: Option<std::sync::Mutex<HashMap<String, std::sync::Arc<crate::deepai::Session>>>>,
     /// The configured model's catalog default effort, looked up once.
     catalog_effort: tokio::sync::OnceCell<Option<crate::reasoning::Effort>>,
     /// The configured model's context window, looked up once.
@@ -153,8 +153,23 @@ pub struct Llm {
     stream_idle: Duration,
     /// See [`Llm::with_account`].
     account: Option<String>,
+    /// See [`Llm::with_route`].
+    route: Option<crate::pool::Route>,
     /// See [`Llm::with_token_url`].
     token_url: Option<String>,
+}
+
+/// Why an attempt to start an answer on one account failed.
+enum Attempt {
+    /// Nothing was sent: the credential or the request could not be made.
+    Unsent(ErrorInfo),
+    /// The request was sent and got no answer, or a broken one.
+    Broken(ErrorInfo),
+    /// The provider answered with an error status.
+    Refused {
+        error: ErrorInfo,
+        outcome: crate::pool::Outcome,
+    },
 }
 
 /// The HTTP client of a [`Llm`]: a read that waits longer than `idle` for
@@ -176,11 +191,8 @@ impl Llm {
     pub fn new(config: LlmConfig) -> Result<Self, ErrorInfo> {
         let stream_idle = Duration::from_secs(crate::settings::DEFAULT_STREAM_IDLE_SECONDS);
         let client = http_client(stream_idle)?;
-        let deepai = (config.auth == AuthKind::DeepAi).then(|| {
-            Box::new(crate::deepai::Session::new(
-                config.auth_store_path.as_deref(),
-            ))
-        });
+        let deepai =
+            (config.auth == AuthKind::DeepAi).then(|| std::sync::Mutex::new(HashMap::new()));
         Ok(Self {
             stream_idle,
             client,
@@ -193,8 +205,16 @@ impl Llm {
             siblings: std::sync::Mutex::new(std::collections::HashMap::new()),
             codex_client_version: None,
             account: None,
+            route: None,
             token_url: None,
         })
+    }
+
+    /// Chooses the account of a sign-in kind per request from its
+    /// provider's pool ([`crate::pool`]) instead of one fixed account.
+    pub(crate) fn with_route(mut self, route: Option<crate::pool::Route>) -> Self {
+        self.route = route;
+        self
     }
 
     /// Refreshes sign-ins at `token_url` instead of the provider's token
@@ -373,6 +393,7 @@ impl Llm {
         .with_stream_idle(self.stream_idle)
         .map(|llm| {
             llm.with_account(self.account.clone())
+                .with_route(self.route.clone())
                 .with_token_url(self.token_url.clone())
         })
     }
@@ -386,11 +407,15 @@ impl Llm {
     /// Sends `body` to the DeepAI account's tool review endpoint and returns
     /// its JSON answer.
     pub(crate) async fn deepai_review(&self, body: &Value) -> Result<Value, ErrorInfo> {
-        let session = self
-            .deepai
-            .as_ref()
-            .ok_or_else(|| ErrorInfo::new("provider_config", "the provider is not DeepAI"))?;
-        let api_key = deepai_api_key(&self.credential().await?)?;
+        if self.deepai.is_none() {
+            return Err(ErrorInfo::new(
+                "provider_config",
+                "the provider is not DeepAI",
+            ));
+        }
+        let (account, credential) = self.signed_in().await?;
+        let session = self.deepai_session(&account);
+        let api_key = deepai_api_key(&credential)?;
         let request = self
             .client
             .post(self.url("review_tool"))
@@ -457,45 +482,303 @@ impl Llm {
         output: Option<&JsonOutput>,
     ) -> Result<ChatStream, ErrorInfo> {
         let started = Instant::now();
-        if let Some(session) = &self.deepai {
-            let mut stream = self
-                .deepai_chat(session, conversation, tools, output)
-                .await?;
-            stream.started = started;
-            stream.provider = self.provider_label();
-            return Ok(stream);
-        }
         let format = self.config.provider;
-        let effort = self.effort().await;
-        let aliases = if self.config.auth == AuthKind::MuseSubscription {
-            muse_aliases(tools)
+        let mut aliases = Vec::new();
+        let body = if self.deepai.is_some() {
+            Value::Null
         } else {
-            Vec::new()
-        };
-        let (aliased_conversation, aliased_tools);
-        let (conversation, tools) = if aliases.is_empty() {
-            (conversation, tools)
-        } else {
-            aliased_conversation = alias_conversation(conversation, &aliases);
-            aliased_tools = alias_tools(tools, &aliases);
-            (&aliased_conversation, aliased_tools.as_slice())
-        };
-        let mut body = request_body(format, &self.config, effort, conversation, tools, output)?;
-        if format == ProviderKind::Anthropic {
-            if let Some(limit) = self.output_limit().await {
-                crate::reasoning::raise_anthropic_max(&mut body, limit);
+            let effort = self.effort().await;
+            if self.config.auth == AuthKind::MuseSubscription {
+                aliases = muse_aliases(tools);
             }
-        }
-        let response = match format {
-            ProviderKind::OpenAi => self.openai_chat(&body).await,
-            ProviderKind::Anthropic => self.anthropic_chat(body).await,
-            ProviderKind::Responses => self.responses_chat(&body).await,
-        }?;
-        let mut stream = ChatStream::new(format, &self.config.model, response, self.stream_idle);
+            let (aliased_conversation, aliased_tools);
+            let (conversation, tools) = if aliases.is_empty() {
+                (conversation, tools)
+            } else {
+                aliased_conversation = alias_conversation(conversation, &aliases);
+                aliased_tools = alias_tools(tools, &aliases);
+                (&aliased_conversation, aliased_tools.as_slice())
+            };
+            let mut body = request_body(format, &self.config, effort, conversation, tools, output)?;
+            if format == ProviderKind::Anthropic {
+                if let Some(limit) = self.output_limit().await {
+                    crate::reasoning::raise_anthropic_max(&mut body, limit);
+                }
+            }
+            body
+        };
+        let attempt = |account: Option<String>| {
+            let body = &body;
+            async move {
+                match self.deepai {
+                    Some(_) => {
+                        self.deepai_chat(account.as_deref(), conversation, tools, output)
+                            .await
+                    }
+                    None => {
+                        let response = self.send(account.as_deref(), body.clone()).await?;
+                        Ok(ChatStream::new(
+                            format,
+                            &self.config.model,
+                            response,
+                            self.stream_idle,
+                        ))
+                    }
+                }
+            }
+        };
+        let mut stream = match &self.route {
+            None => attempt(self.account.clone())
+                .await
+                .map_err(Attempt::error)?,
+            Some(route) => self.start_routed(route, attempt).await?,
+        };
         stream.aliases = aliases;
         stream.started = started;
         stream.provider = self.provider_label();
         Ok(stream)
+    }
+
+    /// Starts an answer on the account the pool chooses. A quota refusal
+    /// (HTTP 429 or 402) is retried once on the account the pool chooses
+    /// next, when that is another one: nothing of the answer was streamed.
+    async fn start_routed<F, Fut>(
+        &self,
+        route: &crate::pool::Route,
+        attempt: F,
+    ) -> Result<ChatStream, ErrorInfo>
+    where
+        F: Fn(Option<String>) -> Fut,
+        Fut: std::future::Future<Output = Result<ChatStream, Attempt>>,
+    {
+        let thread = crate::pool::current_thread();
+        let mut refused: Option<(String, ErrorInfo)> = None;
+        loop {
+            let (account, members) = self.pick(route, thread).await?;
+            if let Some((_, error)) = refused.take_if(|(first, _)| *first == account) {
+                return Err(error);
+            }
+            let retried = refused.is_some();
+            let record = |outcome: crate::pool::Outcome| {
+                let ctx = route.ctx(&members, crate::pool::now_ms());
+                let account = account.clone();
+                async move { route.pool.record(&ctx, &account, thread, &outcome).await }
+            };
+            match attempt(Some(account.clone())).await {
+                Ok(mut stream) => {
+                    record(crate::pool::Outcome::answered()).await;
+                    stream.ticket = Some(Ticket {
+                        route: route.clone(),
+                        store: self.store_path().ok(),
+                        account,
+                        thread,
+                    });
+                    return Ok(stream);
+                }
+                Err(Attempt::Unsent(error)) => return Err(error),
+                Err(Attempt::Broken(error)) => {
+                    record(crate::pool::Outcome::Broken(error.message.clone())).await;
+                    return Err(error);
+                }
+                Err(Attempt::Refused { error, outcome }) => {
+                    let quota = outcome.is_quota();
+                    record(outcome).await;
+                    if !quota || retried {
+                        return Err(error);
+                    }
+                    refused = Some((account, error));
+                }
+            }
+        }
+    }
+
+    /// The accounts of the route's provider kind.
+    fn route_accounts(
+        &self,
+        route: &crate::pool::Route,
+    ) -> Result<Vec<crate::oauth::Account>, ErrorInfo> {
+        crate::oauth::Store::load(self.store_path()?)
+            .map(|store| store.accounts(route.kind))
+            .map_err(|error| ErrorInfo::new("provider_config", error))
+    }
+
+    /// The account the pool chooses for a request of `thread`, with the
+    /// accounts it chose from; the usage reads the pool asks for are
+    /// started.
+    async fn pick(
+        &self,
+        route: &crate::pool::Route,
+        thread: Option<crate::store::SessionId>,
+    ) -> Result<(String, Vec<crate::pool::Member>), ErrorInfo> {
+        let accounts = self.route_accounts(route)?;
+        let unavailable = |accounts: &[crate::oauth::Account]| {
+            crate::oauth::choose_account(route.kind, accounts, route.pinned.as_deref())
+                .err()
+                .unwrap_or_else(|| {
+                    ErrorInfo::new(
+                        "account_unavailable",
+                        format!(
+                            "no {} account can be used; see /accounts status",
+                            route.kind
+                        ),
+                    )
+                })
+        };
+        if let Some(pinned) = &route.pinned {
+            if !accounts.iter().any(|account| &account.id == pinned) {
+                return Err(unavailable(&accounts));
+            }
+        }
+        let members: Vec<crate::pool::Member> =
+            accounts.iter().map(crate::pool::Member::of).collect();
+        let ctx = route.ctx(&members, crate::pool::now_ms());
+        let (chosen, due) = route.pool.choose(&ctx, thread).await;
+        self.read_usage_of(route, due);
+        match chosen {
+            Some(account) => Ok((account, members)),
+            None => Err(unavailable(&accounts)),
+        }
+    }
+
+    /// The account requests outside the answer (models, usage, review)
+    /// use: the fixed one, else the current thread's, else the one a new
+    /// thread would get; `None` without a pool.
+    async fn current_account(&self) -> Result<Option<String>, ErrorInfo> {
+        if self.account.is_some() {
+            return Ok(self.account.clone());
+        }
+        let Some(route) = &self.route else {
+            return Ok(None);
+        };
+        let accounts = self.route_accounts(route)?;
+        let members: Vec<crate::pool::Member> =
+            accounts.iter().map(crate::pool::Member::of).collect();
+        if let Some(thread) = crate::pool::current_thread() {
+            if let Some(bound) = route.pool.bound(&route.provider, thread).await {
+                if members.iter().any(|member| member.id == bound) {
+                    return Ok(Some(bound));
+                }
+            }
+        }
+        let ctx = route.ctx(&members, crate::pool::now_ms());
+        match route.pool.peek(&ctx).await {
+            Some(account) => Ok(Some(account)),
+            None => crate::oauth::choose_account(route.kind, &accounts, route.pinned.as_deref())
+                .map(Some),
+        }
+    }
+
+    /// Reads the usage of `accounts` in the background for the pool.
+    fn read_usage_of(&self, route: &crate::pool::Route, accounts: Vec<String>) {
+        let readable = matches!(
+            self.config.auth,
+            AuthKind::ClaudeOauth | AuthKind::GptOauth | AuthKind::MuseSubscription
+        );
+        let Ok(path) = self.store_path() else {
+            return;
+        };
+        for account in accounts {
+            let pool = std::sync::Arc::clone(&route.pool);
+            let kind = route.kind;
+            if !readable {
+                tokio::spawn(async move { pool.read_done(kind, &account, None).await });
+                continue;
+            }
+            let client = self.client.clone();
+            let config = self.config.clone();
+            let path = path.clone();
+            let token_url = self.token_url.clone();
+            tokio::spawn(async move {
+                let usage = match crate::oauth::fresh(
+                    path,
+                    config.auth,
+                    Some(&account),
+                    token_url.as_deref(),
+                )
+                .await
+                {
+                    Ok((_, credential)) => read_usage(&client, &config, &credential).await.ok(),
+                    Err(_) => None,
+                };
+                let quota = usage
+                    .as_ref()
+                    .and_then(|usage| crate::pool::usage_quota(usage, crate::pool::now_ms()));
+                pool.read_done(kind, &account, quota).await;
+            });
+        }
+    }
+
+    /// Sends `body` on `account` (the fixed or only account when `None`)
+    /// and returns the answer once its status is a success.
+    async fn send(&self, account: Option<&str>, body: Value) -> Result<reqwest::Response, Attempt> {
+        let (request, signed_in) = match self.config.provider {
+            ProviderKind::OpenAi => (self.openai_request(&body), None),
+            ProviderKind::Anthropic => self
+                .anthropic_request(account, body)
+                .await
+                .map_err(Attempt::Unsent)?,
+            ProviderKind::Responses => self
+                .responses_request(account, &body)
+                .await
+                .map_err(Attempt::Unsent)?,
+        };
+        let response = request.send().await.map_err(|error| {
+            Attempt::Broken(ErrorInfo::new(
+                "provider_http",
+                format!("request failed: {error}"),
+            ))
+        })?;
+        self.answered(account, signed_in.as_ref(), response).await
+    }
+
+    /// The answer of a request on `account` signed in with `signed_in`:
+    /// its usage headers go to the pool; an error status becomes a refusal,
+    /// after a refused credential was refreshed or marked.
+    async fn answered(
+        &self,
+        account: Option<&str>,
+        signed_in: Option<&Credential>,
+        mut response: reqwest::Response,
+    ) -> Result<reqwest::Response, Attempt> {
+        if let (Some(route), Some(account)) = (&self.route, account) {
+            route.observe(account, response.headers());
+        }
+        let status = response.status().as_u16();
+        if response.status().is_success() {
+            return Ok(response);
+        }
+        let header = |name: &str| {
+            response
+                .headers()
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string)
+        };
+        let retry_after = header("retry-after");
+        let resets = crate::pool::refusal_resets(&header);
+        let body = match read_capped(&mut response, ERROR_BODY_MAX_BYTES).await {
+            Ok(Some(bytes)) => String::from_utf8_lossy(&bytes).into_owned(),
+            Ok(None) | Err(_) => String::new(),
+        };
+        let denial = status == 403 && crate::pool::names_denial(&body);
+        if let Some(credential) = signed_in {
+            match status {
+                401 => self.refused(account, credential).await,
+                403 if !denial => self.mark_refused(account).await,
+                _ => {}
+            }
+        }
+        let message = format!("provider returned HTTP {status}: {}", snippet(&body));
+        Err(Attempt::Refused {
+            error: ErrorInfo::new("provider_http", message.clone()),
+            outcome: crate::pool::Outcome::Status {
+                status,
+                retry_after,
+                resets,
+                denial,
+                message,
+            },
+        })
     }
 
     /// The effort to send: the configured one, else the model's catalog
@@ -572,14 +855,43 @@ impl Llm {
     /// Loads the credential for an OAuth kind, refreshing it first when it is
     /// expired. Static-key kinds never touch the store.
     async fn credential(&self) -> Result<Credential, ErrorInfo> {
+        self.signed_in().await.map(|(_, credential)| credential)
+    }
+
+    /// [`Self::credential`] of [`Self::current_account`], with its account.
+    async fn signed_in(&self) -> Result<(String, Credential), ErrorInfo> {
+        let account = self.current_account().await?;
+        self.credential_of(account.as_deref()).await
+    }
+
+    /// The credential of `account`, or of the only usable account when
+    /// `None`, refreshed first when it has expired.
+    async fn credential_of(
+        &self,
+        account: Option<&str>,
+    ) -> Result<(String, Credential), ErrorInfo> {
         crate::oauth::fresh(
             self.store_path()?,
             self.config.auth,
-            self.account.as_deref(),
+            account,
             self.token_url.as_deref(),
         )
         .await
-        .map(|(_, credential)| credential)
+    }
+
+    /// The DeepAI state of `account`, made when first needed.
+    fn deepai_session(&self, account: &str) -> std::sync::Arc<crate::deepai::Session> {
+        let sessions = self.deepai.as_ref().expect("a DeepAI client");
+        sessions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .entry(account.to_string())
+            .or_insert_with(|| {
+                std::sync::Arc::new(crate::deepai::Session::new(
+                    self.config.auth_store_path.as_deref(),
+                ))
+            })
+            .clone()
     }
 
     fn store_path(&self) -> Result<std::path::PathBuf, ErrorInfo> {
@@ -590,35 +902,45 @@ impl Llm {
         }
     }
 
-    /// After the model API refused the credential `rejected` (HTTP 401): a
-    /// sign-in that refreshes is refreshed, which marks the account as
-    /// needing a new sign-in when the refresh is refused too; a static key
-    /// is marked at once. The request itself still fails.
-    async fn refused(&self, rejected: &Credential) {
-        let Ok(path) = self.store_path() else {
-            return;
-        };
-        let name = self.config.auth.store_name();
+    /// After the model API refused the credential `rejected` of `account`
+    /// (HTTP 401): a sign-in that refreshes is refreshed, which marks the
+    /// account as needing a new sign-in when the refresh is refused too; a
+    /// static key is marked at once. The request itself still fails.
+    async fn refused(&self, account: Option<&str>, rejected: &Credential) {
         match self.config.auth {
             AuthKind::ApiKey => {}
             AuthKind::ClaudeOauth | AuthKind::GptOauth => {
+                let Ok(path) = self.store_path() else {
+                    return;
+                };
                 let _ = crate::oauth::renew(
                     path,
                     self.config.auth,
-                    self.account.as_deref(),
+                    account,
                     &rejected.access,
                     self.token_url.as_deref(),
                 )
                 .await;
             }
-            AuthKind::MuseSubscription | AuthKind::DeepAi => {
-                let chosen = crate::oauth::Store::load(path.clone())
-                    .ok()
-                    .and_then(|store| store.choose(name, self.account.as_deref()).ok());
-                if let Some(account) = chosen {
-                    let _ = crate::oauth::mark_needs_reauth(&path, name, &account);
-                }
-            }
+            AuthKind::MuseSubscription | AuthKind::DeepAi => self.mark_refused(account).await,
+        }
+    }
+
+    /// Marks `account` (the only usable one when `None`) as needing a new
+    /// sign-in.
+    async fn mark_refused(&self, account: Option<&str>) {
+        let Ok(path) = self.store_path() else {
+            return;
+        };
+        let name = self.config.auth.store_name();
+        let chosen = match account {
+            Some(account) => Some(account.to_string()),
+            None => crate::oauth::Store::load(path.clone())
+                .ok()
+                .and_then(|store| store.choose(name, None).ok()),
+        };
+        if let Some(account) = chosen {
+            let _ = crate::oauth::mark_needs_reauth(&path, name, &account);
         }
     }
 
@@ -637,20 +959,19 @@ impl Llm {
         format!("{base}/v1/messages")
     }
 
-    async fn openai_chat(&self, body: &Value) -> Result<reqwest::Response, ErrorInfo> {
-        let response = self
-            .client
+    fn openai_request(&self, body: &Value) -> reqwest::RequestBuilder {
+        self.client
             .post(self.url("chat/completions"))
             .bearer_auth(&self.config.api_key)
             .header("accept", "text/event-stream")
             .json(body)
-            .send()
-            .await
-            .map_err(|error| ErrorInfo::new("provider_http", format!("request failed: {error}")))?;
-        require_success(response).await
     }
 
-    async fn anthropic_chat(&self, mut body: Value) -> Result<reqwest::Response, ErrorInfo> {
+    async fn anthropic_request(
+        &self,
+        account: Option<&str>,
+        mut body: Value,
+    ) -> Result<(reqwest::RequestBuilder, Option<Credential>), ErrorInfo> {
         let destination = destination(ProviderKind::Anthropic, &self.config);
         let summary = self.config.reasoning.summary;
         let mut request = self.client.post(self.anthropic_url());
@@ -658,7 +979,7 @@ impl Llm {
         if self.config.auth == AuthKind::ClaudeOauth {
             // OAuth bearers are only accepted with the beta opt-in and the
             // Claude Code identity block ahead of the conversation.
-            let credential = self.credential().await?;
+            let (_, credential) = self.credential_of(account).await?;
             let mut system = vec![json!({
                 "type": "text",
                 "text": crate::oauth::CLAUDE_CODE_SYSTEM_INSTRUCTION,
@@ -681,25 +1002,21 @@ impl Llm {
                 request = request.header("anthropic-beta", beta);
             }
         }
-        let response = request
+        let request = request
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header("accept", "text/event-stream")
-            .json(&body)
-            .send()
-            .await
-            .map_err(|error| ErrorInfo::new("provider_http", format!("request failed: {error}")))?;
-        if let (401, Some(credential)) = (response.status().as_u16(), &signed_in) {
-            self.refused(credential).await;
-        }
-        require_success(response).await
+            .json(&body);
+        Ok((request, signed_in))
     }
 
     /// The account's usage: rate-limit windows for the OAuth kinds, the
     /// Theos allowance for DeepAI. Static-key kinds have none.
     pub async fn usage(&self) -> Result<crate::Usage, ErrorInfo> {
-        if let Some(session) = &self.deepai {
-            let api_key = deepai_api_key(&self.credential().await?)?;
-            let theos = session
+        if self.deepai.is_some() {
+            let (account, credential) = self.signed_in().await?;
+            let api_key = deepai_api_key(&credential)?;
+            let theos = self
+                .deepai_session(&account)
                 .theos(&self.client, &self.config.base_url, &api_key)
                 .await?;
             return Ok(crate::Usage {
@@ -708,105 +1025,35 @@ impl Llm {
                 theos: Some(theos),
             });
         }
-        let base = self.config.base_url.trim_end_matches('/');
-        let (request, parse): (reqwest::RequestBuilder, UsageParser) =
-            match self.config.auth {
-                AuthKind::GptOauth => {
-                    let credential = self.credential().await?;
-                    let backend = base.strip_suffix("/codex").unwrap_or(base);
-                    (
-                        self.client
-                            .get(format!("{backend}/wham/usage"))
-                            .timeout(USAGE_TIMEOUT)
-                            .bearer_auth(&credential.access)
-                            .header("ChatGPT-Account-Id", chatgpt_account_id(&credential)?),
-                        crate::usage::from_wham,
-                    )
-                }
-                AuthKind::ClaudeOauth => {
-                    let credential = self.credential().await?;
-                    let host = base.strip_suffix("/v1").unwrap_or(base);
-                    (
-                        self.client
-                            .get(format!("{host}/api/oauth/usage"))
-                            .timeout(USAGE_TIMEOUT)
-                            .header("accept", "application/json, text/plain, */*")
-                            .header("content-type", "application/json")
-                            .header("user-agent", CLAUDE_USER_AGENT)
-                            .header("anthropic-beta", CLAUDE_USAGE_BETA)
-                            .bearer_auth(&credential.access),
-                        crate::usage::from_anthropic,
-                    )
-                }
-                AuthKind::MuseSubscription => {
-                    let credential = self.credential().await?;
-                    let token = credential.oauth_access_token.clone().ok_or_else(|| {
-                        ErrorInfo::new(
-                        "provider_config",
-                        "the stored Muse credential has no Meta account token; run the login again",
-                    )
-                    })?;
-                    let host = base.strip_suffix("/v1").unwrap_or(base);
-                    // No `onboard`: this is a read, and onboarding on a read
-                    // would change the user's account (reference
-                    // `muse-key-quota.ts`).
-                    (
-                        self.client
-                            .post(format!("{host}/muse-code/key"))
-                            .timeout(MUSE_USAGE_TIMEOUT)
-                            .header("accept", "application/json")
-                            .header("content-type", "application/json")
-                            .header("x-api-version", crate::oauth::MUSE_API_VERSION)
-                            .bearer_auth(token)
-                            .body("{}"),
-                        crate::usage::from_muse,
-                    )
-                }
-                AuthKind::ApiKey | AuthKind::DeepAi => return Err(ErrorInfo::new(
-                    "provider_unsupported",
-                    "usage is only available for claude-oauth, gpt-oauth, muse-code, and deepai",
-                )),
-            };
-        let response = request
-            .send()
-            .await
-            .map_err(|error| ErrorInfo::new("provider_http", format!("request failed: {error}")))?;
-        let status = response.status();
-        if !status.is_success() {
-            // The body is not echoed: the Muse answer can carry its key.
+        if matches!(self.config.auth, AuthKind::ApiKey | AuthKind::DeepAi) {
             return Err(ErrorInfo::new(
-                "provider_http",
-                format!("the usage request returned HTTP {}", status.as_u16()),
+                "provider_unsupported",
+                "usage is only available for claude-oauth, gpt-oauth, muse-code, and deepai",
             ));
         }
-        let mut response = response;
-        let bytes = read_capped(&mut response, USAGE_BODY_MAX_BYTES)
-            .await
-            .map_err(|error| ErrorInfo::new("provider_stream", format!("stream failed: {error}")))?
-            .ok_or_else(|| {
-                ErrorInfo::new("provider_protocol", "the usage response is too large")
-            })?;
-        let value: Value = serde_json::from_slice(&bytes)
-            .map_err(|_| ErrorInfo::new("provider_protocol", "the usage response is not JSON"))?;
-        parse(&value)
+        let credential = self.credential().await?;
+        read_usage(&self.client, &self.config, &credential).await
     }
 
-    /// A DeepAI chat: the catalog picks the format, a metered model waits
-    /// for the single metered slot, and every attempt renews the check-in
-    /// first and waits out `session_busy` (reference `localTransport`).
+    /// A DeepAI chat on `account` (the only usable one when `None`): the
+    /// catalog picks the format, a metered model waits for the single
+    /// metered slot, and every attempt renews the check-in first and waits
+    /// out `session_busy` (reference `localTransport`).
     async fn deepai_chat(
         &self,
-        session: &crate::deepai::Session,
+        account: Option<&str>,
         conversation: &Conversation,
         tools: &[ToolSpec],
         output: Option<&JsonOutput>,
-    ) -> Result<ChatStream, ErrorInfo> {
-        let credential = self.credential().await?;
-        let api_key = deepai_api_key(&credential)?;
+    ) -> Result<ChatStream, Attempt> {
+        let (account, credential) = self.credential_of(account).await.map_err(Attempt::Unsent)?;
+        let session = self.deepai_session(&account);
+        let api_key = deepai_api_key(&credential).map_err(Attempt::Unsent)?;
         let base = &self.config.base_url;
         let route = session
             .route(&self.client, base, &api_key, &self.config.model)
-            .await?;
+            .await
+            .map_err(Attempt::Unsent)?;
         let slot = if route.metered {
             Some(session.metered_slot().await)
         } else {
@@ -824,11 +1071,13 @@ impl Llm {
             conversation,
             tools,
             output,
-        )?;
+        )
+        .map_err(Attempt::Unsent)?;
         loop {
             session
                 .ensure_checked_in(&self.client, base, &api_key)
-                .await?;
+                .await
+                .map_err(Attempt::Unsent)?;
             let request = self
                 .client
                 .post(&url)
@@ -841,21 +1090,28 @@ impl Llm {
                 .send()
                 .await
                 .map_err(|error| {
-                    ErrorInfo::new("provider_http", format!("request failed: {error}"))
+                    Attempt::Broken(ErrorInfo::new(
+                        "provider_http",
+                        format!("request failed: {error}"),
+                    ))
                 })?;
-            if response.status().as_u16() == 401 {
-                self.refused(&credential).await;
-            }
             match crate::deepai::admission(response).await {
                 crate::deepai::Admission::Answered(response) => {
-                    let response = crate::deepai::require_lane(response).await?;
+                    let response = if response.status().as_u16() == 426 {
+                        crate::deepai::require_lane(response)
+                            .await
+                            .map_err(Attempt::Unsent)?
+                    } else {
+                        self.answered(Some(&account), Some(&credential), response)
+                            .await?
+                    };
                     let mut stream =
                         ChatStream::new(format, &self.config.model, response, self.stream_idle);
                     stream.slot = slot;
                     return Ok(stream);
                 }
                 crate::deepai::Admission::Busy(delay) => tokio::time::sleep(delay).await,
-                crate::deepai::Admission::Refused(error) => return Err(error),
+                crate::deepai::Admission::Refused(error) => return Err(Attempt::Unsent(error)),
             }
         }
     }
@@ -867,7 +1123,11 @@ impl Llm {
         format!("{}/responses", self.config.base_url.trim_end_matches('/'))
     }
 
-    async fn responses_chat(&self, body: &Value) -> Result<reqwest::Response, ErrorInfo> {
+    async fn responses_request(
+        &self,
+        account: Option<&str>,
+        body: &Value,
+    ) -> Result<(reqwest::RequestBuilder, Option<Credential>), ErrorInfo> {
         let request = self
             .client
             .post(self.responses_url())
@@ -878,7 +1138,7 @@ impl Llm {
             // The Muse account token must never be sent to the model API
             // (measured 401); its minted key is the bearer.
             AuthKind::MuseSubscription => {
-                let credential = self.credential().await?;
+                let (_, credential) = self.credential_of(account).await?;
                 let request = request
                     .bearer_auth(muse_api_key(&credential)?)
                     .header("user-agent", crate::oauth::MUSE_USER_AGENT)
@@ -888,7 +1148,7 @@ impl Llm {
             }
             // The ChatGPT account access token is the bearer.
             _ => {
-                let credential = self.credential().await?;
+                let (_, credential) = self.credential_of(account).await?;
                 let request = request.bearer_auth(&credential.access);
                 let request = if self.config.auth == AuthKind::GptOauth {
                     request.header("chatgpt-account-id", chatgpt_account_id(&credential)?)
@@ -899,14 +1159,7 @@ impl Llm {
                 request
             }
         };
-        let response =
-            request.json(body).send().await.map_err(|error| {
-                ErrorInfo::new("provider_http", format!("request failed: {error}"))
-            })?;
-        if let (401, Some(credential)) = (response.status().as_u16(), &signed_in) {
-            self.refused(credential).await;
-        }
-        require_success(response).await
+        Ok((request.json(body), signed_in))
     }
 
     /// The discovery endpoint for the configured kind, following the
@@ -939,9 +1192,11 @@ impl Llm {
 
     /// Lists the models the configured endpoint advertises.
     pub async fn models(&self) -> Result<Vec<ModelInfo>, ErrorInfo> {
-        if let Some(session) = &self.deepai {
-            let api_key = deepai_api_key(&self.credential().await?)?;
-            let catalog = session
+        if self.deepai.is_some() {
+            let (account, credential) = self.signed_in().await?;
+            let api_key = deepai_api_key(&credential)?;
+            let catalog = self
+                .deepai_session(&account)
                 .catalog(&self.client, &self.config.base_url, &api_key, true)
                 .await?;
             return Ok(catalog
@@ -1121,6 +1376,108 @@ fn alias_conversation(conversation: &Conversation, aliases: &[(String, String)])
 
 /// Reads one provider's usage payload.
 type UsageParser = fn(&Value) -> Result<crate::Usage, ErrorInfo>;
+
+/// The rate-limit windows of the account signed in with `credential` from
+/// the usage endpoint of `config`'s sign-in kind (ChatGPT, Claude, Muse).
+async fn read_usage(
+    client: &reqwest::Client,
+    config: &LlmConfig,
+    credential: &Credential,
+) -> Result<crate::Usage, ErrorInfo> {
+    let base = config.base_url.trim_end_matches('/');
+    let (request, parse): (reqwest::RequestBuilder, UsageParser) = match config.auth {
+        AuthKind::GptOauth => {
+            let backend = base.strip_suffix("/codex").unwrap_or(base);
+            (
+                client
+                    .get(format!("{backend}/wham/usage"))
+                    .timeout(USAGE_TIMEOUT)
+                    .bearer_auth(&credential.access)
+                    .header("ChatGPT-Account-Id", chatgpt_account_id(credential)?),
+                crate::usage::from_wham,
+            )
+        }
+        AuthKind::ClaudeOauth => {
+            let host = base.strip_suffix("/v1").unwrap_or(base);
+            (
+                client
+                    .get(format!("{host}/api/oauth/usage"))
+                    .timeout(USAGE_TIMEOUT)
+                    .header("accept", "application/json, text/plain, */*")
+                    .header("content-type", "application/json")
+                    .header("user-agent", CLAUDE_USER_AGENT)
+                    .header("anthropic-beta", CLAUDE_USAGE_BETA)
+                    .bearer_auth(&credential.access),
+                crate::usage::from_anthropic,
+            )
+        }
+        AuthKind::MuseSubscription => {
+            let token = credential.oauth_access_token.clone().ok_or_else(|| {
+                ErrorInfo::new(
+                    "provider_config",
+                    "the stored Muse credential has no Meta account token; run the login again",
+                )
+            })?;
+            let host = base.strip_suffix("/v1").unwrap_or(base);
+            // No `onboard`: this is a read, and onboarding on a read would
+            // change the user's account (reference `muse-key-quota.ts`).
+            (
+                client
+                    .post(format!("{host}/muse-code/key"))
+                    .timeout(MUSE_USAGE_TIMEOUT)
+                    .header("accept", "application/json")
+                    .header("content-type", "application/json")
+                    .header("x-api-version", crate::oauth::MUSE_API_VERSION)
+                    .bearer_auth(token)
+                    .body("{}"),
+                crate::usage::from_muse,
+            )
+        }
+        AuthKind::ApiKey | AuthKind::DeepAi => {
+            return Err(ErrorInfo::new(
+                "provider_unsupported",
+                "usage is only available for claude-oauth, gpt-oauth, muse-code, and deepai",
+            ))
+        }
+    };
+    let response = request
+        .send()
+        .await
+        .map_err(|error| ErrorInfo::new("provider_http", format!("request failed: {error}")))?;
+    let status = response.status();
+    if !status.is_success() {
+        // The body is not echoed: the Muse answer can carry its key.
+        return Err(ErrorInfo::new(
+            "provider_http",
+            format!("the usage request returned HTTP {}", status.as_u16()),
+        ));
+    }
+    let mut response = response;
+    let bytes = read_capped(&mut response, USAGE_BODY_MAX_BYTES)
+        .await
+        .map_err(|error| ErrorInfo::new("provider_stream", format!("stream failed: {error}")))?
+        .ok_or_else(|| ErrorInfo::new("provider_protocol", "the usage response is too large"))?;
+    let value: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| ErrorInfo::new("provider_protocol", "the usage response is not JSON"))?;
+    parse(&value)
+}
+
+impl Attempt {
+    fn error(self) -> ErrorInfo {
+        match self {
+            Self::Unsent(error) | Self::Broken(error) | Self::Refused { error, .. } => error,
+        }
+    }
+}
+
+/// The pool's account of a started answer, so a failure of its stream
+/// counts against that account.
+struct Ticket {
+    route: crate::pool::Route,
+    store: Option<std::path::PathBuf>,
+    account: String,
+    thread: Option<crate::store::SessionId>,
+}
 
 /// The streaming request body of `conversation` in `format`. Responses
 /// requests are stateless (`store: false`, reference `warmup.ts`), so the
@@ -1611,6 +1968,7 @@ pub struct ChatStream {
     provider: String,
     /// How long the provider may send nothing (the client's read timeout).
     idle: Duration,
+    ticket: Option<Ticket>,
 }
 
 impl ChatStream {
@@ -1631,7 +1989,24 @@ impl ChatStream {
             started: Instant::now(),
             first_output: None,
             provider: String::new(),
+            ticket: None,
         }
+    }
+
+    /// Fails the stream with `error`, a transport failure that counts
+    /// against the pool's account of the answer.
+    async fn broken(&mut self, error: ErrorInfo) -> Result<Option<Piece>, ErrorInfo> {
+        self.done = true;
+        if let Some(ticket) = self.ticket.take() {
+            if let Some(store) = &ticket.store {
+                let outcome = crate::pool::Outcome::Broken(error.message.clone());
+                ticket
+                    .route
+                    .record(store, &ticket.account, ticket.thread, &outcome)
+                    .await;
+            }
+        }
+        Err(error)
     }
 
     /// The request as it is logged, for `purpose`, as read so far.
@@ -1748,22 +2123,24 @@ impl ChatStream {
                     self.body_ended = true;
                 }
                 Err(error) if error.is_timeout() => {
-                    self.done = true;
-                    return Err(ErrorInfo::new(
-                        "provider_idle",
-                        format!(
-                            "the provider sent nothing for {} seconds \
-                             (server.stream_idle_seconds), so the answer was given up",
-                            self.idle.as_secs()
-                        ),
-                    ));
+                    return self
+                        .broken(ErrorInfo::new(
+                            "provider_idle",
+                            format!(
+                                "the provider sent nothing for {} seconds \
+                                 (server.stream_idle_seconds), so the answer was given up",
+                                self.idle.as_secs()
+                            ),
+                        ))
+                        .await;
                 }
                 Err(error) => {
-                    self.done = true;
-                    return Err(ErrorInfo::new(
-                        "provider_stream",
-                        format!("stream failed: {error}"),
-                    ));
+                    return self
+                        .broken(ErrorInfo::new(
+                            "provider_stream",
+                            format!("stream failed: {error}"),
+                        ))
+                        .await;
                 }
             }
         }

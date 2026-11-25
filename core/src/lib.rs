@@ -34,6 +34,7 @@ mod outline;
 mod pdf;
 mod picture;
 mod plugins;
+pub mod pool;
 mod promise;
 mod read;
 pub mod reasoning;
@@ -46,6 +47,7 @@ pub mod settings;
 mod shell;
 mod sse;
 pub mod store;
+mod store_pool;
 mod store_threads;
 mod transcribe;
 pub mod translate;
@@ -573,6 +575,8 @@ pub struct Core {
     started: Started,
     /// Sign-ins started over the protocol.
     logins: accounts::Logins,
+    /// Which account of a sign-in provider each request uses.
+    pool: Arc<pool::Pool>,
 }
 
 impl Default for Core {
@@ -608,6 +612,7 @@ impl Core {
             clients: Mutex::new(HashMap::new()),
             started: Started::default(),
             logins: accounts::Logins::new(accounts::LoginEndpoints::default()),
+            pool: Arc::new(pool::Pool::new(None)),
         }
     }
 
@@ -620,6 +625,7 @@ impl Core {
     /// Keeps threads in `store`; the settings are the `settings.json`
     /// beside it.
     pub fn with_store(mut self, store: Store) -> Self {
+        self.pool = Arc::new(pool::Pool::new(Some(store.clone())));
         self.store = Some(store);
         self
     }
@@ -758,14 +764,26 @@ impl Core {
             reasoning,
             self.credentials.clone(),
         );
+        let route = (!provider.kind.uses_api_key()).then(|| self.route(id, &provider));
         let client = Arc::new(
             Llm::new(config)?
                 .with_codex_client_version(provider.client_version.clone())
                 .with_stream_idle(idle)?
-                .with_account(provider.active_account.clone())
+                .with_route(route)
                 .with_token_url(self.logins.token_url(provider.kind)),
         );
         Ok(self.clients_lock().entry(key).or_insert(client).clone())
+    }
+
+    /// How the sign-in provider `id`'s clients choose their account.
+    pub(crate) fn route(&self, id: &str, provider: &settings::Provider) -> pool::Route {
+        pool::Route {
+            pool: Arc::clone(&self.pool),
+            provider: id.to_string(),
+            kind: provider.kind.auth().store_name(),
+            rules: pool::Rules::of(provider.pool.as_ref()),
+            pinned: provider.active_account.clone(),
+        }
     }
 
     fn clients_lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Arc<Llm>>> {
@@ -1619,15 +1637,18 @@ impl Core {
             }
             let _ = stop.send(true);
         });
-        let mut outcome = turn::run(
-            models,
-            store,
+        let mut outcome = pool::in_thread(
             thread,
-            prompt,
-            approvals,
-            claim.steer,
-            stopped,
-            events,
+            turn::run(
+                models,
+                store,
+                thread,
+                prompt,
+                approvals,
+                claim.steer,
+                stopped,
+                events,
+            ),
         )
         .await;
         forward.abort();

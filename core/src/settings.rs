@@ -314,10 +314,73 @@ pub struct Provider {
     /// The `client_version` the ChatGPT models endpoint is asked as.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_version: Option<String>,
-    /// The stored account of a sign-in kind its requests use; without it,
-    /// the kind's only usable account.
+    /// The stored account of a sign-in kind its requests prefer while it
+    /// can serve them; without it, the pool chooses
+    /// (docs/evidence/account-pool.md).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_account: Option<String>,
+    /// How requests choose among the kind's accounts; the defaults when
+    /// absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool: Option<PoolConfig>,
+}
+
+/// The `pool` of a sign-in provider. An absent field takes the default of
+/// [`crate::pool::Rules`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PoolConfig {
+    /// `quota`, `round-robin`, `fill-first` or `reset-first`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strategy: Option<String>,
+    /// New conversations placed on one account in a row under
+    /// `round-robin`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sticky_limit: Option<u32>,
+    /// Usage percent from which the pool moves to another account; 0 never
+    /// moves on usage alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_switch_threshold: Option<u32>,
+    /// Failures in a row that make the pool leave an account; 0 never
+    /// leaves on failures alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failover_threshold: Option<u32>,
+    /// Whether a conversation keeps its account, for the provider's prompt
+    /// cache, until that account is spent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_affinity: Option<bool>,
+}
+
+impl PoolConfig {
+    fn check(&self) -> Result<(), String> {
+        if let Some(strategy) = &self.strategy {
+            if crate::pool::Strategy::parse(strategy).is_none() {
+                return Err(format!(
+                    "\"pool.strategy\" {strategy:?} is not one of quota, round-robin, \
+                     fill-first and reset-first"
+                ));
+            }
+        }
+        let within = |name: &str, value: Option<u32>, low: u32, high: u32| match value {
+            Some(value) if !(low..=high).contains(&value) => {
+                Err(format!("\"pool.{name}\" must be from {low} to {high}"))
+            }
+            _ => Ok(()),
+        };
+        within(
+            "sticky_limit",
+            self.sticky_limit,
+            1,
+            crate::pool::MAX_STICKY_LIMIT,
+        )?;
+        within("auto_switch_threshold", self.auto_switch_threshold, 0, 100)?;
+        within(
+            "failover_threshold",
+            self.failover_threshold,
+            0,
+            crate::pool::MAX_FAILOVER_THRESHOLD,
+        )
+    }
 }
 
 impl Provider {
@@ -334,6 +397,7 @@ impl Provider {
             hidden_models: Vec::new(),
             client_version: None,
             active_account: None,
+            pool: None,
         }
     }
 
@@ -375,6 +439,16 @@ impl Provider {
             if account.trim().is_empty() {
                 return Err(format!("provider {id}: \"active_account\" is empty"));
             }
+        }
+        if let Some(pool) = &self.pool {
+            if self.kind.uses_api_key() {
+                return Err(format!(
+                    "provider {id}: \"pool\" is only for the sign-in kinds: an API key \
+                     provider keeps one key"
+                ));
+            }
+            pool.check()
+                .map_err(|error| format!("provider {id}: {error}"))?;
         }
         if let Some(language) = self
             .translation

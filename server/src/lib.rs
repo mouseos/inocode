@@ -417,7 +417,13 @@ async fn dispatch(
         | "accounts/rename"
         | "accounts/pause"
         | "accounts/remove"
-        | "accounts/use" => {
+        | "accounts/use"
+        | "accounts/priority"
+        | "accounts/clear_cooldown"
+        | "pool/get"
+        | "pool/set"
+        | "pool/reset_affinity"
+        | "pool/status" => {
             // Settings and credential files, and for models/list an HTTP
             // round trip: off the read loop like the store requests.
             tokio::spawn(settings_request(
@@ -642,6 +648,12 @@ async fn settings_request(
             "accounts/pause" => core.pause_account(&params).await,
             "accounts/remove" => core.remove_account(&params).await,
             "accounts/use" => core.use_account(&params).await,
+            "accounts/priority" => core.set_account_priority(&params).await,
+            "accounts/clear_cooldown" => core.clear_account_cooldown(&params).await,
+            "pool/get" => core.pool_get(&params).await,
+            "pool/set" => core.pool_set(&params).await,
+            "pool/reset_affinity" => core.pool_reset_affinity(&params).await,
+            "pool/status" => core.pool_status(&params).await,
             // `thread/settings` with nothing but the thread reads; any
             // other field is a change.
             _ => match request.thread() {

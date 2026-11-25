@@ -19,7 +19,7 @@ use tokio::sync::{oneshot, watch};
 use crate::deepai::SignInEndpoints;
 use crate::oauth::{self, Account, Credential, FlowEndpoints, MuseEndpoints, SignedIn, Store};
 use crate::settings::{self, Kind};
-use crate::{Core, ErrorInfo};
+use crate::{pool, Core, ErrorInfo};
 
 /// The endpoints sign-ins use; the defaults are the production hosts.
 pub struct LoginEndpoints {
@@ -233,8 +233,37 @@ fn account_view(
         "added": account.info.added_ms,
         "email": account.email,
         "account_id": account.account_id,
+        "priority": account.info.priority.unwrap_or(0),
+        "auto_switch_threshold": account.info.auto_switch_threshold,
         "active": active == Some(account.id.as_str()),
     })
+}
+
+/// An integer field of `params` within `range`: `Some(None)` for `null`,
+/// `None` when absent.
+fn bounded(
+    params: &Value,
+    name: &str,
+    range: std::ops::RangeInclusive<i64>,
+) -> Result<Option<Option<i64>>, ErrorInfo> {
+    match params.get(name) {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        Some(value) => value
+            .as_i64()
+            .filter(|value| range.contains(value))
+            .map(|value| Some(Some(value)))
+            .ok_or_else(|| {
+                ErrorInfo::new(
+                    "invalid_params",
+                    format!(
+                        "\"{name}\" must be an integer from {} to {}, or null",
+                        range.start(),
+                        range.end()
+                    ),
+                )
+            }),
+    }
 }
 
 fn string<'a>(params: &'a Value, name: &str) -> Result<&'a str, ErrorInfo> {
@@ -295,18 +324,40 @@ impl Core {
         };
         let mut views = Vec::new();
         for (kind, provider) in targets {
-            let name = kind.auth().store_name();
-            let accounts = store.accounts(name);
-            let chosen = provider
-                .as_deref()
-                .and_then(|id| settings.provider(id))
-                .and_then(|provider| provider.active_account.as_deref());
-            let active = oauth::choose_account(name, &accounts, chosen).ok();
+            let accounts = store.accounts(kind.auth().store_name());
+            let active = self
+                .current_account(&settings, kind, provider.as_deref(), &accounts)
+                .await;
             views.extend(accounts.iter().map(|account| {
                 account_view(account, kind, provider.as_deref(), active.as_deref())
             }));
         }
         Ok(json!({ "accounts": views }))
+    }
+
+    /// The account a new conversation on `provider` would use now (the
+    /// pool's choice); without a provider, the kind's only usable account.
+    async fn current_account(
+        &self,
+        settings: &settings::Settings,
+        kind: Kind,
+        provider: Option<&str>,
+        accounts: &[Account],
+    ) -> Option<String> {
+        let name = kind.auth().store_name();
+        let Some((id, configured)) =
+            provider.and_then(|id| settings.provider(id).map(|configured| (id, configured)))
+        else {
+            return oauth::choose_account(name, accounts, None).ok();
+        };
+        let route = self.route(id, configured);
+        if let Some(pinned) = &route.pinned {
+            if !accounts.iter().any(|account| &account.id == pinned) {
+                return None;
+            }
+        }
+        let members: Vec<pool::Member> = accounts.iter().map(pool::Member::of).collect();
+        self.pool.peek(&route.ctx(&members, pool::now_ms())).await
     }
 
     /// The kind `params.provider` names, the account `params.account` names
@@ -331,17 +382,11 @@ impl Core {
         account: &str,
         store: &Store,
     ) -> Result<Value, ErrorInfo> {
-        let name = kind.auth().store_name();
-        let accounts = store.accounts(name);
-        let chosen = match provider {
-            Some(id) => self
-                .settings()
-                .await?
-                .provider(id)
-                .and_then(|provider| provider.active_account.clone()),
-            None => None,
-        };
-        let active = oauth::choose_account(name, &accounts, chosen.as_deref()).ok();
+        let accounts = store.accounts(kind.auth().store_name());
+        let settings = self.settings().await?;
+        let active = self
+            .current_account(&settings, kind, provider, &accounts)
+            .await;
         let found = accounts
             .iter()
             .find(|candidate| candidate.id == account)
@@ -399,6 +444,7 @@ impl Core {
         store
             .remove_account(kind.auth().store_name(), &account)
             .map_err(store_error)?;
+        self.pool.forget(kind.auth().store_name(), &account).await;
         if self.store.is_some() {
             settings::forget_account(&self.writable_settings().await?, kind, &account)
                 .await
@@ -407,9 +453,180 @@ impl Core {
         Ok(json!({ "removed": account, "kind": kind.name() }))
     }
 
-    /// `accounts/use {provider, account}`: the provider's requests use the
-    /// account from the next one on; `account: null` returns to the only
-    /// usable account.
+    /// `accounts/priority {provider, account, priority?, auto_switch_threshold?}`:
+    /// the account's pool tier (-100 to 100) and its own usage threshold
+    /// (0 to 100); `null` returns either to the default.
+    pub async fn set_account_priority(&self, params: &Value) -> Result<Value, ErrorInfo> {
+        let priority = bounded(
+            params,
+            "priority",
+            i64::from(pool::MIN_PRIORITY)..=i64::from(pool::MAX_PRIORITY),
+        )?;
+        let threshold = bounded(params, "auto_switch_threshold", 0..=100)?;
+        if priority.is_none() && threshold.is_none() {
+            return Err(ErrorInfo::new(
+                "invalid_params",
+                "requires \"priority\" or \"auto_switch_threshold\"",
+            ));
+        }
+        let (kind, provider, account, mut store) = self.named_account(params).await?;
+        store
+            .edit_info(kind.auth().store_name(), &account, |info| {
+                if let Some(priority) = priority {
+                    info.priority = priority.map(|p| p as i32).filter(|p| *p != 0);
+                }
+                if let Some(threshold) = threshold {
+                    info.auto_switch_threshold = threshold.map(|t| t as u32);
+                }
+            })
+            .map_err(store_error)?;
+        self.account_result(kind, provider.as_deref(), &account, &store)
+            .await
+    }
+
+    /// `accounts/clear_cooldown {provider, account}`: the pool may use the
+    /// account again at once after a quota refusal.
+    pub async fn clear_account_cooldown(&self, params: &Value) -> Result<Value, ErrorInfo> {
+        let (kind, _, account, _) = self.named_account(params).await?;
+        let cleared = self
+            .pool
+            .clear_cooldown(kind.auth().store_name(), &account)
+            .await;
+        Ok(json!({ "account": account, "cleared": cleared }))
+    }
+
+    /// The sign-in provider of the settings `params.provider` names.
+    async fn pool_provider(
+        &self,
+        params: &Value,
+    ) -> Result<(settings::Settings, String), ErrorInfo> {
+        let settings = self.settings().await?;
+        let name = string(params, "provider")?;
+        match resolve(&settings, name)? {
+            (_, Some(id)) => Ok((settings, id)),
+            (_, None) => Err(ErrorInfo::new(
+                "invalid_params",
+                format!(
+                    "{name} is not a provider of the settings; the pool belongs to a provider \
+                     (providers/list shows them)"
+                ),
+            )),
+        }
+    }
+
+    /// `pool/get {provider}`: the provider's `pool` as written and in
+    /// effect.
+    pub async fn pool_get(&self, params: &Value) -> Result<Value, ErrorInfo> {
+        let (settings, id) = self.pool_provider(params).await?;
+        pool_view(&settings, &id)
+    }
+
+    /// `pool/set {provider, strategy?, sticky_limit?, auto_switch_threshold?,
+    /// failover_threshold?, cache_affinity?}`; `null` returns a field to its
+    /// default.
+    pub async fn pool_set(&self, params: &Value) -> Result<Value, ErrorInfo> {
+        const FIELDS: [&str; 5] = [
+            "strategy",
+            "sticky_limit",
+            "auto_switch_threshold",
+            "failover_threshold",
+            "cache_affinity",
+        ];
+        let (settings, id) = self.pool_provider(params).await?;
+        let fields = params.as_object().into_iter().flatten();
+        let mut written = settings
+            .provider(&id)
+            .and_then(|provider| serde_json::to_value(&provider.pool).ok())
+            .and_then(|pool| pool.as_object().cloned())
+            .unwrap_or_default();
+        let mut changed = false;
+        for (name, value) in fields.filter(|(name, _)| *name != "provider") {
+            if !FIELDS.contains(&name.as_str()) {
+                return Err(ErrorInfo::new(
+                    "invalid_params",
+                    format!(
+                        "unknown pool field {name:?}; the fields are {}",
+                        FIELDS.join(", ")
+                    ),
+                ));
+            }
+            changed = true;
+            if value.is_null() {
+                written.remove(name);
+            } else {
+                written.insert(name.clone(), value.clone());
+            }
+        }
+        if !changed {
+            return Err(ErrorInfo::new(
+                "invalid_params",
+                format!("requires one of {}", FIELDS.join(", ")),
+            ));
+        }
+        let pool = match written.is_empty() {
+            true => Value::Null,
+            false => Value::Object(written),
+        };
+        settings::update_provider(
+            &self.writable_settings().await?,
+            &id,
+            &json!({ "pool": pool }),
+        )
+        .await
+        .map_err(|error| ErrorInfo::new("invalid_params", error))?;
+        pool_view(&self.settings().await?, &id)
+    }
+
+    /// `pool/reset_affinity {provider?, thread_id?}`: threads choose their
+    /// account again on their next request.
+    pub async fn pool_reset_affinity(&self, params: &Value) -> Result<Value, ErrorInfo> {
+        let provider = match params.get("provider") {
+            None | Some(Value::Null) => None,
+            Some(_) => Some(self.pool_provider(params).await?.1),
+        };
+        let thread = match params.get("thread_id") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(crate::store::SessionId(value.as_i64().ok_or_else(
+                || ErrorInfo::new("invalid_params", "\"thread_id\" must be an integer"),
+            )?)),
+        };
+        let cleared = self.pool.reset_affinity(provider.as_deref(), thread).await;
+        Ok(json!({ "cleared": cleared }))
+    }
+
+    /// `pool/status {provider?}`: per sign-in provider of the settings, the
+    /// pool's settings and per account its usage score, cooldown, why it is
+    /// not used, the threads bound to it and its last error.
+    pub async fn pool_status(&self, params: &Value) -> Result<Value, ErrorInfo> {
+        let settings = self.settings().await?;
+        let ids: Vec<String> = match params.get("provider") {
+            None | Some(Value::Null) => settings
+                .providers
+                .iter()
+                .flatten()
+                .filter(|(_, provider)| !provider.kind.uses_api_key())
+                .map(|(id, _)| id.clone())
+                .collect(),
+            Some(_) => vec![self.pool_provider(params).await?.1],
+        };
+        let store = self.credentials_store()?;
+        let mut providers = Vec::new();
+        for id in ids {
+            let Some(configured) = settings.provider(&id) else {
+                continue;
+            };
+            let route = self.route(&id, configured);
+            let accounts = store.accounts(route.kind);
+            let members: Vec<pool::Member> = accounts.iter().map(pool::Member::of).collect();
+            let ctx = route.ctx(&members, pool::now_ms());
+            providers.push(self.pool.status(&ctx, &accounts).await);
+        }
+        Ok(json!({ "providers": providers }))
+    }
+
+    /// `accounts/use {provider, account}`: the provider's requests prefer
+    /// the account from the next one on, while it can serve them;
+    /// `account: null` leaves the choice to the pool.
     pub async fn use_account(&self, params: &Value) -> Result<Value, ErrorInfo> {
         let settings = self.settings().await?;
         let (kind, provider) = resolve(&settings, string(params, "provider")?)?;
@@ -613,6 +830,20 @@ impl Core {
         });
         Ok(login_view(id, login))
     }
+}
+
+/// The `pool` of the provider `id` as written and in effect.
+fn pool_view(settings: &settings::Settings, id: &str) -> Result<Value, ErrorInfo> {
+    let provider = settings
+        .provider(id)
+        .ok_or_else(|| ErrorInfo::new("invalid_params", format!("no provider has the id {id}")))?;
+    Ok(json!({
+        "provider": id,
+        "kind": provider.kind.name(),
+        "pool": provider.pool,
+        "effective": pool::Rules::of(provider.pool.as_ref()).view(),
+        "active_account": provider.active_account,
+    }))
 }
 
 fn unknown_login() -> ErrorInfo {

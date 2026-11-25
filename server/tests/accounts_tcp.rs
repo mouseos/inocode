@@ -234,16 +234,19 @@ async fn sign_ins_add_accounts_and_the_provider_uses_the_chosen_one() {
         assert_eq!(second["added"], true);
         let bob = second["account"].as_str().unwrap().to_string();
         assert_ne!(bob, "default");
+        // Two usable accounts and none chosen: the pool chooses, and the
+        // thread stays on the account it used.
         let listed = accounts(&mut client, 11).await;
         assert_eq!(listed.len(), 2);
-        assert!(listed.iter().all(|account| account["active"] == false));
-        let refused = turn(&mut client, 12, thread).await;
-        assert_eq!(refused["event"], "failed", "{refused}");
-        assert_eq!(refused["error"]["code"], "account_ambiguous", "{refused}");
-        assert!(refused["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("/accounts use"));
+        let active: Vec<&Value> = listed
+            .iter()
+            .filter(|account| account["active"] == true)
+            .collect();
+        assert_eq!(active.len(), 1, "{listed:?}");
+        assert_eq!(active[0]["id"], "default", "the first of equals");
+        assert!(answered_with(&mut client, 12, thread)
+            .await
+            .contains("at-alice"));
 
         let named = request(
             &mut client,
@@ -288,8 +291,10 @@ async fn sign_ins_add_accounts_and_the_provider_uses_the_chosen_one() {
         .await;
         assert_eq!(paused["result"]["account"]["paused"], true, "{paused}");
         assert_eq!(paused["result"]["account"]["active"], false);
-        let refused = turn(&mut client, 19, thread).await;
-        assert_eq!(refused["error"]["code"], "account_paused", "{refused}");
+        // The chosen account is paused: the pool uses the other one.
+        assert!(answered_with(&mut client, 19, thread)
+            .await
+            .contains("at-alice"));
         request(
             &mut client,
             20,
@@ -297,9 +302,44 @@ async fn sign_ins_add_accounts_and_the_provider_uses_the_chosen_one() {
             json!({"provider": "claude", "account": bob, "paused": false}),
         )
         .await;
+        // The thread keeps the account it moved to; a new one gets the
+        // chosen account again.
         assert!(answered_with(&mut client, 21, thread)
             .await
+            .contains("at-alice"));
+        let other = request(&mut client, 28, "thread/start", json!({})).await["result"]
+            ["thread_id"]
+            .as_i64()
+            .unwrap();
+        assert!(answered_with(&mut client, 29, other)
+            .await
             .contains("at-bob"));
+        let alice_only = request(
+            &mut client,
+            30,
+            "accounts/pause",
+            json!({"provider": "claude", "account": "default", "paused": true}),
+        )
+        .await;
+        assert_eq!(alice_only["result"]["account"]["paused"], true);
+        request(
+            &mut client,
+            31,
+            "accounts/pause",
+            json!({"provider": "claude", "account": bob, "paused": true}),
+        )
+        .await;
+        let refused = turn(&mut client, 32, thread).await;
+        assert_eq!(refused["error"]["code"], "account_paused", "{refused}");
+        for (id, account) in [(33, "default"), (34, bob.as_str())] {
+            request(
+                &mut client,
+                id,
+                "accounts/pause",
+                json!({"provider": "claude", "account": account, "paused": false}),
+            )
+            .await;
+        }
 
         let removed = request(
             &mut client,

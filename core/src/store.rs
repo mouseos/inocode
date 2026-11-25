@@ -14,10 +14,11 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::conversation::{AssistantPart, Body, Message};
+pub use crate::store_pool::{PoolBinding, PoolCooldown};
 pub use crate::store_threads::{SessionUsage, ThreadSummary};
 use crate::ErrorInfo;
 
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 11;
 /// Tool results above this size are stored once in `blobs` and referenced.
 const BLOB_THRESHOLD: usize = 16 * 1024;
 /// Text indexed per message; the rest stays readable but unsearchable.
@@ -255,10 +256,38 @@ CREATE TABLE elicitations(
 CREATE INDEX elicitations_session ON elicitations(session_id);
 "#;
 
+/// The account pool (docs/evidence/account-pool.md): which account of a
+/// provider each thread stays on, and the quota cooldowns of accounts, so a
+/// restart neither loses a thread's prompt cache nor sends to an account
+/// that refused on quota until a later time. `kind` is the credential
+/// store's provider name and `account` the account id there.
+const SCHEMA_V11: &str = r#"
+CREATE TABLE pool_affinity(
+    session_id INTEGER NOT NULL,
+    provider TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    account TEXT NOT NULL,
+    bound INTEGER NOT NULL,
+    used INTEGER NOT NULL,
+    PRIMARY KEY(session_id, provider)
+);
+CREATE INDEX pool_affinity_account ON pool_affinity(kind, account);
+CREATE TABLE pool_cooldowns(
+    kind TEXT NOT NULL,
+    account TEXT NOT NULL,
+    until INTEGER NOT NULL,
+    avoid_until INTEGER NOT NULL,
+    since INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    status INTEGER NOT NULL,
+    PRIMARY KEY(kind, account)
+);
+"#;
+
 /// Schema steps; step `i` brings the database to version `i + 1`.
-const MIGRATIONS: [&str; 10] = [
+const MIGRATIONS: [&str; 11] = [
     SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9,
-    SCHEMA_V10,
+    SCHEMA_V10, SCHEMA_V11,
 ];
 
 /// A thread id never given before (`SCHEMA_V10`).
@@ -2435,6 +2464,13 @@ mod migration {
                 row.get::<_, i64>(0)
             })
             .expect("the version 9 table exists");
+        connection
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM pool_affinity) + (SELECT COUNT(*) FROM pool_cooldowns)",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("the version 11 tables exist");
     }
 
     #[test]

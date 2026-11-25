@@ -209,7 +209,7 @@
 | `/models [プロバイダ]` | `models/catalog` |
 | `/login [プロバイダ] [callback・code・device]`・`code 〈番号〉 〈コード〉`・`status 〈番号〉`・`cancel 〈番号〉` | `accounts/login/*`。プロバイダを書かなければこの会話のプロバイダ。結果の `url`（と Muse の `user_code`）を人が開く。`code` は Claude でブラウザがこの機械に戻れないとき。〈番号〉は結果の `login_id` |
 | `/logout [アカウント]` | この会話のプロバイダのアカウントを `accounts/remove` で消す（秘密も消える）。書かなければ、いまそのプロバイダが使っているアカウント |
-| `/accounts`・`list [プロバイダ]`・`use 〈プロバイダ〉 〈アカウント〉`・`pause`・`resume`・`remove 〈プロバイダ〉 〈アカウント〉`・`rename 〈プロバイダ〉 〈アカウント〉 〈別名〉` | `accounts/*`。アカウントは id か別名で書ける。何も付けなければ `list` |
+| `/accounts`・`list [プロバイダ]`・`use 〈プロバイダ〉 〈アカウント〉`・`pause`・`resume`・`remove 〈プロバイダ〉 〈アカウント〉`・`rename 〈プロバイダ〉 〈アカウント〉 〈別名〉`・`priority 〈プロバイダ〉 〈アカウント〉 〈-100〜100〉`・`clear-cooldown 〈プロバイダ〉 〈アカウント〉`・`strategy 〈プロバイダ〉 〈quota・round-robin・fill-first・reset-first〉`・`status [プロバイダ]` | `accounts/*`・`pool/set`（`strategy`）・`pool/status`（`status`）。アカウントは id か別名で書ける。何も付けなければ `list`。プールの中身は `account-pool.md` |
 | `/usage`・`/stats [日数]` | `usage`・`stats/models`。`/stats` の時刻はサーバーの時間帯で数える |
 | `/status` | 会話の概要、モデルとモード、走っているか、この会話の要求のトークンの合計、目標 |
 | `/translate`・`thinking`・`answer`・`service`・`to`・`models [remove …]`・`languages [方式]` | `settings/translation`・`translation/*` |
@@ -237,7 +237,7 @@
 - `/plugins` の外す・有効無効、`/mcp` の有効無効、`/providers` の一覧以外の細かな操作（隠す等）はコマンドに無い。
 - `/model` からのモデルの設定（思考の深さの既定、送る文の翻訳、モデルの言語）は無い。
 - `/status` にアカウントは出さない（アカウントは `/accounts list` で見る）。
-- `/accounts` の優先度とプールの方式は、プールがまだ無いので無い（`account-pool.md`）。
+- `/accounts` からはプールの方式・優先度・クールダウンの解除・状態だけを扱う。`sticky_limit`・`auto_switch_threshold`・`failover_threshold`・`cache_affinity`、アカウントごとの閾値、会話の固定の解除は `pool/set`・`accounts/priority`・`pool/reset_affinity` で行う（`account-pool.md`）。
 - 保留と質問の一覧は、サーバーが動いている間だけ覚えている（再起動で消える）。
 
 ### 道具とコマンドの照合（決まり 6）

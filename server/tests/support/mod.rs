@@ -110,6 +110,8 @@ pub struct MockReply {
     pub chunks: Vec<Vec<u8>>,
     pub head_delay: Duration,
     pub chunk_delay: Duration,
+    /// Response headers besides the content type.
+    pub headers: Vec<(String, String)>,
 }
 
 impl MockReply {
@@ -121,6 +123,7 @@ impl MockReply {
             chunks,
             head_delay: Duration::ZERO,
             chunk_delay: Duration::ZERO,
+            headers: Vec::new(),
         }
     }
 
@@ -131,7 +134,13 @@ impl MockReply {
             chunks: vec![body.as_bytes().to_vec()],
             head_delay: Duration::ZERO,
             chunk_delay: Duration::ZERO,
+            headers: Vec::new(),
         }
+    }
+
+    pub fn with_header(mut self, name: &str, value: &str) -> Self {
+        self.headers.push((name.to_string(), value.to_string()));
+        self
     }
 
     /// Delays the response headers, so the request is answered late.
@@ -265,8 +274,13 @@ async fn write_reply(stream: &mut TcpStream, reply: &MockReply) -> io::Result<()
     if !reply.head_delay.is_zero() {
         tokio::time::sleep(reply.head_delay).await;
     }
+    let extra: String = reply
+        .headers
+        .iter()
+        .map(|(name, value)| format!("{name}: {value}\r\n"))
+        .collect();
     let head = format!(
-        "HTTP/1.1 {} {}\r\ncontent-type: {}\r\nconnection: close\r\n\r\n",
+        "HTTP/1.1 {} {}\r\ncontent-type: {}\r\n{extra}connection: close\r\n\r\n",
         reply.status,
         reason(reply.status),
         reply.content_type

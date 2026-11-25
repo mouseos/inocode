@@ -53,6 +53,14 @@ pub struct AccountInfo {
     /// accounts stored before this was recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub added_ms: Option<u64>,
+    /// The account pool's tier, -100 to 100; higher tiers are used first.
+    /// Absent is 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<i32>,
+    /// The usage percent from which the pool moves away from this account,
+    /// instead of its provider's `pool.auto_switch_threshold`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_switch_threshold: Option<u32>,
 }
 
 /// [`AccountInfo`] by provider, then account.
@@ -1713,6 +1721,8 @@ mod tests {
             paused: true,
             needs_reauth: false,
             added_ms: Some(5),
+            priority: Some(-3),
+            auto_switch_threshold: Some(90),
         };
         {
             let _lock = lock_store(&path).unwrap();

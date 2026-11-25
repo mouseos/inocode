@@ -447,8 +447,8 @@ async fn login_command(provider: Option<&str>, option: Option<&str>) -> io::Resu
     let accounts = Store::load(path).map_err(io::Error::other)?.accounts(name);
     if accounts.len() > 1 {
         println!(
-            "{name} has {} accounts; a provider without an active account cannot choose \
-             among them: choose one with accounts/use or /accounts use",
+            "{name} has {} accounts; the provider's pool chooses among them for each \
+             request (/accounts status shows how), unless /accounts use prefers one",
             accounts.len()
         );
     }
