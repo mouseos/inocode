@@ -14,6 +14,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::conversation::{AssistantPart, Body, Message};
+pub use crate::store_threads::{SessionUsage, ThreadSummary};
 use crate::ErrorInfo;
 
 const SCHEMA_VERSION: i64 = 9;
@@ -431,6 +432,13 @@ pub struct Store {
     inner: Arc<Inner>,
 }
 
+/// A question of an MCP server waiting for the person.
+struct Waiting {
+    session: SessionId,
+    question: serde_json::Value,
+    answer: tokio::sync::oneshot::Sender<serde_json::Value>,
+}
+
 struct Inner {
     path: PathBuf,
     writer: Mutex<Connection>,
@@ -440,8 +448,8 @@ struct Inner {
     /// dropped.
     mcp: tokio::sync::Mutex<Option<Arc<crate::mcp::Tools>>>,
     /// Questions of MCP servers waiting for the person's answer, by id, with
-    /// the thread whose turn asked.
-    elicitations: Mutex<HashMap<u64, (SessionId, tokio::sync::oneshot::Sender<serde_json::Value>)>>,
+    /// the thread whose turn asked and the question as it was reported.
+    elicitations: Mutex<HashMap<u64, Waiting>>,
     next_elicitation: std::sync::atomic::AtomicU64,
 }
 
@@ -463,7 +471,8 @@ impl Store {
     }
 
     /// Registers a question of an MCP server for the person: its id, and
-    /// where the answer arrives.
+    /// where the answer arrives. [`Self::describe_elicitation`] keeps the
+    /// question as reported, for listing.
     pub(crate) fn wait_elicitation(
         &self,
         session: SessionId,
@@ -478,8 +487,44 @@ impl Store {
             .elicitations
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .insert(id, (session, sender));
+            .insert(
+                id,
+                Waiting {
+                    session,
+                    question: serde_json::Value::Null,
+                    answer: sender,
+                },
+            );
         (id, receiver)
+    }
+
+    pub(crate) fn describe_elicitation(&self, id: u64, question: serde_json::Value) {
+        if let Some(waiting) = self
+            .inner
+            .elicitations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get_mut(&id)
+        {
+            waiting.question = question;
+        }
+    }
+
+    /// The questions of MCP servers that `session`'s turn waits on, oldest
+    /// first.
+    pub(crate) fn elicitations(&self, session: SessionId) -> Vec<(u64, serde_json::Value)> {
+        let waiting = self
+            .inner
+            .elicitations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut found: Vec<(u64, serde_json::Value)> = waiting
+            .iter()
+            .filter(|(_, waiting)| waiting.session == session)
+            .map(|(id, waiting)| (*id, waiting.question.clone()))
+            .collect();
+        found.sort_by_key(|(id, _)| *id);
+        found
     }
 
     /// Drops a question that is no longer waited for.
@@ -505,11 +550,11 @@ impl Store {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         match waiting.get(&id) {
-            Some((asked, _)) if *asked == session => {}
+            Some(asked) if asked.session == session => {}
             _ => return false,
         }
-        let (_, sender) = waiting.remove(&id).expect("checked above");
-        sender.send(answer).is_ok()
+        let asked = waiting.remove(&id).expect("checked above");
+        asked.answer.send(answer).is_ok()
     }
 
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, ErrorInfo> {

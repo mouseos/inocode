@@ -230,7 +230,7 @@ async fn install_from(
             servers.join(", ")
         ),
     });
-    let unused: Vec<&str> = ["commands", "agents", "hooks"]
+    let unused: Vec<&str> = ["agents", "hooks"]
         .into_iter()
         .filter(|part| target.join(part).exists())
         .collect();
@@ -592,6 +592,25 @@ impl Installed {
     pub(crate) fn root(&self) -> &Path {
         &self.root
     }
+
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Its commands for the person: each `commands/<name>.md`, by name.
+    pub(crate) fn commands(&self) -> Vec<(String, PathBuf)> {
+        let Ok(found) = std::fs::read_dir(self.root.join("commands")) else {
+            return Vec::new();
+        };
+        let mut commands: Vec<(String, PathBuf)> = found
+            .flatten()
+            .map(|item| item.path())
+            .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "md"))
+            .filter_map(|path| Some((path.file_stem()?.to_str()?.to_string(), path)))
+            .collect();
+        commands.sort();
+        commands
+    }
 }
 
 fn read_json(path: Option<PathBuf>) -> Value {
@@ -840,7 +859,7 @@ mod tests {
             .expect("install");
         assert!(installed.contains("notes:write-note"), "{installed}");
         assert!(installed.contains("plugin_notes_store"), "{installed}");
-        assert!(installed.contains("Not used here: commands"), "{installed}");
+        assert!(!installed.contains("Not used here"), "{installed}");
         install_from(&root, &catalogs, r#"{"plugin": "linter@test-catalog"}"#)
             .await
             .expect("install from a url");

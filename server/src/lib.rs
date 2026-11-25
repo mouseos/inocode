@@ -261,6 +261,41 @@ async fn dispatch(
             true
         }
         "cancel" => cancel(request, stream_id, queue, in_flight).await,
+        "command/run" => {
+            // Commands read files and the store, and some start a turn.
+            tokio::spawn(run_command(
+                request,
+                stream_id,
+                Arc::clone(core),
+                queue.clone(),
+                Arc::clone(in_flight),
+            ));
+            true
+        }
+        "commands/list" | "thread/list" => {
+            // Store and plugin files: off the read loop like the store requests.
+            let (id, core, queue) = (request.id, Arc::clone(core), queue.clone());
+            tokio::spawn(async move {
+                let params = request.params.clone().unwrap_or_else(|| json!({}));
+                let result = if request.method == "commands/list" {
+                    match params.get("thread_id") {
+                        None | Some(Value::Null) => core.commands(None).await,
+                        Some(_) => match request.thread() {
+                            Ok(thread) => core.commands(Some(thread)).await,
+                            Err(error) => Err(error),
+                        },
+                    }
+                } else {
+                    list_threads(&params, &core).await
+                };
+                let payload = match result {
+                    Ok(result) => json!({ "id": id, "result": result }),
+                    Err(error) => json!({ "id": id, "error": error }),
+                };
+                let _ = send(&queue, stream_id, payload).await;
+            });
+            true
+        }
         "models/catalog" => {
             // Fetches prices and scores: off the read loop, like discovery.
             let (id, core, queue) = (request.id, Arc::clone(core), queue.clone());
@@ -549,6 +584,121 @@ async fn read_thread(request: &Request, core: &Core) -> Result<Value, ErrorInfo>
         })
         .collect();
     Ok(json!({ "messages": messages }))
+}
+
+/// `thread/list`: `project`, a project's key, and `limit` (100 when absent,
+/// at most 1,000).
+async fn list_threads(params: &Value, core: &Core) -> Result<Value, ErrorInfo> {
+    let project = match params.get("project") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(project)) if !project.is_empty() => Some(project.as_str()),
+        Some(_) => {
+            return Err(ErrorInfo::new(
+                "invalid_params",
+                "\"project\" must be a non-empty string",
+            ))
+        }
+    };
+    let limit = match params.get("limit") {
+        None | Some(Value::Null) => READ_DEFAULT_LIMIT,
+        Some(value) => value
+            .as_u64()
+            .filter(|limit| (1..=READ_MAX_LIMIT).contains(limit))
+            .ok_or_else(|| {
+                ErrorInfo::new(
+                    "invalid_params",
+                    format!("\"limit\" must be 1 to {READ_MAX_LIMIT}"),
+                )
+            })?,
+    };
+    core.threads(project, limit as usize).await
+}
+
+/// `command/run`: `thread_id`, and the command as typed in `text`
+/// (`"/goal fix the tests"`) or as `name` and `args`. A command that gives
+/// a result is answered with it; one that starts a turn sends a `command`
+/// event with what it did, then the turn's events as `turn/start` does.
+async fn run_command(
+    request: Request,
+    stream_id: u64,
+    core: Arc<Core>,
+    queue: mpsc::Sender<Outgoing>,
+    in_flight: InFlight,
+) {
+    let id = request.id;
+    let failed = |error: inocode_core::commands::CommandError| {
+        let mut error_value = json!(error.error);
+        if let Some(when) = error.when {
+            error_value["when"] = json!(when);
+        }
+        json!({ "id": id, "error": error_value })
+    };
+    let params = request.params.clone().unwrap_or_else(|| json!({}));
+    let parsed = request.thread().and_then(|thread| {
+        let (name, args) = match (&params["text"], &params["name"]) {
+            (Value::String(text), _) => inocode_core::commands::split(text)?,
+            (_, Value::String(name)) => {
+                let args = match &params["args"] {
+                    Value::Null => String::new(),
+                    Value::String(args) => args.clone(),
+                    _ => {
+                        return Err(ErrorInfo::new(
+                            "invalid_params",
+                            "\"args\" must be a string",
+                        ))
+                    }
+                };
+                (name.clone(), args)
+            }
+            _ => {
+                return Err(ErrorInfo::new(
+                    "invalid_params",
+                    "requires a \"text\" string, or a \"name\" string with \"args\"",
+                ))
+            }
+        };
+        Ok((thread, name, args))
+    });
+    let (thread, name, args) = match parsed {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            let _ = send(&queue, stream_id, failed(error.into())).await;
+            return;
+        }
+    };
+    let start = match core.run_command(thread, &name, &args).await {
+        Ok(inocode_core::commands::Ran::Result(result)) => {
+            let _ = send(&queue, stream_id, json!({ "id": id, "result": result })).await;
+            return;
+        }
+        Ok(inocode_core::commands::Ran::Turn(start)) => start,
+        Err(error) => {
+            let _ = send(&queue, stream_id, failed(error)).await;
+            return;
+        }
+    };
+    let mut pending = in_flight.lock().await;
+    if pending.contains_key(&id) {
+        drop(pending);
+        let error = ErrorInfo::new("duplicate_id", "request id is already in flight");
+        let _ = send_event(&queue, stream_id, EventPayload::failed(id, error)).await;
+        return;
+    }
+    let (cancel_tx, cancel_rx) = watch::channel(false);
+    pending.insert(id, Generation::Running(cancel_tx));
+    drop(pending);
+    let _ = send_event(&queue, stream_id, EventPayload::command(id, start.result)).await;
+    run_turn(
+        id,
+        thread,
+        ((start.prompt, start.reply_to), (start.approvals, false)),
+        stream_id,
+        core,
+        queue,
+        in_flight,
+        cancel_rx,
+    )
+    .await;
 }
 
 async fn model_stats(

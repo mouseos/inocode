@@ -387,6 +387,7 @@ async fn ask_person(
         "requestedSchema": schema,
         "questions": questions_of(&schema),
     });
+    store.describe_elicitation(id, question.clone());
     if asking
         .events
         .send(crate::turn::TurnEvent::Elicitation(question))
@@ -531,6 +532,46 @@ impl Source {
 
 /// The servers of `config`, of the plugins installed under `plugins` and the
 /// connectors of the accounts signed in at `accounts`, started.
+/// The servers `mcp.json` names and those of the installed plugins, with
+/// how each is reached, and the tools of the servers already started.
+/// Nothing is started: servers start at a turn's first use.
+pub(crate) async fn listed(store: &Store) -> Value {
+    let mut config = configured(&store.files_folder().with_file_name("mcp.json"));
+    let shown = |name: String, settings: &ServerConfig, plugin: Option<&str>| {
+        json!({
+            "name": name,
+            "command": settings.command,
+            "args": settings.args,
+            "url": settings.url,
+            "plugin": plugin,
+        })
+    };
+    let mut servers: Vec<Value> = std::mem::take(&mut config.servers)
+        .into_iter()
+        .map(|(name, settings)| shown(name, &settings, None))
+        .collect();
+    for plugin in crate::plugins::Installed::all(&crate::plugins::folder(store)) {
+        for (name, settings) in plugin.servers() {
+            if let Ok(settings) = serde_json::from_value::<ServerConfig>(settings) {
+                servers.push(shown(name, &settings, Some(plugin.name())));
+            }
+        }
+    }
+    let tools: Option<Vec<String>> = store
+        .mcp()
+        .lock()
+        .await
+        .as_ref()
+        .map(|tools| tools.specs.iter().map(|spec| spec.name.clone()).collect());
+    let connectors: Value = config
+        .connectors
+        .iter()
+        .map(|(name, setting)| (name.clone(), json!(setting.enabled)))
+        .collect::<serde_json::Map<_, _>>()
+        .into();
+    json!({ "servers": servers, "started": tools.is_some(), "tools": tools, "connectors": connectors })
+}
+
 async fn load(
     config: &Path,
     accounts: &Path,

@@ -180,6 +180,9 @@ pub struct Models {
     /// (docs/evidence/goal-command.md).
     pub checker: Option<std::sync::Arc<Llm>>,
     pub colleague: Option<std::sync::Arc<Llm>>,
+    /// An approval mode the person chose while the turn runs, used from
+    /// the next request on.
+    pub mode: watch::Receiver<Option<Mode>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1499,6 +1502,7 @@ pub async fn run(
     drop(llm);
     let ending = steps(
         models.main,
+        models.mode,
         &mut thread,
         prompt,
         &mut steer,
@@ -1528,6 +1532,62 @@ pub async fn run(
         held: thread.held,
         questions,
     }
+}
+
+/// Compacts the history of `session` now, as the turn does near the end of
+/// `llm`'s context window: the history is treated as filling the window
+/// (or its estimated size when larger), so the older part is replaced by a
+/// summary and the recent part kept. Returns the stored compaction
+/// message's position; `None` when nothing could be replaced.
+pub(crate) async fn compact_now(
+    llm: &Llm,
+    compactor: Option<&Llm>,
+    store: &Store,
+    session: SessionId,
+) -> Result<Option<i64>, ErrorInfo> {
+    let window = llm.context_window().await.ok_or_else(|| {
+        ErrorInfo::new(
+            "unavailable",
+            "the model's context window is not known, so what to keep cannot be chosen",
+        )
+    })?;
+    let (events, _) = mpsc::channel(1);
+    let (_keep, cancel) = watch::channel(false);
+    let mut thread = open(store, session, "", Approvals::default(), cancel, events).await?;
+    let tools = agent_tools::specs(thread.sandboxed());
+    let bytes = compaction::request_bytes(
+        thread.conversation.system.as_deref(),
+        &thread.conversation.messages,
+        &tools,
+    );
+    let ratio = llm
+        .bytes_per_token(session.0)
+        .unwrap_or(compaction::FALLBACK_BYTES_PER_TOKEN);
+    let input = compaction::tokens(bytes, ratio).max(window);
+    let sent: Vec<(i64, Message)> = thread
+        .seqs
+        .iter()
+        .copied()
+        .zip(thread.conversation.messages.iter().cloned())
+        .collect();
+    let compacted = compaction::compact(
+        llm,
+        compactor,
+        thread.conversation.system.clone(),
+        &sent,
+        &tools,
+        input,
+        window,
+    )
+    .await;
+    let Some((body, records)) = compacted else {
+        return Ok(None);
+    };
+    if let Err(error) = store.log_requests(session, &records).await {
+        eprintln!("inocode: the requests were not logged: {}", error.message);
+    }
+    thread.record(vec![body]).await?;
+    Ok(thread.seqs.last().copied())
 }
 
 async fn open<'a>(
@@ -1607,6 +1667,7 @@ async fn open<'a>(
 
 async fn steps(
     main: watch::Receiver<std::sync::Arc<Llm>>,
+    mut mode: watch::Receiver<Option<Mode>>,
     thread: &mut Thread<'_>,
     prompt: Prompt,
     steer: &mut mpsc::UnboundedReceiver<String>,
@@ -1644,6 +1705,11 @@ async fn steps(
     }
     let mut cuts = 0;
     loop {
+        if mode.has_changed().unwrap_or(false) {
+            if let Some(chosen) = *mode.borrow_and_update() {
+                thread.mode = chosen;
+            }
+        }
         let llm = main.borrow().clone();
         let llm = llm.as_ref();
         // MCP tools found by a search are offered from the next request on.

@@ -13,6 +13,7 @@ mod camera;
 mod camera_mode;
 pub mod catalog;
 mod colleague;
+pub mod commands;
 mod compaction;
 mod connectors;
 pub mod conversation;
@@ -44,6 +45,7 @@ pub mod settings;
 mod shell;
 mod sse;
 pub mod store;
+mod store_threads;
 mod transcribe;
 pub mod translate;
 pub mod turn;
@@ -329,6 +331,9 @@ pub struct EventPayload {
     /// Questions of a turn for the person, from `ask`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub questions: Option<Vec<turn::Asked>>,
+    /// What a `command/run` that starts a turn did before the turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<Value>,
 }
 
 fn translation_service(name: &str) -> Result<translate::Service, ErrorInfo> {
@@ -367,6 +372,15 @@ impl EventPayload {
             text: Some(piece.text),
             error: piece.error,
             ..Self::new(id, "thinking_translation")
+        }
+    }
+
+    /// The result of a command that goes on with a turn; the turn's
+    /// events follow.
+    pub fn command(id: u64, result: Value) -> Self {
+        Self {
+            result: Some(result),
+            ..Self::new(id, "command")
         }
     }
 
@@ -428,6 +442,7 @@ impl EventPayload {
             elicitation: None,
             held: None,
             questions: None,
+            result: None,
         }
     }
 }
@@ -446,12 +461,22 @@ enum Provider {
 struct Running {
     steer: mpsc::UnboundedSender<String>,
     model: watch::Sender<Arc<Llm>>,
+    mode: watch::Sender<Option<turn::Mode>>,
 }
 
 /// What [`Core::begin_turn`] claimed for [`Core::run_turn`].
 pub struct Claim {
     steer: mpsc::UnboundedReceiver<String>,
     model: watch::Receiver<Arc<Llm>>,
+    mode: watch::Receiver<Option<turn::Mode>>,
+}
+
+/// What the latest turn of a thread left for the person: the calls held
+/// for approval and the questions asked. Kept while the server runs.
+#[derive(Debug, Clone, Default)]
+struct Waiting {
+    held: Vec<turn::Held>,
+    questions: Vec<turn::Asked>,
 }
 
 /// What a thread chose to run on, as stored; an absent field follows
@@ -538,6 +563,7 @@ pub struct Core {
     /// Clients by everything that made them, so a changed provider gets a
     /// new one and an unchanged one keeps its connections and check-in.
     clients: Mutex<HashMap<String, Arc<Llm>>>,
+    waiting: Mutex<HashMap<SessionId, Waiting>>,
 }
 
 impl Default for Core {
@@ -571,6 +597,7 @@ impl Core {
             turns: Mutex::new(HashMap::new()),
             credentials: None,
             clients: Mutex::new(HashMap::new()),
+            waiting: Mutex::new(HashMap::new()),
         }
     }
 
@@ -766,6 +793,7 @@ impl Core {
         conversation: &Choice,
         mode: turn::Mode,
         main: watch::Receiver<Arc<Llm>>,
+        chosen_mode: watch::Receiver<Option<turn::Mode>>,
     ) -> Result<turn::Models, ErrorInfo> {
         let settings = self.settings().await?;
         let current = main.borrow().clone();
@@ -822,6 +850,7 @@ impl Core {
             checker: self.role_client(&settings, conversation, roles.check.as_ref(), &current)?,
             colleague,
             main,
+            mode: chosen_mode,
         })
     }
 
@@ -962,14 +991,23 @@ impl Core {
         }
         let (steer_sender, steer) = mpsc::unbounded_channel();
         let (model_sender, model) = watch::channel(model);
+        let (mode_sender, mode) = watch::channel(None);
         turns.insert(
             thread,
             Running {
                 steer: steer_sender,
                 model: model_sender,
+                mode: mode_sender,
             },
         );
-        Ok(Claim { steer, model })
+        Ok(Claim { steer, model, mode })
+    }
+
+    /// Whether a turn of `thread` runs.
+    pub fn turn_running(&self, thread: SessionId) -> bool {
+        self.turns
+            .lock()
+            .is_ok_and(|turns| turns.contains_key(&thread))
     }
 
     pub fn end_turn(&self, thread: SessionId) {
@@ -1101,10 +1139,14 @@ impl Core {
         let text = serde_json::to_string(&chosen)
             .map_err(|error| ErrorInfo::new("internal", error.to_string()))?;
         self.store()?.set_thread_settings(thread, text).await?;
-        if let Some(client) = client {
-            if let Ok(turns) = self.turns.lock() {
-                if let Some(running) = turns.get(&thread) {
+        if let Ok(turns) = self.turns.lock() {
+            if let Some(running) = turns.get(&thread) {
+                if let Some(client) = client {
                     running.model.send_replace(client);
+                }
+                if patch.contains_key("mode") {
+                    let mode = chosen.mode.as_deref().and_then(turn::Mode::parse);
+                    running.mode.send_replace(Some(mode.unwrap_or_default()));
                 }
             }
         }
@@ -1434,7 +1476,7 @@ impl Core {
             (Err(error), _) | (_, Err(error)) => return failed(error),
         };
         let models = match self
-            .helpers(&conversation, approvals.mode, claim.model)
+            .helpers(&conversation, approvals.mode, claim.model, claim.mode)
             .await
         {
             Ok(models) => models,
@@ -1444,7 +1486,7 @@ impl Core {
             text: prompt,
             reply_to,
         };
-        turn::run(
+        let outcome = turn::run(
             models,
             store,
             thread,
@@ -1454,7 +1496,16 @@ impl Core {
             cancel,
             events,
         )
-        .await
+        .await;
+        let waiting = Waiting {
+            held: outcome.held.clone(),
+            questions: outcome.questions.clone(),
+        };
+        self.waiting
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(thread, waiting);
+        outcome
     }
 
     /// Lists the models of the provider `provider`, or of the provider of
