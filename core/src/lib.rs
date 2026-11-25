@@ -1192,11 +1192,103 @@ impl Core {
 
     /// The configured provider's models with their prices, benchmark scores
     /// and measured speed (docs/evidence/model-catalog.md).
-    pub async fn model_catalog(&self) -> Result<catalog::Catalog, ErrorInfo> {
+    /// The models of every usable provider (or only `provider`), with
+    /// prices, scores and measured speed. Hidden providers and models are
+    /// left out unless `include_hidden`, then marked. A provider whose list
+    /// cannot be had is given with its error instead of failing the rest.
+    pub async fn model_catalog(
+        &self,
+        provider: Option<&str>,
+        include_hidden: bool,
+    ) -> Result<Value, ErrorInfo> {
         let store = self.store()?;
-        let llm = self.default_client().await?;
-        let models = llm.models().await?;
-        Ok(catalog::build(&llm, store, models).await)
+        let settings = self.settings().await?;
+        if let Some(id) = provider {
+            if settings.provider(id).is_none() {
+                return Err(ErrorInfo::new(
+                    "invalid_params",
+                    format!("unknown provider {id}"),
+                ));
+            }
+        }
+        let mut listed = Vec::new();
+        let mut sources = Vec::new();
+        for (id, entry) in settings.providers.iter().flatten() {
+            if entry.disabled
+                || provider.is_some_and(|wanted| wanted != id)
+                || (entry.hidden && !include_hidden)
+            {
+                continue;
+            }
+            let choice = Choice {
+                provider: Some(id.clone()),
+                ..Choice::default()
+            };
+            let built = async {
+                let llm = self.client(&settings, &choice)?;
+                let models = match &entry.models {
+                    Some(models) => models.iter().map(|model| listed_model(model)).collect(),
+                    None => llm.models().await?,
+                };
+                Ok::<_, ErrorInfo>(catalog::build(&llm, store, models).await)
+            }
+            .await;
+            let mut shown = json!({
+                "id": id,
+                "kind": entry.kind.name(),
+                "hidden": entry.hidden,
+            });
+            match built {
+                Ok(catalog) => {
+                    let models: Vec<Value> = catalog
+                        .models
+                        .iter()
+                        .filter_map(|model| {
+                            let hidden = entry.hidden_models.contains(&model.id);
+                            if hidden && !include_hidden {
+                                return None;
+                            }
+                            let mut value = serde_json::to_value(model).ok()?;
+                            value["hidden"] = Value::Bool(hidden);
+                            Some(value)
+                        })
+                        .collect();
+                    shown["models"] = Value::from(models);
+                    shown["plan"] = json!(catalog.plan);
+                    shown["stale"] = Value::Bool(catalog.stale);
+                    for source in catalog.sources {
+                        if !sources.contains(&source) {
+                            sources.push(source);
+                        }
+                    }
+                }
+                Err(error) => shown["error"] = json!(error),
+            }
+            listed.push(shown);
+        }
+        Ok(json!({ "providers": listed, "sources": sources }))
+    }
+
+    /// Hides or shows one model of a provider in the lists shown for
+    /// choosing: `{provider, model, hidden}`.
+    pub async fn set_model_visibility(&self, params: &Value) -> Result<Value, ErrorInfo> {
+        let text = |name: &str| {
+            params[name].as_str().ok_or_else(|| {
+                ErrorInfo::new("invalid_params", format!("\"{name}\" must be a string"))
+            })
+        };
+        let hidden = params["hidden"]
+            .as_bool()
+            .ok_or_else(|| ErrorInfo::new("invalid_params", "\"hidden\" must be true or false"))?;
+        let provider = settings::set_model_hidden(
+            &self.settings_path()?,
+            text("provider")?,
+            text("model")?,
+            hidden,
+        )
+        .await
+        .map_err(|error| ErrorInfo::new("invalid_params", error))?;
+        Ok(json!({ "hidden_models": provider.hidden_models }))
     }
 
     /// Writes `patch` into the translation settings beside the database

@@ -534,3 +534,62 @@ async fn without_a_provider_a_turn_says_how_to_add_one() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn providers_and_models_are_hidden_from_the_lists_and_shown_again() {
+    with_timeout(async {
+        let mock = mock(0, Vec::new()).await;
+        let folder = folder();
+        let mut settings = mock_settings(&mock);
+        settings["providers"]["listed"] =
+            json!({"kind": "openai", "base_url": mock.base_url, "models": ["x", "y"]});
+        let core = core_with(&folder, settings).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+
+        let hidden = request(
+            &mut client,
+            1,
+            "models/visibility",
+            json!({"provider": "listed", "model": "y", "hidden": true}),
+        )
+        .await;
+        assert_eq!(hidden["result"]["hidden_models"], json!(["y"]), "{hidden}");
+        let provider = request(
+            &mut client,
+            2,
+            "providers/update",
+            json!({"id": "mock", "hidden": true}),
+        )
+        .await;
+        assert_eq!(provider["result"]["provider"]["hidden"], true, "{provider}");
+
+        let written: Value = serde_json::from_str(
+            &std::fs::read_to_string(folder.join("settings.json")).expect("settings"),
+        )
+        .expect("json");
+        assert_eq!(
+            written["providers"]["listed"]["hidden_models"],
+            json!(["y"])
+        );
+        assert_eq!(written["providers"]["mock"]["hidden"], true);
+
+        let shown = request(
+            &mut client,
+            3,
+            "models/visibility",
+            json!({"provider": "listed", "model": "y", "hidden": false}),
+        )
+        .await;
+        assert_eq!(shown["result"]["hidden_models"], json!([]), "{shown}");
+        let refused = request(
+            &mut client,
+            4,
+            "models/visibility",
+            json!({"provider": "nope", "model": "y", "hidden": true}),
+        )
+        .await;
+        assert_eq!(refused["error"]["code"], "invalid_params", "{refused}");
+    })
+    .await;
+}

@@ -369,3 +369,64 @@ async fn logfare_messages_stream_event_kinds() {
     })
     .await;
 }
+
+/// The catalog lists the models of every signed-in provider on this
+/// machine, leaves out a hidden provider and a hidden model, and marks them
+/// when asked to include them. Lists models only; no model is called.
+#[tokio::test]
+#[ignore = "requires the signed-in accounts of this machine; run by hand"]
+async fn the_catalog_lists_every_provider_and_honours_hiding() {
+    with_timeout_of(LIVE_TIMEOUT, async {
+        let folder = std::env::temp_dir().join(format!("inocode-live-catalog-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).expect("folder");
+        std::fs::write(
+            folder.join("settings.json"),
+            json!({"providers": {
+                "claude": {"kind": "claude-oauth"},
+                "gpt": {"kind": "gpt-oauth", "hidden_models": ["gpt-6-luna"]},
+                "muse": {"kind": "muse-code", "hidden": true},
+                "deepai": {"kind": "deepai"},
+            }, "default": {"provider": "claude"}})
+            .to_string(),
+        )
+        .expect("settings");
+        let store = inocode_core::store::Store::open(folder.join("inocode.db"))
+            .await
+            .expect("store");
+        let core = inocode_core::Core::new().with_store(store);
+        for include_hidden in [false, true] {
+            let catalog = core.model_catalog(None, include_hidden).await.expect("catalog");
+            for provider in catalog["providers"].as_array().expect("providers") {
+                let models = provider["models"].as_array().map_or(0, Vec::len);
+                let hidden: Vec<&str> = provider["models"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|model| model["hidden"] == true)
+                    .filter_map(|model| model["id"].as_str())
+                    .collect();
+                println!(
+                    "include_hidden={include_hidden} provider={} hidden={} models={models} hidden_models={hidden:?} error={}",
+                    provider["id"], provider["hidden"], provider["error"]
+                );
+            }
+            let ids: Vec<&str> = catalog["providers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|provider| provider["id"].as_str())
+                .collect();
+            assert_eq!(ids.contains(&"muse"), include_hidden, "{ids:?}");
+            let luna = catalog["providers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|provider| provider["id"] == "gpt")
+                .flat_map(|provider| provider["models"].as_array().cloned().unwrap_or_default())
+                .any(|model| model["id"] == "gpt-6-luna");
+            assert_eq!(luna, include_hidden);
+        }
+        let _ = std::fs::remove_dir_all(&folder);
+    })
+    .await;
+}

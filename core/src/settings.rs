@@ -236,6 +236,12 @@ pub struct Provider {
     pub translation: Option<OutgoingTranslation>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub disabled: bool,
+    /// Left out of the model lists shown for choosing; still usable.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
+    /// Models of this provider left out of those lists; still usable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hidden_models: Vec<String>,
     /// The `client_version` the ChatGPT models endpoint is asked as.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_version: Option<String>,
@@ -251,6 +257,8 @@ impl Provider {
             reasoning: ReasoningDefault::default(),
             translation: None,
             disabled: false,
+            hidden: false,
+            hidden_models: Vec::new(),
             client_version: None,
         }
     }
@@ -593,6 +601,45 @@ pub async fn update_provider(path: &Path, id: &str, patch: &Value) -> Result<Pro
             } else {
                 entry.insert(name.clone(), field.clone());
             }
+        }
+        serde_json::from_value(Value::Object(entry.clone()))
+            .map_err(|error| format!("provider {id}: {error}"))
+    })
+    .await
+}
+
+/// Hides or shows the model `model` of the provider `id` in the lists
+/// shown for choosing.
+pub async fn set_model_hidden(
+    path: &Path,
+    id: &str,
+    model: &str,
+    hidden: bool,
+) -> Result<Provider, String> {
+    edit_settings(path, |file| {
+        let entry = providers_of(file)?
+            .get_mut(id)
+            .ok_or_else(|| format!("no provider has the id {id}"))?
+            .as_object_mut()
+            .ok_or_else(|| format!("provider {id} is not an object"))?;
+        let mut models: Vec<String> = entry
+            .get("hidden_models")
+            .and_then(Value::as_array)
+            .map(|models| {
+                models
+                    .iter()
+                    .filter_map(|model| model.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        models.retain(|kept| kept != model);
+        if hidden {
+            models.push(model.to_string());
+        }
+        if models.is_empty() {
+            entry.remove("hidden_models");
+        } else {
+            entry.insert("hidden_models".into(), Value::from(models));
         }
         serde_json::from_value(Value::Object(entry.clone()))
             .map_err(|error| format!("provider {id}: {error}"))

@@ -248,7 +248,8 @@ async fn dispatch(
             true
         }
         "providers/list" | "providers/add" | "providers/update" | "providers/remove"
-        | "models/list" | "thread/settings" | "settings/get" | "settings/set" => {
+        | "models/list" | "models/visibility" | "thread/settings" | "settings/get"
+        | "settings/set" => {
             // Settings and credential files, and for models/list an HTTP
             // round trip: off the read loop like the store requests.
             tokio::spawn(settings_request(
@@ -264,7 +265,10 @@ async fn dispatch(
             // Fetches prices and scores: off the read loop, like discovery.
             let (id, core, queue) = (request.id, Arc::clone(core), queue.clone());
             tokio::spawn(async move {
-                let payload = match core.model_catalog().await {
+                let params = request.params.clone().unwrap_or_else(|| json!({}));
+                let provider = params["provider"].as_str();
+                let include_hidden = params["include_hidden"].as_bool().unwrap_or(false);
+                let payload = match core.model_catalog(provider, include_hidden).await {
                     Ok(catalog) => json!({ "id": id, "result": catalog }),
                     Err(error) => json!({ "id": id, "error": error }),
                 };
@@ -410,6 +414,7 @@ async fn settings_request(
             "providers/remove" => core.remove_provider(&params).await,
             "settings/get" => core.get_settings().await,
             "settings/set" => core.set_settings(&params).await,
+            "models/visibility" => core.set_model_visibility(&params).await,
             // `thread/settings` with nothing but the thread reads; any
             // other field is a change.
             _ => match request.thread() {

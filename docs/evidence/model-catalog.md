@@ -27,6 +27,9 @@
   - `speed_tiers`（`fast`・`flex`）、`access_programs`（Daybreak など）、`theos_per_request`、`context_window`。
   - `badge`：Claude のサインインのとき、Claude のモデル一覧がそのモデルに付けるバッジ。Claude が送った形のまま（例：`message` が "CVP: Defense Access"）。
   - 全体に `plan`（Claude のサインインのときのプラン）、`sources`（出典と使用許諾）、`stale`（取得に失敗して古い写しを使ったとき）。
+- 全プロバイダ：`models/catalog` は、設定に登録された全プロバイダ（使えなくした `disabled` を除く）のモデルを、プロバイダごとに返す（`{providers: [{id, kind, hidden, models, plan, stale, error}], sources}`）。`{provider}` で 1 つに絞れる。一覧を取れないプロバイダは `error` を付けて返し、ほかは返す（ユーザー：「モデルは全プロバイダ返さないと意味がない。ただしプロバイダごとの表示非表示、モデルごとの表示非表示は設定できるようにして」、2026-11-25）。
+- 表示・非表示：プロバイダの `hidden`（`providers/update`）、モデルごとの `hidden_models`（`models/visibility` `{provider, model, hidden}`）。非表示は一覧から外すだけで、使えなくはしない。`{include_hidden: true}` なら外さずに `hidden: true` を付けて返す。
+- 本物での確認（2026-11-25、`live_api::the_catalog_lists_every_provider_and_honours_hiding`、モデルは呼ばず一覧だけ）：claude-oauth 17、deepai 28、gpt-oauth 10（`gpt-6-luna` を非表示にしたので、含めると 11）。muse-code（非表示にしたプロバイダ）は既定では返らず、含めると 13。
 - 取得した写しは `<名前>.files/catalog/` に保存し（一時ファイルに書いてから名前を変える）、期限内はそれを使う。取得に失敗したら古い写しを使う。
 - 照合は旧版の方式の一部（提供元の対応表、小文字と `.`・`-` の同一視、`provider/` の除去、日付の除去）。
 
