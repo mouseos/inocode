@@ -675,9 +675,21 @@ fn providers_of(file: &mut Map<String, Value>) -> Result<&mut Map<String, Value>
         .ok_or_else(|| "\"providers\" is not an object".to_string())
 }
 
+/// Translating what is sent is not implemented, so it is refused rather
+/// than kept as if it worked.
+fn refuse_outgoing(id: &str, provider: &Provider) -> Result<(), String> {
+    match &provider.translation {
+        Some(translation) if translation.outgoing => Err(format!(
+            "provider {id}: \"translation.outgoing\" is not implemented"
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// Adds the provider `id`; an id already in use is refused.
 pub async fn add_provider(path: &Path, id: &str, provider: &Provider) -> Result<(), String> {
     check_id(id)?;
+    refuse_outgoing(id, provider)?;
     let value = serde_json::to_value(provider).map_err(|error| error.to_string())?;
     edit_settings(path, |file| {
         let providers = providers_of(file)?;
@@ -707,8 +719,10 @@ pub async fn update_provider(path: &Path, id: &str, patch: &Value) -> Result<Pro
                 entry.insert(name.clone(), field.clone());
             }
         }
-        serde_json::from_value(Value::Object(entry.clone()))
-            .map_err(|error| format!("provider {id}: {error}"))
+        let provider: Provider = serde_json::from_value(Value::Object(entry.clone()))
+            .map_err(|error| format!("provider {id}: {error}"))?;
+        refuse_outgoing(id, &provider)?;
+        Ok(provider)
     })
     .await
 }

@@ -2447,21 +2447,15 @@ impl Core {
 
     async fn translate(&self, sub: Option<&str>, values: &[String]) -> Result<Value, ErrorInfo> {
         let value = |index: usize| values.get(index).map(String::as_str);
-        let path = self.settings_path()?;
         match sub {
             Some("thinking") => {
                 self.set_translation(&json!({ "thinking": value(0) == Some("on") }))
                     .await
             }
-            Some("answer") => {
-                crate::translate::update(&path, &json!({ "answer": value(0) == Some("on") }))
-                    .await
-                    .map_err(|error| ErrorInfo::new("invalid_params", error))?;
-                let mut shown = self.translation_view().await?;
-                shown["note"] =
-                    json!("translating answers is not implemented yet; the setting is only stored");
-                Ok(shown)
-            }
+            Some("answer") => Err(ErrorInfo::new(
+                "not_implemented",
+                "translating answers is not implemented",
+            )),
             Some("service") => self.set_translation(&json!({ "service": value(0) })).await,
             Some("to") => self.set_translation(&json!({ "to": value(0) })).await,
             Some("models") => match value(0) {
@@ -2497,12 +2491,8 @@ impl Core {
         let settings = crate::translate::Settings::read(&path)
             .await
             .map_err(|error| ErrorInfo::new("settings_invalid", error))?;
-        let file = crate::settings::read(&path)
-            .await
-            .map_err(|error| ErrorInfo::new("settings_invalid", error))?;
         Ok(json!({
             "thinking": settings.thinking,
-            "answer": file["translation"]["answer"].as_bool().unwrap_or(false),
             "service": settings.service.name(),
             "to": settings.to,
         }))

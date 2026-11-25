@@ -1442,12 +1442,15 @@ impl Core {
     }
 
     /// Writes `patch` into the translation settings beside the database
-    /// and gives them back; turns that start after it use them.
+    /// and gives them back; turns that start after it use them. When the
+    /// thinking is translated with Firefox's or Chrome's models, they are
+    /// fetched first, and `models` says whether that worked.
     pub async fn set_translation(&self, patch: &Value) -> Result<Value, ErrorInfo> {
         let path = self.store()?.files_folder().with_file_name("settings.json");
         let settings = translate::update(&path, patch)
             .await
             .map_err(|error| ErrorInfo::new("invalid_params", error))?;
+        let mut models = Value::Null;
         if settings.thinking
             && matches!(
                 settings.service,
@@ -1458,22 +1461,19 @@ impl Core {
             // keeps the first turn's thinking from waiting on it.
             let language = language::default(&path).await;
             if let Some(to) = translate::target(&settings, language.as_deref()) {
-                let translator = translate::shared(
-                    settings.service,
-                    settings.google_key.clone(),
-                    path.with_file_name("translation-models"),
-                );
-                tokio::spawn(async move {
-                    if let Err(error) = translator.prepare("en", &to).await {
-                        eprintln!("inocode: translation models: {}", error.message);
-                    }
-                });
+                let translator =
+                    translate::shared(&settings, path.with_file_name("translation-models"));
+                models = match translator.prepare("en", &to).await {
+                    Ok(notes) => json!({ "ready": true, "notes": notes }),
+                    Err(error) => json!({ "ready": false, "error": error }),
+                };
             }
         }
         Ok(json!({
             "thinking": settings.thinking,
             "service": settings.service.name(),
             "to": settings.to,
+            "models": models,
         }))
     }
 
@@ -1527,8 +1527,17 @@ impl Core {
         let name = params["service"]
             .as_str()
             .ok_or_else(|| ErrorInfo::new("invalid_params", "\"service\" must be a string"))?;
-        let languages =
-            translate::languages(translation_service(name)?, &translate::Hosts::default()).await?;
+        let settings = translate::Settings::read(
+            &self.store()?.files_folder().with_file_name("settings.json"),
+        )
+        .await
+        .map_err(|error| ErrorInfo::new("settings_invalid", error))?;
+        let languages = translate::languages(
+            translation_service(name)?,
+            &translate::Hosts::default(),
+            &settings.google_languages_key,
+        )
+        .await?;
         Ok(json!({
             "from": languages.from,
             "to": languages.to,
