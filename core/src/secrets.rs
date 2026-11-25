@@ -61,6 +61,10 @@ pub struct AccountInfo {
     /// instead of its provider's `pool.auto_switch_threshold`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_switch_threshold: Option<u32>,
+    /// The pool may keep using the account once a usage window is full
+    /// while it holds credits the provider spends instead.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub credits: bool,
 }
 
 /// [`AccountInfo`] by provider, then account.
@@ -1723,6 +1727,7 @@ mod tests {
             added_ms: Some(5),
             priority: Some(-3),
             auto_switch_threshold: Some(90),
+            credits: true,
         };
         {
             let _lock = lock_store(&path).unwrap();

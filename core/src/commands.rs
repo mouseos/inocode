@@ -1744,6 +1744,7 @@ impl Core {
             }
             ("fork", _) => {
                 let fork = store.fork_session(thread).await?;
+                self.pool.note_lineage(fork, thread).await;
                 json!({ "thread_id": fork.0, "from": thread.0 })
             }
             ("delete", _) => {

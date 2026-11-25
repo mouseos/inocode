@@ -146,6 +146,11 @@ impl Store {
                 params![session.0, fork, time],
             )
             .map_err(store_error)?;
+            tx.execute(
+                "INSERT INTO thread_lineage(session_id, parent) VALUES (?1, ?2)",
+                params![fork, session.0],
+            )
+            .map_err(store_error)?;
             tx.commit().map_err(store_error)?;
             Ok(SessionId(fork))
         })
@@ -177,6 +182,7 @@ impl Store {
                 "thread_settings",
                 "waiting",
                 "elicitations",
+                "thread_lineage",
             ] {
                 tx.execute(
                     &format!("DELETE FROM {table} WHERE session_id = ?1"),

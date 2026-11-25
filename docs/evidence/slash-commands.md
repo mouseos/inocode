@@ -237,7 +237,7 @@
 - `/plugins` の外す・有効無効、`/mcp` の有効無効、`/providers` の一覧以外の細かな操作（隠す等）はコマンドに無い。
 - `/model` からのモデルの設定（思考の深さの既定、送る文の翻訳、モデルの言語）は無い。
 - `/status` にアカウントは出さない（アカウントは `/accounts list` で見る）。
-- `/accounts` からはプールの方式・優先度・クールダウンの解除・状態だけを扱う。`sticky_limit`・`auto_switch_threshold`・`failover_threshold`・`cache_affinity`、アカウントごとの閾値、会話の固定の解除は `pool/set`・`accounts/priority`・`pool/reset_affinity` で行う（`account-pool.md`）。
+- `/accounts` からはプールの方式・優先度・クールダウンの解除・状態だけを扱う。`sticky_limit`・`auto_switch_threshold`・`failover_threshold`・`cache_affinity`、アカウントごとの閾値、会話の固定の解除は `pool/set`・`accounts/priority`・`pool/reset_affinity` で行う（`account-pool.md`）。`excluded_plans`・`start_idle_windows`・`priority_failback`・`host_circuit_threshold`、アカウントごとの `credits` も同じ。API キーのプロバイダの id を書けば、そのキーのプールのキーを扱う。キーを足すのは `accounts/add_key` と `inocode-server key set` だけで、スラッシュコマンドは無い（会話の記録にキーを残さないため）。
 - 保留と質問の一覧は、サーバーが動いている間だけ覚えている（再起動で消える）。
 
 ### 道具とコマンドの照合（決まり 6）

@@ -387,7 +387,9 @@ async fn the_pool_is_set_by_method_and_by_command() {
         assert_eq!(
             got["result"]["effective"],
             json!({"strategy": "quota", "sticky_limit": 1, "auto_switch_threshold": 80,
-                   "failover_threshold": 3, "cache_affinity": true})
+                   "failover_threshold": 3, "cache_affinity": true, "excluded_plans": [],
+                   "start_idle_windows": false, "priority_failback": false,
+                   "host_circuit_threshold": 0})
         );
         let set = request(
             &mut client,
@@ -426,6 +428,11 @@ async fn the_pool_is_set_by_method_and_by_command() {
                 json!({"provider": "claude", "auto_switch_threshold": 101}),
             ),
             (10, json!({"provider": "claude", "failover_threshold": 21})),
+            (
+                10,
+                json!({"provider": "claude", "host_circuit_threshold": 21}),
+            ),
+            (10, json!({"provider": "claude", "excluded_plans": ["  "]})),
             (11, json!({"provider": "claude", "speed": 1})),
             (12, json!({"provider": "claude"})),
             (13, json!({"provider": "claude-oauth", "strategy": "quota"})),
@@ -508,6 +515,588 @@ async fn the_pool_is_set_by_method_and_by_command() {
         assert!(answered_with(&mut client, 24, thread)
             .await
             .contains("at-erin"));
+    })
+    .await;
+}
+
+/// Writes the settings of a core: `providers` and the default provider.
+fn write_settings(folder: &std::path::Path, providers: Value, default: &str) {
+    std::fs::write(
+        folder.join("settings.json"),
+        json!({"providers": providers, "default": {"provider": default}}).to_string(),
+    )
+    .expect("settings");
+}
+
+/// The bearer or `x-api-key` a request was signed with.
+fn signed_with(request: &MockRequest) -> String {
+    request
+        .headers
+        .get("x-api-key")
+        .cloned()
+        .or_else(|| request.authorization.clone())
+        .unwrap_or_default()
+        .trim_start_matches("Bearer ")
+        .to_string()
+}
+
+/// The keys or bearers the model endpoint got, in order.
+fn signers(mock: &MockApi) -> Vec<String> {
+    mock.requests()
+        .into_iter()
+        .filter(|request| {
+            request.method == "POST"
+                && (request.path.ends_with("/messages") || request.path.ends_with("/responses"))
+        })
+        .map(|request| signed_with(&request))
+        .collect()
+}
+
+async fn set_model(client: &mut Client, id: u64, thread: i64, model: &str) {
+    let chosen = request(
+        client,
+        id,
+        "thread/settings",
+        json!({"thread_id": thread, "model": model}),
+    )
+    .await;
+    assert_eq!(chosen["result"]["model"], model, "{chosen}");
+}
+
+#[tokio::test]
+async fn a_fable_refusal_moves_only_fable_requests_off_the_account() {
+    with_timeout(async {
+        let folder = folder();
+        let mock = start_mock(|request: &MockRequest| {
+            if request.path.ends_with("/oauth/token") {
+                let name = request.body["code"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .trim_start_matches("code-")
+                    .to_string();
+                return MockReply::status(
+                    200,
+                    &json!({
+                        "access_token": format!("at-{name}"),
+                        "refresh_token": format!("rt-{name}"),
+                        "expires_in": 3600,
+                        "account": {"email_address": format!("{name}@example.test"),
+                                    "uuid": format!("uuid-{name}")},
+                    })
+                    .to_string(),
+                );
+            }
+            if request.method == "GET" {
+                return MockReply::status(404, "{}");
+            }
+            let bearer = signed_with(request);
+            let fable = request.body["model"]
+                .as_str()
+                .is_some_and(|model| model.starts_with("claude-fable-5"));
+            if bearer == "at-alice" && fable {
+                return MockReply::status(
+                    429,
+                    r#"{"type":"error","error":{"type":"rate_limit_error","message":"limit"}}"#,
+                )
+                .with_header("anthropic-ratelimit-unified-7d_oi-status", "rejected")
+                .with_header("anthropic-ratelimit-unified-7d_oi-utilization", "1.01")
+                .with_header("anthropic-ratelimit-unified-5h-utilization", "0.1")
+                .with_header("anthropic-ratelimit-unified-7d-utilization", "0.2");
+            }
+            MockReply::stream(anthropic_stream(&bearer))
+        })
+        .await;
+        let core = core_for(&folder, &mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let alice = sign_in(&mut client, 1, "alice").await;
+        sign_in(&mut client, 3, "bob").await;
+
+        let fable = new_thread(&mut client, 5).await;
+        set_model(&mut client, 6, fable, "claude-fable-5").await;
+        assert!(answered_with(&mut client, 7, fable)
+            .await
+            .contains("at-bob"));
+        assert_eq!(signers(&mock), ["at-alice", "at-bob"]);
+
+        // The account still serves its other models.
+        let sonnet = new_thread(&mut client, 8).await;
+        assert!(answered_with(&mut client, 9, sonnet)
+            .await
+            .contains("at-alice"));
+        let another = new_thread(&mut client, 10).await;
+        set_model(&mut client, 11, another, "claude-fable-5").await;
+        assert!(answered_with(&mut client, 12, another)
+            .await
+            .contains("at-bob"));
+        assert_eq!(
+            signers(&mock).len(),
+            4,
+            "alice is not asked for Fable again"
+        );
+
+        let status = status_of(&mut client, 13).await;
+        let refused = row(&status, &alice);
+        assert!(refused["cooldown_until"].is_null(), "{refused}");
+        assert!(
+            refused["scoped_cooldowns"]["Fable"]["cooldown_until"]
+                .as_u64()
+                .is_some(),
+            "{refused}"
+        );
+        assert_eq!(refused["usage"]["families"]["Fable"], 100.0, "{refused}");
+    })
+    .await;
+}
+
+/// A ChatGPT stand-in at `/responses` that answers with the bearer it got.
+async fn gpt_mock() -> MockApi {
+    start_mock(|request: &MockRequest| {
+        if request.method == "GET" {
+            return MockReply::status(404, "{}");
+        }
+        let bearer = signed_with(request);
+        MockReply::stream(vec![
+            format!("data: {}\n\n", json!({"type": "response.created"})).into_bytes(),
+            format!(
+                "data: {}\n\n",
+                json!({"type": "response.output_text.delta", "delta": bearer})
+            )
+            .into_bytes(),
+            format!("data: {}\n\n", json!({"type": "response.completed"})).into_bytes(),
+        ])
+    })
+    .await
+}
+
+/// A token whose claims name the ChatGPT plan `plan`; its text is the
+/// bearer the mock answers with.
+fn plan_token(name: &str, plan: &str) -> String {
+    use base64::Engine;
+    let encode =
+        |value: Value| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(value.to_string());
+    format!(
+        "{}.{}.{name}",
+        encode(json!({"alg": "none"})),
+        encode(json!({"https://api.openai.com/auth": {"chatgpt_plan_type": plan}}))
+    )
+}
+
+/// Stores a ChatGPT account signed in as `name` with the plan `plan`.
+fn store_gpt_account(folder: &std::path::Path, name: &str, plan: &str) -> String {
+    inocode_core::secrets::set_mode(inocode_core::secrets::StoreMode::Plaintext);
+    let mut store = inocode_core::oauth::Store::load(folder.join("auth.json")).expect("store");
+    store
+        .add_signed_in(
+            "gpt-oauth",
+            inocode_core::oauth::Credential {
+                access: plan_token(name, plan),
+                refresh: format!("rt-{name}"),
+                expires_at_ms: Some(now_ms() + 3_600_000),
+                account_id: Some(format!("acct-{name}")),
+                email: Some(format!("{name}@example.test")),
+                api_key: None,
+                oauth_access_token: None,
+            },
+        )
+        .expect("account")
+        .account
+}
+
+#[tokio::test]
+async fn an_account_of_an_excluded_plan_is_used_only_when_chosen() {
+    with_timeout(async {
+        let folder = folder();
+        let mock = gpt_mock().await;
+        write_settings(
+            &folder,
+            json!({"gpt": {"kind": "gpt-oauth", "base_url": mock.base_url,
+                           "default_model": "gpt-5.2-codex", "reasoning": {"effort": "low"},
+                           "pool": {"excluded_plans": ["Free"]}}}),
+            "gpt",
+        );
+        let free = store_gpt_account(&folder, "alice", "free");
+        let plus = store_gpt_account(&folder, "bob", "plus");
+        let core = core_for(&folder, &mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+
+        let thread = new_thread(&mut client, 1).await;
+        assert!(answered_with(&mut client, 2, thread)
+            .await
+            .ends_with(".bob"));
+        let status = request(&mut client, 3, "pool/status", json!({"provider": "gpt"})).await;
+        let status = &status["result"]["providers"][0];
+        assert_eq!(row(status, &free)["reason"], "plan_excluded", "{status}");
+        assert_eq!(row(status, &free)["plan"], "free");
+        assert_eq!(row(status, &plus)["reason"], Value::Null);
+        assert_eq!(status["pool"]["excluded_plans"], json!(["free"]));
+
+        let chosen = request(
+            &mut client,
+            4,
+            "accounts/use",
+            json!({"provider": "gpt", "account": free}),
+        )
+        .await;
+        assert_eq!(
+            chosen["result"]["active_account"],
+            free.as_str(),
+            "{chosen}"
+        );
+        let other = new_thread(&mut client, 5).await;
+        assert!(answered_with(&mut client, 6, other)
+            .await
+            .ends_with(".alice"));
+        assert_eq!(signers(&mock).len(), 2);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_thread_on_a_lower_tier_moves_back_when_the_higher_one_has_room() {
+    with_timeout(async {
+        let folder = folder();
+        let alice_used = Arc::new(std::sync::atomic::AtomicU32::new(95));
+        let served = Arc::clone(&alice_used);
+        let mock = start_mock(move |request: &MockRequest| {
+            if request.path.ends_with("/oauth/token") {
+                let name = request.body["code"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .trim_start_matches("code-")
+                    .to_string();
+                return MockReply::status(
+                    200,
+                    &json!({
+                        "access_token": format!("at-{name}"),
+                        "refresh_token": format!("rt-{name}"),
+                        "expires_in": 3600,
+                        "account": {"email_address": format!("{name}@example.test"),
+                                    "uuid": format!("uuid-{name}")},
+                    })
+                    .to_string(),
+                );
+            }
+            if request.method == "GET" {
+                return MockReply::status(404, "{}");
+            }
+            let bearer = signed_with(request);
+            let used = if bearer == "at-alice" {
+                served.load(Ordering::SeqCst)
+            } else {
+                10
+            };
+            MockReply::stream(anthropic_stream(&bearer))
+                .with_header(
+                    "anthropic-ratelimit-unified-7d-utilization",
+                    &format!("{}", f64::from(used) / 100.0),
+                )
+                .with_header("anthropic-ratelimit-unified-5h-utilization", "0.0")
+        })
+        .await;
+        let core = core_for(&folder, &mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let alice = sign_in(&mut client, 1, "alice").await;
+        let bob = sign_in(&mut client, 3, "bob").await;
+
+        // A thread placed on bob by hand, and left there when the choice
+        // is taken back and alice becomes the higher tier.
+        let low = new_thread(&mut client, 5).await;
+        let used = |account: &str| json!({"provider": "claude", "account": account});
+        request(&mut client, 6, "accounts/use", used(&bob)).await;
+        assert!(answered_with(&mut client, 7, low).await.contains("at-bob"));
+        let back = request(
+            &mut client,
+            8,
+            "accounts/use",
+            json!({"provider": "claude", "account": null}),
+        )
+        .await;
+        assert_eq!(back["result"]["active_account"], Value::Null, "{back}");
+        let ranked = request(
+            &mut client,
+            9,
+            "accounts/priority",
+            json!({"provider": "claude", "account": alice, "priority": 10}),
+        )
+        .await;
+        assert_eq!(ranked["result"]["account"]["priority"], 10, "{ranked}");
+
+        // The higher tier takes a new thread and reports 95%: no room.
+        let high = new_thread(&mut client, 10).await;
+        assert!(answered_with(&mut client, 11, high)
+            .await
+            .contains("at-alice"));
+        assert!(answered_with(&mut client, 12, low).await.contains("at-bob"));
+
+        // Its next answer shows room again.
+        alice_used.store(20, Ordering::SeqCst);
+        assert!(answered_with(&mut client, 13, high)
+            .await
+            .contains("at-alice"));
+        assert!(
+            answered_with(&mut client, 14, low).await.contains("at-bob"),
+            "off by default: the thread keeps its cache"
+        );
+        let set = request(
+            &mut client,
+            15,
+            "pool/set",
+            json!({"provider": "claude", "priority_failback": true}),
+        )
+        .await;
+        assert_eq!(
+            set["result"]["effective"]["priority_failback"], true,
+            "{set}"
+        );
+        assert!(answered_with(&mut client, 16, low)
+            .await
+            .contains("at-alice"));
+        let status = status_of(&mut client, 17).await;
+        assert_eq!(row(&status, &alice)["bound_threads"], 2, "{status}");
+        assert_eq!(row(&status, &bob)["bound_threads"], 0, "{status}");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_fork_starts_on_the_account_of_the_thread_it_came_from() {
+    with_timeout(async {
+        let folder = folder();
+        let mock = claude_mock().await;
+        write_settings(
+            &folder,
+            json!({"claude": {"kind": "claude-oauth", "base_url": mock.base_url,
+                              "pool": {"strategy": "round-robin"}}}),
+            "claude",
+        );
+        let core = core_for(&folder, &mock).await;
+        let (addr, stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        sign_in(&mut client, 1, "bob").await;
+        sign_in(&mut client, 3, "dave").await;
+
+        // In turn: bob, dave, bob; the next in turn would be dave.
+        let parent = new_thread(&mut client, 5).await;
+        assert!(answered_with(&mut client, 6, parent)
+            .await
+            .contains("at-bob"));
+        let other = new_thread(&mut client, 7).await;
+        assert!(answered_with(&mut client, 8, other)
+            .await
+            .contains("at-dave"));
+        let third = new_thread(&mut client, 9).await;
+        assert!(answered_with(&mut client, 10, third)
+            .await
+            .contains("at-bob"));
+        let fork = |thread: i64| json!({"thread_id": thread, "text": "/fork"});
+        let forked = request(&mut client, 11, "command/run", fork(parent)).await;
+        let child = forked["result"]["thread_id"].as_i64().expect("a fork");
+        assert!(
+            answered_with(&mut client, 12, child)
+                .await
+                .contains("at-bob"),
+            "the parent's account, not the next in turn"
+        );
+
+        // A new core over the same database still knows where a fork came
+        // from: a fresh turn order would start at bob, the parent is on dave.
+        let later = request(&mut client, 13, "command/run", fork(other)).await["result"]
+            ["thread_id"]
+            .as_i64()
+            .expect("a fork");
+        let _ = stop.send(());
+        drop(client);
+        let core = core_for(&folder, &mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        assert!(answered_with(&mut client, 14, later)
+            .await
+            .contains("at-dave"));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn an_unreachable_host_is_counted_apart_from_the_keys() {
+    with_timeout(async {
+        let folder = folder();
+        let closed = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+            listener.local_addr().expect("address").port()
+        };
+        let mock = gpt_mock().await;
+        write_settings(
+            &folder,
+            json!({"keys": {"kind": "openai", "base_url": format!("http://127.0.0.1:{closed}/v1"),
+                            "pool": {"host_circuit_threshold": 2}}}),
+            "keys",
+        );
+        let core = core_for(&folder, &mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        request(
+            &mut client,
+            1,
+            "accounts/add_key",
+            json!({"provider": "keys", "key": "key-one"}),
+        )
+        .await;
+        let thread = new_thread(&mut client, 2).await;
+        for id in [3, 4] {
+            let last = turn(&mut client, id, thread).await;
+            assert_eq!(last["event"], "failed", "{last}");
+        }
+        let status = request(&mut client, 5, "pool/status", json!({"provider": "keys"})).await;
+        let status = &status["result"]["providers"][0];
+        assert_eq!(status["host"]["consecutive_failures"], 2, "{status}");
+        assert_eq!(status["host"]["last_code"], "connection_refused");
+        assert!(
+            status["host"]["cooldown_until"].as_u64().is_some(),
+            "{status}"
+        );
+        let key = row(status, "default");
+        assert_eq!(key["consecutive_failures"], 0, "not the key's fault: {key}");
+        assert_eq!(key["reason"], Value::Null);
+        let last = turn(&mut client, 6, thread).await;
+        assert!(
+            last.to_string().contains("provider_unreachable"),
+            "the circuit holds requests: {last}"
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn several_keys_of_a_provider_form_a_pool() {
+    with_timeout(async {
+        let folder = folder();
+        let mock = start_mock(|request: &MockRequest| {
+            if request.method == "GET" {
+                return MockReply::status(404, "{}");
+            }
+            match signed_with(request).as_str() {
+                "key-one" => MockReply::status(
+                    429,
+                    r#"{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}"#,
+                )
+                .with_header("retry-after", "120"),
+                key => MockReply::stream(anthropic_stream(&format!("answered by {key}"))),
+            }
+        })
+        .await;
+        write_settings(
+            &folder,
+            json!({"keys": {"kind": "anthropic", "base_url": mock.base_url,
+                            "default_model": "claude-sonnet-5"}}),
+            "keys",
+        );
+        let core = core_for(&folder, &mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+
+        let first = request(
+            &mut client,
+            1,
+            "accounts/add_key",
+            json!({"provider": "keys", "key": "key-one", "alias": "first"}),
+        )
+        .await;
+        assert_eq!(first["result"]["account"]["id"], "default", "{first}");
+        assert_eq!(first["result"]["added"], true);
+        let second = request(
+            &mut client,
+            2,
+            "accounts/add_key",
+            json!({"provider": "keys", "key": "key-two", "alias": "second"}),
+        )
+        .await;
+        let second_id = second["result"]["account"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_ne!(second_id, "default", "{second}");
+        let listed = request(&mut client, 3, "accounts/list", json!({"provider": "keys"})).await;
+        assert_eq!(
+            listed["result"]["accounts"].as_array().unwrap().len(),
+            2,
+            "{listed}"
+        );
+        assert!(!listed.to_string().contains("key-one"), "no key is shown");
+        for (id, params) in [
+            (4, json!({"provider": "keys", "key": "", "alias": "x"})),
+            (5, json!({"provider": "keys", "alias": "x"})),
+            (6, json!({"provider": "claude", "key": "k"})),
+            (
+                7,
+                json!({"provider": "keys", "key": "k", "alias": "default"}),
+            ),
+        ] {
+            let refused = request(&mut client, id, "accounts/add_key", params.clone()).await;
+            if id == 7 {
+                assert_eq!(
+                    refused["result"]["added"], false,
+                    "names the default: {refused}"
+                );
+                continue;
+            }
+            assert!(refused["error"].is_object(), "{params}: {refused}");
+        }
+        let restored = request(
+            &mut client,
+            8,
+            "accounts/add_key",
+            json!({"provider": "keys", "key": "key-one", "alias": "FIRST"}),
+        )
+        .await;
+        assert_eq!(restored["result"]["account"]["id"], "default", "{restored}");
+
+        // The first key is refused on rate; the same request goes to the
+        // second key, and the first waits.
+        let thread = new_thread(&mut client, 9).await;
+        assert!(answered_with(&mut client, 10, thread)
+            .await
+            .contains("answered by key-two"));
+        assert_eq!(signers(&mock), ["key-one", "key-two"]);
+        let status = request(&mut client, 11, "pool/status", json!({"provider": "keys"})).await;
+        let status = &status["result"]["providers"][0];
+        assert_eq!(status["kind"], "api-key/keys", "{status}");
+        let cooled = row(status, "default");
+        let until = cooled["cooldown_until"].as_u64().expect("a cooldown");
+        assert!(until <= now_ms() + 120_000, "{cooled}");
+        assert_eq!(cooled["reason"], "cooldown");
+        assert!(!status.to_string().contains("key-two"), "no key is shown");
+
+        let paused = request(
+            &mut client,
+            12,
+            "accounts/pause",
+            json!({"provider": "keys", "account": "second", "paused": true}),
+        )
+        .await;
+        assert_eq!(paused["result"]["account"]["paused"], true, "{paused}");
+        let other = new_thread(&mut client, 13).await;
+        let last = turn(&mut client, 14, other).await;
+        assert_eq!(
+            last["event"], "failed",
+            "only the cooling key is left: {last}"
+        );
+        let removed = request(
+            &mut client,
+            15,
+            "accounts/remove",
+            json!({"provider": "keys", "account": "second"}),
+        )
+        .await;
+        assert_eq!(
+            removed["result"]["removed"],
+            second_id.as_str(),
+            "{removed}"
+        );
+        let stored = std::fs::read_to_string(folder.join("auth.json")).unwrap();
+        assert!(!stored.contains("key-two"), "its secret is gone");
     })
     .await;
 }

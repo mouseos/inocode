@@ -116,6 +116,10 @@ pub struct Account {
     pub info: crate::secrets::AccountInfo,
     pub email: Option<String>,
     pub account_id: Option<String>,
+    /// The ChatGPT plan its token names (`chatgpt_plan_type`), if any.
+    pub plan: Option<String>,
+    /// Whether it holds a non-empty static API key.
+    pub has_key: bool,
 }
 
 /// What storing a finished sign-in did.
@@ -211,6 +215,11 @@ impl Store {
                     .unwrap_or_default(),
                 email: credential.email.clone(),
                 account_id: credential.account_id.clone(),
+                plan: chatgpt_plan(&credential.access),
+                has_key: credential
+                    .api_key
+                    .as_deref()
+                    .is_some_and(|key| !key.trim().is_empty()),
             })
             .collect();
         // Accounts added in the same millisecond: `default` is always the
@@ -380,6 +389,81 @@ impl Store {
             }
             Ok((account.clone(), SignedIn { account, added }))
         })
+    }
+
+    /// Stores the static key `key` of `provider` (an `api-key/<id>` name):
+    /// over the account `alias` names by id or alias (any case), else as a
+    /// new account with that alias; without `alias`, over the default
+    /// account. The first account of a provider is its default account.
+    pub fn set_key(
+        &mut self,
+        provider: &str,
+        alias: Option<&str>,
+        key: &str,
+    ) -> Result<SignedIn, String> {
+        let path = self.path.clone();
+        self.change(provider, |contents| {
+            let named = |contents: &crate::secrets::Contents, name: &str| {
+                let accounts = contents.accounts.get(provider)?;
+                accounts
+                    .keys()
+                    .find(|id| id.as_str() == name)
+                    .or_else(|| {
+                        let info = contents.info.get(provider)?;
+                        accounts.keys().find(|id| {
+                            info.get(*id)
+                                .and_then(|info| info.alias.as_deref())
+                                .is_some_and(|alias| alias.eq_ignore_ascii_case(name))
+                        })
+                    })
+                    .cloned()
+            };
+            let found = match alias {
+                Some(name) => named(contents, name),
+                None => Some(crate::secrets::DEFAULT_ACCOUNT.to_string()),
+            };
+            let accounts = contents.accounts.entry(provider.to_string()).or_default();
+            let (account, added) = match found {
+                Some(id) => {
+                    let added = !accounts.contains_key(&id);
+                    (id, added)
+                }
+                None => (new_account_id(accounts)?, true),
+            };
+            let mut credential = match accounts.get(&account) {
+                Some(stored) => parse_credential(stored, provider, &path)?,
+                None => empty_credential(),
+            };
+            credential.api_key = Some(key.to_string());
+            let value = serde_json::to_value(&credential).map_err(|e| e.to_string())?;
+            accounts.insert(account.clone(), value);
+            let info = contents
+                .info
+                .entry(provider.to_string())
+                .or_default()
+                .entry(account.clone())
+                .or_default();
+            if added {
+                info.added_ms = Some(now_ms());
+                if let Some(alias) = alias.filter(|alias| *alias != account) {
+                    info.alias = Some(alias.to_string());
+                }
+            }
+            Ok((account.clone(), SignedIn { account, added }))
+        })
+    }
+
+    /// Removes every account of `provider`, secrets included.
+    pub fn remove_provider(&mut self, provider: &str) -> Result<(), String> {
+        let ids: Vec<String> = self
+            .entries
+            .get(provider)
+            .map(|accounts| accounts.keys().cloned().collect())
+            .unwrap_or_default();
+        for id in ids {
+            self.remove_account(provider, &id)?;
+        }
+        Ok(())
     }
 
     /// Applies `edit` to the store as currently stored, under its lock,
@@ -900,6 +984,25 @@ pub fn jwt_payload(token: &str) -> Option<Value> {
         .decode(payload)
         .ok()?;
     serde_json::from_slice(&bytes).ok()
+}
+
+/// The ChatGPT plan (`chatgpt_plan_type`) a token's claims name, at the top
+/// level or under `https://api.openai.com/auth`.
+pub fn chatgpt_plan(token: &str) -> Option<String> {
+    let payload = jwt_payload(token)?;
+    let named = |value: Option<&Value>| {
+        value
+            .and_then(Value::as_str)
+            .filter(|plan| !plan.trim().is_empty())
+            .map(str::to_string)
+    };
+    named(payload.get("chatgpt_plan_type")).or_else(|| {
+        named(
+            payload
+                .get("https://api.openai.com/auth")
+                .and_then(|claims| claims.get("chatgpt_plan_type")),
+        )
+    })
 }
 
 /// The ChatGPT account id from the id/access token claims.
@@ -2038,6 +2141,8 @@ mod tests {
             },
             email: None,
             account_id: None,
+            plan: None,
+            has_key: false,
         }
     }
 
@@ -2060,6 +2165,75 @@ mod tests {
         assert_eq!(choose(&refused, None), Err("account_needs_reauth"));
         let none_usable = [listed("default", true, false), listed("b", false, true)];
         assert_eq!(choose(&none_usable, None), Err("account_unavailable"));
+    }
+
+    #[test]
+    fn keys_are_set_by_alias_into_accounts_of_the_key_pool() {
+        let path = temp_store_path("keys");
+        let mut store = Store::load(path.clone()).expect("load");
+        let name = "api-key/logfare";
+        let first = store.set_key(name, None, "k-default").expect("default");
+        assert_eq!(first.account, "default");
+        assert!(first.added);
+        let second = store
+            .set_key(name, Some("spare"), "k-spare")
+            .expect("spare");
+        assert!(second.added);
+        assert_ne!(second.account, "default");
+        let replaced = store
+            .set_key(name, Some("SPARE"), "k-spare-2")
+            .expect("again");
+        assert_eq!(
+            replaced,
+            SignedIn {
+                account: second.account.clone(),
+                added: false
+            }
+        );
+        let accounts = Store::load(path.clone()).expect("reload").accounts(name);
+        assert_eq!(accounts.len(), 2);
+        assert!(accounts.iter().all(|account| account.has_key));
+        assert_eq!(accounts[1].info.alias.as_deref(), Some("spare"));
+        assert_eq!(
+            store
+                .account_credential(name, &second.account)
+                .and_then(|credential| credential.api_key.clone())
+                .as_deref(),
+            Some("k-spare-2")
+        );
+        store.remove_provider(name).expect("remove");
+        assert!(Store::load(path.clone())
+            .expect("reload")
+            .accounts(name)
+            .is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_chatgpt_token_names_its_plan() {
+        use base64::Engine;
+        let token = |claims: Value| {
+            format!(
+                "e30.{}.sig",
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims.to_string())
+            )
+        };
+        assert_eq!(
+            chatgpt_plan(&token(
+                json!({"https://api.openai.com/auth": {"chatgpt_plan_type": "plus"}})
+            ))
+            .as_deref(),
+            Some("plus")
+        );
+        assert_eq!(
+            chatgpt_plan(&token(json!({"chatgpt_plan_type": "team"}))).as_deref(),
+            Some("team")
+        );
+        assert_eq!(
+            chatgpt_plan(&token(json!({"chatgpt_plan_type": " "}))),
+            None
+        );
+        assert_eq!(chatgpt_plan("not-a-token"), None);
     }
 
     #[test]

@@ -121,7 +121,7 @@
 | `providers/list` | なし | `{providers: [{id, kind, …, effective_base_url, effective_default_model, credential}], default}` |
 | `providers/add` | `{id, kind, base_url?, default_model?, models?, reasoning?, translation?, disabled?, client_version?}` | `{provider}` |
 | `providers/update` | `{id, …}`（`null` で既定に戻す） | `{provider}` |
-| `providers/remove` | `{id}` | `{removed}`。`default` か役が選んでいれば `provider_in_use`（「roles.review」など場所を書く）。会話が選んでいても `provider_in_use`（会話の番号を書く）。消したら、保管場所のそのプロバイダの API キーも消す（同じ名前で足し直したとき古い鍵を使わないため） |
+| `providers/remove` | `{id}` | `{removed}`。`default` か役が選んでいれば `provider_in_use`（「roles.review」など場所を書く）。会話が選んでいても `provider_in_use`（会話の番号を書く）。消したら、保管場所のそのプロバイダの API キーも、キーのプールの全部を消す（同じ名前で足し直したとき古い鍵を使わないため） |
 | `models/list` | `{provider, include_hidden?}` | `{models}`。隠したモデルは `include_hidden` が `true` のときだけ |
 | `models` | `{thread_id?, include_hidden?}` | 会話の（無ければ `default` の）プロバイダの `{models}`。隠したモデルは同じく除く |
 | `thread/settings` | `{thread_id, provider?, model?, effort?, summary?, mode?}` | `{thread_id, provider, model, effort, summary, mode}` |
@@ -262,7 +262,7 @@
 
 ## アカウントの登録（実装済み）
 
-- **対象と範囲：** ログインで使う 4 つの種類（`claude-oauth`・`gpt-oauth`・`muse-code`・`deepai`）に、それぞれ複数のアカウントを持たせる。プロトコルとスラッシュコマンドからのログイン、一覧、別名、一時停止、削除、使うアカウントの選択。API キーの種類（`openai`・`anthropic`・`responses`）は 1 プロバイダ 1 キーのまま。送るたびにアカウントを選び替えるプールは下の「アカウントのプール」。
+- **対象と範囲：** ログインで使う 4 つの種類（`claude-oauth`・`gpt-oauth`・`muse-code`・`deepai`）に、それぞれ複数のアカウントを持たせる。プロトコルとスラッシュコマンドからのログイン、一覧、別名、一時停止、削除、使うアカウントの選択。API キーの種類（`openai`・`anthropic`・`responses`）も、1 プロバイダに複数のキーをアカウントとして持てる（下の「アカウントのプール」の「API キーのプール」）。送るたびにアカウントを選び替えるプールは下の「アカウントのプール」。
 - **関連ソースコード：** `core/src/accounts.rs`（プロトコルの処理、ログインの進行、ログインの完了を CLI と共通にした `complete_login`）、`core/src/oauth.rs`（`Store` のアカウントの操作、`same_identity`、`choose_account`、更新が断られたときの印）、`core/src/secrets.rs`（`AccountInfo` と、ファイルへの保存、消したアカウントの OS の保管庫の項目の削除）、`core/src/settings.rs`（`active_account`、`forget_account`）、`core/src/llm.rs`（`with_account`、401 のときの扱い）、`core/src/connectors.rs`、`core/src/commands.rs`、`server/src/lib.rs`、`server/src/main.rs`（`login`）、`core/src/deepai.rs`（`username` を記録）。
 - **根拠の状態：** UNSUPPORTED_APPROVED（上の「方針」のユーザー判断。作る順の「アカウント」の段）。学術研究での裏付けは調べていない。
 
@@ -284,7 +284,7 @@
 
 ### 使うアカウントの選び方
 
-- 設定のプロバイダに `active_account`（アカウントの id）を足した。`accounts/use` か `providers/update` で変える。API キーの種類には書けない。
+- 設定のプロバイダに `active_account`（アカウントの id）を足した。`accounts/use` か `providers/update` で変える。API キーの種類では、キーのプールのアカウントの id を書く。
 - 設定のプロバイダから送る要求は、アカウントのプールが選ぶ（下の「アカウントのプール」）。`active_account` はプールが優先する手で選んだアカウントで、それが使えないあいだはプールがほかへ移る。
 - 使えるアカウントが 1 つも無いときの誤り（`oauth::choose_account` が作る。どれもターンは `failed`）：
   - アカウントが 1 つも無い：`provider_config`（`/login` を案内）。
@@ -295,7 +295,7 @@
   - `account_ambiguous` は、設定のプロバイダを通らない使い方（`choose_account` を直接呼ぶコネクタ）にだけ残る。
 - ログインは `active_account` を変えない（判断：ログインで知らないうちに使うアカウントが替わらないように）。2 つ目のアカウントにログインすると、次の要求からプールが 2 つの中から選ぶ。CLI の `login` はそのとき、プールが選ぶことと `/accounts status`・`/accounts use` を出す。
 - `active_account` を変えると、設定の中身が変わるのでクライアントが作り直され、次の要求から効く。
-- コネクタ（`/connectors`）は、その種類の止めていないプロバイダのうち、最初に `active_account` を持つものの選択を使う。無ければ使えるアカウントが 1 つのときだけそれで、複数あれば `account_ambiguous`（プールは使わない。下の「作っていないもの」）。
+- コネクタ（`/connectors`）は、その種類の止めていないプロバイダのうち、最初に `active_account` を持つものの選択を使う。無ければ使えるアカウントが 1 つのときだけそれで、複数あれば `account_ambiguous`（プールは使わない。理由は下の「アカウントのプール」の「コネクタ」）。
 
 ### ログインし直しが要る印
 
@@ -315,9 +315,11 @@
 | `accounts/rename` | `{provider, account, alias}`（`null` か空で外す） | `{account: {…}}` |
 | `accounts/pause` | `{provider, account, paused}` | `{account: {…}}` |
 | `accounts/remove` | `{provider, account}` | `{removed, kind}` |
+| `accounts/add_key` | `{provider, key, alias?}` | `{account: {…}, added}` |
 | `accounts/use` | `{provider, account}`（`null` で選択を外し、プールに任せる） | `{provider, active_account}` |
 
-- `provider`：設定のプロバイダの id。無ければ種類の名前（`claude-oauth` など）、CLI と同じ `claude`・`gpt`・`muse` も受ける。API キーのプロバイダは `invalid_params`。`accounts/use` だけは設定のプロバイダの id が要る。
+- `provider`：設定のプロバイダの id。無ければ種類の名前（`claude-oauth` など）、CLI と同じ `claude`・`gpt`・`muse` も受ける。API キーのプロバイダの id なら、そのキーのプール（認証情報の保管場所の `api-key/<id>` のアカウント）。`accounts/use` だけは設定のプロバイダの id が要る。`accounts/login/start` は API キーのプロバイダを `invalid_params` で断り、`accounts/add_key` を案内する。
+- `accounts/add_key`：API キーのプロバイダ（設定にあること）に、要求の `key` をアカウントとして入れる。`alias` が今のアカウントの id か別名（大文字小文字を無視）を名指せば、そのキーを置き換える（`added: false`）。名指さなければ、その別名の新しいアカウントを足す（最初の 1 件は `default`）。`alias` を省くと `default` のキー（`inocode-server key set <id>` と同じ）。キーは返さず、ログにも出さない。キーが要求の中を通ってよい理由：この口は起動ごとの合言葉で認証した 127.0.0.1 の接続だけを受け、サンドボックスの命令からは合言葉が読めない（`server-auth.md`）。すでに `accounts/login/code` が同じ口でログインのコードを受けている。サーバーは要求の中身を記録しない（`server/src/lib.rs` の `settings_request`）。スラッシュコマンドは作っていない（会話の記録にキーが残るため）。
 - `account`：アカウントの id。合わなければ別名（大文字小文字を無視）。無ければ `account_unknown`。別名は 1〜64 文字、制御文字なし、同じ種類のほかのアカウントの id・別名と重ならないこと（`invalid_params`）。
 - `accounts/list`：`provider` を付けなければ、設定のログインのプロバイダごとのアカウントと、プロバイダの無い種類のアカウント（`provider: null`）。同じ種類のプロバイダが 2 つあれば、同じアカウントがそれぞれの行に出る。`active` は、そのプロバイダで新しい会話がいま使うアカウント（プールの選択。プロバイダの無い行は、使えるアカウントが 1 つのときのそれ）。`added` はミリ秒か `null`。`priority` は無ければ 0。秘密は返さない。
 - `accounts/remove`：認証情報（OS の保管庫の項目も）を消し、そのアカウントを `active_account` にしていたプロバイダからその選択を外す。プールもそのアカウントについて覚えていること（会話の固定、クールダウン、使用率）を忘れる。
@@ -367,9 +369,9 @@
 
 ## アカウントのプール（実装済み）
 
-- **対象と範囲：** ログインの種類（`claude-oauth`・`gpt-oauth`・`muse-code`・`deepai`）の設定のプロバイダが、送る要求ごとにどのアカウントを使うかを選ぶ。複数のアカウントがあるとき、使用率・失敗・上限による断りを見て移り、会話を同じアカウントに留める。opencodex のアカウントの選択と切り替えの部分と同じ範囲。opencodex のモデルの組み合わせ（combos）と、決まりによる経路の選択（policy routing）は範囲外（下の表）。
-- **関連ソースコード：** `core/src/pool.rs`（選び方・結果の記録・使用率・状態の表示）、`core/src/store_pool.rs`（データベースへの保存）、`core/src/store.rs`（版 11）、`core/src/llm.rs`（`start_routed`・`pick`・`send`・`answered`・`read_usage`。要求ごとにプールに聞き、結果を返す）、`core/src/lib.rs`（`Core::route`、ターンを `pool::in_thread` で包む）、`core/src/accounts.rs`（`pool/*`・`accounts/priority`・`accounts/clear_cooldown`）、`core/src/settings.rs`（`PoolConfig`）、`core/src/secrets.rs`（`AccountInfo` の `priority`・`auto_switch_threshold`）、`core/src/commands.rs`（`/accounts` の `priority`・`clear-cooldown`・`strategy`・`status`）、`server/src/lib.rs`。
-- **根拠の状態：** UNSUPPORTED_APPROVED。学術研究での裏付けは調べていない。ユーザーの指示（2026-11-25）「プールは、opencodex と同じだけ作る方向でよい」による。数値は opencodex のソースの値（下の表）で、効果を測った研究ではない。
+- **対象と範囲：** 設定のプロバイダ（ログインの種類 `claude-oauth`・`gpt-oauth`・`muse-code`・`deepai`、と API キーの種類 `openai`・`anthropic`・`responses`）が、送る要求ごとにどのアカウント（API キーの種類ではキー）を使うかを選ぶ。複数あるとき、使用率・失敗・上限による断りを見て移り、会話を同じアカウントに留める。opencodex のアカウントの選択と切り替えの部分と同じ範囲。opencodex のモデルの組み合わせ（combos）と、決まりによる経路の選択（policy routing）は範囲外（ユーザーの判断。下の表）。
+- **関連ソースコード：** `core/src/pool.rs`（選び方・結果の記録・使用率・断りの分け方・接続先の台帳・状態の表示）、`core/src/store_pool.rs`（データベースへの保存）、`core/src/store.rs`（版 12）、`core/src/store_threads.rs`（分岐した会話の親の記録）、`core/src/llm.rs`（`start_routed`・`pick`・`send`・`answered`・`api_key_of`・`unreachable_code`・`read_usage`。要求ごとにプールに聞き、結果を返す）、`core/src/lib.rs`（`Core::route`、ターンを `pool::in_thread` で包む）、`core/src/accounts.rs`（`pool/*`・`accounts/priority`・`accounts/clear_cooldown`・`accounts/add_key`）、`core/src/settings.rs`（`PoolConfig`、`account_store`）、`core/src/secrets.rs`（`AccountInfo` の `priority`・`auto_switch_threshold`・`credits`）、`core/src/oauth.rs`（`Store::set_key`・`chatgpt_plan`）、`core/src/usage.rs`（`Credits`）、`core/src/commands.rs`（`/accounts` の `priority`・`clear-cooldown`・`strategy`・`status`、`/fork` が親を記録）、`server/src/lib.rs`、`server/src/main.rs`（`key set --account`）。
+- **根拠の状態：** UNSUPPORTED_APPROVED。学術研究での裏付けは調べていない。ユーザーの指示（2026-11-25）「プールは、opencodex と同じだけ作る方向でよい」と、残りの仕組みについての指示（2026-11-26）「残りも今作る」による。数値は opencodex のソースの値（下の表）で、効果を測った研究ではない。
 - **注意（ユーザーに伝えた）：** 複数の有料契約を束ねて上限を避ける使い方は、OpenAI・Anthropic の利用規約に触れるおそれがある。
 
 ### 何をするか
@@ -391,15 +393,98 @@
   - 上限による断りや再ログインの要る断りでは、そのアカウントへのすべての会話の固定を外す。
 - **結果の扱い：**
   - 200 番台：成功。失敗率の窓に成功を足す。失敗が 2 回以上続いていたアカウントは、成功が 2 回続いて初めて失敗の数を 0 に戻す。
-  - 429・402：クールダウン。`Retry-After`（秒か日付、最長 24 時間）、無ければ断りの応答が示す窓の戻る時刻のうち最も早いもの（最長 15 分）、どちらも無ければ 60 秒。そのうえ、示された戻る時刻（最長 6 時間）まではほかのアカウントを選ぶ（回避）。クールダウンと回避はデータベース（`pool_cooldowns`）にも書き、再起動の後も続く。そのアカウントへの会話の固定を外し、現在のアカウントだったら次のものへ移す。答えがまだ始まっていないので、同じ要求を一度だけプールの選ぶ別のアカウントへ送り直す（別のアカウントが無ければ、その断りをそのまま返す）。
-  - 401：Claude・ChatGPT は断られたトークンで更新を一度試し、更新も断られたらログインし直しの印を付ける。Muse・DeepAI はすぐ印を付ける。403 で本文が作業領域・権利の拒否（`codex_workspace_access_denied`・`workspace_access_denied`・`codex_entitlement_missing`・`entitlement_missing`）を名乗らないものは、ログインの種類ならすぐ印を付ける。どちらも、そのアカウントの会話の固定を外す。要求そのものは失敗のまま。
+  - 429・402（下の「Anthropic の 429 の分け方」「モデルごとの上限」「API キーのプール」の例外を除く）：クールダウン。`Retry-After`（秒か日付、最長 24 時間）、無ければ断りの応答が示す窓の戻る時刻のうち最も早いもの（最長 15 分）、どちらも無ければ 60 秒。そのうえ、示された戻る時刻（最長 6 時間）まではほかのアカウントを選ぶ（回避）。クールダウンと回避はデータベース（`pool_cooldowns`）にも書き、再起動の後も続く。そのアカウントへの会話の固定を外し、現在のアカウントだったら次のものへ移す。答えがまだ始まっていないので、同じ要求を一度だけプールの選ぶ別のアカウントへ送り直す（別のアカウントが無ければ、その断りをそのまま返す）。
+  - 401：Claude・ChatGPT は断られたトークンで更新を一度試し、更新も断られたらログインし直しの印を付ける。Muse・DeepAI はすぐ印を付ける。403 で本文が作業領域・権利の拒否（`codex_workspace_access_denied`・`workspace_access_denied`・`codex_entitlement_missing`・`entitlement_missing`）を名乗らないものは、ChatGPT・Muse・DeepAI ならすぐ印を付ける（Claude の 403 は下の「Anthropic の 429 の分け方」）。どちらも、そのアカウントの会話の固定を外す。要求そのものは失敗のまま。
   - 403 で拒否を名乗るもの：失敗の数を 1 足すだけ（印は付けない、固定も外さない）。
-  - 500 番台・接続の失敗・応答の途中の途切れや無音（`provider_idle`）：失敗の数を足す（前の失敗から 5 分を過ぎていれば 1 から）。3 回続けば（`failover_threshold`、0 で切る）、そのアカウントを避け始め、避ける時間は 30 秒、2 分、10 分、30 分と延ばす。現在のアカウントだったら次のものへ移す。60 秒の失敗率の窓でも見る：20 件以上のうち 25% 以上が失敗なら、新しい会話を置かない（手で選んだアカウントは除く）。10% 以下が 30 秒続けば戻す。応答の途中のプロバイダの誤りの出来事（SSE の `error` など）は数えない。
+  - 500 番台・接続の失敗（下の「接続先の台帳」の、接続先に届かなかったものを除く）・応答の途中の途切れや無音（`provider_idle`）：失敗の数を足す（前の失敗から 5 分を過ぎていれば 1 から）。3 回続けば（`failover_threshold`、0 で切る）、そのアカウントを避け始め、避ける時間は 30 秒、2 分、10 分、30 分と延ばす。現在のアカウントだったら次のものへ移す。60 秒の失敗率の窓でも見る：20 件以上のうち 25% 以上が失敗なら、新しい会話を置かない（手で選んだアカウントは除く）。10% 以下が 30 秒続けば戻す。応答の途中のプロバイダの誤りの出来事（SSE の `error` など）は数えない。
   - そのほかの 400 番台・300 番台：アカウントの健康に数えない。
 - **使用率の読み取り：** 応答（成功でも断りでも）の見出しを毎回読む。Codex の `x-codex-{primary,secondary,tertiary}-used-percent`・`-reset-at`・`-window-minutes`（primary の窓が 1 日未満なら 5 時間の窓、28 日以上なら月の窓）、Anthropic の `anthropic-ratelimit-unified-{5h,7d}-utilization`（0〜1 の割合）・`-reset`。加えて、使えるアカウントが 2 つ以上あり、使用率で選ぶとき（`quota`・`reset-first`、または閾値が 0 でないとき）だけ、10 分読んでいないアカウントの使用量 API（ChatGPT の `wham/usage`、Claude の `api/oauth/usage`、Muse の `muse-code/key`。`/usage` と同じもの）を裏で読む。DeepAI は読まない（割合の窓が無い）。
 - **クールダウンを早く終える：** `Retry-After` 以外で決まったクールダウン中のアカウントは、5 分ごとに使用量 API を読み、使用率が 100% 未満ならクールダウンと回避を終える。手では `accounts/clear_cooldown`。
 - **使えるアカウントが選べないとき：** 全部がクールダウン中なら、現在のアカウント（無ければクールダウンが最も早く終わるもの）へ送る（プロバイダがまた断るか、戻っていれば答える）。全部が一時停止かログインし直しなら、`account_paused`・`account_needs_reauth`・`account_unavailable`。
 - **要求以外の読み取り：** モデルの一覧・`/usage`・DeepAI の審査などは、その会話の固定、無ければ新しい会話が使うアカウントで読む。
+
+### opencodex の残りの仕組み
+
+ユーザーの指示（2026-11-26）「残りも今作る」による。モデルの組み合わせ（combos）と、決まりによる経路の選択（policy routing）は、前の判断どおり範囲外。場所は `refs/opencodex/src` からの行番号（v2.100.0、コミット 1d10758f）。どれも学術研究の裏付けは無く、opencodex のソースに合わせた（UNSUPPORTED_APPROVED）。
+
+#### モデルごとの上限
+
+- 要求のモデルから「上限の組（quota group）」を決める（`pool::quota_scope`）：
+  - ChatGPT：`gpt-reserve` は `reserve`、ほかのモデルはすべて `shared`。opencodex は「上限が別だと確かめた組だけを分け、ほかは共有」としている（`codex/routing/health-store.ts:103-118` の `NATIVE_MODEL_QUOTA_SCOPES`・`codexQuotaScopeForModel`、`catalog/native-models.ts:2`）。
+  - Claude：Fable の家族（`claude-fable-5` と `claude-fable-5-…`）は `Fable`（`oauth/anthropic-model-family.ts:4-7`）。ほかのモデルに組は無い。
+  - ほかの種類（Muse・DeepAI・API キー）には組は無い。
+- ChatGPT の 429・402 で、`Retry-After` が無く断りの応答の戻る時刻からクールダウンを決めたもの（`reset`）は、その組だけを冷ます（`codex/routing.ts:1452-1494`）。組が `shared` なら、前と同じくそのアカウントの会話の固定を外し、現在のアカウントを移す（`:1480`）。`reserve` なら固定も現在のアカウントも動かさない（`:1477-1479` の説明、`health-store.ts:121` の `isIndependentCodexQuotaScope`）。`Retry-After` か既定の 60 秒のクールダウンは、前と同じくアカウント全体（`:1452-1455` の説明）。
+- 組のクールダウンと回避は、そのアカウントの全体のものと合わせて見る：全体のものが続いていれば全体、無ければ要求の組のもの（`health-store.ts:166` の `codexQuotaAvoidUntil`、`:230` の `getCodexQuotaHealthSnapshot`）。
+- Anthropic の Fable の家族：断り（下の「Anthropic の 429 の分け方」の家族の上限）は、その家族の要求だけを、窓の戻る時刻か 30 分の早いほうまで、そのアカウントから外す（`oauth/anthropic-model-quota.ts:9`・`:58`・`:99`）。そのアカウントから Fable の答えが返れば外れる（`:75`、`providers/quota/account-cache.ts:320`）。
+- Fable の窓の使用率：応答の見出し `anthropic-ratelimit-unified-7d_oi-utilization`（0〜1.01 の割合、100% で頭打ち）、429 で `7d_oi-status: rejected` なら 100%（`providers/quota/anthropic-family-headers.ts:3-14`）。Fable の要求の使用率の数え方には、その窓も入れる（`anthropic-model-quota.ts:13-17` の `anthropicModelPercents`）。窓が 100% のアカウントは、Fable の要求では後回し（ほかに無ければ使う。`oauth/anthropic-routing.ts:805-806`）。
+- 会話の固定：Fable の家族の断りだけで使えないときは、固定を残してその要求だけほかへ送る（一時的な不調の回り道と同じ扱い。`anthropic-routing.ts:1316-1324`）。
+- 保存：組のクールダウンはデータベースの `pool_scoped_cooldowns`（下の「データベース」）。
+
+#### プランとクレジット
+
+- **プランによる除外：** `pool.excluded_plans`（プランの名前の一覧、大文字小文字を無視）。そのプランのアカウントは、プールが自分では選ばない。`active_account` で手で選んだアカウントは使う（`codex/routing/selection.ts:50` の `excludedCodexPoolPlanKeys`、`:76` の `isCodexAccountPlanExcluded`）。固定した会話もそのアカウントを離れる（`:120` の `isCodexAccountSelectable`、「固定した会話は一覧を通らないので、使えるかの判定にも入れる」という opencodex の説明 `:66-71`）。全部が除外なら送らない（`account_unavailable`。`:110` の `isCodexAccountRotationExcluded`）。
+  - プランの名前は、使用量 API の答え（ChatGPT の `plan_type`、Muse の `subs_tier_name`）、無ければ ChatGPT のトークンの `chatgpt_plan_type`（`codex/plan.ts:23-38` の `extractChatgptPlanType`。opencodex も使用量 API の値を優先する `codex/plan-from-token.ts:33`）。Claude はプランを読む口が無いので、除外は効かない。
+- **クレジット：** ChatGPT のアカウントで、窓が 100% になっている（5 時間の窓が今も満杯、または週・月の窓が 100% で戻る時刻が先）ときは、プールはそのアカウントを使わない（ChatGPT は満杯でもクレジットを使って答えるため。`codex/account-credit-use.ts:14-28`・`:56-95`・`:97-107`）。アカウントごとの `credits: true`（`accounts/priority` で書く）で、しかも 5 分以内に読んだクレジットが使える（`has_credits` で残高が 0 より多い、または `unlimited`、`overage_limit_reached` でない）ときだけ使い続ける（`codex/quota-types.ts:26`・`:38-49`）。全部がこの状態なら送らない。クレジットは使用量 API の `credits`（`codex/credits.ts:27-52`）と、応答の見出し `x-codex-credits-has-credits`・`-unlimited`・`-balance`（`server/safe-response-headers.ts:108-110` に並ぶ名前）から読む。
+  - opencodex の設定の名前は `creditCodexAccountIds`（使ってよいアカウントの一覧）。inocode はアカウントの目次の `credits` に置いた（ほかのアカウントごとの値と同じ場所）。
+- **モデルの権利の補正：** ChatGPT が 400 で本文の `detail`（または `error.message`）が「The '〈モデル〉' model is not supported when using Codex with a ChatGPT account.」とちょうど一致するとき（`combos/failover.ts:1389`・`:1403`）、そのアカウントとモデルの組を 6 時間覚え（`codex/observed-model-denials.ts:46`・`:119`）、そのモデルの要求ではほかのアカウントを先に使う。外して空になるときは外さない（`:22-30` の説明「並べ方の好みで、選べる・選べないの判定ではない」）。同じ要求を一度だけ別のアカウントへ送り直す（`server/responses/core-codex-account.ts:1122-1141`）。そのアカウントがそのモデルで答えれば消える（`observed-model-denials.ts:153`）。固定した会話は固定を残し、そのモデルの要求だけほかへ送る。
+  - モデルの名簿（`/models` をアカウントごとに取って、権利の有無を知る仕組み、`codex/model-entitlements.ts`）は作っていない。
+
+#### 空いた窓
+
+- `pool.start_idle_windows`（既定 `false`、opencodex の `codexPool.startIdleWindows` も既定で無効）。新しい会話を、5 時間の窓がまだ始まっていないアカウントへ先に置き、その窓を走らせ始める（`codex/routing/idle-window.ts:22-58`）。
+- 条件：手で選んだアカウントが無い、組が `reserve` でない（`:30-31`）。使えて閾値に達していないアカウントのうち（`:32-36`）、5 時間の窓が 0%、窓の長さが 5 時間と分かっている、5 分以内に読んだ、戻る時刻が読んだ時刻のちょうど 5 時間後（±1 分）で、まだ先（`:40-47`）。一度置いたら、戻る時刻か今から 5 時間の遅いほう＋1 分までは、そのアカウントの窓は始まったものとみなす（`:45-52`）。
+- 置き方の順：会話の固定、分岐した会話の親、空いた窓、方式の順（`codex/routing.ts:1088-1110`）。
+- 窓の長さは Codex の見出し（`x-codex-primary-window-minutes`）か使用量 API の `limit_window_seconds` から分かる。Anthropic の見出しには長さが無いので、Claude では使用量 API の答えに長さがあるときだけ効く。
+
+#### 分岐した会話
+
+- `/fork` で作った会話は、親の会話を覚える（データベースの `thread_lineage`）。その会話がそのプロバイダで初めて送るとき、親の会話が今使っているアカウント（回り道の保持中なら回り道の先）へ置く。親が使えなければ、同じ親から分かれたほかの会話（新しいものから 8 件まで）のアカウント（`codex/routing.ts:382-407`・`:415-443`、`codex/lineage.ts:69` の `CODEX_LINEAGE_MAX_SIBLINGS`）。使えるかの判定は固定と同じ（使える、上限の断りが残っていない、失敗が続いていない）。
+- 一度でも固定を持った会話には使わない（`routing.ts:1083-1087` の説明）。
+- 補助役（審査・圧縮・探索・判定・同僚）は前から同じ会話として送るので、同じアカウント。
+
+#### 固定した会話の上の段への戻し
+
+- `pool.priority_failback`（既定 `false`、opencodex の `codexAccountPriorityFailback` も既定で無効）。`quota` の方式で、固定したアカウントの閾値が 0 でないとき（`codex/account-priority.ts:10-14`）。
+- 上の段が新しい会話を取り戻す条件（前からの「上の段が戻ったとき」）が成り立ち、上の段の候補のうち、閾値に達しておらず、上限の断りが残っておらず、失敗が続いておらず、使用率が 5 分以内に読んだもの（5 時間の窓も 5 分以内）で、分かっていて 100% 未満かつ閾値未満のものがあれば、そのうち最も空いたものへ会話の固定を移す（`codex/routing.ts:512`、`account-priority.ts:8` の 5 分）。手で選んだアカウントがあれば移らない（`pickPriorityPreemption` と同じ）。
+- 1 分に 1 回の見直しより先に、毎回確かめる（`routing.ts:704-705`）。
+- この設定が有効なとき、使用量 API を読む間隔を 10 分から 5 分にする（opencodex は戻しのために 5 分ごとに読み直す。`codex/auth-context.ts:1578-1583`、`codex/auth-api/pool-mode-gate.ts:332-337`）。
+
+#### 接続先の台帳
+
+- 名前が引けない（DNS）・接続を断られた・道が無い（ホスト・ネットワークに届かない）ことがはっきりした失敗は、接続先に要求が届いていないので、アカウント（キー）の失敗に数えない（`lib/upstream-reachability.ts:1-21`・`:29-38`・`:71-87`、`codex/routing/cooldown-math.ts:157`）。代わりに（プロバイダの id、接続先のホスト名）ごとの台帳に数える（`codex/routing.ts:1278-1284`、`codex/upstream-host-health.ts:53`）。
+  - inocode の判定：`reqwest` の接続の誤りで、その元の `std::io::Error` の種類が `ConnectionRefused`・`HostUnreachable`・`NetworkUnreachable`・`NetworkDown`、または元の誤りの文が `dns error` で始まるもの（`hyper-util` が名前引きの失敗をこう名乗る。型が公開されていないので文で見る）。リセット・時間切れ・TLS の失敗は、接続先が要求を見た後かもしれないので、前と同じくアカウントの失敗。
+- 台帳：続いた失敗の数、最後の時刻、最後の理由。前の失敗から 10 分を過ぎた失敗は 1 から数え直す。答え（どんな HTTP の状態でも）が来れば消える。128 件まで（`upstream-host-health.ts:10-13`・`:253`・`:326`）。
+- 回路（circuit）：`pool.host_circuit_threshold`（0〜20、既定 0 で数えるだけ）。その数だけ続けて届かなければ、30 秒はそのプロバイダへ送らず `provider_unreachable` を返す。30 秒の後は 1 件だけ試しに送り（ほかは 1 秒後を案内）、試しも届かなければまた 30 秒（`upstream-host-health.ts:167-216`）。試しが何も知らせずに終わった（送る前に失敗した）ときは、30 秒たてば次の試しを許す（inocode の判断。opencodex は試しの持ち主を厳密に管理している）。
+- `pool/status` の `host` に出す。
+
+#### Anthropic の 429 の分け方
+
+- Claude のログインの 429 を、見出しで分ける（`oauth/anthropic-rate-limit-policy.ts:23-32` の `classifyAnthropic429`）：
+  - 5 時間か週（`5h`・`7d`）の窓が `rejected`、または全体（`anthropic-ratelimit-unified-status`）が `rejected`：アカウント全体の上限。前と同じクールダウンと送り直し（`oauth/anthropic-routing.ts:1217-1270`）。
+  - Fable の窓（`7d_oi`）だけが `rejected`：Fable の家族の上限（上の「モデルごとの上限」）。Fable の要求なら別のアカウントへ一度送り直す（`oauth/anthropic-account-refusal.ts:162-165`）。
+  - `Retry-After` があるか、全体が `allowed`：一時的な速度制限。上限の断りではない（opencodex の説明「Retry-After はそのアカウントの一時停止で、上限を使い切った証拠ではない」`anthropic-rate-limit-policy.ts:28`）。そのアカウントを `Retry-After`（無ければ 0.1 秒）の間だけ新しい要求に使わず（`pauseAnthropicRateAdmission`、`anthropic-account-refusal.ts:167-170`）、会話の固定は残す。待ちが 1 秒以内なら同じアカウントで一度待って送り直し、それでも断られたら、または待ちが長ければ、別のアカウントへ一度送り直す（`:171-196`、`ANTHROPIC_SHORT_RETRY_MS` 100・`ANTHROPIC_MAX_INLINE_THROTTLE_MS` 1000 は `anthropic-rate-limit-policy.ts:7-8`）。
+  - どれでもない：何の窓かわからない。アカウントの状態は変えず、使えるアカウントが 2 つ以上なら 0.1 秒後に同じアカウントで一度だけ送り直す（`anthropic-account-refusal.ts:166-190`）。
+- Claude の 403：本文がアカウント自体を断るもの（`error.type` が `permission_error` で「Your account does not have access to Claude Code」「Your (Claude) subscription has expired / is expired / is inactive」「Your account does not have an active subscription」「(Your|This) organization has disabled Claude subscription access for Claude Code」、`billing_error` か `permission_error` で「Your credit balance is too low to access the Anthropic API」、または `oauth_org_not_allowed`。`error.code` があるなら `subscription_required`・`insufficient_quota`・`permission_denied`・`oauth_org_not_allowed` のどれか。`anthropic-account-refusal.ts:67-90`）は、`Retry-After` が無ければ 10 分のクールダウン（`anthropic-routing.ts:60`・`:1250`）で、ほかのアカウントへ一度送り直す。ログインし直しの印は付けない（`:1213` の説明「プランの更新にログインは要らない」）。そのほかの Claude の 403 はアカウントの健康に数えず、印も付けない（前は印を付けていた）。
+  - 文の一致は大文字小文字を無視し、終わりの `.`・`!` を除いて比べる（opencodex の正規表現は終わりの 1 文字だけを許す。inocode のほうが少し緩い）。
+- Claude の 401 は前のまま（断られたトークンで更新を一度試す）。opencodex は「OAuth access token has been revoked.」の 401 だけに印を付ける（`anthropic-account-refusal.ts:51-65`・`:135-155`）が、inocode は前からの、更新も断られたら印を付ける扱いを残した。
+
+#### API キーのプール
+
+- 登録：API キーの種類のプロバイダ `<id>` のキーは、認証情報の保管場所の `api-key/<id>` のアカウントとして持つ（ログインのアカウントと同じ形。別名・一時停止・優先度・閾値・削除・`active_account` も同じ）。
+  - `inocode-server key set <id> [--account <別名>]`：`--account` が無ければ `default` のキー（前と同じ）。あれば、その id か別名（大文字小文字を無視）のアカウントのキーを置き換え、無ければその別名で新しいアカウントを足す。キーは表示しない（入力も画面に出さない）。
+  - プロトコル `accounts/add_key {provider, key, alias?}`（上の「アカウントの登録」の「プロトコル」）。`accounts/list`・`rename`・`pause`・`priority`・`clear_cooldown`・`remove`・`use` は、API キーのプロバイダの id でそのキーを扱う。
+  - キーの無いアカウント（前の版でプロバイダを消したときに空にしたもの）はプールに入れない。
+- 選び方：ログインのアカウントと同じプール（方式・段・閾値・会話の固定・失敗の続き・回り道・接続先の台帳）。`pool` の設定も書ける。
+  - opencodex との違い：opencodex の `apiKeyPoolStrategy`（`round-robin`・`fill-first`・`quota`）は、今使っているキーがクールダウン中のときだけ別のキーを選ぶ（`providers/key-failover.ts:490-548` の `selectProactiveApiKey`。`quota` は使用率の多い残り、無ければ並びの順）。inocode は新しい会話ごとに方式で選ぶ（ユーザーの指示「同じ方式で選ぶ」による）。キーの使用率は読まない（読む口が無い）ので、`quota` の方式では、断られるまで今のキーを使い続ける。これは opencodex の既定の動き（健全なキーを使い続ける）と同じになる。
+- 断りの扱い（`providers/key-failover.ts`）：
+  - 429・402：`Retry-After`（最長 10 分、`:40`・`:364-378`）、無ければ 60 秒（`:39`）のクールダウン。断りの窓の戻る時刻は使わない（キーには窓が無い）。同じ要求を一度だけ別のキーへ送り直す（`:852-950` の `rotateKeyAfterFailure`）。
+  - 401：そのキーを 10 分休ませ（`:930-944`「401 は鍵そのものへの判定なので上限まで休ませる」）、同じ要求を一度だけ別のキーへ送り直す。
+  - 403：キーの健康に数えない。
+  - opencodex の、429 の本文に書かれた戻る時刻を読む部分（`:107` の `readQuotaResetAt`、`:247` の `parseQuotaResetAt`）と、Anthropic の請求の断りの 1 時間（`:50`）は作っていない。
+
+#### コネクタ
+
+- コネクタ（`/connectors`、claude.ai と ChatGPT の MCP コネクタ）は前のまま、プールを使わない。コネクタの MCP の接続は長く続き、その途中でアカウントが替わると接続先の側の状態が合わなくなること、コネクタはプール（`Core` が持つ）に届かない場所（`core/src/mcp.rs` の接続の管理）でアカウントの見出しを作ることから、簡単ではないと判断した（推測を含む。試していない）。
 
 ### opencodex との対応
 
@@ -415,20 +500,20 @@
 | クールダウンを試しの 1 件で早く終える（probe lease） | 使用量 API の読み取りで代えた（本物の要求は送らない） |
 | 401・403（資格）で再ログインの印、403 の拒否は印なし | 作った（401 は前からの「更新を一度試す」を残した） |
 | 5xx の失敗の続き、3 回で切り替え、30 秒〜30 分の回避、60 秒の失敗率 | 作った |
-| 応答の見出しと使用量 API からの使用率、使用率の数え方 | 作った（クレジット・プランによる例外は無し） |
+| 応答の見出しと使用量 API からの使用率、使用率の数え方 | 作った（モデルの家族の窓とクレジット・プランは下の行） |
 | 手で選んだときの会話の固定の解除と回避の取り消し | 作った |
 | 管理：方式・sticky・閾値・失敗の閾値・優先度・クールダウン解除・状態 | プロトコルとスラッシュコマンドで作った（下） |
-| モデルごとの上限（モデル別のクォータ枠、モデルの権利の名簿） | 作っていない |
-| クレジットでの続行、プランによる除外、`use-remaining` | 作っていない |
-| 空いた 5 時間の窓を始めに行く置き方（idle window） | 作っていない |
-| 子の会話を親の会話のアカウントへ置く（lineage） | 作っていない（補助役は同じ会話なので同じアカウントを使う） |
-| 優先度の戻しを固定した会話にも使う（priority failback、opencodex でも既定で無効） | 作っていない |
-| 接続先の到達できなさの台帳（host ledger） | 作っていない（接続の失敗はアカウントの失敗に数える） |
-| Anthropic の 429 の細かい分け方（一時的な速度制限・家族ごとの上限） | 作っていない（429 はすべて上限による断り） |
+| モデルごとの上限（モデル別のクォータ枠） | 作った：ChatGPT の `gpt-reserve` と残り、Anthropic の Fable の家族（下の「モデルごとの上限」）。モデルの権利の名簿（`/models` の取得）は作っていない。権利の補正は断りの記録で作った（次の行） |
+| クレジットでの続行、プランによる除外、モデルの権利の補正（断られたモデルの記録） | 作った（下の「プランとクレジット」）。`use-remaining`（手で選んだアカウントを使い切るまで使う一回きりの指定）は作っていない |
+| 空いた 5 時間の窓を始めに行く置き方（idle window、opencodex でも既定で無効） | 作った（下の「空いた窓」） |
+| 子の会話を親の会話のアカウントへ置く（lineage） | 作った：`/fork` で分けた会話（下の「分岐した会話」）。補助役は同じ会話なので前から同じアカウント |
+| 優先度の戻しを固定した会話にも使う（priority failback、opencodex でも既定で無効） | 作った（下の「固定した会話の上の段への戻し」） |
+| 接続先の到達できなさの台帳（host ledger）と、任意の回路（circuit） | 作った（下の「接続先の台帳」） |
+| Anthropic の 429 の細かい分け方（一時的な速度制限・家族ごとの上限）と 403 の分け方 | 作った（下の「Anthropic の 429 の分け方」） |
 | 手で選んだアカウントを、使い切ったときに設定から外す | しない（inocode の `active_account` は設定に残り、また使えるようになれば戻る） |
 | モデルの組み合わせ（combos）、決まりによる経路の選択（policy routing） | 範囲外 |
-| API キーの複数のキーのプール | 作っていない：登録簿が 1 プロバイダ 1 キー（`api-key/<id>`）なので、プールは API キーのプロバイダには効かない。`pool` の設定も書けない |
-| コネクタのアカウントの選択 | プールを使わない |
+| API キーの複数のキーのプール（`apiKeyPool`・`apiKeyPoolStrategy`） | 作った（下の「API キーのプール」。選び方は opencodex より広い） |
+| コネクタのアカウントの選択 | プールを使わない（下の「コネクタ」） |
 
 ### 数値と出典（opencodex、`refs/opencodex/src`）
 
@@ -456,6 +541,17 @@
 | 拒否の名前 | `names_denial` | `codex/quota-rejection.ts:81`・`:86` |
 | 手で選んだとき | `Inner::sync_pin` | `codex/routing/active-account.ts:34` |
 | クールダウンの解除 | `Pool::clear_cooldown` | `codex/routing/health-store.ts:279`、`codex/auth-api/routes.ts:282` |
+| 上限の組（`gpt-reserve` は `reserve`、ほかは `shared`、Fable の家族） | `quota_scope`・`anthropic_family` | `codex/routing/health-store.ts:108-118`、`oauth/anthropic-model-family.ts:4` |
+| 家族の断りの保持 30 分 | `FAMILY_REFUSAL_MAX_AGE` | `oauth/anthropic-model-quota.ts:9`・`:99` |
+| Anthropic の短い送り直し 0.1 秒、同じアカウントで待つのは 1 秒まで | `SHORT_RETRY`・`MAX_INLINE_THROTTLE` | `oauth/anthropic-rate-limit-policy.ts:7-8` |
+| Anthropic の 403（アカウントの断り）のクールダウン 10 分 | `ACCOUNT_REFUSAL_COOLDOWN` | `oauth/anthropic-routing.ts:60`・`:1250` |
+| 断られたモデルの記録 6 時間 | `MODEL_DENIAL` | `codex/observed-model-denials.ts:46` |
+| クレジットの鮮度 5 分 | `CREDITS_FRESHNESS` | `codex/quota-types.ts:26` |
+| 空いた窓：5 時間・±1 分・5 分以内に読んだもの | `IDLE_WINDOW_SECONDS`・`IDLE_WINDOW_TOLERANCE`・`IDLE_WINDOW_FRESHNESS` | `codex/routing/idle-window.ts:10-12` |
+| 兄弟の会話は 8 件まで | `MAX_SIBLINGS` | `codex/lineage.ts:69` |
+| 上の段への戻しの鮮度と読み直し 5 分 | `FAILBACK_REFRESH` | `codex/account-priority.ts:8` |
+| 接続先の台帳：10 分で数え直し、回路は 30 秒、閾値 0〜20、128 件 | `HOST_FAILURE_WINDOW`・`HOST_CIRCUIT_COOLDOWN`・`MAX_HOST_CIRCUIT_THRESHOLD`・`MAX_HOSTS` | `codex/upstream-host-health.ts:10-13` |
+| API キー：`Retry-After` は 10 分まで、無ければ 60 秒、401 は 10 分 | `MAX_KEY_COOLDOWN`・`DEFAULT_QUOTA_COOLDOWN` | `providers/key-failover.ts:39-40`・`:930-944` |
 
 ### 設定
 
@@ -466,35 +562,40 @@
       "kind": "claude-oauth",
       "active_account": "ab12cd34",
       "pool": {"strategy": "quota", "sticky_limit": 1, "auto_switch_threshold": 80,
-               "failover_threshold": 3, "cache_affinity": true}
-    }
+               "failover_threshold": 3, "cache_affinity": true,
+               "excluded_plans": ["free"], "start_idle_windows": false,
+               "priority_failback": false, "host_circuit_threshold": 0}
+    },
+    "keys": {"kind": "anthropic", "active_account": "default", "pool": {"strategy": "round-robin"}}
   }
 }
 ```
 
-- `pool` の各項目は省ける（省くと上の値）。`strategy` は `quota`・`round-robin`・`fill-first`・`reset-first`、`sticky_limit` は 1〜100、`auto_switch_threshold` は 0〜100、`failover_threshold` は 0〜20。違えば設定の誤り。API キーの種類に `pool` は書けない。
-- アカウントごとの値は、認証情報の保管場所のファイルの `account_info`（秘密でない目次）の `priority`（0 は書かない）と `auto_switch_threshold`。この 2 つを書いたファイルは、これを知らない前の版の inocode では読めない（`account_info` は知らない項目を断る）。
+- `pool` の各項目は省ける（省くと上の値）。`strategy` は `quota`・`round-robin`・`fill-first`・`reset-first`、`sticky_limit` は 1〜100、`auto_switch_threshold` は 0〜100、`failover_threshold` は 0〜20、`host_circuit_threshold` は 0〜20、`excluded_plans` は空でない名前の一覧。違えば設定の誤り。API キーの種類にも `pool` と `active_account` を書ける（キーのプール）。
+- アカウントごとの値は、認証情報の保管場所のファイルの `account_info`（秘密でない目次）の `priority`（0 は書かない）と `auto_switch_threshold` と `credits`（`true` のときだけ書く）。これらを書いたファイルは、これを知らない前の版の inocode では読めない（`account_info` は知らない項目を断る）。
 
 ### プロトコル
 
 | メソッド | params | result |
 |---|---|---|
-| `pool/get` | `{provider}` | `{provider, kind, pool（書いたもの、無ければ null）, effective: {strategy, sticky_limit, auto_switch_threshold, failover_threshold, cache_affinity}, active_account}` |
-| `pool/set` | `{provider, strategy?, sticky_limit?, auto_switch_threshold?, failover_threshold?, cache_affinity?}`（`null` で既定に戻す） | `pool/get` と同じ |
-| `accounts/priority` | `{provider, account, priority?, auto_switch_threshold?}`（どちらか 1 つは要る。`null` で既定に戻す） | `{account: {…, priority, auto_switch_threshold, active}}` |
-| `accounts/clear_cooldown` | `{provider, account}` | `{account, cleared}`（クールダウンか回避が続いていたら `true`） |
+| `pool/get` | `{provider}` | `{provider, kind, pool（書いたもの、無ければ null）, effective: {strategy, sticky_limit, auto_switch_threshold, failover_threshold, cache_affinity, excluded_plans, start_idle_windows, priority_failback, host_circuit_threshold}, active_account}` |
+| `pool/set` | `{provider, strategy?, sticky_limit?, auto_switch_threshold?, failover_threshold?, cache_affinity?, excluded_plans?, start_idle_windows?, priority_failback?, host_circuit_threshold?}`（`null` で既定に戻す） | `pool/get` と同じ |
+| `accounts/priority` | `{provider, account, priority?, auto_switch_threshold?, credits?}`（どれか 1 つは要る。`null` で既定に戻す） | `{account: {…, plan, priority, auto_switch_threshold, credits, active}}` |
+| `accounts/clear_cooldown` | `{provider, account}` | `{account, cleared}`（クールダウンか回避が続いていたら `true`。上限の組のものも消す） |
 | `pool/reset_affinity` | `{provider?, thread_id?}` | `{cleared}`（外した会話の固定の数） |
-| `pool/status` | `{provider?}` | `{providers: [{provider, kind, pool（効いている値）, active_account, current, accounts: [{id, alias, paused, needs_reauth, priority, auto_switch_threshold, threshold, score, usage, cooldown_until, cooldown_source, quota_avoid_until, soft_avoid_until, reason, consecutive_failures, degraded, bound_threads, last_status, last_error, current}]}]}` |
+| `pool/status` | `{provider?}` | `{providers: [{provider, kind, model, pool（効いている値）, active_account, current, host, accounts: [{id, alias, paused, needs_reauth, priority, auto_switch_threshold, credits, plan, threshold, score, usage, cooldown_until, cooldown_source, quota_avoid_until, soft_avoid_until, rate_pause_until, scoped_cooldowns, denied_models, reason, consecutive_failures, degraded, bound_threads, last_status, last_error, current}]}]}` |
 
-- `provider` は設定のプロバイダの id（ログインの種類）。種類の名前や API キーのプロバイダは `invalid_params`。`account` は id か別名。
-- 時刻はミリ秒。`cooldown_until`・`quota_avoid_until`・`soft_avoid_until` は過ぎていれば `null`。`score` は使用率の数え方の値で、分からなければ `null`。`usage` は `{short_percent, short_resets_at, weekly_percent, weekly_resets_at, monthly_percent, monthly_resets_at, updated}` か `null`。`reason` は使わない理由（`paused`・`needs_reauth`・`cooldown`・`quota_avoided`・`transient`・`degraded`）か `null`。`current` は新しい会話がいま使うアカウント。`bound_threads` はそのプロバイダでそのアカウントに固定した会話の数。`last_error` は最後の失敗の文（プロバイダの返した本文の先頭 300 文字まで。認証情報は入らない）。
+- `provider` は設定のプロバイダの id（ログインの種類も API キーの種類も）。種類の名前は `invalid_params`。`account` は id か別名。`pool/status` は `provider` を省くと設定のすべてのプロバイダ（API キーの種類も）。`kind` は認証情報の保管場所の名前（API キーの種類は `api-key/<id>`）。
+- 時刻はミリ秒。`cooldown_until`・`quota_avoid_until`・`soft_avoid_until` は過ぎていれば `null`。`score` は使用率の数え方の値で、分からなければ `null`。`usage` は `{short_percent, short_resets_at, weekly_percent, weekly_resets_at, monthly_percent, monthly_resets_at, families, plan, updated}` か `null`（`families` はモデルの家族の窓、例 `{"Fable": 100}`）。`reason` は使わない理由（`paused`・`needs_reauth`・`plan_excluded`・`usage_limit`（クレジットを守る）・`cooldown`・`quota_avoided`・`rate_paused`・`transient`・`degraded`）か `null`。状態はプロバイダの既定のモデル（`model`）の要求から見たもので、ほかのモデルの上限の組のクールダウンは `reason` に出ず、`scoped_cooldowns`（組の名前 → `{cooldown_until, cooldown_source, quota_avoid_until, status}`）に出る。`denied_models` はそのアカウントが断ったモデル（6 時間）。`host` は接続先の台帳（`{host, consecutive_failures, last_failure, last_code, cooldown_until}`、届かなかったことが無ければ `null`）。`current` は新しい会話がいま使うアカウント。`bound_threads` はそのプロバイダでそのアカウントに固定した会話の数。`last_error` は最後の失敗の文（プロバイダの返した本文の先頭 300 文字まで。認証情報は入らない）。
 - `providers/update` の `pool` でも変えられる（同じ確かめ）。
 
-### データベース（版 11）
+### データベース（版 12）
 
 - `pool_affinity(session_id, provider, kind, account, bound, used)`：会話の固定。キーは（会話、プロバイダ）。読み込みは最初にプールを使うとき 1 回、24 時間以内に使ったものだけ。使った時刻の書き込みは 1 分に 1 回まで。
 - `pool_cooldowns(kind, account, until, avoid_until, since, source, status)`：上限による断りのクールダウンと回避。読み込みはまだ続いているものだけ。
-- 前の版のデータベースはそのまま上げる（`store::migration` の試験で版 11 まで上がる）。
+- `pool_scoped_cooldowns(kind, account, scope, until, avoid_until, since, source, status)`：上限の組（`reserve`・`shared`・`Fable`）のクールダウンと回避。キーは（種類、アカウント、組）。アカウントを消すかクールダウンを手で解くと、組のものも消える。
+- `thread_lineage(session_id, parent)`：`/fork` で作った会話と、その元の会話。会話を消すとその行も消える。読み込みは最初にプールを使うとき 1 回。
+- 前の版のデータベースはそのまま上げる（`store::migration` の試験で版 12 まで上がる）。
 
 ### スラッシュコマンド
 
@@ -509,14 +610,22 @@
   - 失敗の続き（2 回では移らない、3 回で 30 秒、2 分、30 分、成功 2 回で消える、5 分で古くなる）、失敗率の窓（19 件では足りない、20 件中 5 件、30 秒続いて戻る）。
   - 会話の固定（閾値を超えても残る・使い切ったら空いたほうへ・行き先が無ければ残る・`cache_affinity: false` は閾値で移る・ほかの方式は見直さない）、24 時間で外れる、一時的な不調での回り道と 10 分での移し替え、401 と 403 の拒否の違い、使用量 API を読む条件と 5 分ごとの確かめ。
   - 見出しの読み取り（Codex の 5 時間・週・月、100 を超える値、Anthropic の割合と断りの窓）、5 時間の窓だけでは数えない、使用量 API の窓の分け方。
-- `core/src/store_pool.rs`：固定とクールダウンの保存・上書き・削除。`core/src/secrets.rs`：`priority`・`auto_switch_threshold` が保存の往復で残る。
+  - 残りの仕組み（2026-11-26）：Anthropic の 429 の分け方（5 時間・週・全体・Fable・`Retry-After`・`allowed`・わからない）と送り直しの決め方、速度制限で固定が残り回り道してから戻る、わからない 429 は何も変えない、Claude の 403 の分け方（ふつうの 403 は何もしない、アカウントを断る 403 は 10 分）と本文の判定。Fable の断りは Fable だけ（ほかのモデルは使える、30 分が上限、Fable の答えで外れる）。ChatGPT の戻る時刻からの断りは組だけ（`reserve` は `shared` に影響しない、`shared` は固定を外す、`Retry-After` は全体）。プランの除外（手で選べば使う、使用量 API のプランが勝つ、全部除外なら無し）。クレジット（満杯は使わない、`credits` と 5 分以内のクレジットがあれば使う、古いクレジットは数えない、ほかに無くても送らない、ChatGPT だけ）。断られたモデル（そのモデルだけ後回し、固定は残る、ほかに無ければ使う、答えで消える、6 時間）。空いた窓（空いた窓を先に、一度置いたら始まったとみなす、既定で無効、古い値は使わない、手で選べば使わない）。分岐した会話（親のアカウント、兄弟のアカウント、使えない親は使わない）。上の段への戻し（既定で無効、新しい使用率でだけ、手で選んだら戻らない）。接続先の台帳（10 分で数え直す、回路は閾値で 30 秒、試しは 1 件、試しの失敗でまた閉じる、届けば消える、アカウントの失敗に数えない）。API キーの冷まし方（`Retry-After` は 10 分まで、401 は 10 分、窓の時刻は使わない、使用量は読まない）。
+- `core/src/store_pool.rs`：固定とクールダウンの保存・上書き・削除、組のクールダウンが全体と別に残り、組ごと・全部を消せる、分岐の親が残り会話を消すと消える。`core/src/secrets.rs`：`priority`・`auto_switch_threshold`・`credits` が保存の往復で残る。`core/src/oauth.rs`：キーを別名で足す・置き換える・全部消す、トークンのプラン。`core/src/usage.rs`：ChatGPT の使用量 API の `credits` を読み、`/usage` の表示には出さない。`core/src/accounts.rs`：API キーのプロバイダの名前がキーのプールになる。
 - プロトコル（`server/tests/pool_tcp.rs`、模擬の Claude、実 TCP）：
   - 2 つのアカウント。1 つ目が 429（`Retry-After: 3600`、5 時間の窓 100%）を返す → 同じ要求が 2 つ目で答え、会話はそこに留まる（模擬が受けた順は `at-alice`、`at-bob`、次のターンは `at-bob` だけ）。`pool/status`：1 つ目は `cooldown_until` が約 1 時間後、`cooldown_source: retry-after`、`reason: cooldown`、`last_status: 429`、`score: 100`。2 つ目は見出しから `score: 40`（週 40%、5 時間 25%）、固定 1 件、`current`。`accounts/list` の `active` も 2 つ目。
   - コアを作り直す（同じデータベース）→ クールダウンの終わりの時刻も会話の固定も残り、その会話と新しい会話は 2 つ目へ送られ、1 つ目には送られない。`accounts/clear_cooldown` で解除（2 回目は `cleared: false`）、`pool/reset_affinity` で固定 2 件を外す。
   - 503 を返すアカウントで 3 回失敗 → `consecutive_failures: 3`、`reason: transient`、新しい会話はもう 1 つで答える。
   - `pool/get`・`pool/set`（書いた値・効いている値・`null` で戻す・設定ファイルに書かれる）と拒む場合（知らない方式、範囲外、知らない項目、項目なし、種類の名前）、`accounts/priority` と拒む場合、`/accounts status`・`strategy`・`priority`・`clear-cooldown`、知らない方式のコマンドは誤り。
+  - Fable の断り：2 つのアカウント。1 つ目が Fable の要求にだけ 429（`7d_oi-status: rejected`、`7d_oi-utilization: 1.01`）を返す → Fable の会話は 2 つ目で答える。Sonnet の新しい会話は 1 つ目で答え、もう 1 つの Fable の会話は初めから 2 つ目へ（模擬が受けた順は `at-alice`、`at-bob`、`at-alice`、`at-bob`）。`pool/status`（Sonnet から見る）：1 つ目は `cooldown_until: null`、`scoped_cooldowns.Fable` に終わりの時刻、`usage.families.Fable: 100`。
+  - プランの除外（模擬の ChatGPT、トークンの `chatgpt_plan_type` が `free` と `plus`）：`excluded_plans: ["Free"]` で、先に足した `free` のアカウントを飛ばして `plus` で答える。`pool/status` は `reason: plan_excluded`・`plan: free`、効いている値は小文字の `["free"]`。`accounts/use` で `free` を選ぶと、新しい会話はそれで答える。
+  - 上の段への戻し：`accounts/use` で 2 つ目（段 0）に置いた会話を残し、選択を外して 1 つ目を段 10 にする。1 つ目は新しい会話を取り 95% と答え、その後 20% と答える。戻しが無効のうちは、2 つ目の会話は 2 つ目のまま。`pool/set` で `priority_failback: true` にすると、次のターンは 1 つ目で答え、`bound_threads` は 1 つ目 2 件・2 つ目 0 件。
+  - 分岐した会話：`round-robin` で bob・dave・bob と置いた後、最初の会話を `/fork` した会話は、順番なら dave のところ bob で答える。dave の会話を `/fork` し、コアを作り直す（同じデータベース）と、その会話は新しい順番の最初（bob）ではなく dave で答える（分岐の親がデータベースから読まれる）。
+  - 接続先の台帳：閉じたポートを接続先にした API キーのプロバイダ（`host_circuit_threshold: 2`）。2 回のターンは失敗し、`pool/status` の `host` は `consecutive_failures: 2`・`last_code: connection_refused`・`cooldown_until` あり、キーは `consecutive_failures: 0`・`reason: null`。3 回目は送らずに `provider_unreachable`。
+  - API キーのプール：`accounts/add_key` で 2 つのキー（`first` は `default`、`second` は新しい id、`added: true`）。空のキー・キー無し・ログインのプロバイダは誤り、`alias` が `default` を名指すと置き換え（`added: false`）、大文字の別名でも同じアカウント。`accounts/list` は 2 件でキーを含まない。1 つ目が 429（`Retry-After: 120`）→ 同じ要求が 2 つ目で答える（模擬が受けた順は `key-one`、`key-two`）。`pool/status` は `kind: api-key/keys`、1 つ目は 2 分以内のクールダウン、キーを含まない。2 つ目を一時停止すると、新しい会話はクールダウン中の 1 つ目へ送られて断られ、失敗する。2 つ目を消すとファイルからそのキーが消える。
+  - 前からの試験 `the_pool_is_set_by_method_and_by_command` は、効いている値の新しい項目と、拒む場合（`host_circuit_threshold: 21`、空のプランの名前）を足した。
 - 前からの試験 `accounts_tcp.rs` を、プールの動きに合わせて直した（上の「アカウントの登録」の「試験」）。
-- 実行したもの（2026-11-25、この機械）：`cargo test -j 1 --workspace`（すべて成功）、`cargo clippy -j 1 --workspace --all-targets -- -D warnings`（警告なし）、`cargo fmt --all`、`git diff --check`。
+- 実行したもの（2026-11-25、この機械）：`cargo test -j 1 --workspace`（すべて成功）、`cargo clippy -j 1 --workspace --all-targets -- -D warnings`（警告なし）、`cargo fmt --all`、`git diff --check`。残りの仕組みを足した後（2026-11-26、この機械）にも同じ 4 つを実行し、すべて成功・警告なし。
 
 ### 実際の機械での確認（2026-11-25、読むだけ）
 
@@ -526,8 +635,23 @@
 - ターンの後の `pool/status`：本物の応答の見出しから `short_percent: 0`（5 時間の窓）、`weekly_percent: 26`、`score: 26`、それぞれの戻る時刻、固定 1 件。本物の Anthropic の応答が `anthropic-ratelimit-unified-5h-*`・`-7d-*` を付けることを確かめた。
 - アカウントが 1 つなので、使用量 API の読み取りは起きない。ログイン・上限・アカウントの変更はしていない。
 
+### 実際の機械での確認（2026-11-26、読むだけ）
+
+- 残りの仕組みを足した後に、同じ `pool_tcp::live_the_pool_shows_the_machines_accounts_and_answers` を同じ条件（`INOCODE_TEST_PROVIDER=claude-oauth`、`INOCODE_TEST_MODEL=claude-haiku-5-5`、`HTTPS_PROXY`・`HTTP_PROXY` を外す）で 1 回実行。
+- ターンの前の `pool/status`：効いている値に新しい項目（`excluded_plans: []`、`start_idle_windows: false`、`priority_failback: false`、`host_circuit_threshold: 0`）、`current: default`、`score: null`、理由なし、固定 0 件。
+- 1 ターン（「hi」）：`completed`、日本語のあいさつ。全体で約 3.1 秒。
+- ターンの後：`short_percent: 17`、`weekly_percent: 28`、`score: 28`、`families: {}`（Haiku の応答に `7d_oi` の見出しは無かった）、`plan: null`、固定 1 件。
+- ログイン・上限・アカウントの変更はしていない。
+
 ### 確かめていないこと
 
+- 残りの仕組み（2026-11-26）について：
+  - 本物の Anthropic の 429 が、どの窓に `rejected` を付け、`Retry-After` や `unified-status: allowed` をいつ付けるか（opencodex のソースと模擬だけ）。Fable の `7d_oi` の窓は opencodex の記録（「Fable について試した値で確かめた」`anthropic-family-headers.ts:1`）だけで、本物では見ていない。Claude の 403 の本文の文も本物では見ていない。
+  - ChatGPT の `gpt-reserve` の上限が本当に別か（opencodex の判断に従った）、ChatGPT の 400 の「model is not supported」の本文、使用量 API の `credits` の形と `x-codex-credits-*` 見出しが本物の応答に付くか（どれも opencodex のソースだけ）。トークンの `chatgpt_plan_type` も本物では読んでいない。
+  - 名前引きの失敗を `hyper-util` の誤りの文（`dns error`）で見分けることは、閉じたポート（接続を断られる）の試験しかしていない。Linux・macOS での `std::io::ErrorKind` の対応も試していない。
+  - 空いた窓は、Codex の見出しか使用量 API が窓の長さを言うときだけ効く。本物の ChatGPT の `x-codex-primary-window-minutes` が 300 になるかは見ていない。
+  - API キーのプールは模擬の Anthropic の形でだけ試した（OpenAI・Responses の形は 1 キーの前からの試験だけ）。`inocode-server key set --account` は手で試していない（キーの入力を画面に出さない部分は前と同じ）。
+  - 2 つのプロセスが同じキーを使うときのクールダウンは共有しない（ログインのアカウントと同じ）。
 - 本物の 429・402 の形：Anthropic・ChatGPT・Muse・DeepAI が上限で断るときに `Retry-After` や使用率の見出しをどう付けるかは、本物では見ていない（模擬と opencodex のソースだけ）。本物の上限には当てていない（当てないことにした）。
 - Codex の `x-codex-*` 見出しは単体の試験だけで、本物の ChatGPT の応答では見ていない。
 - 使用量 API の Claude の `limits[]` の `kind` の名前は分からないので、名前に `five`・`5h`・`session`・`hour`・`window` があれば 5 時間の窓、`month` があれば月、ほかは週とみなした（推測）。

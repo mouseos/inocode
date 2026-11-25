@@ -16,8 +16,10 @@
 //! `login claude|gpt|muse-code|deepai` runs the interactive subscription/OAuth
 //! login instead of serving, storing the credential as an account of the
 //! kind (a new one, or the one that signs in the same person) and adding
-//! the provider to the settings. `key set <provider-id>` stores
-//! the API key of a static-key provider, read from standard input. `models
+//! the provider to the settings. `key set <provider-id> [--account <alias>]`
+//! stores the API key of a static-key provider, read from standard input:
+//! its default key, or the key of the account `alias` names (a new one of
+//! the provider's key pool when none has that alias). `models
 //! [provider-id]` lists a provider's models; `usage` prints the default
 //! account's usage (rate-limit windows or the DeepAI Theos allowance).
 //!
@@ -161,10 +163,21 @@ async fn command(
     let mut words = words.into_iter();
     match words.next().as_deref() {
         Some("login") => login_command(words.next().as_deref(), words.next().as_deref()).await,
-        Some("key") => match (words.next().as_deref(), words.next()) {
-            (Some("set"), Some(provider)) => key_command(&provider).await,
-            _ => Err(invalid("usage: inocode-server key set <provider-id>")),
-        },
+        Some("key") => {
+            let rest: Vec<String> = words.collect();
+            match rest
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .as_slice()
+            {
+                ["set", provider] => key_command(provider, None).await,
+                ["set", provider, "--account", alias] => key_command(provider, Some(alias)).await,
+                _ => Err(invalid(
+                    "usage: inocode-server key set <provider-id> [--account <alias>]",
+                )),
+            }
+        }
         Some("models") => models_command(words.next().as_deref()).await,
         Some("usage") => usage_command().await,
         None | Some("serve") => serve(port.unwrap_or(settings::DEFAULT_PORT), sandbox_flag).await,
@@ -322,8 +335,18 @@ fn write_token(path: &std::path::Path) -> io::Result<String> {
 }
 
 /// Stores the API key of the provider `provider`, typed without echo or
-/// piped in. The key is never printed.
-async fn key_command(provider: &str) -> io::Result<()> {
+/// piped in: its default key, or with `alias` the key of the account it
+/// names by id or alias, a new account of the key pool when none does. The
+/// key is never printed.
+async fn key_command(provider: &str, alias: Option<&str>) -> io::Result<()> {
+    if let Some(alias) = alias {
+        let length = alias.chars().count();
+        if !(1..=64).contains(&length) || alias.chars().any(char::is_control) {
+            return Err(invalid(
+                "an account alias has 1 to 64 characters and no control characters",
+            ));
+        }
+    }
     let settings = settings::Settings::load(&settings_path()?)
         .await
         .map_err(io::Error::other)?;
@@ -342,12 +365,15 @@ async fn key_command(provider: &str) -> io::Result<()> {
     }
     let mut store =
         Store::load(Store::default_path().map_err(io::Error::other)?).map_err(io::Error::other)?;
-    store
-        .update(&settings::api_key_name(provider), |credential| {
-            credential.api_key = Some(key.to_string());
-        })
+    let stored = store
+        .set_key(&settings::api_key_name(provider), alias, key)
         .map_err(io::Error::other)?;
-    println!("key for {provider} stored in {:?}", store.path());
+    println!(
+        "key for {provider} {} as the account {} in {:?}",
+        if stored.added { "stored" } else { "replaced" },
+        stored.account,
+        store.path()
+    );
     if settings.provider(provider).is_none() {
         println!(
             "no provider {provider} is configured yet; add it with providers/add \

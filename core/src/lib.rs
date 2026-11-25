@@ -764,7 +764,7 @@ impl Core {
             reasoning,
             self.credentials.clone(),
         );
-        let route = (!provider.kind.uses_api_key()).then(|| self.route(id, &provider));
+        let route = Some(self.route(id, &provider));
         let client = Arc::new(
             Llm::new(config)?
                 .with_codex_client_version(provider.client_version.clone())
@@ -775,14 +775,19 @@ impl Core {
         Ok(self.clients_lock().entry(key).or_insert(client).clone())
     }
 
-    /// How the sign-in provider `id`'s clients choose their account.
+    /// How the provider `id`'s clients choose their account or key.
     pub(crate) fn route(&self, id: &str, provider: &settings::Provider) -> pool::Route {
+        let host = reqwest::Url::parse(provider.base_url())
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+            .unwrap_or_default();
         pool::Route {
             pool: Arc::clone(&self.pool),
             provider: id.to_string(),
-            kind: provider.kind.auth().store_name(),
+            kind: settings::account_store(id, provider.kind),
             rules: pool::Rules::of(provider.pool.as_ref()),
             pinned: provider.active_account.clone(),
+            host: format!("{id}|{host}"),
         }
     }
 
@@ -796,10 +801,13 @@ impl Core {
     fn api_key(&self, id: &str) -> Result<String, ErrorInfo> {
         let store = oauth::Store::load(self.credentials_path()?)
             .map_err(|error| ErrorInfo::new("provider_config", error))?;
+        let name = settings::api_key_name(id);
         store
-            .credential(&settings::api_key_name(id))
+            .accounts(&name)
+            .iter()
+            .filter(|account| account.has_key)
+            .find_map(|account| store.account_credential(&name, &account.id))
             .and_then(|credential| credential.api_key.clone())
-            .filter(|key| !key.trim().is_empty())
             .ok_or_else(|| {
                 ErrorInfo::new(
                     "provider_unconfigured",
@@ -1279,12 +1287,9 @@ impl Core {
                 if kind.is_some_and(settings::Kind::uses_api_key) {
                     let mut store = oauth::Store::load(self.credentials_path()?)
                         .map_err(|error| ErrorInfo::new("provider_config", error))?;
-                    let name = settings::api_key_name(&id);
-                    if store.credential(&name).is_some() {
-                        store
-                            .update(&name, |credential| credential.api_key = None)
-                            .map_err(|error| ErrorInfo::new("provider_config", error))?;
-                    }
+                    store
+                        .remove_provider(&settings::api_key_name(&id))
+                        .map_err(|error| ErrorInfo::new("provider_config", error))?;
                 }
                 Ok(json!({ "removed": id }))
             }

@@ -18,7 +18,7 @@ pub use crate::store_pool::{PoolBinding, PoolCooldown};
 pub use crate::store_threads::{SessionUsage, ThreadSummary};
 use crate::ErrorInfo;
 
-const SCHEMA_VERSION: i64 = 11;
+const SCHEMA_VERSION: i64 = 12;
 /// Tool results above this size are stored once in `blobs` and referenced.
 const BLOB_THRESHOLD: usize = 16 * 1024;
 /// Text indexed per message; the rest stays readable but unsearchable.
@@ -284,10 +284,33 @@ CREATE TABLE pool_cooldowns(
 );
 "#;
 
+/// The account pool's cooldowns of one quota group of an account (a
+/// ChatGPT model group, an Anthropic model family), apart from the whole
+/// account's, and which thread each forked thread came from, so a fork
+/// starts on its parent's account (docs/evidence/account-pool.md).
+const SCHEMA_V12: &str = r#"
+CREATE TABLE pool_scoped_cooldowns(
+    kind TEXT NOT NULL,
+    account TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    until INTEGER NOT NULL,
+    avoid_until INTEGER NOT NULL,
+    since INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    status INTEGER NOT NULL,
+    PRIMARY KEY(kind, account, scope)
+);
+CREATE TABLE thread_lineage(
+    session_id INTEGER PRIMARY KEY,
+    parent INTEGER NOT NULL
+);
+CREATE INDEX thread_lineage_parent ON thread_lineage(parent);
+"#;
+
 /// Schema steps; step `i` brings the database to version `i + 1`.
-const MIGRATIONS: [&str; 11] = [
+const MIGRATIONS: [&str; 12] = [
     SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9,
-    SCHEMA_V10, SCHEMA_V11,
+    SCHEMA_V10, SCHEMA_V11, SCHEMA_V12,
 ];
 
 /// A thread id never given before (`SCHEMA_V10`).

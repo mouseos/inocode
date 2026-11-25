@@ -420,6 +420,7 @@ async fn dispatch(
         | "accounts/use"
         | "accounts/priority"
         | "accounts/clear_cooldown"
+        | "accounts/add_key"
         | "pool/get"
         | "pool/set"
         | "pool/reset_affinity"
@@ -650,6 +651,7 @@ async fn settings_request(
             "accounts/use" => core.use_account(&params).await,
             "accounts/priority" => core.set_account_priority(&params).await,
             "accounts/clear_cooldown" => core.clear_account_cooldown(&params).await,
+            "accounts/add_key" => core.add_key(&params).await,
             "pool/get" => core.pool_get(&params).await,
             "pool/set" => core.pool_set(&params).await,
             "pool/reset_affinity" => core.pool_reset_affinity(&params).await,
