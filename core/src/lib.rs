@@ -38,6 +38,7 @@ mod review;
 pub mod rules;
 mod rules_import;
 pub mod sandbox;
+pub mod secrets;
 mod shell;
 mod sse;
 pub mod store;

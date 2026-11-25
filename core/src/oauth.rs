@@ -4,8 +4,9 @@
 //! Reference implementation: lidge-jun/opencodex `src/oauth/` (see
 //! docs/evidence/oauth-providers.md for the recorded wire facts). Every
 //! endpoint URL is injectable so tests can point a flow at a mock server; the
-//! defaults are the production endpoints. Credentials are stored at
-//! `~/.inocode/auth.json` and their `Debug` output is redacted.
+//! defaults are the production endpoints. Credentials are kept by
+//! [`crate::secrets`] for the store at `~/.inocode/auth.json`, and their
+//! `Debug` output is redacted.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -107,11 +108,13 @@ impl fmt::Debug for Credential {
     }
 }
 
-/// `~/.inocode/auth.json` keyed by provider name. The manual `Debug` keeps
-/// credentials out of any derived output.
+/// The credentials of the store at `~/.inocode/auth.json`, keyed by provider
+/// name; each is that provider's [`crate::secrets::DEFAULT_ACCOUNT`]. The
+/// manual `Debug` keeps credentials out of any derived output.
 pub struct Store {
     path: PathBuf,
     entries: BTreeMap<String, Credential>,
+    vault: crate::secrets::Vault,
 }
 
 impl fmt::Debug for Store {
@@ -132,12 +135,26 @@ impl Store {
         Ok(PathBuf::from(home).join(".inocode").join("auth.json"))
     }
 
-    /// Opens the store at `path`. A missing file is an empty store; a file
-    /// that cannot be read or parsed is an error, because treating it as empty
-    /// would make the next save discard every other provider's credential.
+    /// Opens the store at `path` with [`crate::secrets::mode`].
     pub fn load(path: PathBuf) -> Result<Self, String> {
-        let entries = read_entries(&path)?;
-        Ok(Self { path, entries })
+        Self::open(path, crate::secrets::mode())
+    }
+
+    /// Opens the store at `path`, keeping its secrets where `mode` selects
+    /// and moving them there first when they are elsewhere. A missing file
+    /// is an empty store; a store that cannot be read, parsed or decrypted
+    /// is an error, because treating it as empty would make the next save
+    /// discard every other provider's credential.
+    pub fn open(path: PathBuf, mode: crate::secrets::StoreMode) -> Result<Self, String> {
+        let default_location = Self::default_path()
+            .is_ok_and(|default| crate::secrets::same_location(&default, &path));
+        let vault = crate::secrets::Vault::new(path.clone(), mode, default_location);
+        let entries = credentials(&vault.load()?, &path)?;
+        Ok(Self {
+            path,
+            entries,
+            vault,
+        })
     }
 
     pub fn credential(&self, provider: &str) -> Option<&Credential> {
@@ -151,30 +168,29 @@ impl Store {
 
     /// Persists one provider's credential.
     ///
-    /// The file is re-read first and only this provider's entry is replaced,
+    /// The store is re-read first and only this provider's entry is replaced,
     /// so entries written by another process since this store was loaded (a
-    /// login running next to a server that refreshed a token) are kept. The
-    /// new content is written to a sibling file created owner-only where the
-    /// platform supports it, then renamed over the store, so a crash never
-    /// leaves a truncated file and the credential is never world-readable.
+    /// login running next to a server that refreshed a token) are kept.
     pub fn save(&mut self, provider: &str, credential: Credential) -> Result<(), String> {
         self.update(provider, |stored| *stored = credential)
     }
 
-    /// Edits one provider's credential as currently stored on disk and
-    /// persists it the same way as [`Store::save`].
+    /// Edits one provider's credential as currently stored and persists it
+    /// the same way as [`Store::save`].
     pub fn update<F>(&mut self, provider: &str, edit: F) -> Result<(), String>
     where
         F: FnOnce(&mut Credential),
     {
-        // Held from the read to the rename, so two processes saving at once
-        // cannot both start from the same file and drop each other's entry
-        // (reference `auth.store.lock`).
-        let _lock = lock_file(&sibling(&self.path, ".lock"))?;
-        let mut entries = read_entries(&self.path)?;
-        let credential = entries
-            .entry(provider.to_string())
-            .or_insert_with(|| Credential {
+        let _lock = crate::secrets::lock_store(&self.path)?;
+        let mut contents = self.vault.load_locked()?;
+        let account = crate::secrets::DEFAULT_ACCOUNT;
+        let mut credential = match contents
+            .accounts
+            .get(provider)
+            .and_then(|accounts| accounts.get(account))
+        {
+            Some(stored) => parse_credential(stored, provider, &self.path)?,
+            None => Credential {
                 access: String::new(),
                 refresh: String::new(),
                 expires_at_ms: None,
@@ -182,45 +198,47 @@ impl Store {
                 email: None,
                 api_key: None,
                 oauth_access_token: None,
-            });
-        edit(credential);
-        let serialized = serde_json::to_vec_pretty(&entries).map_err(|e| e.to_string())?;
-        write_replacing(&self.path, &serialized)?;
-        self.entries = entries;
+            },
+        };
+        edit(&mut credential);
+        let value = serde_json::to_value(&credential).map_err(|e| e.to_string())?;
+        contents
+            .accounts
+            .entry(provider.to_string())
+            .or_default()
+            .insert(account.to_string(), value);
+        self.vault.save_locked(&contents, provider, account)?;
+        self.entries = credentials(&contents.accounts, &self.path)?;
         Ok(())
     }
 }
 
-/// `path` with `suffix` appended to its file name.
-fn sibling(path: &std::path::Path, suffix: &str) -> PathBuf {
-    let mut name = path.as_os_str().to_owned();
-    name.push(suffix);
-    PathBuf::from(name)
+/// Each provider's [`crate::secrets::DEFAULT_ACCOUNT`] credential.
+fn credentials(
+    accounts: &crate::secrets::Accounts,
+    path: &std::path::Path,
+) -> Result<BTreeMap<String, Credential>, String> {
+    accounts
+        .iter()
+        .filter_map(|(provider, accounts)| {
+            accounts
+                .get(crate::secrets::DEFAULT_ACCOUNT)
+                .map(|stored| Ok((provider.clone(), parse_credential(stored, provider, path)?)))
+        })
+        .collect()
 }
 
-fn open_lock_file(path: &std::path::Path) -> Result<std::fs::File, String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true).write(true).create(true).truncate(false);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    options
-        .open(path)
-        .map_err(|e| format!("cannot open the lock file {}: {e}", path.display()))
-}
-
-/// Takes the OS's exclusive lock on `path`; dropping the file releases it,
-/// and so does the process ending, so a crash never leaves a stale lock.
-fn lock_file(path: &std::path::Path) -> Result<std::fs::File, String> {
-    let file = open_lock_file(path)?;
-    file.lock()
-        .map_err(|e| format!("cannot lock {}: {e}", path.display()))?;
-    Ok(file)
+fn parse_credential(
+    stored: &Value,
+    provider: &str,
+    path: &std::path::Path,
+) -> Result<Credential, String> {
+    Credential::deserialize(stored).map_err(|e| {
+        format!(
+            "the credential store {} is not valid: {provider}: {e}",
+            path.display()
+        )
+    })
 }
 
 /// The credential stored at `path` for `auth`, refreshed first when it has
@@ -334,8 +352,11 @@ where
     F: FnOnce(String) -> Fut,
     Fut: std::future::Future<Output = Result<Credential, String>>,
 {
-    let lock = open_lock_file(&sibling(&path, &format!(".refresh.{provider}.lock")))
-        .map_err(RefreshError::Store)?;
+    let lock = crate::secrets::open_lock_file(&crate::secrets::sibling(
+        &path,
+        &format!(".refresh.{provider}.lock"),
+    ))
+    .map_err(RefreshError::Store)?;
     let deadline = tokio::time::Instant::now() + REFRESH_LOCK_WAIT;
     loop {
         match lock.try_lock() {
@@ -378,51 +399,6 @@ where
     store.credential(provider).cloned().ok_or_else(|| {
         RefreshError::Store(format!("the {provider} credential vanished after saving"))
     })
-}
-
-fn read_entries(path: &std::path::Path) -> Result<BTreeMap<String, Credential>, String> {
-    match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map_err(|e| format!("the credential store {} is not valid: {e}", path.display())),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
-        Err(error) => Err(format!(
-            "cannot read the credential store {}: {error}",
-            path.display()
-        )),
-    }
-}
-
-fn write_replacing(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
-    use std::io::Write;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    let mut temp = path.as_os_str().to_owned();
-    temp.push(format!(".tmp-{}", std::process::id()));
-    let temp = PathBuf::from(temp);
-    // A leftover from an interrupted save may carry other permissions; the
-    // file must be created fresh for the owner-only mode to apply.
-    let _ = std::fs::remove_file(&temp);
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let written = options.open(&temp).and_then(|mut file| {
-        file.write_all(bytes)?;
-        file.sync_all()
-    });
-    let result = written.and_then(|()| std::fs::rename(&temp, path));
-    if let Err(error) = result {
-        let _ = std::fs::remove_file(&temp);
-        return Err(format!(
-            "cannot write the credential store {}: {error}",
-            path.display()
-        ));
-    }
-    Ok(())
 }
 
 /// PKCE verifier/challenge pair (RFC 7636 `S256`).
@@ -1450,6 +1426,7 @@ mod tests {
         let mut store = Store {
             path: path.clone(),
             entries: BTreeMap::new(),
+            vault: crate::secrets::Vault::new(path.clone(), crate::secrets::mode(), false),
         };
         assert!(store.save("gpt-oauth", sample_credential("a")).is_err());
         assert_eq!(std::fs::read(&path).expect("read"), b"{not json");
@@ -1531,7 +1508,7 @@ mod tests {
             );
         }
         std::fs::remove_file(&path).expect("remove");
-        let _ = std::fs::remove_file(sibling(&path, ".lock"));
+        let _ = std::fs::remove_file(crate::secrets::sibling(&path, ".lock"));
     }
 
     #[test]
@@ -1599,8 +1576,8 @@ mod tests {
             Some("rt-2")
         );
         std::fs::remove_file(&path).expect("remove");
-        let _ = std::fs::remove_file(sibling(&path, ".lock"));
-        let _ = std::fs::remove_file(sibling(&path, ".refresh.gpt-oauth.lock"));
+        let _ = std::fs::remove_file(crate::secrets::sibling(&path, ".lock"));
+        let _ = std::fs::remove_file(crate::secrets::sibling(&path, ".refresh.gpt-oauth.lock"));
     }
 
     #[test]
