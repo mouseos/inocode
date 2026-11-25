@@ -221,6 +221,18 @@ Claude でサインインしていれば claude.ai のコネクタ、ChatGPT で
 
 - 設計と根拠：[docs/evidence/usage-log.md](docs/evidence/usage-log.md)。
 
+### 作業の見積もり
+
+ターンと目標を作業として記録し（頼んだ文、種類、モデル、トークン、時間、道具の内訳、変えた行とファイル、結果）、似た過去の作業から、これからの作業のトークンと分の幅を出す。`/estimate 〈作業〉` か:
+
+```json
+{"id": 1, "method": "estimate", "params": {"thread_id": 3, "text": "README を英語に翻訳する"}}
+```
+
+ターンの間は、始めとモデルへの要求のたびに `estimate` の出来事で残りの幅を送る（過去の作業が無ければ送らない）。`/goal status` にも目標の残りの幅を出す。
+
+- 設計と根拠：[docs/evidence/effort-estimates.md](docs/evidence/effort-estimates.md)。
+
 ### 返答の言語
 
 モデルは、OS の表示言語で返答する。話しかけた文から言語を推定はしない。会話の中で別の言語を頼むと、最後に頼んだ言語に変わる。OS と違う言語を既定にするには、`~/.inocode/settings.json`（`inocode.db` と同じフォルダー）に書く:

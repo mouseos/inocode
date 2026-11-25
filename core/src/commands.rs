@@ -621,10 +621,15 @@ pub const BUILTINS: &[Builtin] = &[
         &[form("The status.", &[], Now)],
         None,
     ),
-    missing(
+    builtin(
         "estimate",
         "Estimate the time and tokens of a piece of work.",
-        "effort estimates are not implemented yet (docs/evidence/effort-estimates.md)",
+        &[form(
+            "The range from similar past tasks on this thread's model.",
+            &[arg("work", Text)],
+            Now,
+        )],
+        None,
     ),
     builtin(
         "translate",
@@ -2039,6 +2044,10 @@ impl Core {
                     "goal": goal.map(|goal| json!({"objective": goal.objective, "state": goal.state})),
                 })
             }
+            ("estimate", _) => {
+                self.estimate(Some(thread), value(0).unwrap_or_default())
+                    .await?
+            }
             ("translate", sub) => self.translate(sub, values).await?,
             ("devices", _) => {
                 let folder = store.files_folder().join("images");
@@ -2253,6 +2262,7 @@ impl Core {
             };
             (end - first).max(0)
         });
+        let estimate = self.goal_estimate(thread, &goal, elapsed as u64).await?;
         Ok(json!({
             "goal": goal,
             "running": running,
@@ -2262,6 +2272,7 @@ impl Core {
             "rounds": goal.rounds,
             "round_limit": goal.round_limit,
             "last_check": goal.reason,
+            "estimate": estimate,
         }))
     }
 

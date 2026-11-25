@@ -528,6 +528,16 @@ async fn dispatch(
             ));
             true
         }
+        "estimate" => {
+            // Store reads, off the read loop like the thread requests.
+            tokio::spawn(estimate(
+                request,
+                stream_id,
+                Arc::clone(core),
+                queue.clone(),
+            ));
+            true
+        }
         "usage" => {
             // An HTTP round trip like discovery, so it runs beside the read loop.
             tokio::spawn(read_usage(
@@ -924,6 +934,35 @@ async fn model_stats(
     let _ = send(&queue, stream_id, payload).await;
 }
 
+/// `estimate {thread_id?, text}`: the time and tokens the work `text`
+/// describes may take (docs/evidence/effort-estimates.md).
+async fn estimate(
+    request: Request,
+    stream_id: u64,
+    core: Arc<Core>,
+    queue: mpsc::Sender<Outgoing>,
+) {
+    let id = request.id;
+    let params = request.params.clone().unwrap_or_else(|| json!({}));
+    let thread = match params.get("thread_id") {
+        None | Some(Value::Null) => Ok(None),
+        Some(_) => request.thread().map(Some),
+    };
+    let result = match (thread, params["text"].as_str()) {
+        (Ok(thread), Some(text)) => core.estimate(thread, text).await,
+        (Err(error), _) => Err(error),
+        (_, None) => Err(ErrorInfo::new(
+            "invalid_params",
+            "\"text\" must be a string",
+        )),
+    };
+    let payload = match result {
+        Ok(result) => json!({ "id": id, "result": result }),
+        Err(error) => json!({ "id": id, "error": error }),
+    };
+    let _ = send(&queue, stream_id, payload).await;
+}
+
 async fn read_usage(id: u64, stream_id: u64, core: Arc<Core>, queue: mpsc::Sender<Outgoing>) {
     let payload = match core.usage().await {
         Ok(usage) => json!({ "id": id, "result": usage }),
@@ -1071,6 +1110,7 @@ async fn run_turn(
         TurnEvent::ThinkingTranslation(piece) => EventPayload::thinking_translation(id, piece),
         TurnEvent::Message { seq, message } => EventPayload::message(id, seq, &message),
         TurnEvent::Elicitation(elicitation) => EventPayload::elicitation(id, elicitation),
+        TurnEvent::Estimate(estimate) => EventPayload::estimate(id, &estimate),
     };
     let outcome = {
         let run = core.run_turn(

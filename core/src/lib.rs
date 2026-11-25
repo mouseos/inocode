@@ -20,6 +20,7 @@ mod connectors;
 pub mod conversation;
 pub mod deepai;
 mod edit;
+pub mod estimate;
 mod explore;
 mod fetch;
 mod find;
@@ -340,6 +341,9 @@ pub struct EventPayload {
     /// What went wrong beside a turn's work without ending it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warnings: Option<Vec<String>>,
+    /// What is left of a turn's task by the estimate.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estimate: Option<Value>,
 }
 
 fn translation_service(name: &str) -> Result<translate::Service, ErrorInfo> {
@@ -397,6 +401,14 @@ impl EventPayload {
         }
     }
 
+    /// What is left of a running turn's task by the estimate.
+    pub fn estimate(id: u64, estimate: &estimate::Estimate) -> Self {
+        Self {
+            estimate: serde_json::to_value(estimate).ok(),
+            ..Self::new(id, "estimate")
+        }
+    }
+
     pub fn message(id: u64, seq: i64, message: &conversation::Message) -> Self {
         Self {
             message: Some(json!({ "seq": seq, "message": message })),
@@ -445,6 +457,7 @@ impl EventPayload {
             questions: None,
             result: None,
             warnings: None,
+            estimate: None,
         }
     }
 }
@@ -994,7 +1007,13 @@ impl Core {
             .last()
             .map_or(1, |last| last.seq + 1);
         let goal = goal::Goal::new(objective, check, rounds, tokens, from_seq)?;
+        let replaced = goal::load(store, thread).await?;
         goal::save(store, thread, &goal).await?;
+        if let Some(replaced) = replaced.filter(goal::Goal::is_active) {
+            store
+                .end_goal_task(thread, replaced.from_seq, "abandoned")
+                .await?;
+        }
         Ok(goal)
     }
 
@@ -1018,6 +1037,9 @@ impl Core {
             goal.state = goal::State::Stopped;
             goal.reason = "stopped by the person".to_string();
             goal::save(store, thread, &goal).await?;
+            store
+                .end_goal_task(thread, goal.from_seq, "abandoned")
+                .await?;
         }
         Ok(Some(goal))
     }

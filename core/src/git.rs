@@ -141,6 +141,172 @@ fn short(oid: &str) -> &str {
     oid.get(..7).unwrap_or(oid)
 }
 
+/// Lines added and removed per file, `None` for a binary file.
+type Numstat = std::collections::HashMap<String, Option<(u64, u64)>>;
+
+/// The repository's changes when a task starts, to tell its own changes
+/// from those that were there before (docs/evidence/effort-estimates.md).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Snapshot {
+    head: String,
+    changed: Numstat,
+    untracked: std::collections::HashSet<String>,
+}
+
+/// What a task changed: lines added and removed, and files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Changed {
+    pub added: u64,
+    pub removed: u64,
+    pub files: u64,
+}
+
+/// Untracked files whose lines are counted, and bytes read of each.
+const COUNTED_FILES: usize = 500;
+const COUNTED_BYTES: u64 = 1024 * 1024;
+
+async fn output(folder: &Path, arguments: &[&str]) -> Option<String> {
+    let mut command = git(folder, arguments);
+    let output = tokio::time::timeout(WAIT, command.output())
+        .await
+        .ok()?
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// The working tree against `base`, by file. External diff and text
+/// conversion programs, which the repository can name, are not run.
+async fn numstat(folder: &Path, base: &str) -> Option<Numstat> {
+    let text = output(
+        folder,
+        &[
+            "diff",
+            "--numstat",
+            "--no-renames",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--ignore-submodules=all",
+            base,
+            "--",
+        ],
+    )
+    .await?;
+    Some(parse_numstat(&text))
+}
+
+fn parse_numstat(text: &str) -> Numstat {
+    text.lines()
+        .filter_map(|line| {
+            let mut fields = line.splitn(3, '\t');
+            let added = fields.next()?;
+            let removed = fields.next()?;
+            let path = fields.next()?;
+            let lines = added.parse().ok().zip(removed.parse().ok());
+            Some((path.to_string(), lines))
+        })
+        .collect()
+}
+
+async fn untracked(folder: &Path) -> Option<std::collections::HashSet<String>> {
+    let text = output(
+        folder,
+        &["ls-files", "--others", "--exclude-standard", "-z"],
+    )
+    .await?;
+    Some(
+        text.split('\0')
+            .filter(|path| !path.is_empty())
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
+/// The state to compare with at the end; `None` when the folder is not in
+/// a repository with a commit, git is missing or slow, or the repository
+/// names a filter program that comparing could run.
+pub(crate) async fn snapshot(folder: &Path) -> Option<Snapshot> {
+    if has_filters(folder).await? {
+        return None;
+    }
+    let head = output(folder, &["rev-parse", "--verify", "HEAD"])
+        .await?
+        .trim()
+        .to_string();
+    Some(Snapshot {
+        changed: numstat(folder, &head).await?,
+        untracked: untracked(folder).await?,
+        head,
+    })
+}
+
+/// What changed since `start`: the working tree against the commit of the
+/// start, so commits made meanwhile count, less what was changed already
+/// then; and the lines of files that became untracked since.
+pub(crate) async fn changed_since(folder: &Path, start: &Snapshot) -> Option<Changed> {
+    if has_filters(folder).await? {
+        return None;
+    }
+    let now = numstat(folder, &start.head).await?;
+    let mut changed = compare(&start.changed, &now);
+    let new: Vec<String> = untracked(folder)
+        .await?
+        .into_iter()
+        .filter(|path| !start.untracked.contains(path))
+        .take(COUNTED_FILES)
+        .collect();
+    for path in new {
+        changed.files += 1;
+        changed.added += count_lines(&folder.join(path)).await;
+    }
+    Some(changed)
+}
+
+fn compare(before: &Numstat, after: &Numstat) -> Changed {
+    let mut changed = Changed {
+        added: 0,
+        removed: 0,
+        files: 0,
+    };
+    let paths: std::collections::BTreeSet<&String> = before.keys().chain(after.keys()).collect();
+    for path in paths {
+        let was = before.get(path).copied().unwrap_or(Some((0, 0)));
+        let is = after.get(path).copied().unwrap_or(Some((0, 0)));
+        if was == is {
+            continue;
+        }
+        changed.files += 1;
+        if let (Some(was), Some(is)) = (was, is) {
+            changed.added += is.0.saturating_sub(was.0);
+            changed.removed += is.1.saturating_sub(was.1);
+        }
+    }
+    changed
+}
+
+/// Lines of a text file, from its first `COUNTED_BYTES`; 0 for a binary
+/// or unreadable one.
+async fn count_lines(path: &Path) -> u64 {
+    use tokio::io::AsyncReadExt;
+    let Ok(file) = tokio::fs::File::open(path).await else {
+        return 0;
+    };
+    let mut bytes = Vec::new();
+    if file
+        .take(COUNTED_BYTES)
+        .read_to_end(&mut bytes)
+        .await
+        .is_err()
+        || bytes.contains(&0)
+    {
+        return 0;
+    }
+    let newlines = bytes.iter().filter(|&&byte| byte == b'\n').count() as u64;
+    newlines + u64::from(bytes.last().is_some_and(|&byte| byte != b'\n'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,6 +329,65 @@ mod tests {
              current state and the file names."
         );
         assert!(!line.contains("secret") && !line.contains("origin"));
+    }
+
+    #[test]
+    fn only_what_changed_after_the_start_counts() {
+        let before = parse_numstat("3\t1\talready.rs\n-\t-\timage.png\n");
+        let after = parse_numstat("5\t1\talready.rs\n-\t-\timage.png\n10\t2\tnew work.rs\n");
+        assert_eq!(
+            compare(&before, &after),
+            Changed {
+                added: 12,
+                removed: 2,
+                files: 2
+            }
+        );
+        // A change there at the start and undone since is a changed file.
+        let undone = compare(&before, &parse_numstat(""));
+        assert_eq!((undone.files, undone.added), (2, 0));
+    }
+
+    #[tokio::test]
+    async fn a_task_s_changes_are_read_from_the_repository() {
+        let dir = tempfile::tempdir().expect("dir");
+        let folder = dir.path();
+        let run = |arguments: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+                .args(["-c", "commit.gpgsign=false"])
+                .args(arguments)
+                .current_dir(folder)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            assert!(status.is_ok_and(|status| status.success()), "{arguments:?}");
+        };
+        run(&["init", "-q"]);
+        std::fs::write(folder.join("a.txt"), "one\ntwo\n").expect("write");
+        std::fs::write(folder.join("old.txt"), "x\n").expect("write");
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "start"]);
+        std::fs::write(folder.join("old.txt"), "x\ny\n").expect("write");
+        std::fs::write(folder.join("before.txt"), "untracked before\n").expect("write");
+        let start = snapshot(folder).await.expect("a repository");
+        std::fs::write(folder.join("a.txt"), "one\n2\nthree\n").expect("write");
+        run(&["commit", "-q", "-am", "work"]);
+        std::fs::write(folder.join("new.txt"), "a\nb\nc").expect("write");
+        let changed = changed_since(folder, &start).await.expect("changes");
+        // a.txt: two lines added, one removed, though committed; old.txt
+        // was changed before the start and not since; new.txt is new.
+        assert_eq!(
+            changed,
+            Changed {
+                added: 5,
+                removed: 1,
+                files: 2
+            }
+        );
+        assert!(snapshot(&folder.join("..").join("no-such-folder"))
+            .await
+            .is_none());
     }
 
     #[test]

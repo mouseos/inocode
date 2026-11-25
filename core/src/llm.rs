@@ -896,7 +896,7 @@ impl Llm {
     /// default, else [`crate::reasoning::FALLBACK_EFFORT`]. Only the ChatGPT
     /// roster publishes defaults, so only it is consulted; a failed lookup
     /// counts as no catalog.
-    async fn effort(&self) -> crate::reasoning::Effort {
+    pub(crate) async fn effort(&self) -> crate::reasoning::Effort {
         if let Some(effort) = self.config.reasoning.effort {
             return effort;
         }

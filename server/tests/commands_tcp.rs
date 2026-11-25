@@ -169,8 +169,8 @@ async fn the_list_has_every_built_in_command_and_the_projects_under_their_prefix
         assert_eq!(forms[1]["sub"], "status");
         assert_eq!(forms[1]["when"], "now");
         assert_eq!(named("model")["forms"][0]["when"], "next_request");
-        assert_eq!(named("estimate")["available"], false);
-        assert!(named("estimate")["reason"].is_string());
+        assert_eq!(named("estimate")["available"], true);
+        assert_eq!(named("estimate")["forms"][0]["when"], "now");
         assert_eq!(named("user:hello")["short"], "hello");
         assert_eq!(named("project:goal"), Value::Null, "no thread, no project");
 
@@ -265,9 +265,143 @@ async fn goal_sets_a_goal_works_on_it_and_reports_its_status() {
         assert!(result["elapsed_ms"].as_i64().is_some_and(|ms| ms >= 0));
         assert!(result["tokens"].is_u64());
         assert_eq!(result["running"], false);
+        assert_eq!(result["estimate"], Value::Null, "nothing is left of it");
 
         let stopped = command(&mut client, 4, thread, "/goal stop").await;
         assert_eq!(stopped["result"]["goal"]["state"], "achieved");
+    })
+    .await;
+}
+
+/// An answer that reports `input` and 5 output tokens.
+fn measured_turn(text: &str, input: u64) -> Vec<Vec<u8>> {
+    let usage = json!({ "choices": [], "usage": {"prompt_tokens": input, "completion_tokens": 5} });
+    vec![
+        sse_delta(text),
+        finish(),
+        format!("data: {usage}\n\n").into_bytes(),
+        sse_done(),
+    ]
+}
+
+async fn plain_turn(client: &mut Client, id: u64, thread: i64, prompt: &str) -> Vec<Value> {
+    client
+        .1
+        .write_json(
+            id,
+            &json!({"id": id, "method": "turn/start",
+                    "params": {"thread_id": thread, "prompt": prompt}}),
+        )
+        .await
+        .expect("send");
+    let mut events = Vec::new();
+    loop {
+        let event = next_message(client, id).await;
+        let end = matches!(
+            event["event"].as_str(),
+            Some("completed" | "failed" | "cancelled") | None
+        );
+        events.push(event);
+        if end {
+            return events;
+        }
+    }
+}
+
+#[tokio::test]
+async fn past_turns_estimate_similar_work_before_and_during_it() {
+    with_timeout(async {
+        let mock = scripted(vec![
+            measured_turn("翻訳しました", 1_000),
+            measured_turn("翻訳しました", 2_000),
+            measured_turn("翻訳しました", 3_000),
+            measured_turn("翻訳しました", 500),
+        ])
+        .await;
+        let database = database();
+        let (addr, _stop, _handle) = start_server(core_for(&mock, &database).await).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client, None).await;
+
+        // Without a past task nothing is estimated, and no estimate is sent.
+        let none = command(&mut client, 2, thread, "/estimate README を英語に翻訳する").await;
+        assert_eq!(none["result"]["estimate"]["method"], "none", "{none}");
+        assert_eq!(none["result"]["estimate"]["tokens"], Value::Null);
+        let first = plain_turn(&mut client, 3, thread, "README を英語に翻訳する").await;
+        assert!(first.iter().all(|event| event["event"] != "estimate"));
+        plain_turn(&mut client, 4, thread, "設計の文書を英語に翻訳する").await;
+        plain_turn(&mut client, 5, thread, "使い方を英語に翻訳する").await;
+
+        let estimate = command(&mut client, 6, thread, "/estimate 変更履歴を英語に翻訳する").await;
+        let result = &estimate["result"];
+        assert_eq!(result["command"], "estimate", "{estimate}");
+        assert_eq!(result["model"], "test-model");
+        let estimate = &result["estimate"];
+        assert_eq!(estimate["samples"], 3, "{estimate}");
+        assert_eq!(estimate["widened"], true);
+        assert_eq!(estimate["method"], "similar");
+        // 1,005, 2,005 and 3,005 tokens: the median, half the least and
+        // twice the most.
+        assert_eq!(
+            estimate["tokens"],
+            json!({"low": 503, "mid": 2_005, "high": 6_010})
+        );
+        assert!(estimate["minutes"]["mid"].is_number());
+        assert!(estimate["note"]
+            .as_str()
+            .is_some_and(|note| note.contains("3 past tasks")));
+
+        let by_method = call(
+            &mut client,
+            7,
+            json!({"id": 7, "method": "estimate", "params": {"text": "変更履歴を英語に翻訳する"}}),
+        )
+        .await;
+        assert_eq!(by_method["result"]["estimate"]["samples"], 3, "{by_method}");
+        let in_thread = call(
+            &mut client,
+            8,
+            json!({"id": 8, "method": "estimate",
+                   "params": {"thread_id": thread, "text": "変更履歴を英語に翻訳する"}}),
+        )
+        .await;
+        assert_eq!(in_thread["result"], by_method["result"]);
+        for (id, params) in [
+            (9, json!({})),
+            (10, json!({"text": "  "})),
+            (11, json!({"thread_id": 999, "text": "x"})),
+        ] {
+            let refused = call(
+                &mut client,
+                id,
+                json!({"id": id, "method": "estimate", "params": params}),
+            )
+            .await;
+            assert!(
+                matches!(
+                    refused["error"]["code"].as_str(),
+                    Some("invalid_params" | "unknown_thread")
+                ),
+                "{refused}"
+            );
+        }
+
+        // During a turn: the estimate before the first request, then what
+        // is left after it.
+        let events = plain_turn(&mut client, 12, thread, "目次を英語に翻訳する").await;
+        let sent: Vec<&Value> = events
+            .iter()
+            .filter(|event| event["event"] == "estimate")
+            .map(|event| &event["estimate"])
+            .collect();
+        assert_eq!(sent.len(), 2, "{events:?}");
+        assert_eq!(sent[0]["samples"], 3);
+        assert_eq!(sent[0]["so_far"], Value::Null);
+        assert_eq!(sent[1]["so_far"]["tokens"], 505);
+        // All three past turns had used more than 505 tokens.
+        assert_eq!(sent[1]["samples"], 3);
+        assert_eq!(sent[1]["tokens"]["mid"], 1_500);
+        assert_eq!(events.last().unwrap()["event"], "completed");
     })
     .await;
 }
@@ -287,8 +421,8 @@ async fn commands_check_their_arguments_and_report_what_is_missing() {
         assert_eq!(wrong["error"]["code"], "invalid_arguments");
         let unconfirmed = command(&mut client, 4, thread, "/delete").await;
         assert_eq!(unconfirmed["error"]["code"], "invalid_arguments");
-        let estimate = command(&mut client, 5, thread, "/estimate this").await;
-        assert_eq!(estimate["error"]["code"], "unavailable");
+        let estimate = command(&mut client, 5, thread, "/estimate").await;
+        assert_eq!(estimate["error"]["code"], "invalid_arguments");
         let edit = command(&mut client, 6, thread, "/rules edit 1 x").await;
         assert_eq!(edit["error"]["code"], "unavailable");
         let no_slash = command(&mut client, 7, thread, "plan").await;

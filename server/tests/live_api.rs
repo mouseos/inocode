@@ -162,6 +162,65 @@ async fn a_turn_answers_on_the_provider_the_settings_choose() {
     .await;
 }
 
+/// Three small turns, then estimates of similar work before and during a
+/// turn (docs/evidence/effort-estimates.md).
+#[tokio::test]
+#[ignore = "requires a provider credential; run by hand"]
+async fn small_turns_estimate_a_similar_one() {
+    with_timeout_of(LIVE_TIMEOUT, async {
+        let database = live_folder("api-estimate").join("inocode.db");
+        let core = Arc::new(live_core(&database, None).await);
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = call(&mut client, 1, json!({"id": 1, "method": "thread/start"})).await
+            ["result"]["thread_id"]
+            .as_i64()
+            .expect("thread id");
+        let prompts = [
+            "What is 2 + 3? Reply with the number only.",
+            "What is 7 + 4? Reply with the number only.",
+            "What is 9 + 6? Reply with the number only.",
+            "What is 8 + 5? Reply with the number only.",
+        ];
+        for (index, prompt) in prompts.iter().enumerate() {
+            let id = 2 + index as u64;
+            if index == 3 {
+                let estimate = call(
+                    &mut client,
+                    10,
+                    json!({"id": 10, "method": "command/run",
+                           "params": {"thread_id": thread, "text": format!("/estimate {prompt}")}}),
+                )
+                .await;
+                println!("live /estimate: {}", estimate["result"]);
+                assert_eq!(estimate["result"]["estimate"]["samples"], 3, "{estimate}");
+            }
+            client
+                .1
+                .write_json(
+                    id,
+                    &json!({"id": id, "method": "turn/start",
+                            "params": {"thread_id": thread, "prompt": prompt}}),
+                )
+                .await
+                .expect("send");
+            let last = loop {
+                let event = next_message(&mut client, id).await;
+                match event["event"].as_str().unwrap_or_default() {
+                    "estimate" => {
+                        println!("live turn {} estimate: {}", index + 1, event["estimate"])
+                    }
+                    "completed" | "failed" | "cancelled" => break event,
+                    _ => {}
+                }
+            };
+            assert_eq!(last["event"], "completed", "{last}");
+            println!("live turn {} usage: {}", index + 1, last["usage"]);
+        }
+    })
+    .await;
+}
+
 #[tokio::test]
 #[ignore = "requires a provider credential; run by the live-api workflow jobs"]
 async fn logfare_messages_api_generates_and_streams_text_over_tcp() {

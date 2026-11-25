@@ -18,7 +18,7 @@ pub use crate::store_pool::{PoolBinding, PoolCooldown};
 pub use crate::store_threads::{SessionUsage, ThreadSummary};
 use crate::ErrorInfo;
 
-const SCHEMA_VERSION: i64 = 12;
+const SCHEMA_VERSION: i64 = 13;
 /// Tool results above this size are stored once in `blobs` and referenced.
 const BLOB_THRESHOLD: usize = 16 * 1024;
 /// Text indexed per message; the rest stays readable but unsearchable.
@@ -307,10 +307,42 @@ CREATE TABLE thread_lineage(
 CREATE INDEX thread_lineage_parent ON thread_lineage(parent);
 "#;
 
+/// Each finished task, a turn or a goal as a whole, for estimating later
+/// work (docs/evidence/effort-estimates.md). `tools` is JSON written by the
+/// harness.
+const SCHEMA_V13: &str = r#"
+CREATE TABLE tasks(
+    id INTEGER PRIMARY KEY,
+    started INTEGER NOT NULL,
+    session_id INTEGER,
+    kind TEXT NOT NULL,
+    goal_seq INTEGER,
+    request TEXT NOT NULL,
+    task_type TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    effort TEXT,
+    input INTEGER NOT NULL,
+    output INTEGER NOT NULL,
+    cached INTEGER NOT NULL,
+    requests INTEGER NOT NULL,
+    wall_ms INTEGER NOT NULL,
+    tool_ms INTEGER NOT NULL,
+    tools TEXT NOT NULL,
+    lines_added INTEGER,
+    lines_removed INTEGER,
+    files_changed INTEGER,
+    changes_from TEXT NOT NULL,
+    outcome TEXT NOT NULL
+);
+CREATE INDEX tasks_started ON tasks(started);
+CREATE INDEX tasks_goal ON tasks(session_id, goal_seq);
+"#;
+
 /// Schema steps; step `i` brings the database to version `i + 1`.
-const MIGRATIONS: [&str; 12] = [
+const MIGRATIONS: [&str; 13] = [
     SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9,
-    SCHEMA_V10, SCHEMA_V11, SCHEMA_V12,
+    SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13,
 ];
 
 /// A thread id never given before (`SCHEMA_V10`).
@@ -2494,6 +2526,9 @@ mod migration {
                 |row| row.get::<_, i64>(0),
             )
             .expect("the version 11 tables exist");
+        connection
+            .query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get::<_, i64>(0))
+            .expect("the version 13 table exists");
     }
 
     #[test]

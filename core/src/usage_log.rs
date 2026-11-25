@@ -141,7 +141,53 @@ impl Store {
             .await?;
         Ok(summarize(rows, utc_offset_minutes))
     }
+
+    /// The median speed and wait for the first text of `model`'s completed
+    /// requests of the last 30 days, the latest `SPEED_REQUESTS` of them,
+    /// whatever the provider.
+    pub(crate) async fn model_speed(
+        &self,
+        model: &str,
+    ) -> Result<crate::estimate::Speed, ErrorInfo> {
+        let since = crate::store::now() - 30 * 24 * 3_600_000;
+        let model = model.to_string();
+        let rows = self
+            .read(Duration::from_secs(10), move |db| {
+                let mut statement = db
+                    .prepare_cached(
+                        "SELECT at, output, first_output_ms, duration_ms FROM requests
+                         WHERE model = ?1 AND at >= ?2 AND outcome = 'completed'
+                         ORDER BY at DESC LIMIT ?3",
+                    )
+                    .map_err(store_error)?;
+                let rows = statement
+                    .query_map(params![model, since, SPEED_REQUESTS], |row| {
+                        Ok(Row {
+                            at: row.get(0)?,
+                            provider: String::new(),
+                            model: String::new(),
+                            input: None,
+                            output: row.get(1)?,
+                            cached: None,
+                            first_output_ms: row.get(2)?,
+                            duration_ms: row.get(3)?,
+                            outcome: "completed".into(),
+                        })
+                    })
+                    .map_err(store_error)?;
+                rows.collect::<Result<Vec<_>, _>>().map_err(store_error)
+            })
+            .await?;
+        let rows: Vec<&Row> = rows.iter().collect();
+        Ok(crate::estimate::Speed {
+            tokens_per_second: median_speed(&rows),
+            first_output_ms: median_first_output(&rows),
+        })
+    }
 }
+
+/// Requests a model's speed is measured over.
+const SPEED_REQUESTS: i64 = 500;
 
 fn summarize(rows: Vec<Row>, utc_offset_minutes: i64) -> Vec<ModelStats> {
     let mut groups: BTreeMap<(String, String), Vec<Row>> = BTreeMap::new();

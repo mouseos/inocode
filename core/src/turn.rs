@@ -51,6 +51,9 @@ pub enum TurnEvent {
     /// A question of an MCP server for the person, answered with
     /// `turn/answer` while the call waits.
     Elicitation(serde_json::Value),
+    /// What is left of the task by the estimate, at the start and after
+    /// each model request (docs/evidence/effort-estimates.md).
+    Estimate(crate::estimate::Estimate),
 }
 
 /// Why a turn ended.
@@ -547,6 +550,12 @@ struct Thread<'a> {
     git: Option<String>,
     /// Whether and how the thinking is translated.
     thinking_translation: ThinkingTranslation,
+    /// The tool calls of the turn, for its task record.
+    tally: crate::estimate::Tally,
+    /// The estimate re-made after each request, with the tokens the task
+    /// had used before this turn and when the turn started
+    /// (docs/evidence/effort-estimates.md).
+    forecast: Option<(crate::estimate::Forecast, u64, std::time::Instant)>,
 }
 
 /// The translation of the thinking as the settings last read give it: one
@@ -1369,6 +1378,20 @@ impl Thread<'_> {
         self.goal.as_ref().is_some_and(crate::goal::Goal::is_active)
     }
 
+    /// Sends what is left of the task by the estimate, from what it used
+    /// so far. Nothing is sent without past tasks to go by.
+    async fn send_estimate(&self, usage: &TurnUsage) {
+        let Some((forecast, before, started)) = &self.forecast else {
+            return;
+        };
+        if !forecast.has_history() {
+            return;
+        }
+        let used = before + usage.input + usage.output;
+        let estimate = forecast.remaining(used, started.elapsed().as_millis() as u64);
+        let _ = self.events.send(TurnEvent::Estimate(estimate)).await;
+    }
+
     /// Keeps the working model's claim for the next check; deciding is the
     /// checker's.
     async fn claim(&mut self, arguments: &str) -> Answer {
@@ -1572,7 +1595,9 @@ impl Thread<'_> {
                     if name != crate::goal::GOAL {
                         self.goal_calls += 1;
                     }
+                    let started = std::time::Instant::now();
                     let answer = self.answer(llm, body, name, arguments, usage).await;
+                    self.tally.add(name, arguments, started.elapsed());
                     if name == crate::ask::ASK && !answer.1 {
                         if let Ok((questions, _)) = crate::ask::check(arguments) {
                             self.asked.push((call_id.clone(), questions));
@@ -1678,6 +1703,7 @@ pub async fn run(
             }
         }
     };
+    let task = TaskStart::begin(&mut thread, &llm, &prompt.text).await;
     drop(llm);
     let mut prompt = prompt;
     let ending = loop {
@@ -1734,6 +1760,7 @@ pub async fn run(
             error.message
         ));
     }
+    task.end(&mut thread, &usage, &ending).await;
     let mut questions: Vec<Asked> = thread
         .asked
         .iter()
@@ -1749,6 +1776,136 @@ pub async fn run(
         held: thread.held,
         questions,
         warnings: thread.warnings,
+    }
+}
+
+/// What the record of a turn as a task needs from its start
+/// (docs/evidence/effort-estimates.md).
+struct TaskStart {
+    started_ms: i64,
+    started: std::time::Instant,
+    prompt: String,
+    provider: String,
+    model: String,
+    effort: String,
+    /// The goal the turn works on, if one is active.
+    goal: Option<crate::goal::Goal>,
+    snapshot: Option<crate::git::Snapshot>,
+}
+
+impl TaskStart {
+    /// Notes the start, and prepares and sends the first estimate.
+    async fn begin(thread: &mut Thread<'_>, llm: &Llm, prompt: &str) -> Self {
+        let goal = thread.goal.clone().filter(crate::goal::Goal::is_active);
+        let snapshot = match thread.folder.as_deref() {
+            Some(folder) => crate::git::snapshot(folder).await,
+            None => None,
+        };
+        // A goal is one task over its turns: what it used before counts.
+        let (request, before) = match &goal {
+            Some(goal) => {
+                let before = thread
+                    .store
+                    .goal_task_tokens(thread.session, goal.from_seq)
+                    .await;
+                (goal.objective.clone(), before)
+            }
+            None => (prompt.to_string(), Ok(0)),
+        };
+        let forecast = match before {
+            Ok(before) => crate::estimate::forecast(thread.store, &request, llm.model())
+                .await
+                .map(|forecast| (forecast, before)),
+            Err(error) => Err(error),
+        };
+        match forecast {
+            Ok((forecast, before)) => {
+                thread.forecast = Some((forecast, before, std::time::Instant::now()));
+                thread.send_estimate(&TurnUsage::default()).await;
+            }
+            Err(error) => thread.warnings.push(format!(
+                "no estimate could be made for this turn: {}",
+                error.message
+            )),
+        }
+        Self {
+            started_ms: crate::store::now(),
+            started: std::time::Instant::now(),
+            prompt: prompt.to_string(),
+            provider: llm.provider_label(),
+            model: llm.model().to_string(),
+            effort: llm.effort().await.as_str().to_string(),
+            goal,
+            snapshot,
+        }
+    }
+
+    /// Records the turn as a task, and adds it to its goal's record.
+    async fn end(self, thread: &mut Thread<'_>, usage: &TurnUsage, ending: &Ending) {
+        let changed = match (&self.snapshot, thread.folder.as_deref()) {
+            (Some(snapshot), Some(folder)) => crate::git::changed_since(folder, snapshot).await,
+            _ => None,
+        };
+        let (lines_added, lines_removed, files_changed, changes_from) = match changed {
+            Some(changed) => (
+                Some(changed.added),
+                Some(changed.removed),
+                Some(changed.files),
+                "git",
+            ),
+            None => (None, None, Some(thread.tally.edited.len() as u64), "tools"),
+        };
+        let task = crate::estimate::Task {
+            started_ms: self.started_ms,
+            session: Some(thread.session.0),
+            kind: "turn".into(),
+            goal_seq: self.goal.as_ref().map(|goal| goal.from_seq),
+            task_type: crate::estimate::recorded_type(&self.prompt, &thread.tally.counts).into(),
+            request: self.prompt,
+            provider: self.provider,
+            model: self.model,
+            effort: Some(self.effort),
+            input: usage.input,
+            output: usage.output,
+            cached: usage.cached,
+            requests: usage.requests,
+            wall_ms: self.started.elapsed().as_millis() as u64,
+            tool_ms: thread.tally.tool_ms,
+            tools: thread.tally.counts,
+            lines_added,
+            lines_removed,
+            files_changed,
+            changes_from: changes_from.into(),
+            outcome: ending.as_str().into(),
+        };
+        let mut recorded = thread.store.record_task(&task).await;
+        if let (Ok(()), Some(goal)) = (&recorded, &self.goal) {
+            let outcome = match crate::goal::load(thread.store, thread.session).await {
+                Ok(Some(now)) if now.same_goal(goal) => match now.state {
+                    crate::goal::State::Active => "running",
+                    crate::goal::State::Achieved => "achieved",
+                    _ => "abandoned",
+                },
+                Ok(_) => "abandoned",
+                Err(error) => {
+                    thread.warnings.push(format!(
+                        "the goal's task record was not updated: {}",
+                        error.message
+                    ));
+                    return;
+                }
+            };
+            recorded = thread
+                .store
+                .add_to_goal_task(&task, goal.from_seq, goal.objective.clone(), outcome)
+                .await;
+        }
+        if let Err(error) = recorded {
+            thread.warnings.push(format!(
+                "this turn was not recorded as a task, so estimates leave it out: {}",
+                error.message
+            ));
+        }
     }
 }
 
@@ -1895,6 +2052,8 @@ async fn open<'a>(
         warnings: Vec::new(),
         git,
         thinking_translation,
+        tally: Default::default(),
+        forecast: None,
     })
 }
 
@@ -2009,6 +2168,7 @@ async fn steps(
         }
         thread.thinking_translation.answer_ended();
         usage.add_stream(&stream, "turn");
+        thread.send_estimate(usage).await;
         if let Some(measured) = stream.usage() {
             llm.measured(
                 thread.session.0,

@@ -159,8 +159,9 @@ impl Store {
 
     /// Deletes `session` with its messages, plan, goal, standing
     /// instructions, choice of model, held calls and questions; `false`
-    /// when there is no such thread. The log of its requests to models and
-    /// the events of notes are kept, no longer linked to the thread, and
+    /// when there is no such thread. The log of its requests to models, the
+    /// records of its tasks and the events of notes are kept, no longer
+    /// linked to the thread, and
     /// stored payloads, which other threads may share, are kept. The files
     /// of the thread are [`Self::thread_files`].
     pub async fn delete_session(&self, session: SessionId) -> Result<bool, ErrorInfo> {
@@ -190,7 +191,7 @@ impl Store {
                 )
                 .map_err(store_error)?;
             }
-            for table in ["requests", "note_events"] {
+            for table in ["requests", "note_events", "tasks"] {
                 tx.execute(
                     &format!("UPDATE {table} SET session_id = NULL WHERE session_id = ?1"),
                     [session.0],
