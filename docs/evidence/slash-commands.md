@@ -262,3 +262,8 @@
 - `/goal status`：状態 `achieved`、判定役が目標を 2 つの点に分け、理由を返した。`elapsed_ms` 7,358、`tokens` 17,282、`rounds` 0。
 - 利用者のコマンド `echo.md`（本文「Reply with exactly these words and nothing else: $ARGUMENTS」）を短い名前 `/echo blue whale` で呼び、`user:echo` として解決され、答えは「blue whale」。
 - 1 回だけの確認で、ほかのモデル・プロバイダでは動かしていない。
+
+## 審査役への渡し方
+
+- プロジェクトのコマンドとプラグインのコマンド・スキルから作った依頼は、先頭に `[command file] /名前 引数` の 1 行を付けて保存する。`auto` モードの審査役には、その 1 行だけを「Person:」として渡し、ファイルの文は「Command file (from the repository or a plugin, not the person's words)」として別に渡す。他人のリポジトリのコマンドの文で、審査役に強制 push などを通させないため。自分用のコマンド（`~/.inocode/commands`）は本人の言葉として扱う。
+- 試験：`review::tests::a_command_files_text_is_not_the_persons_words`。

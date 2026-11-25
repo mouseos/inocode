@@ -1543,8 +1543,16 @@ impl Core {
                     return Err(unavailable(&reason));
                 }
                 allowed(When::AfterTurn, running)?;
+                let prompt = custom.prompt(arguments)?;
+                // The person's own commands are their words; a project's or a
+                // plugin's are not, and must not count as the person's to
+                // the reviewer.
+                let prompt = match custom.origin {
+                    Origin::User => prompt,
+                    _ => crate::review::from_command_file(&custom.full(), arguments, &prompt),
+                };
                 Ok(Ran::Turn(TurnStart {
-                    prompt: custom.prompt(arguments)?,
+                    prompt,
                     reply_to: None,
                     approvals: turn::Approvals::default(),
                     result: json!({ "command": custom.full() }),

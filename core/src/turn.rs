@@ -628,6 +628,17 @@ async fn thinking_translator(
 }
 
 impl Thread<'_> {
+    /// Records that `rule` was allowed for the call `name`; a failure goes
+    /// into the turn's warnings, since the record is the rule's audit.
+    async fn record_allowed(&mut self, rule: crate::store::NoteId, actor: Actor, name: &str) {
+        if let Err(error) = self.store.record(rule, "allowed", actor, None, name).await {
+            self.warnings.push(format!(
+                "the approval of rule {} could not be recorded: {}",
+                rule.0, error.message
+            ));
+        }
+    }
+
     async fn record(&mut self, bodies: Vec<Body>) -> Result<(), ErrorInfo> {
         let base = self.next_seq;
         let messages: Vec<Message> = bodies
@@ -827,10 +838,7 @@ impl Thread<'_> {
                     asked_rules = rules;
                 } else {
                     for rule in &rules {
-                        let _ = self
-                            .store
-                            .record(*rule, "allowed", Actor::Person, None, name)
-                            .await;
+                        self.record_allowed(*rule, Actor::Person, name).await;
                     }
                 }
             }
@@ -842,10 +850,7 @@ impl Thread<'_> {
         if let Some(index) = approved {
             self.approved.remove(index);
             for rule in &asked_rules {
-                let _ = self
-                    .store
-                    .record(*rule, "allowed", Actor::Person, None, name)
-                    .await;
+                self.record_allowed(*rule, Actor::Person, name).await;
             }
         } else if self.mode != Mode::Full {
             if let Some(answer) = self
@@ -1025,10 +1030,7 @@ impl Thread<'_> {
                 crate::review::Verdict::Allow => {
                     self.denials.0 = 0;
                     for rule in &asked_rules {
-                        let _ = self
-                            .store
-                            .record(*rule, "allowed", Actor::Harness, None, name)
-                            .await;
+                        self.record_allowed(*rule, Actor::Harness, name).await;
                     }
                     None
                 }
