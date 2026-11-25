@@ -23,7 +23,9 @@ use crate::ErrorInfo;
 
 /// The key in Google's published page-translation script.
 const GOOGLE_KEY: &str = "AIzaSyATBXajvzQLTDHEQbcpq0Ihe0vWDHmO520";
-const WAIT: Duration = Duration::from_secs(20);
+/// How long one request to an online service may take; a stream's wait at
+/// its end is as long, so that a request under way can still answer.
+pub(crate) const WAIT: Duration = Duration::from_secs(20);
 /// The longest run of text without a sentence end that waits for one.
 const LONGEST_CHUNK: usize = 400;
 
@@ -136,31 +138,40 @@ pub async fn installed(models: &Path) -> Vec<InstalledModel> {
 
 /// Deletes the model of `service` for `from` → `to` kept in `models`;
 /// `Ok(false)` when there is none. For Chromium, either language may be
-/// `en`, since a pack holds both ways. A [`Translator`] that has already
-/// loaded the model keeps it in memory.
+/// `en`, since a pack holds both ways. The translators shared in this
+/// process let go of the models they loaded.
 pub async fn remove(
     models: &Path,
     service: Service,
     from: &str,
     to: &str,
 ) -> Result<bool, ErrorInfo> {
-    match service {
-        Service::Firefox => firefox::remove(models, from, to).await,
-        Service::Chromium => chromium::remove(&models.join("chromium"), from, to).await,
-        Service::Edge | Service::Google => Err(ErrorInfo::new(
-            "invalid_params",
-            format!("the {} service keeps no models", service.name()),
-        )),
-    }
+    let removed = match service {
+        Service::Firefox => firefox::remove(models, from, to).await?,
+        Service::Chromium => chromium::remove(&models.join("chromium"), from, to).await?,
+        Service::Edge | Service::Google => {
+            return Err(ErrorInfo::new(
+                "invalid_params",
+                format!("the {} service keeps no models", service.name()),
+            ))
+        }
+    };
+    forget(service, models).await;
+    Ok(removed)
 }
 
-/// The key in Google's page-translation script for its list of languages.
+/// The key in Google's page-translation script for its list of languages,
+/// the default of the `google_languages_key` setting.
 const GOOGLE_LANGUAGES_KEY: &str = "AIzaSyBWDj0QJvVIx8XOhRegXX5_SrRWxhT5Hs4";
 
 /// What `service` can translate: Firefox's from its catalog, Chromium's
 /// from the packs Chrome lists, Google's and Edge's from their lists of
-/// languages.
-pub async fn languages(service: Service, hosts: &Hosts) -> Result<Languages, ErrorInfo> {
+/// languages, asked with `google_languages_key`.
+pub async fn languages(
+    service: Service,
+    hosts: &Hosts,
+    google_languages_key: &str,
+) -> Result<Languages, ErrorInfo> {
     let client = reqwest::Client::builder()
         .user_agent(concat!("inocode/", env!("CARGO_PKG_VERSION")))
         .build()
@@ -185,7 +196,7 @@ pub async fn languages(service: Service, hosts: &Hosts) -> Result<Languages, Err
             let query = [
                 ("client", "te_lib"),
                 ("display_language", "en"),
-                ("key", GOOGLE_LANGUAGES_KEY),
+                ("key", google_languages_key),
             ];
             let response = get(&hosts.google_languages, &query).await.map_err(failed)?;
             let value = answer(response).await?;
@@ -253,6 +264,7 @@ impl Translator {
             chromium: chromium::Chromium::new(
                 models.join("chromium"),
                 hosts.chromium.clone(),
+                chromium::CHROME_VERSION.into(),
                 client.clone(),
             ),
             firefox: firefox::Firefox::new(models, hosts.firefox.clone(), client.clone()),
@@ -261,19 +273,28 @@ impl Translator {
         }
     }
 
-    /// Each of `texts` in the language `to` (a tag such as `ja`), in the
-    /// same order; code in backticks is left as written.
+    /// The same translator asking Chrome's update server as Chrome
+    /// `version`.
+    pub fn with_chrome_version(mut self, version: String) -> Self {
+        self.chromium = self.chromium.with_version(version);
+        self
+    }
+
     /// Gets ready to translate from `from` to `to`: Firefox's models and
     /// Chrome's packs are fetched now rather than with the first text; the
-    /// services need nothing.
-    pub async fn prepare(&self, from: &str, to: &str) -> Result<(), ErrorInfo> {
+    /// services need nothing. Gives back what the person should know about
+    /// how the models were checked, such as OneCRL checked against no
+    /// revocations known before.
+    pub async fn prepare(&self, from: &str, to: &str) -> Result<Vec<String>, ErrorInfo> {
         match self.service {
             Service::Firefox => self.firefox.prepare(from, to).await,
-            Service::Chromium => self.chromium.prepare(from, to).await,
-            Service::Edge | Service::Google => Ok(()),
+            Service::Chromium => self.chromium.prepare(from, to).await.map(|()| Vec::new()),
+            Service::Edge | Service::Google => Ok(Vec::new()),
         }
     }
 
+    /// Each of `texts` in the language `to` (a tag such as `ja`), in the
+    /// same order; code in backticks is left as written.
     /// A text whose script shows it is already in `to` is given back as it
     /// is, without being sent.
     pub async fn translate(&self, texts: &[String], to: &str) -> Result<Vec<String>, ErrorInfo> {
@@ -794,47 +815,116 @@ impl Chunker {
         (!self.pending.is_empty()).then(|| std::mem::take(&mut self.pending))
     }
 
-    /// Where the ready text ends: after the last sentence end that is
-    /// outside code, else, past the longest chunk, after the last space.
+    /// Where the ready text ends: after the last sentence end outside
+    /// code, else, past the longest chunk, after the last whitespace that
+    /// is not inside closed code, so that a backtick that is never closed
+    /// does not hold the rest of the stream back.
     fn cut(&self) -> Option<usize> {
-        let text = &self.pending;
-        let (mut sentence, mut space) = (None, None);
-        let mut in_fence = false;
-        let mut in_code = false;
-        let mut chars = text.char_indices().peekable();
-        while let Some((at, char)) = chars.next() {
-            if text[at..].starts_with("```") {
-                in_fence = !in_fence;
-                chars.next();
-                chars.next();
-                continue;
-            }
-            if char == '`' && !in_fence {
-                in_code = !in_code;
-                continue;
-            }
-            if in_fence || in_code {
-                continue;
-            }
-            let end = at + char.len_utf8();
-            match char {
-                '\n' | '。' | '！' | '？' => sentence = Some(end),
-                '.' | '!' | '?' if starts_sentence(&text[end..]) => sentence = Some(end),
-                _ if char.is_whitespace() => space = Some(end),
-                _ => {}
+        let scan = scan(&self.pending, false);
+        scan.ends.last().copied().or_else(|| {
+            (self.pending.len() > LONGEST_CHUNK)
+                .then(|| scan.space_outside.max(scan.space_in_open_code))
+                .flatten()
+        })
+    }
+}
+
+/// What [`scan`] finds in a text.
+struct Scan {
+    /// Just past each sentence end outside code.
+    ends: Vec<usize>,
+    /// Just past the last whitespace outside code.
+    space_outside: Option<usize>,
+    /// Just past the last whitespace inside code that is not closed yet.
+    space_in_open_code: Option<usize>,
+}
+
+/// The sentence ends of `text`, the one rule for streamed text and for the
+/// offline services: after 。！？ and a newline, and after `.`, `!` or `?`
+/// when [`starts_sentence`] says so, outside code in ``` fences or
+/// backticks. A backtick or fence with no closing one is code to the end
+/// of a stream that may still close it; in a `whole` text it is a plain
+/// character, and a `.`, `!` or `?` with only whitespace after it ends a
+/// sentence.
+fn scan(text: &str, whole: bool) -> Scan {
+    let mut out = Scan {
+        ends: Vec::new(),
+        space_outside: None,
+        space_in_open_code: None,
+    };
+    let mut at = 0;
+    while let Some(char) = text[at..].chars().next() {
+        let end = at + char.len_utf8();
+        if char == '`' {
+            let fence = if text[at..].starts_with("```") {
+                "```"
+            } else {
+                "`"
+            };
+            let inside = at + fence.len();
+            match text[inside..].find(fence) {
+                Some(length) => {
+                    at = inside + length + fence.len();
+                    continue;
+                }
+                None if !whole => {
+                    out.space_in_open_code = text[inside..]
+                        .char_indices()
+                        .rfind(|(_, c)| c.is_whitespace())
+                        .map(|(offset, c)| inside + offset + c.len_utf8());
+                    break;
+                }
+                None => {}
             }
         }
-        sentence.or(space.filter(|_| text.len() > LONGEST_CHUNK))
+        match char {
+            '\n' | '。' | '！' | '？' => out.ends.push(end),
+            '.' | '!' | '?' if starts_sentence(&text[end..], whole) => out.ends.push(end),
+            _ if char.is_whitespace() => out.space_outside = Some(end),
+            _ => {}
+        }
+        at = end;
     }
+    out
+}
+
+/// A whole text cut into sentences and the whitespace around them, by the
+/// same rule as streamed text ([`scan`]); `true` marks a sentence.
+pub(crate) fn sentences(text: &str) -> Vec<(&str, bool)> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    for end in scan(text, true).ends.into_iter().chain([text.len()]) {
+        let piece = &text[start..end];
+        start = end;
+        let body = piece.trim();
+        if body.is_empty() {
+            if !piece.is_empty() {
+                out.push((piece, false));
+            }
+            continue;
+        }
+        let lead = &piece[..piece.len() - piece.trim_start().len()];
+        let trail = &piece[piece.trim_end().len()..];
+        for (part, sentence) in [(lead, false), (body, true), (trail, false)] {
+            if !part.is_empty() {
+                out.push((part, sentence));
+            }
+        }
+    }
+    out
 }
 
 /// Whether `rest`, the text after a `.`, `!` or `?`, starts a new
 /// sentence: space, then a capital, a digit, a list mark, a quote or code,
 /// or a character of a script without capitals. A lower-case word carries
-/// the sentence on, as after `println!` or `e.g.`; until the next word has
-/// come it is not known, so the cut waits.
-fn starts_sentence(rest: &str) -> bool {
+/// the sentence on, as after `println!` or `e.g.`; in a stream, until the
+/// next word has come it is not known, so the cut waits; at the end of a
+/// `whole` text the sentence ends.
+fn starts_sentence(rest: &str, whole: bool) -> bool {
     let next = rest.trim_start();
+    if next.is_empty() {
+        return whole;
+    }
     if next.len() == rest.len() {
         return false;
     }
@@ -917,6 +1007,18 @@ impl<T: Send + 'static> Streamer<T> {
     pub fn push(&self, text: &str) {
         let mut backlog = lock(&self.backlog);
         if let Some(piece) = backlog.chunker.push(text) {
+            backlog.ready.push_back(piece);
+        }
+        drop(backlog);
+        self.wake.notify_one();
+    }
+
+    /// Ends the text pushed so far: what waits for a sentence end goes to
+    /// be translated as a piece of its own, so that it is not joined with
+    /// text pushed later.
+    pub fn flush(&self) {
+        let mut backlog = lock(&self.backlog);
+        if let Some(piece) = backlog.chunker.finish() {
             backlog.ready.push_back(piece);
         }
         drop(backlog);
@@ -1024,30 +1126,61 @@ async fn work<T: Send + 'static>(
     }
 }
 
-/// The translator for `service`, `google_key` and `models`, made once per
-/// process so that loaded models and open connections are kept.
-pub(crate) fn shared(
-    service: Service,
-    google_key: Option<String>,
-    models: PathBuf,
-) -> std::sync::Arc<Translator> {
-    type Key = (Service, Option<String>, PathBuf);
-    type Made = std::sync::Mutex<std::collections::HashMap<Key, std::sync::Arc<Translator>>>;
-    static MADE: std::sync::OnceLock<Made> = std::sync::OnceLock::new();
-    let mut made = MADE
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    made.entry((service, google_key.clone(), models.clone()))
+/// The translators made by [`shared`], by service, the setting that
+/// service uses (Google's key, the Chrome version) and models folder.
+type Made =
+    std::collections::HashMap<(Service, Option<String>, PathBuf), std::sync::Arc<Translator>>;
+
+static MADE: std::sync::LazyLock<std::sync::Mutex<Made>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn made() -> std::sync::MutexGuard<'static, Made> {
+    MADE.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// The translator for the service of `settings` and `models`, made once
+/// per process so that loaded models and open connections are kept.
+pub(crate) fn shared(settings: &Settings, models: PathBuf) -> std::sync::Arc<Translator> {
+    let service = settings.service;
+    let setting = match service {
+        Service::Google => settings.google_key.clone(),
+        Service::Chromium => Some(settings.chrome_version.clone()),
+        Service::Edge | Service::Firefox => None,
+    };
+    made()
+        .entry((service, setting, models.clone()))
         .or_insert_with(|| {
-            std::sync::Arc::new(Translator::new(
-                service,
-                google_key,
-                Hosts::default(),
-                models,
-            ))
+            std::sync::Arc::new(
+                Translator::new(
+                    service,
+                    settings.google_key.clone(),
+                    Hosts::default(),
+                    models,
+                )
+                .with_chrome_version(settings.chrome_version.clone()),
+            )
         })
         .clone()
+}
+
+/// Lets go of the shared translators of `service` for `models` and of the
+/// models they loaded, so that a model deleted from disk is not used again.
+async fn forget(service: Service, models: &Path) {
+    let gone: Vec<std::sync::Arc<Translator>> = {
+        let mut made = made();
+        let keys: Vec<_> = made
+            .keys()
+            .filter(|(kind, _, folder)| *kind == service && folder == models)
+            .cloned()
+            .collect();
+        keys.into_iter()
+            .filter_map(|key| made.remove(&key))
+            .collect()
+    };
+    for translator in gone {
+        translator.firefox.forget().await;
+        translator.chromium.forget().await;
+    }
 }
 
 /// The `translation` settings of `settings.json`.
@@ -1057,6 +1190,10 @@ pub struct Settings {
     pub service: Service,
     pub to: Option<String>,
     pub google_key: Option<String>,
+    /// The Chrome version Chrome's update server is asked as.
+    pub chrome_version: String,
+    /// The key Google's list of languages is asked with.
+    pub google_languages_key: String,
 }
 
 impl Default for Settings {
@@ -1066,9 +1203,23 @@ impl Default for Settings {
             service: Service::Google,
             to: None,
             google_key: None,
+            chrome_version: chromium::CHROME_VERSION.into(),
+            google_languages_key: GOOGLE_LANGUAGES_KEY.into(),
         }
     }
 }
+
+/// The keys of the `translation` settings; `answer` is accepted only as
+/// off, since translating answers is not implemented.
+const SETTING_KEYS: [&str; 7] = [
+    "thinking",
+    "service",
+    "to",
+    "google_key",
+    "chrome_version",
+    "google_languages_key",
+    "answer",
+];
 
 impl Settings {
     pub(crate) fn from_value(value: &Value) -> Result<Self, String> {
@@ -1082,6 +1233,12 @@ impl Settings {
         let section = section
             .as_object()
             .ok_or("\"translation\" is not an object")?;
+        if let Some(unknown) = section
+            .keys()
+            .find(|key| !SETTING_KEYS.contains(&key.as_str()))
+        {
+            return Err(format!("unknown translation setting {unknown:?}"));
+        }
         let text = |name: &str| -> Result<Option<String>, String> {
             match section.get(name) {
                 None | Some(Value::Null) => Ok(None),
@@ -1090,17 +1247,49 @@ impl Settings {
                 Some(_) => Err(format!("\"translation.{name}\" is not a string")),
             }
         };
-        match section.get("thinking") {
-            None | Some(Value::Null) => {}
-            Some(Value::Bool(on)) => settings.thinking = *on,
-            Some(_) => return Err("\"translation.thinking\" is not true or false".into()),
+        let switch = |name: &str| -> Result<bool, String> {
+            match section.get(name) {
+                None | Some(Value::Null) => Ok(false),
+                Some(Value::Bool(on)) => Ok(*on),
+                Some(_) => Err(format!("\"translation.{name}\" is not true or false")),
+            }
+        };
+        settings.thinking = switch("thinking")?;
+        if switch("answer")? {
+            return Err("translating answers is not implemented".into());
         }
         if let Some(name) = text("service")? {
             settings.service = Service::parse(&name)
                 .ok_or_else(|| format!("unknown translation service {name:?}"))?;
         }
         settings.to = text("to")?;
+        if let Some(to) = &settings.to {
+            if !language_tag(to) {
+                return Err(format!("\"translation.to\" {to:?} is not a language tag"));
+            }
+        }
         settings.google_key = text("google_key")?;
+        if let Some(version) = text("chrome_version")? {
+            let parts: Vec<&str> = version.split('.').collect();
+            let numbers = parts
+                .iter()
+                .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()));
+            if parts.len() != 4 || !numbers {
+                return Err(format!(
+                    "\"translation.chrome_version\" {version:?} is not four numbers with dots"
+                ));
+            }
+            settings.chrome_version = version;
+        }
+        if let Some(key) = text("google_languages_key")? {
+            if !key
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            {
+                return Err("\"translation.google_languages_key\" is not a key".into());
+            }
+            settings.google_languages_key = key;
+        }
         Ok(settings)
     }
 
@@ -1108,6 +1297,19 @@ impl Settings {
     pub(crate) async fn read(path: &Path) -> Result<Self, String> {
         Self::from_value(&crate::settings::read(path).await?)
     }
+}
+
+/// Whether `tag` is written as a language tag (BCP 47 in form): a language
+/// of two or three letters, then subtags of one to eight letters or
+/// digits, such as `ja`, `zh-Hant` or `pt-BR`.
+fn language_tag(tag: &str) -> bool {
+    let mut parts = tag.split('-');
+    let primary = parts.next().unwrap_or_default();
+    (2..=3).contains(&primary.len())
+        && primary.bytes().all(|b| b.is_ascii_alphabetic())
+        && parts.all(|part| {
+            (1..=8).contains(&part.len()) && part.bytes().all(|b| b.is_ascii_alphanumeric())
+        })
 }
 
 /// The language to translate into: the setting, else the reply language
@@ -1265,6 +1467,38 @@ mod tests {
     }
 
     #[test]
+    fn a_backtick_never_closed_does_not_hold_the_stream_back() {
+        let mut chunker = Chunker::default();
+        assert_eq!(chunker.push("Use ` here. Then"), None);
+        let long = "more words ".repeat(40);
+        let cut = chunker.push(&long).unwrap();
+        assert!(cut.starts_with("Use ` here. Then"), "{cut}");
+        assert!(cut.ends_with(' ') && cut.len() > LONGEST_CHUNK, "{cut}");
+        assert_eq!(chunker.push("Next one. And"), Some("Next one.".into()));
+    }
+
+    #[test]
+    fn whole_texts_are_cut_by_the_same_rule_as_streams() {
+        assert_eq!(
+            sentences("See e.g. this one. Run `a. B` now! 終わり。x"),
+            [
+                ("See e.g. this one.", true),
+                (" ", false),
+                ("Run `a. B` now!", true),
+                (" ", false),
+                ("終わり。", true),
+                ("x", true),
+            ]
+        );
+        // A backtick that is never closed is a plain character in a whole
+        // text.
+        assert_eq!(
+            sentences("Odd ` mark. Next."),
+            [("Odd ` mark.", true), (" ", false), ("Next.", true)]
+        );
+    }
+
+    #[test]
     fn settings_are_read_and_checked() {
         assert_eq!(Settings::from_value(&json!({})), Ok(Settings::default()));
         let settings = Settings::from_value(&json!({"translation": {
@@ -1274,11 +1508,32 @@ mod tests {
             settings,
             Settings {
                 thinking: true,
-                service: Service::Google,
                 to: Some("ja".into()),
-                google_key: None,
+                ..Settings::default()
             }
         );
+        assert_eq!(settings.chrome_version, chromium::CHROME_VERSION);
+        assert_eq!(settings.google_languages_key, GOOGLE_LANGUAGES_KEY);
+        let set = Settings::from_value(&json!({"translation": {
+            "chrome_version": "150.0.1.2", "google_languages_key": "AIza-x_1", "to": "zh-Hant",
+            "answer": false}}))
+        .unwrap();
+        assert_eq!(set.chrome_version, "150.0.1.2");
+        assert_eq!(set.google_languages_key, "AIza-x_1");
+        for wrong in [
+            json!({"tihnking": true}),
+            json!({"answer": true}),
+            json!({"to": "Japanese"}),
+            json!({"to": "ja JP"}),
+            json!({"chrome_version": "143"}),
+            json!({"chrome_version": "143.0.x.1"}),
+            json!({"google_languages_key": "a key"}),
+        ] {
+            assert!(
+                Settings::from_value(&json!({ "translation": wrong })).is_err(),
+                "{wrong}"
+            );
+        }
         assert!(Settings::from_value(&json!({"translation": {"service": "deepl"}})).is_err());
         let firefox = Settings::from_value(&json!({"translation": {"service": "firefox"}}));
         assert_eq!(firefox.unwrap().service, Service::Firefox);
@@ -1431,6 +1686,36 @@ mod tests {
         translated
     }
 
+    /// What waits for a sentence end when the stream is flushed goes as a
+    /// piece of its own, not joined with what is pushed after.
+    #[tokio::test]
+    async fn a_flushed_stream_ends_its_unfinished_sentence() {
+        let (edge, _) = edge_stand_in().await;
+        let translator = Translator::new(
+            Service::Edge,
+            None,
+            Hosts {
+                edge,
+                ..Hosts::default()
+            },
+            PathBuf::new(),
+        );
+        let (out, mut received) = mpsc::channel(16);
+        let streamer =
+            Streamer::start(std::sync::Arc::new(translator), "ja".into(), out, |piece| {
+                piece
+            });
+        streamer.push("first answer without an end");
+        streamer.flush();
+        streamer.push("second one");
+        streamer.finish(Duration::from_secs(10)).await;
+        let mut pieces = Vec::new();
+        while let Ok(piece) = received.try_recv() {
+            pieces.push(piece.text);
+        }
+        assert_eq!(pieces, ["FIRST ANSWER WITHOUT AN END", "SECOND ONE"]);
+    }
+
     /// Text left untranslated goes out as written: the oldest at once when
     /// too much waits, the rest when the wait at the end runs out.
     #[tokio::test]
@@ -1477,11 +1762,53 @@ mod tests {
     #[tokio::test]
     async fn the_same_settings_share_one_translator() {
         let folder = PathBuf::from("shared-test-models");
-        let one = shared(Service::Firefox, None, folder.clone());
-        let two = shared(Service::Firefox, None, folder.clone());
+        let firefox = Settings {
+            service: Service::Firefox,
+            ..Settings::default()
+        };
+        let one = shared(&firefox, folder.clone());
+        let two = shared(&firefox, folder.clone());
         assert!(std::sync::Arc::ptr_eq(&one, &two));
-        let other = shared(Service::Firefox, None, PathBuf::from("other-test-models"));
+        let other = shared(&firefox, PathBuf::from("other-test-models"));
         assert!(!std::sync::Arc::ptr_eq(&one, &other));
+        // Google's key does not make another offline translator.
+        let keyed = Settings {
+            google_key: Some("other".into()),
+            ..firefox.clone()
+        };
+        assert!(std::sync::Arc::ptr_eq(
+            &one,
+            &shared(&keyed, folder.clone())
+        ));
+        let chromium = Settings {
+            service: Service::Chromium,
+            ..Settings::default()
+        };
+        let newer = Settings {
+            chrome_version: "150.0.0.0".into(),
+            ..chromium.clone()
+        };
+        assert!(!std::sync::Arc::ptr_eq(
+            &shared(&chromium, folder.clone()),
+            &shared(&newer, folder.clone())
+        ));
+    }
+
+    /// A model deleted from disk is not used again by the translators the
+    /// process shares.
+    #[tokio::test]
+    async fn a_removed_model_is_let_go_of() {
+        let models = tempfile::tempdir().unwrap();
+        let root = models.path().to_path_buf();
+        let firefox = Settings {
+            service: Service::Firefox,
+            ..Settings::default()
+        };
+        let before = shared(&firefox, root.clone());
+        std::fs::create_dir_all(root.join("en-ja")).unwrap();
+        assert_eq!(remove(&root, Service::Firefox, "en", "ja").await, Ok(true));
+        let after = shared(&firefox, root.clone());
+        assert!(!std::sync::Arc::ptr_eq(&before, &after));
     }
 
     #[tokio::test]
@@ -1623,22 +1950,32 @@ mod tests {
             edge_languages: format!("{base}/edge"),
             ..Hosts::default()
         };
-        let found = languages(Service::Google, &hosts).await.unwrap();
+        let found = languages(Service::Google, &hosts, GOOGLE_LANGUAGES_KEY)
+            .await
+            .unwrap();
         assert_eq!(found.from, ["en", "ja"]);
         assert_eq!(found.to, ["en", "zh-TW"]);
         assert!(found.direct.is_empty());
-        let found = languages(Service::Edge, &hosts).await.unwrap();
+        let found = languages(Service::Edge, &hosts, GOOGLE_LANGUAGES_KEY)
+            .await
+            .unwrap();
         assert_eq!(found.from, ["en", "ja", "tlh-Latn"]);
         assert_eq!(found.from, found.to);
-        let found = languages(Service::Chromium, &hosts).await.unwrap();
+        let found = languages(Service::Chromium, &hosts, GOOGLE_LANGUAGES_KEY)
+            .await
+            .unwrap();
         assert!(found.direct.contains(&("en".into(), "ja".into())));
         let empty = Hosts {
             google_languages: format!("{base}/empty"),
             edge_languages: format!("{base}/missing"),
             ..Hosts::default()
         };
-        assert!(languages(Service::Google, &empty).await.is_err());
-        assert!(languages(Service::Edge, &empty).await.is_err());
+        assert!(languages(Service::Google, &empty, GOOGLE_LANGUAGES_KEY)
+            .await
+            .is_err());
+        assert!(languages(Service::Edge, &empty, GOOGLE_LANGUAGES_KEY)
+            .await
+            .is_err());
     }
 
     /// Lists each service's languages from the real servers.
@@ -1651,7 +1988,9 @@ mod tests {
             Service::Firefox,
             Service::Chromium,
         ] {
-            let found = languages(service, &Hosts::default()).await.unwrap();
+            let found = languages(service, &Hosts::default(), GOOGLE_LANGUAGES_KEY)
+                .await
+                .unwrap();
             println!(
                 "{}: {} from, {} to, {} direct pairs",
                 service.name(),

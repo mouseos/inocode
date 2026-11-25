@@ -24,7 +24,7 @@ use x509_cert::Certificate;
 
 use super::marian::{Model, Shortlist};
 use super::sentencepiece::Vocabulary;
-use super::{InstalledModel, Languages, License, Service};
+use super::{sentences, InstalledModel, Languages, License, Service};
 use crate::ErrorInfo;
 
 /// Mozilla's Remote Settings server.
@@ -193,46 +193,6 @@ impl Pair {
             ));
         }
         self.target.decode(&out)
-    }
-}
-
-/// `text` cut into sentences and the whitespace around them; a sentence
-/// ends at 。！？, a newline, or . ! ? before whitespace.
-pub(super) fn sentences(text: &str) -> Vec<(&str, bool)> {
-    let mut out = Vec::new();
-    let mut start = 0;
-    let mut chars = text.char_indices().peekable();
-    while let Some((at, char)) = chars.next() {
-        let next = chars.peek().map(|&(_, next)| next);
-        let ends = match char {
-            '\n' | '。' | '！' | '？' => true,
-            '.' | '!' | '?' => next.is_some_and(char::is_whitespace),
-            _ => false,
-        };
-        if ends {
-            let end = at + char.len_utf8();
-            push_sentence(&text[start..end], &mut out);
-            start = end;
-        }
-    }
-    push_sentence(&text[start..], &mut out);
-    out
-}
-
-fn push_sentence<'a>(piece: &'a str, out: &mut Vec<(&'a str, bool)>) {
-    let body = piece.trim();
-    if body.is_empty() {
-        if !piece.is_empty() {
-            out.push((piece, false));
-        }
-        return;
-    }
-    let lead = &piece[..piece.len() - piece.trim_start().len()];
-    let trail = &piece[piece.trim_end().len()..];
-    for (part, sentence) in [(lead, false), (body, true), (trail, false)] {
-        if !part.is_empty() {
-            out.push((part, sentence));
-        }
     }
 }
 
@@ -1036,16 +996,51 @@ pub(super) async fn writing(base: &Path, name: &str) -> Result<FileLock, String>
     Ok(held)
 }
 
-/// The model folders already checked for a newer version in this process.
-static CHECKED: LazyLock<std::sync::Mutex<HashSet<PathBuf>>> = LazyLock::new(Default::default);
+/// How long a fetched catalog, and a check of a kept model for a newer
+/// version that went through, hold in a process (inocode's choice: a
+/// process that runs for days still sees new versions).
+pub(super) const CHECK_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// Whether the model in `folder` is still to be checked for a newer
-/// version in this process; marks it checked.
-pub(super) fn first_check(folder: &Path) -> bool {
-    CHECKED
+/// The checks of kept models for a newer version in this process.
+#[derive(Default)]
+struct Checks {
+    /// When each model folder was last checked with success.
+    done: HashMap<PathBuf, std::time::Instant>,
+    /// The model folders being checked now.
+    running: HashSet<PathBuf>,
+}
+
+static CHECKS: LazyLock<std::sync::Mutex<Checks>> = LazyLock::new(Default::default);
+
+fn checks() -> std::sync::MutexGuard<'static, Checks> {
+    CHECKS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .insert(folder.to_path_buf())
+}
+
+/// Whether the model in `folder` is due a check for a newer version: none
+/// went through within [`CHECK_LIFETIME`] and none is under way. When it
+/// is, a check is noted as under way; the caller ends it with
+/// [`check_done`].
+pub(super) fn check_due(folder: &Path) -> bool {
+    let mut checks = checks();
+    let fresh = checks
+        .done
+        .get(folder)
+        .is_some_and(|at| at.elapsed() < CHECK_LIFETIME);
+    !fresh && checks.running.insert(folder.to_path_buf())
+}
+
+/// Ends the check of the model in `folder`: one that went through holds
+/// for [`CHECK_LIFETIME`]; after a failure the next use checks again.
+pub(super) fn check_done(folder: &Path, ok: bool) {
+    let mut checks = checks();
+    checks.running.remove(folder);
+    if ok {
+        checks
+            .done
+            .insert(folder.to_path_buf(), std::time::Instant::now());
+    }
 }
 
 /// Puts the folder `new` in the place of `folder` and deletes the old one;
@@ -1153,7 +1148,9 @@ pub(super) async fn asked_to_wait(
 }
 
 /// Notes that `server` asked not to be asked again before `until`, or no
-/// longer asks when `None`, in `memory` and in the file `kept`.
+/// longer asks when `None`, in `memory` and in the file `kept`. The file is
+/// read and written under its write lock, so that a wait another process
+/// notes at the same time is not lost.
 pub(super) async fn set_wait(
     memory: &Waits,
     kept: Option<&Path>,
@@ -1174,6 +1171,10 @@ pub(super) async fn set_wait(
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
     );
     let Some(path) = kept else {
+        return;
+    };
+    let (base, name) = split(path);
+    let Ok(_locked) = lock(base, name, Lock::Write).await else {
         return;
     };
     let mut waits: HashMap<String, i64> = tokio::fs::read(path)
@@ -1247,20 +1248,29 @@ type Loaded = HashMap<(String, String), Arc<Pair>>;
 struct Catalog {
     attachments: reqwest::Url,
     records: Vec<Value>,
+    /// What the person should know about how it was checked.
+    notes: Vec<String>,
+    fetched: std::time::Instant,
 }
 
-/// The catalogs fetched in this process, by settings server: the catalog
-/// is fetched at most once per process.
+/// The catalogs fetched in this process, by settings server: a catalog is
+/// used for [`CHECK_LIFETIME`], then fetched again.
 static CATALOGS: LazyLock<std::sync::Mutex<HashMap<String, Arc<Catalog>>>> =
     LazyLock::new(Default::default);
 
 /// When each settings server asked not to be asked again before.
 static SETTINGS_WAITS: Waits = LazyLock::new(Default::default);
 
+/// The longest wait a settings server's answer is followed for (inocode's
+/// choice; Firefox and application-services set none), the same day as
+/// Chrome's `kMaxRetryAfterSec`, so that one wrong answer cannot stop the
+/// models from being fetched for good.
+const LONGEST_BACKOFF: u64 = 24 * 60 * 60;
+
 /// The seconds an answer of a settings server asks to wait before the next
 /// request: the larger of its `Backoff` and `Retry-After` headers read as
 /// whole seconds, a header that is not one left out, as application-services'
-/// remote_settings client reads them.
+/// remote_settings client reads them, at most [`LONGEST_BACKOFF`].
 fn backoff_seconds(headers: &reqwest::header::HeaderMap) -> u64 {
     let seconds = |name: &str| {
         headers
@@ -1269,7 +1279,9 @@ fn backoff_seconds(headers: &reqwest::header::HeaderMap) -> u64 {
             .and_then(|value| value.trim().parse::<u64>().ok())
             .unwrap_or(0)
     };
-    seconds("Backoff").max(seconds("Retry-After"))
+    seconds("Backoff")
+        .max(seconds("Retry-After"))
+        .min(LONGEST_BACKOFF)
 }
 
 /// Requests to a settings server, which are not sent while the server has
@@ -1364,32 +1376,53 @@ impl Settings<'_> {
     /// OneCRL's revocations, its own signature checked against those known
     /// before (kept in `kept`, none without it), as Firefox checks OneCRL
     /// against its certificate store; those known before when it cannot
-    /// be fetched or does not verify.
-    async fn revoked(&self, kept: Option<&Path>) -> Revoked {
-        let before: Revoked = match kept {
+    /// be fetched or does not verify. With them, a note when they were
+    /// checked against no revocations known before, or are not today's.
+    async fn revoked(&self, kept: Option<&Path>) -> (Revoked, Option<String>) {
+        let before: Option<Revoked> = match kept {
             Some(path) => tokio::fs::read(path)
                 .await
                 .ok()
-                .and_then(|data| serde_json::from_slice(&data).ok())
-                .unwrap_or_default(),
-            None => Revoked::default(),
+                .and_then(|data| serde_json::from_slice(&data).ok()),
+            None => None,
         };
-        let Ok(records) = self.collection(ONECRL, ONECRL_SIGNER, &before).await else {
-            return before;
+        let known = before.is_some();
+        let before = before.unwrap_or_default();
+        let records = match self.collection(ONECRL, ONECRL_SIGNER, &before).await {
+            Ok(records) => records,
+            Err(error) => {
+                let note = if known {
+                    format!(
+                        "OneCRL could not be fetched or checked ({error}); the model catalog \
+                         was checked against the revocations kept from before"
+                    )
+                } else {
+                    format!(
+                        "OneCRL could not be fetched or checked ({error}) and none is kept; \
+                         the model catalog was checked against no revocations"
+                    )
+                };
+                return (before, Some(note));
+            }
         };
         let now = Revoked::from_records(&records);
         if let (Some(path), Ok(data)) = (kept, serde_json::to_vec(&now)) {
-            if now != before {
+            if now != before || !known {
                 let _ = write_whole(path, &data).await;
             }
         }
-        now
+        let note = (!known).then(|| {
+            "OneCRL's own signature was checked against no revocations, since none was kept \
+             yet (Firefox starts from the OneCRL it ships with)"
+                .to_string()
+        });
+        (now, note)
     }
 }
 
 /// The verified catalog at `settings`, fetched when this process has not
-/// fetched it yet; `models` is the models folder, where OneCRL and the
-/// server's request to wait are kept.
+/// fetched it within [`CHECK_LIFETIME`]; `models` is the models folder,
+/// where OneCRL and the server's request to wait are kept.
 async fn catalog(
     client: &reqwest::Client,
     settings: &str,
@@ -1400,6 +1433,7 @@ async fn catalog(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .get(settings)
+        .filter(|kept| kept.fetched.elapsed() < CHECK_LIFETIME)
         .cloned();
     if let Some(kept) = kept {
         return Ok(kept);
@@ -1417,7 +1451,7 @@ async fn catalog(
         .as_str()
         .ok_or("the settings server names no attachment address")?;
     let attachments = reqwest::Url::parse(base).map_err(|error| error.to_string())?;
-    let revoked = server
+    let (revoked, note) = server
         .revoked(models.map(|models| models.join(ONECRL_FILE)).as_deref())
         .await;
     let records = server
@@ -1427,6 +1461,8 @@ async fn catalog(
     let fetched = Arc::new(Catalog {
         attachments,
         records,
+        notes: note.into_iter().collect(),
+        fetched: std::time::Instant::now(),
     });
     CATALOGS
         .lock()
@@ -1493,9 +1529,22 @@ impl Firefox {
     }
 
     /// Fetches the models that take `from` to `to` when they are not on
-    /// disk yet, or a newer version of them when the catalog lists one.
-    pub(super) async fn prepare(&self, from: &str, to: &str) -> Result<(), ErrorInfo> {
-        self.route(from, &model_language(to), true).await.map(drop)
+    /// disk yet, or a newer version of them when the catalog lists one;
+    /// gives back the notes of the catalog this process holds.
+    pub(super) async fn prepare(&self, from: &str, to: &str) -> Result<Vec<String>, ErrorInfo> {
+        self.route(from, &model_language(to), true).await?;
+        let settings = self.settings.trim_end_matches('/');
+        Ok(CATALOGS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(settings)
+            .map(|catalog| catalog.notes.clone())
+            .unwrap_or_default())
+    }
+
+    /// Lets go of the pairs loaded into memory.
+    pub(super) async fn forget(&self) {
+        self.loaded.lock().await.clear();
     }
 
     /// The loaded pairs that take `from` to `to`; fetched first when they
@@ -1536,24 +1585,25 @@ impl Firefox {
                 if self.kept(&pair).await {
                     on_disk.push(pair.clone());
                 } else {
-                    first_check(&self.pair_folder(&pair));
                     self.fetch_pair(&catalog, &pair, &files)
                         .await
                         .map_err(failed)?;
+                    check_done(&self.pair_folder(&pair), true);
                 }
                 pairs.push(pair);
             }
         }
         for pair in on_disk {
-            if !first_check(&self.pair_folder(&pair)) {
+            let folder = self.pair_folder(&pair);
+            if !check_due(&folder) {
                 continue;
             }
             if wait {
-                let _ = self.update(&pair).await;
+                check_done(&folder, self.update(&pair).await.is_ok());
             } else {
                 let this = self.clone();
                 tokio::spawn(async move {
-                    let _ = this.update(&pair).await;
+                    check_done(&folder, this.update(&pair).await.is_ok());
                 });
             }
         }
@@ -2062,8 +2112,12 @@ pub(super) mod tests {
         assert!(!language_tag("en-"));
 
         let folder = Path::new("checked-once-test-folder");
-        assert!(first_check(folder));
-        assert!(!first_check(folder));
+        assert!(check_due(folder));
+        assert!(!check_due(folder), "a check is under way");
+        check_done(folder, false);
+        assert!(check_due(folder), "a failed check is tried again");
+        check_done(folder, true);
+        assert!(!check_due(folder), "a check that went through holds");
     }
 
     /// A stand-in HTTP server that answers each path in `routes` with its
@@ -2198,6 +2252,8 @@ pub(super) mod tests {
             Arc::new(Catalog {
                 attachments: reqwest::Url::parse(&format!("{base}/")).unwrap(),
                 records,
+                notes: Vec::new(),
+                fetched: std::time::Instant::now(),
             })
         };
         let settings = format!("{base}/settings-update-test");
@@ -2412,6 +2468,80 @@ pub(super) mod tests {
                 format!("/wait-c/{COLLECTION}/changeset"),
             ]
         );
+    }
+
+    /// A wait is followed for a day at most, and waits noted at once by
+    /// several holders are all kept in the file.
+    #[tokio::test]
+    async fn waits_are_capped_and_none_is_lost() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("Backoff", "99999999".parse().unwrap());
+        assert_eq!(backoff_seconds(&headers), LONGEST_BACKOFF);
+        headers.insert("Retry-After", "60".parse().unwrap());
+        headers.insert("Backoff", "30".parse().unwrap());
+        assert_eq!(backoff_seconds(&headers), 60);
+
+        let models = tempfile::tempdir().unwrap();
+        let file = models.path().join(BACKOFF_FILE);
+        let writers: Vec<_> = (0..8)
+            .map(|n| {
+                let file = file.clone();
+                tokio::spawn(async move {
+                    let server = format!("https://wait-lock-test-{n}.example");
+                    set_wait(&SETTINGS_WAITS, Some(&file), &server, Some(n)).await;
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.await.unwrap();
+        }
+        let kept: HashMap<String, i64> =
+            serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        assert_eq!(kept.len(), 8, "{kept:?}");
+    }
+
+    /// A catalog is fetched again once its lifetime is over; OneCRL checked
+    /// against nothing kept, or not fetched, is said so.
+    #[tokio::test]
+    async fn an_old_catalog_is_fetched_again_and_onecrl_is_reported() {
+        let base = stand_in(Vec::new()).await;
+        let client = reqwest::Client::new();
+        let settings = format!("{base}/catalog-lifetime-test");
+        let held = |fetched| {
+            Arc::new(Catalog {
+                attachments: reqwest::Url::parse("https://cdn.example/").unwrap(),
+                records: Vec::new(),
+                notes: Vec::new(),
+                fetched,
+            })
+        };
+        CATALOGS
+            .lock()
+            .unwrap()
+            .insert(settings.clone(), held(std::time::Instant::now()));
+        assert!(catalog(&client, &settings, None).await.is_ok());
+        if let Some(old) = std::time::Instant::now().checked_sub(CHECK_LIFETIME * 2) {
+            CATALOGS.lock().unwrap().insert(settings.clone(), held(old));
+            let error = catalog(&client, &settings, None).await.err().unwrap();
+            assert!(error.contains("404"), "{error}");
+        }
+
+        let models = tempfile::tempdir().unwrap();
+        let server = Settings {
+            client: &client,
+            server: &base,
+            waits: None,
+        };
+        let (revoked, note) = server.revoked(Some(&models.path().join(ONECRL_FILE))).await;
+        assert_eq!(revoked, none());
+        assert!(note.unwrap().contains("none is kept"));
+        std::fs::write(
+            models.path().join(ONECRL_FILE),
+            serde_json::to_vec(&none()).unwrap(),
+        )
+        .unwrap();
+        let (_, note) = server.revoked(Some(&models.path().join(ONECRL_FILE))).await;
+        assert!(note.unwrap().contains("kept from before"));
     }
 
     /// Writes a whole kept model of one file in `folder`.
@@ -2672,8 +2802,10 @@ pub(super) mod tests {
         );
         let models = tempfile::tempdir().unwrap();
         let kept = models.path().join(ONECRL_FILE);
-        assert_eq!(server.revoked(Some(&kept)).await, revoked);
-        assert_eq!(server.revoked(Some(&kept)).await, revoked);
+        let (first, note) = server.revoked(Some(&kept)).await;
+        assert_eq!(first, revoked);
+        assert!(note.unwrap().contains("no revocations"));
+        assert_eq!(server.revoked(Some(&kept)).await, (revoked, None));
         println!(
             "kept OneCRL: {} bytes",
             std::fs::metadata(&kept).unwrap().len()

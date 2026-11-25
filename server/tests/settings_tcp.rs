@@ -154,7 +154,7 @@ async fn providers_are_added_listed_changed_and_removed() {
             "providers/add",
             json!({"id": "mock", "kind": "anthropic", "default_model": "claude-haiku-5-5",
                    "reasoning": {"effort": "low"},
-                   "translation": {"outgoing": true, "model_language": "en"}}),
+                   "translation": {"outgoing": false, "model_language": "en"}}),
         )
         .await;
         let provider = &added["result"]["provider"];
@@ -176,6 +176,10 @@ async fn providers_are_added_listed_changed_and_removed() {
             (
                 json!({"id": "other", "kind": "openai", "reasoning": {"effort": "huge"}}),
                 "effort",
+            ),
+            (
+                json!({"id": "other", "kind": "openai", "translation": {"outgoing": true}}),
+                "not implemented",
             ),
         ];
         for (index, (params, expected)) in refused.into_iter().enumerate() {

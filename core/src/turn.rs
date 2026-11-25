@@ -525,7 +525,9 @@ struct Thread<'a> {
     thinking_translation: ThinkingTranslation,
 }
 
-/// The translation of the thinking as the settings last read give it.
+/// The translation of the thinking as the settings last read give it: one
+/// stream of translation for the whole turn, so that a model request never
+/// waits for it.
 struct ThinkingTranslation {
     settings: PathBuf,
     language: Option<String>,
@@ -534,10 +536,19 @@ struct ThinkingTranslation {
     /// The translator and language the thinking is translated into, when
     /// that is turned on.
     current: Option<(std::sync::Arc<crate::translate::Translator>, String)>,
+    events: mpsc::Sender<TurnEvent>,
+    streamer: Option<crate::translate::Streamer<TurnEvent>>,
+    /// Streams of translations turned off or changed during the turn: they
+    /// go on translating what they hold until the turn ends.
+    retired: Vec<crate::translate::Streamer<TurnEvent>>,
 }
 
 impl ThinkingTranslation {
-    async fn read(settings: PathBuf, language: Option<String>) -> Self {
+    async fn read(
+        settings: PathBuf,
+        language: Option<String>,
+        events: mpsc::Sender<TurnEvent>,
+    ) -> Self {
         let read_at = crate::settings::written();
         let current = thinking_translator(&settings, language.as_deref()).await;
         Self {
@@ -545,38 +556,85 @@ impl ThinkingTranslation {
             language,
             read_at,
             current,
+            events,
+            streamer: None,
+            retired: Vec::new(),
         }
     }
 
     /// Reads the settings again when this process wrote them since; `true`
-    /// when it did.
+    /// when the translation they give changed. A stream of the translation
+    /// that changed is not dropped: what it holds is still translated and
+    /// sent, while the turn goes on.
     async fn refresh(&mut self) -> bool {
         if crate::settings::written() == self.read_at {
             return false;
         }
         self.read_at = crate::settings::written();
-        self.current = thinking_translator(&self.settings, self.language.as_deref()).await;
+        let now = thinking_translator(&self.settings, self.language.as_deref()).await;
+        let same = match (&self.current, &now) {
+            (None, None) => true,
+            (Some((was, was_to)), Some((is, is_to))) => {
+                std::sync::Arc::ptr_eq(was, is) && was_to == is_to
+            }
+            _ => false,
+        };
+        if same {
+            return false;
+        }
+        self.current = now;
+        if let Some(streamer) = self.streamer.take() {
+            streamer.flush();
+            self.retired.push(streamer);
+        }
         true
     }
 
-    fn start(
-        &self,
-        events: &mpsc::Sender<TurnEvent>,
-    ) -> Option<crate::translate::Streamer<TurnEvent>> {
-        self.current.clone().map(|(translator, to)| {
-            crate::translate::Streamer::start(
-                translator,
-                to,
-                events.clone(),
-                TurnEvent::ThinkingTranslation,
-            )
-        })
+    /// Adds a piece of the model's thinking.
+    fn push(&mut self, text: &str) {
+        if self.streamer.is_none() {
+            self.streamer = self.current.clone().map(|(translator, to)| {
+                crate::translate::Streamer::start(
+                    translator,
+                    to,
+                    self.events.clone(),
+                    TurnEvent::ThinkingTranslation,
+                )
+            });
+        }
+        if let Some(streamer) = &self.streamer {
+            streamer.push(text);
+        }
+    }
+
+    /// The model's answer ended: its last unfinished sentence is
+    /// translated on its own.
+    fn answer_ended(&self) {
+        if let Some(streamer) = &self.streamer {
+            streamer.flush();
+        }
+    }
+
+    /// The turn ended: waits, at most `wait`, for what is left to be
+    /// translated, so that it comes before the turn's end; what is not
+    /// translated by then is sent as written, with an error.
+    async fn end(&mut self, wait: std::time::Duration) {
+        let finishing: Vec<_> = self
+            .retired
+            .drain(..)
+            .chain(self.streamer.take())
+            .map(|streamer| tokio::spawn(streamer.finish(wait)))
+            .collect();
+        for streamer in finishing {
+            let _ = streamer.await;
+        }
     }
 }
 
-/// How long a turn waits, after the model's answer ends, for the rest of
-/// its thinking to be translated.
-const TRANSLATION_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+/// How long a turn waits, after it ends, for the rest of its thinking to be
+/// translated: as long as one request to an online translation service may
+/// take, so that one under way can still answer.
+const TRANSLATION_WAIT: std::time::Duration = crate::translate::WAIT;
 
 /// The translator for the thinking when the settings at `path` turn it on
 /// and a language to translate into is known.
@@ -595,11 +653,7 @@ async fn thinking_translator(
         return None;
     }
     let to = crate::translate::target(&settings, language)?;
-    let translator = crate::translate::shared(
-        settings.service,
-        settings.google_key,
-        path.with_file_name("translation-models"),
-    );
+    let translator = crate::translate::shared(&settings, path.with_file_name("translation-models"));
     Some((translator, to))
 }
 
@@ -1510,6 +1564,11 @@ pub async fn run(
         &mut usage,
     )
     .await;
+    let wait = match ending {
+        Ending::Interrupted => std::time::Duration::ZERO,
+        _ => TRANSLATION_WAIT,
+    };
+    thread.thinking_translation.end(wait).await;
     if ending == Ending::Interrupted {
         shell::stop_all(&store.files_folder().join("logs"), session);
     }
@@ -1620,6 +1679,7 @@ async fn open<'a>(
     let thinking_translation = ThinkingTranslation::read(
         store.files_folder().with_file_name("settings.json"),
         language.clone(),
+        events.clone(),
     )
     .await;
     Ok(Thread {
@@ -1752,8 +1812,6 @@ async fn steps(
         };
         let mut failure = None;
         thread.thinking_translation.refresh().await;
-        let mut translation = thread.thinking_translation.start(&thread.events);
-        let mut interrupted = false;
         loop {
             tokio::select! {
                 next = stream.next_piece() => match next {
@@ -1763,12 +1821,8 @@ async fn steps(
                     Ok(Some(crate::llm::Piece::Thinking(text))) => {
                         // Turned on or off while the model thinks: from
                         // this piece on.
-                        if thread.thinking_translation.refresh().await {
-                            translation = thread.thinking_translation.start(&thread.events);
-                        }
-                        if let Some(translation) = &translation {
-                            translation.push(&text);
-                        }
+                        thread.thinking_translation.refresh().await;
+                        thread.thinking_translation.push(&text);
                         let _ = thread.events.send(TurnEvent::Thinking(text)).await;
                     }
                     Ok(None) => break,
@@ -1777,17 +1831,10 @@ async fn steps(
                         break;
                     }
                 },
-                () = cancelled(cancel) => {
-                    interrupted = true;
-                    break;
-                }
+                () = cancelled(cancel) => break,
             }
         }
-        if let Some(translation) = translation {
-            if !interrupted {
-                translation.finish(TRANSLATION_WAIT).await;
-            }
-        }
+        thread.thinking_translation.answer_ended();
         usage.add_stream(&stream, "turn");
         if let Some(measured) = stream.usage() {
             llm.measured(
@@ -1934,8 +1981,9 @@ mod tests {
         std::fs::create_dir_all(&folder).unwrap();
         let settings = folder.join("settings.json");
         std::fs::write(&settings, r#"{"translation": {"thinking": false}}"#).unwrap();
+        let (events, _received) = mpsc::channel(16);
         let mut translation =
-            ThinkingTranslation::read(settings.clone(), Some("ja-JP".into())).await;
+            ThinkingTranslation::read(settings.clone(), Some("ja-JP".into()), events).await;
         assert!(translation.current.is_none());
         crate::translate::update(&settings, &serde_json::json!({"thinking": true}))
             .await
@@ -1945,12 +1993,70 @@ mod tests {
             translation.current.as_ref().map(|(_, to)| to.as_str()),
             Some("ja")
         );
+        // A write that leaves the translation as it is changes nothing.
+        crate::translate::update(&settings, &serde_json::json!({"thinking": true}))
+            .await
+            .unwrap();
+        crate::settings::update(&settings, |file| {
+            file.insert("language".into(), serde_json::json!("ja-JP"));
+            Ok::<_, String>(())
+        })
+        .await
+        .unwrap();
+        assert!(!translation.refresh().await);
         crate::translate::update(&settings, &serde_json::json!({"thinking": false}))
             .await
             .unwrap();
         assert!(translation.refresh().await);
         assert!(translation.current.is_none());
         std::fs::remove_dir_all(&folder).unwrap();
+    }
+
+    /// The thinking pushed before the translation was changed is still
+    /// sent, and all of it comes before the turn's end, which does not wait
+    /// longer than it is given.
+    #[tokio::test]
+    async fn thinking_waiting_for_translation_is_sent_by_the_end_of_the_turn() {
+        let folder = tempfile::tempdir().unwrap();
+        let settings = folder.path().join("settings.json");
+        // A Google that takes the connection and never answers.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        std::fs::write(
+            &settings,
+            r#"{"translation": {"thinking": true, "service": "edge", "to": "ja"}}"#,
+        )
+        .unwrap();
+        let (events, mut received) = mpsc::channel(64);
+        let mut translation = ThinkingTranslation::read(settings.clone(), None, events).await;
+        translation.current = translation.current.take().map(|(_, to)| {
+            let stalled = crate::translate::Translator::new(
+                crate::translate::Service::Edge,
+                None,
+                crate::translate::Hosts {
+                    edge: format!("http://{}/translate", listener.local_addr().unwrap()),
+                    ..crate::translate::Hosts::default()
+                },
+                folder.path().join("translation-models"),
+            );
+            (std::sync::Arc::new(stalled), to)
+        });
+        translation.push("First thought. Unfinished");
+        translation.answer_ended();
+        crate::translate::update(&settings, &serde_json::json!({"thinking": false}))
+            .await
+            .unwrap();
+        assert!(translation.refresh().await);
+        translation.push("Not translated any more. ");
+        let started = std::time::Instant::now();
+        translation.end(std::time::Duration::from_millis(200)).await;
+        assert!(started.elapsed() < std::time::Duration::from_secs(15));
+        let mut pieces = Vec::new();
+        while let Ok(TurnEvent::ThinkingTranslation(piece)) = received.try_recv() {
+            pieces.push(piece);
+        }
+        let texts: Vec<&str> = pieces.iter().map(|piece| piece.text.as_str()).collect();
+        assert_eq!(texts, ["First thought.", " Unfinished"]);
+        assert!(pieces.iter().all(|piece| piece.error.is_some()));
     }
 
     #[test]

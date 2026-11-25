@@ -547,8 +547,7 @@ async fn records_of_the_agent_are_shown_and_changed_by_commands() {
         assert_eq!(colleague["result"]["on"], false);
         assert_eq!(colleague["result"]["advice"], json!([]));
         let translate = command(&mut client, 18, thread, "/translate answer on").await;
-        assert_eq!(translate["result"]["answer"], true);
-        assert!(translate["result"]["note"].is_string());
+        assert_eq!(translate["error"]["code"], "not_implemented");
         let help = command(&mut client, 19, thread, "/help goal").await;
         assert_eq!(help["result"]["help"]["name"], "goal");
     })

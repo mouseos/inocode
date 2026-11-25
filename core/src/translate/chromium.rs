@@ -16,19 +16,20 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use super::firefox::{
-    asked_to_wait, body, first_check, language_tag, reading, remove_folder, replace_folder,
-    safe_name, sentences, set_wait, sha256, write_whole, writing, Waits, DISK,
+    asked_to_wait, body, check_done, check_due, language_tag, reading, remove_folder,
+    replace_folder, safe_name, set_wait, sha256, write_whole, writing, Waits, DISK,
 };
 use super::sentencepiece::{Fields, Value as Field, Vocabulary};
 use super::tflite::{Graph, Tensor};
-use super::{InstalledModel, Languages, License, Service};
+use super::{sentences, InstalledModel, Languages, License, Service};
 use crate::ErrorInfo;
 
 /// Chrome's component update server
 /// (components/component_updater/component_updater_url_constants.cc).
 pub(super) const UPDATE: &str = "https://update.googleapis.com/service/update2/json";
-/// The Chrome version the update request names.
-const CHROME_VERSION: &str = "143.0.7499.170";
+/// The Chrome version the update request names unless the
+/// `chrome_version` setting says otherwise.
+pub(super) const CHROME_VERSION: &str = "143.0.7499.170";
 /// Chrome translates between two other languages through English
 /// (components/on_device_translation/public/language_pack.cc).
 const PIVOT: &str = "en";
@@ -365,8 +366,9 @@ fn component_id(key_hash: &[u8; 32]) -> String {
 }
 
 /// The update request for `app` at `version`, `0.0.0.0` when none is kept
-/// (docs/updater/protocol_4.md), naming the system inocode runs on.
-fn update_request(app: &str, version: &str) -> Value {
+/// (docs/updater/protocol_4.md), from Chrome `chrome` on the system
+/// inocode runs on.
+fn update_request(app: &str, version: &str, chrome: &str) -> Value {
     let (os, platform) = match std::env::consts::OS {
         "windows" => ("win", "Windows"),
         "macos" => ("mac", "Mac OS X"),
@@ -384,8 +386,8 @@ fn update_request(app: &str, version: &str) -> Value {
         "dedup": "cr",
         "acceptformat": "crx3,download,puff,run,xz,zucc",
         "@updater": "chrome",
-        "prodversion": CHROME_VERSION,
-        "updaterversion": CHROME_VERSION,
+        "prodversion": chrome,
+        "updaterversion": chrome,
         "@os": os,
         "arch": arch,
         "prodchannel": "stable",
@@ -577,9 +579,46 @@ fn wanted(name: &str) -> bool {
             .any(|end| file.ends_with(end))
 }
 
-/// The wanted files of a zip archive, checked against their CRC-32 and
-/// sizes. Only stored and deflated entries without encryption are read.
-fn unzip(archive: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
+/// The pack's own list of what it is, at the top of the zip; signed with
+/// the rest of the CRX.
+const PACK_MANIFEST: &str = "manifest.json";
+
+/// A version such as `2024.9.9.1` as its numbers.
+fn version_numbers(text: &str) -> Option<Vec<u64>> {
+    text.split('.').map(|part| part.parse().ok()).collect()
+}
+
+/// Whether the version `candidate` comes after `kept`, comparing number by
+/// number with missing ones as 0, as Chrome's `base::Version` does; a
+/// version that is not numbers is never newer.
+fn newer_version(candidate: &str, kept: &str) -> bool {
+    let (Some(candidate), Some(kept)) = (version_numbers(candidate), version_numbers(kept)) else {
+        return false;
+    };
+    let length = candidate.len().max(kept.len());
+    let at = |numbers: &[u64], index: usize| numbers.get(index).copied().unwrap_or(0);
+    (0..length)
+        .map(|index| at(&candidate, index).cmp(&at(&kept, index)))
+        .find(|order| order.is_ne())
+        == Some(std::cmp::Ordering::Greater)
+}
+
+/// The `version` of the pack's signed `manifest.json`.
+fn signed_version(manifest: &[u8]) -> Result<String, String> {
+    let value: Value = serde_json::from_slice(manifest)
+        .map_err(|error| format!("the pack's {PACK_MANIFEST}: {error}"))?;
+    let version = value["version"]
+        .as_str()
+        .ok_or_else(|| format!("the pack's {PACK_MANIFEST} has no version"))?;
+    version_numbers(version)
+        .ok_or_else(|| format!("the pack's version {version:?} is not numbers"))?;
+    Ok(version.to_string())
+}
+
+/// The files of a zip archive `keep` takes, checked against their CRC-32
+/// and sizes. Only stored and deflated entries without encryption are
+/// read.
+fn unzip(archive: &[u8], keep: impl Fn(&str) -> bool) -> Result<Vec<(String, Vec<u8>)>, String> {
     let u16_at = |at: usize| -> Result<usize, String> {
         archive
             .get(at..at + 2)
@@ -621,7 +660,7 @@ fn unzip(archive: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
             .ok_or("the zip directory is cut short")?;
         let name = String::from_utf8_lossy(name).into_owned();
         at += 46 + name_length + extra_length + comment_length;
-        if !wanted(&name) {
+        if !keep(&name) {
             continue;
         }
         if flags & 1 != 0 {
@@ -944,7 +983,7 @@ impl Direction {
         Ok(text)
     }
 
-    /// The best translation of the source `pieces` by beam search over
+    /// The best translation of the source `pieces` by [`beam_search`] over
     /// the decoder step (see the evidence document for the rules).
     fn search(&self, pieces: &[u32]) -> Result<Vec<u32>, String> {
         let settings = &self.settings;
@@ -988,14 +1027,29 @@ impl Direction {
             };
             states.push((state.len(), state));
         }
-        let mut hypotheses = vec![Hypothesis {
-            pieces: Vec::new(),
-            score: 0.0,
-        }];
-        let mut finished: Option<Hypothesis> = None;
         let longest = settings.longest.max(2 * length);
-        for _ in 0..longest {
+        // The step's outputs for the hypotheses of the last step.
+        let mut last: Option<Vec<Tensor>> = None;
+        beam_search(settings, longest, |hypotheses, parents| {
             let count = hypotheses.len();
+            if let (Some(outputs), Some(parents)) = (&last, parents) {
+                let mut next_states = Vec::with_capacity(states.len());
+                for (at, (_, out, _)) in self.states.iter().enumerate() {
+                    let rows = outputs[*out].floats()?;
+                    let width = states[at].0;
+                    if rows.len() != states[at].1.len() {
+                        return Err("a state changed size".into());
+                    }
+                    let gathered: Vec<f32> = parents
+                        .iter()
+                        .flat_map(|&parent| {
+                            rows[parent * width..(parent + 1) * width].iter().copied()
+                        })
+                        .collect();
+                    next_states.push((width, gathered));
+                }
+                states = next_states;
+            }
             let inputs = self
                 .feeds
                 .iter()
@@ -1021,83 +1075,110 @@ impl Direction {
                 })
                 .collect::<Result<Vec<Tensor>, String>>()?;
             let outputs = self.step.run(inputs)?;
-            let log_probs = outputs[self.log_probs].floats()?;
-            let words = log_probs.len() / count.max(1);
-            if words == 0 || log_probs.len() != words * count {
-                return Err("the decoder step gave no scores".into());
-            }
-            let mut candidates: Vec<(f32, usize, u32)> = Vec::new();
-            for (parent, (hypothesis, row)) in
-                hypotheses.iter().zip(log_probs.chunks(words)).enumerate()
-            {
-                let best = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-                let end = settings.end as usize;
-                if let Some(&end_score) = row.get(end) {
-                    if end_score >= best - settings.end_margin {
-                        let score = hypothesis.score + end_score;
-                        if finished.as_ref().is_none_or(|done| score > done.score) {
-                            finished = Some(Hypothesis {
-                                pieces: hypothesis.pieces.clone(),
-                                score,
-                            });
-                        }
-                    }
-                }
-                let mut top: Vec<(f32, u32)> = Vec::with_capacity(settings.beam + 1);
-                for (word, &score) in row.iter().enumerate() {
-                    let word = word as u32;
-                    if word == settings.end || NEVER.contains(&word) || !score.is_finite() {
-                        continue;
-                    }
-                    if top.len() < settings.beam || score > top[top.len() - 1].0 {
-                        let at = top.partition_point(|&(other, _)| other >= score);
-                        top.insert(at, (score, word));
-                        top.truncate(settings.beam);
-                    }
-                }
-                candidates.extend(
-                    top.into_iter()
-                        .map(|(score, word)| (hypothesis.score + score, parent, word)),
-                );
-            }
-            candidates.sort_by(|a, b| b.0.total_cmp(&a.0));
-            candidates.truncate(settings.beam);
-            let Some(&(best, _, _)) = candidates.first() else {
-                break;
-            };
-            if finished.as_ref().is_some_and(|done| done.score >= best) {
-                break;
-            }
-            let mut next_states = Vec::with_capacity(states.len());
-            for (at, (_, out, _)) in self.states.iter().enumerate() {
-                let rows = outputs[*out].floats()?;
-                let width = states[at].0;
-                if rows.len() != width * count {
-                    return Err("a state changed size".into());
-                }
-                let gathered: Vec<f32> = candidates
-                    .iter()
-                    .flat_map(|&(_, parent, _)| {
-                        rows[parent * width..(parent + 1) * width].iter().copied()
-                    })
-                    .collect();
-                next_states.push((width, gathered));
-            }
-            states = next_states;
-            hypotheses = candidates
-                .iter()
-                .map(|&(score, parent, word)| {
-                    let mut pieces = hypotheses[parent].pieces.clone();
-                    pieces.push(word);
-                    Hypothesis { pieces, score }
-                })
-                .collect();
-        }
-        Ok(match finished {
-            Some(done) => done.pieces,
-            None => hypotheses.swap_remove(0).pieces,
+            let log_probs = outputs[self.log_probs].floats()?.to_vec();
+            last = Some(outputs);
+            Ok(log_probs)
         })
     }
+}
+
+/// Beam search: `step` gives, for the hypotheses it is handed, one row of
+/// log-probabilities per hypothesis, all rows of the same length; from the
+/// second step on it is also handed, for each hypothesis, the one of the
+/// step before it continues. A hypothesis ends with `</s>` when it is
+/// among the `beam` best candidates of a step and its log-probability is
+/// within the end margin of that step's best piece. Ended hypotheses are
+/// collected until there are `beam` of them, no hypothesis goes on, or
+/// `longest` steps were taken; the one with the highest log-probability
+/// per piece (`</s>` counted) wins, which keeps the sum of
+/// log-probabilities, smaller for every piece added, from favouring short
+/// translations (Murray & Chiang 2018, see the evidence document). With
+/// none ended, the best hypothesis still going is taken the same way.
+fn beam_search(
+    settings: &Settings,
+    longest: usize,
+    mut step: impl FnMut(&[Hypothesis], Option<&[usize]>) -> Result<Vec<f32>, String>,
+) -> Result<Vec<u32>, String> {
+    let average = |hypothesis: &Hypothesis, ended: bool| {
+        hypothesis.score / (hypothesis.pieces.len() + usize::from(ended)).max(1) as f32
+    };
+    let mut hypotheses = vec![Hypothesis {
+        pieces: Vec::new(),
+        score: 0.0,
+    }];
+    let mut parents: Option<Vec<usize>> = None;
+    let mut finished: Vec<Hypothesis> = Vec::new();
+    let end = settings.end;
+    for _ in 0..longest {
+        let count = hypotheses.len();
+        let log_probs = step(&hypotheses, parents.as_deref())?;
+        let words = log_probs.len() / count.max(1);
+        if words == 0 || log_probs.len() != words * count {
+            return Err("the decoder step gave no scores".into());
+        }
+        // (score, parent, piece), the piece `None` for `</s>`.
+        let mut candidates: Vec<(f32, usize, Option<u32>)> = Vec::new();
+        for (parent, (hypothesis, row)) in
+            hypotheses.iter().zip(log_probs.chunks(words)).enumerate()
+        {
+            let best = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            if let Some(&end_score) = row.get(end as usize) {
+                if end_score.is_finite() && end_score >= best - settings.end_margin {
+                    candidates.push((hypothesis.score + end_score, parent, None));
+                }
+            }
+            let mut top: Vec<(f32, u32)> = Vec::with_capacity(settings.beam + 1);
+            for (word, &score) in row.iter().enumerate() {
+                let word = word as u32;
+                if word == end || NEVER.contains(&word) || !score.is_finite() {
+                    continue;
+                }
+                if top.len() < settings.beam || score > top[top.len() - 1].0 {
+                    let at = top.partition_point(|&(other, _)| other >= score);
+                    top.insert(at, (score, word));
+                    top.truncate(settings.beam);
+                }
+            }
+            candidates.extend(
+                top.into_iter()
+                    .map(|(score, word)| (hypothesis.score + score, parent, Some(word))),
+            );
+        }
+        candidates.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let mut next = Vec::with_capacity(settings.beam);
+        let mut from = Vec::with_capacity(settings.beam);
+        for (rank, &(score, parent, piece)) in candidates.iter().enumerate() {
+            match piece {
+                None if rank < settings.beam => finished.push(Hypothesis {
+                    pieces: hypotheses[parent].pieces.clone(),
+                    score,
+                }),
+                None => {}
+                Some(word) if next.len() < settings.beam => {
+                    let mut pieces = hypotheses[parent].pieces.clone();
+                    pieces.push(word);
+                    next.push(Hypothesis { pieces, score });
+                    from.push(parent);
+                }
+                Some(_) => {}
+            }
+        }
+        hypotheses = next;
+        parents = Some(from);
+        if finished.len() >= settings.beam || hypotheses.is_empty() {
+            break;
+        }
+    }
+    let ended = finished
+        .iter()
+        .max_by(|a, b| average(a, true).total_cmp(&average(b, true)));
+    let going = hypotheses
+        .iter()
+        .max_by(|a, b| average(a, false).total_cmp(&average(b, false)));
+    Ok(ended
+        .or(going)
+        .map(|h| h.pieces.clone())
+        .unwrap_or_default())
 }
 
 fn ends_in_punctuation(text: &str) -> bool {
@@ -1175,6 +1256,8 @@ type Loaded = HashMap<(String, String), Arc<Direction>>;
 pub(super) struct Chromium {
     folder: PathBuf,
     update: String,
+    /// The Chrome version the update server is asked as.
+    version: String,
     client: reqwest::Client,
     loaded: Arc<tokio::sync::Mutex<Loaded>>,
 }
@@ -1184,6 +1267,7 @@ impl std::fmt::Debug for Chromium {
         f.debug_struct("Chromium")
             .field("folder", &self.folder)
             .field("update", &self.update)
+            .field("version", &self.version)
             .finish()
     }
 }
@@ -1193,14 +1277,30 @@ fn failed(error: impl std::fmt::Display) -> ErrorInfo {
 }
 
 impl Chromium {
-    /// Packs are kept in `folder`; `update` is the component update server.
-    pub(super) fn new(folder: PathBuf, update: String, client: reqwest::Client) -> Self {
+    /// Packs are kept in `folder`; `update` is the component update server,
+    /// asked as Chrome `version`.
+    pub(super) fn new(
+        folder: PathBuf,
+        update: String,
+        version: String,
+        client: reqwest::Client,
+    ) -> Self {
         Self {
             folder,
             update,
+            version,
             client,
             loaded: Arc::default(),
         }
+    }
+
+    pub(super) fn with_version(self, version: String) -> Self {
+        Self { version, ..self }
+    }
+
+    /// Lets go of the directions loaded into memory.
+    pub(super) async fn forget(&self) {
+        self.loaded.lock().await.clear();
     }
 
     /// Each of `texts` in the language `to`.
@@ -1268,17 +1368,17 @@ impl Chromium {
         };
         for (from, to) in &steps {
             let language = if from == PIVOT { to } else { from };
-            if self.manifest(language).await.is_none() || !first_check(&self.pack_folder(language))
-            {
+            let folder = self.pack_folder(language);
+            if self.manifest(language).await.is_none() || !check_due(&folder) {
                 continue;
             }
             if wait {
-                let _ = self.update(language).await;
+                check_done(&folder, self.update(language).await.is_ok());
             } else {
                 let this = self.clone();
                 let language = language.clone();
                 tokio::spawn(async move {
-                    let _ = this.update(&language).await;
+                    check_done(&folder, this.update(&language).await.is_ok());
                 });
             }
         }
@@ -1298,9 +1398,12 @@ impl Chromium {
         read_manifest(&self.pack_folder(language)).await
     }
 
+    /// The direction `from` → `to`, loaded from disk the first time and
+    /// its pack fetched first when it is not there. The loaded directions
+    /// are not locked while a pack is fetched or loaded, so directions
+    /// already loaded go on translating meanwhile.
     async fn load(&self, (from, to): (String, String)) -> Result<Arc<Direction>, ErrorInfo> {
-        let mut loaded = self.loaded.lock().await;
-        if let Some(found) = loaded.get(&(from.clone(), to.clone())) {
+        if let Some(found) = self.loaded.lock().await.get(&(from.clone(), to.clone())) {
             return Ok(found.clone());
         }
         let language = if from == PIVOT { &to } else { &from };
@@ -1313,8 +1416,9 @@ impl Chromium {
         let manifest = match self.manifest(language).await {
             Some(manifest) => manifest,
             None => {
-                first_check(&folder);
-                self.fetch(language).await.map_err(failed)?
+                let fetched = self.fetch(language).await.map_err(failed)?;
+                check_done(&folder, true);
+                fetched
             }
         };
         let (want_from, want_to) = (from.clone(), to.clone());
@@ -1344,9 +1448,13 @@ impl Chromium {
         .await
         .map_err(failed)?
         .map_err(|error| failed(format!("the {from}-{to} model: {error}")))?;
-        let direction = Arc::new(direction);
-        loaded.insert((from, to), direction.clone());
-        Ok(direction)
+        Ok(self
+            .loaded
+            .lock()
+            .await
+            .entry((from, to))
+            .or_insert_with(|| Arc::new(direction))
+            .clone())
     }
 
     /// Asks the update server for the pack, downloads and checks it, and
@@ -1360,13 +1468,16 @@ impl Chromium {
             .check(language, "0.0.0.0", false)
             .await?
             .ok_or("the update server offers no pack")?;
-        self.install(language, &package, &self.pack_folder(language))
+        self.install(language, &package, &self.pack_folder(language), None)
             .await
     }
 
     /// Fetches a newer version of the kept pack into a folder of its own
     /// and puts it in place of the kept one, when the update server offers
-    /// one for the kept version; `Ok(false)` when it does not.
+    /// one for the kept version; `Ok(false)` when it does not. The version
+    /// offered, and the one signed in the pack, must come after the kept
+    /// one, so that an older pack with a good signature cannot take its
+    /// place.
     pub(super) async fn update(&self, language: &str) -> Result<bool, String> {
         if self.manifest(language).await.is_none() {
             return Ok(false);
@@ -1378,12 +1489,15 @@ impl Chromium {
         let Some(package) = self.check(language, &kept.version, true).await? else {
             return Ok(false);
         };
-        if package.version == kept.version {
+        if !newer_version(&package.version, &kept.version) {
             return Ok(false);
         }
         let folder = self.pack_folder(language);
         let staging = folder.with_extension("update");
-        if let Err(error) = self.install(language, &package, &staging).await {
+        if let Err(error) = self
+            .install(language, &package, &staging, Some(&kept.version))
+            .await
+        {
             let _ = tokio::fs::remove_dir_all(&staging).await;
             return Err(error);
         }
@@ -1398,7 +1512,8 @@ impl Chromium {
     /// As in Chrome's update_client, an update check in the `background`
     /// is not sent in the day before the time the server's `X-Retry-After`
     /// asked to wait for (`UpdateEngine::IsThrottled`), while one a user
-    /// waits for is.
+    /// waits for is; it is sent as `bg` and the other as `fg`
+    /// (`X-Goog-Update-Interactivity`).
     async fn check(
         &self,
         language: &str,
@@ -1424,10 +1539,13 @@ impl Chromium {
             .client
             .post(&self.update)
             .header("Content-Type", "application/json")
-            .header("X-Goog-Update-Interactivity", "fg")
-            .header("X-Goog-Update-Updater", format!("chrome-{CHROME_VERSION}"))
+            .header(
+                "X-Goog-Update-Interactivity",
+                if background { "bg" } else { "fg" },
+            )
+            .header("X-Goog-Update-Updater", format!("chrome-{}", self.version))
             .header("X-Goog-Update-AppId", &app)
-            .body(update_request(&app, version).to_string())
+            .body(update_request(&app, version, &self.version).to_string())
             .timeout(UPDATE_WAIT)
             .send()
             .await
@@ -1442,12 +1560,15 @@ impl Chromium {
     }
 
     /// Downloads and checks `package`, and keeps its models and then its
-    /// list of files in `folder`.
+    /// list of files in `folder`. The version kept is the one the pack's
+    /// signed `manifest.json` names, which must be the one offered and,
+    /// for an update, come after `kept`.
     async fn install(
         &self,
         language: &str,
         package: &Package,
         folder: &Path,
+        kept: Option<&str>,
     ) -> Result<Manifest, String> {
         let key = key_hash(language).ok_or("no such pack")?;
         if package.size > LARGEST_PACK {
@@ -1479,14 +1600,33 @@ impl Chromium {
             }
         }
         let data = downloaded.ok_or(last_error)?;
-        let files =
+        let mut files =
             tokio::task::spawn_blocking(move || -> Result<Vec<(String, Vec<u8>)>, String> {
                 let crx = crx(&data)?;
                 verify(&crx, &key)?;
-                unzip(crx.archive)
+                unzip(crx.archive, |name| name == PACK_MANIFEST || wanted(name))
             })
             .await
             .map_err(|error| error.to_string())??;
+        let signed = files
+            .iter()
+            .position(|(name, _)| name == PACK_MANIFEST)
+            .ok_or_else(|| format!("the pack has no {PACK_MANIFEST}"))?;
+        let (_, manifest) = files.swap_remove(signed);
+        let version = signed_version(&manifest)?;
+        if version_numbers(&version) != version_numbers(&package.version) {
+            return Err(format!(
+                "the pack is version {version}, not the {} offered",
+                package.version
+            ));
+        }
+        if let Some(kept) = kept {
+            if !newer_version(&version, kept) {
+                return Err(format!(
+                    "the pack's version {version} is not newer than {kept}"
+                ));
+            }
+        }
         if files.is_empty() {
             return Err("the pack has no models".into());
         }
@@ -1504,7 +1644,7 @@ impl Chromium {
             });
         }
         let manifest = Manifest {
-            version: package.version.clone(),
+            version,
             files: kept,
             license: license(),
         };
@@ -1530,7 +1670,11 @@ mod tests {
         assert_eq!(pack_language("ja-JP"), "ja");
         assert_eq!(pack_language("zh-TW"), "zh-Hant");
         assert!(key_hash("xx").is_none());
-        let request = update_request("hnccddhebmkigcfihhnmiiihcnaogoel", "2024.9.9.1");
+        let request = update_request(
+            "hnccddhebmkigcfihhnmiiihcnaogoel",
+            "2024.9.9.1",
+            CHROME_VERSION,
+        );
         assert_eq!(
             request["request"]["apps"][0]["appid"],
             "hnccddhebmkigcfihhnmiiihcnaogoel"
@@ -1700,7 +1844,7 @@ mod tests {
             ("en_ja_dictionary/dictionary.bin", b"no", false),
             (".hidden_nmt/x.pb", b"no", false),
         ]);
-        let files = unzip(&archive).unwrap();
+        let files = unzip(&archive, wanted).unwrap();
         let names: Vec<&str> = files.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(
             names,
@@ -1713,8 +1857,8 @@ mod tests {
         let mut broken = archive.clone();
         let at = broken.windows(4).position(|w| w == b"\x0a\x02en").unwrap();
         broken[at + 2] = b'E';
-        assert!(unzip(&broken).unwrap_err().contains("checksum"));
-        assert!(unzip(b"not a zip").is_err());
+        assert!(unzip(&broken, wanted).unwrap_err().contains("checksum"));
+        assert!(unzip(b"not a zip", wanted).is_err());
     }
 
     #[test]
@@ -1791,6 +1935,76 @@ mod tests {
         assert!(!ends_in_punctuation("Settings"));
     }
 
+    #[test]
+    fn versions_compare_by_number_and_come_from_the_signed_manifest() {
+        assert!(newer_version("2024.9.10.1", "2024.9.9.1"));
+        assert!(newer_version("2024.9.9.1.1", "2024.9.9.1"));
+        assert!(!newer_version("2024.9.9.1", "2024.9.9.1"));
+        assert!(!newer_version("2024.9.9.01", "2024.9.9.1"));
+        assert!(!newer_version("2023.12.31.9", "2024.9.9.1"));
+        assert!(!newer_version("2025.x", "2024.9.9.1"));
+        assert_eq!(
+            signed_version(br#"{"name": "pack", "version": "2024.9.9.1"}"#),
+            Ok("2024.9.9.1".into())
+        );
+        assert!(signed_version(br#"{"name": "pack"}"#).is_err());
+        assert!(signed_version(br#"{"version": "1.beta"}"#).is_err());
+        assert!(signed_version(b"not json").is_err());
+    }
+
+    /// A short translation whose summed log-probability is higher does not
+    /// win over a longer one that is better per piece, and the search goes
+    /// on past the first ended hypothesis.
+    #[test]
+    fn the_search_prefers_the_best_translation_per_piece() {
+        let settings = Settings {
+            from: "en".into(),
+            to: "ja".into(),
+            files: Vec::new(),
+            source_vocabulary: String::new(),
+            target_vocabulary: String::new(),
+            start: 1,
+            end: 2,
+            end_margin: 5.0,
+            beam: 2,
+            longest: 72,
+        };
+        // Pieces: 0 <unk>, 1 <s>, 2 </s>, 3 "a", 4 "b".
+        let mut seen = Vec::new();
+        let chosen = beam_search(&settings, 20, |hypotheses, parents| {
+            seen.push((hypotheses.len(), parents.map(<[usize]>::len)));
+            Ok(hypotheses
+                .iter()
+                .flat_map(|hypothesis| {
+                    let length = hypothesis.pieces.len();
+                    let b = hypothesis.pieces.contains(&4);
+                    match (length, b) {
+                        (0, _) => [-9.0, -9.0, -1.0, -1.2, -3.0],
+                        (_, true) => [-9.0, -9.0, -9.5, -4.0, -4.0],
+                        (1..=4, false) => [-9.0, -9.0, -5.2, -0.1, -6.0],
+                        _ => [-9.0, -9.0, -0.05, -2.0, -6.0],
+                    }
+                })
+                .collect())
+        })
+        .unwrap();
+        assert_eq!(chosen, [3, 3, 3, 3, 3]);
+        assert_eq!(seen[0], (1, None));
+        assert!(seen[1..]
+            .iter()
+            .all(|&(count, parents)| parents == Some(count)));
+        // The model's end at the first step alone is the best sum (-1.0)
+        // but not the best per piece.
+        let ended_first = beam_search(&settings, 1, |hypotheses, _| {
+            Ok(hypotheses
+                .iter()
+                .flat_map(|_| [-9.0, -9.0, -1.0, -1.2, -3.0])
+                .collect())
+        })
+        .unwrap();
+        assert!(ended_first.is_empty());
+    }
+
     /// An address nothing answers at, for runs that must not use the
     /// network.
     const NOWHERE: &str = "http://127.0.0.1:9";
@@ -1825,6 +2039,15 @@ mod tests {
             .into_bytes()
         };
         let none = answer(json!({"status": "noupdate"}));
+        // An older or the same version, with a good signature or not, never
+        // takes the place of the kept one; nothing is downloaded.
+        let offer = |version: &str| {
+            answer(json!({"status": "ok", "nextversion": version,
+                "pipelines": [{"operations": [
+                    {"type": "download", "size": 5, "out": {"sha256": "0".repeat(64)},
+                     "urls": [{"url": "https://127.0.0.1:9/a.crx3"}]},
+                    {"type": "crx3"}]}]}))
+        };
         // Offered only over http, which is not used.
         let http_only = answer(json!({"status": "ok", "nextversion": "2025.1.1.1",
             "pipelines": [{"operations": [
@@ -1834,19 +2057,33 @@ mod tests {
         let base = super::super::firefox::tests::stand_in(vec![
             ("/none".into(), none),
             ("/http".into(), http_only),
+            ("/older".into(), offer("2024.8.30.9")),
+            ("/same".into(), offer("2024.09.9.1")),
         ])
         .await;
         for (update, expected) in [
             (format!("{base}/none"), Ok(false)),
+            (format!("{base}/older"), Ok(false)),
+            (format!("{base}/same"), Ok(false)),
             (format!("{base}/http"), Err(())),
             (NOWHERE.to_string(), Err(())),
         ] {
-            let chromium = Chromium::new(folder.path().into(), update, reqwest::Client::new());
+            let chromium = Chromium::new(
+                folder.path().into(),
+                update,
+                CHROME_VERSION.into(),
+                reqwest::Client::new(),
+            );
             assert_eq!(chromium.update("ja").await.map_err(drop), expected);
             assert_eq!(chromium.manifest("ja").await, Some(kept.clone()));
             assert!(!folder.path().join("en-ja.update").exists());
         }
-        let chromium = Chromium::new(folder.path().into(), NOWHERE.into(), reqwest::Client::new());
+        let chromium = Chromium::new(
+            folder.path().into(),
+            NOWHERE.into(),
+            CHROME_VERSION.into(),
+            reqwest::Client::new(),
+        );
         assert_eq!(chromium.update("de").await, Ok(false));
     }
 
@@ -1908,7 +2145,12 @@ mod tests {
         let waits = folder.path().join(BACKOFF_FILE);
         let now = chrono::Utc::now().timestamp();
         set_wait(&UPDATE_WAITS, Some(&waits), &update, Some(now + 3600)).await;
-        let chromium = Chromium::new(folder.path().into(), update.clone(), reqwest::Client::new());
+        let chromium = Chromium::new(
+            folder.path().into(),
+            update.clone(),
+            CHROME_VERSION.into(),
+            reqwest::Client::new(),
+        );
         let error = chromium.update("ja").await.unwrap_err();
         assert!(error.contains("asked not to be asked again"), "{error}");
         assert!(asked.lock().unwrap().is_empty());
@@ -1940,6 +2182,7 @@ mod tests {
         let chromium = Chromium::new(
             std::env::temp_dir().join("inocode-chromium-unused"),
             UPDATE.into(),
+            CHROME_VERSION.into(),
             reqwest::Client::new(),
         );
         let offered = chromium
@@ -1957,7 +2200,12 @@ mod tests {
     #[ignore = "downloads about 56 MB from Google; run by hand"]
     async fn english_to_japanese_is_fetched_once_and_kept() {
         let folder = tempfile::tempdir_in(std::env::temp_dir()).unwrap();
-        let online = Chromium::new(folder.path().into(), UPDATE.into(), reqwest::Client::new());
+        let online = Chromium::new(
+            folder.path().into(),
+            UPDATE.into(),
+            CHROME_VERSION.into(),
+            reqwest::Client::new(),
+        );
         let started = std::time::Instant::now();
         online.prepare("en", "ja").await.unwrap();
         println!("fetched and loaded en-ja in {:?}", started.elapsed());
@@ -1983,7 +2231,12 @@ mod tests {
         assert!(names.contains(&"en_ja_nmt/encoder_0.tflite".to_string()));
         assert!(names.contains(&"ja_en_nmt/decoder_step_0.tflite".to_string()));
         assert!(names.iter().all(|name| !name.ends_with(".tmp")));
-        let offline = Chromium::new(folder.path().into(), NOWHERE.into(), reqwest::Client::new());
+        let offline = Chromium::new(
+            folder.path().into(),
+            NOWHERE.into(),
+            CHROME_VERSION.into(),
+            reqwest::Client::new(),
+        );
         offline.prepare("en", "ja").await.unwrap();
         offline.prepare("ja", "en").await.unwrap();
         assert!(offline.prepare("en", "de").await.is_err());
@@ -1993,7 +2246,12 @@ mod tests {
     #[ignore = "downloads Chrome's English-Japanese pack once; run by hand"]
     async fn english_and_japanese_are_translated_here() {
         let folder = std::env::temp_dir().join("inocode-chromium-models");
-        let online = Chromium::new(folder.clone(), UPDATE.into(), reqwest::Client::new());
+        let online = Chromium::new(
+            folder.clone(),
+            UPDATE.into(),
+            CHROME_VERSION.into(),
+            reqwest::Client::new(),
+        );
         if online.manifest("ja").await.is_none() {
             online.fetch("ja").await.unwrap();
         }
@@ -2001,7 +2259,12 @@ mod tests {
             "memory before loading (working set, peak): {:?}",
             super::super::firefox::tests::memory()
         );
-        let chromium = Chromium::new(folder, NOWHERE.into(), reqwest::Client::new());
+        let chromium = Chromium::new(
+            folder,
+            NOWHERE.into(),
+            CHROME_VERSION.into(),
+            reqwest::Client::new(),
+        );
         for (from, to) in [("en", "ja"), ("ja", "en")] {
             let started = std::time::Instant::now();
             chromium.route(from, to, false).await.unwrap();
@@ -2032,5 +2295,38 @@ mod tests {
             "memory after translating: {:?}",
             super::super::firefox::tests::memory()
         );
+    }
+
+    /// Long sentences whose second half the search used to drop: each
+    /// translation must keep most of the sentence (by length).
+    #[tokio::test]
+    #[ignore = "uses the en-ja pack fetched by the test above; run by hand in release"]
+    async fn long_sentences_keep_their_second_half_here() {
+        let folder = std::env::temp_dir().join("inocode-chromium-models");
+        let chromium = Chromium::new(
+            folder,
+            NOWHERE.into(),
+            CHROME_VERSION.into(),
+            reqwest::Client::new(),
+        );
+        let texts = [
+            "I'm going through the remaining causes: slow DB queries or N+1 patterns that cause pile-ups, checked with the slow query log and EXPLAIN.",
+            "The first item is checking the rebase state: whether conflicts are still unresolved, since running cargo test mid-rebase would hit conflict markers and fail to compile.",
+            "I'm laying out the query and index side of the pagination plan: keyset filtering on (created_at, id) with a matching descending index, and fetching one extra row to tell whether there's another page.",
+            "I'm thinking about layering, where project settings override user settings, which override system ones, with env vars and CLI flags on top.",
+            "I'm picking the write-up back up and planning to aim for roughly 900 to 1200 words.",
+        ];
+        for text in texts {
+            let started = std::time::Instant::now();
+            let out = chromium.translate(&[text.to_string()], "ja").await.unwrap();
+            let ratio = out[0].chars().count() as f64 / text.chars().count() as f64;
+            println!(
+                "{text}
+  -> {}  (ratio {ratio:.2}, {:?})",
+                out[0],
+                started.elapsed()
+            );
+            assert!(ratio > 0.3, "{out:?}");
+        }
     }
 }
