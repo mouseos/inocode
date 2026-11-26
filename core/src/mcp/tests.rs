@@ -138,7 +138,7 @@ async fn tools_are_listed_by_page_and_called() {
     assert_eq!(
         seen[1]["params"]["capabilities"],
         json!({"elicitation": {"form": {}, "url": {}}, "roots": {"listChanged": true},
-               "sampling": {}})
+               "sampling": {"tools": {}}})
     );
     assert!(
         seen[3]["params"].get("_meta").is_none(),
@@ -1417,7 +1417,7 @@ async fn a_server_of_the_new_revision_is_spoken_to_without_a_handshake() {
         );
         assert_eq!(
             meta["io.modelcontextprotocol/clientCapabilities"],
-            json!({"elicitation": {"form": {}, "url": {}}, "roots": {}, "sampling": {},
+            json!({"elicitation": {"form": {}, "url": {}}, "roots": {}, "sampling": {"tools": {}},
                    "extensions": {connection::TASKS: {}}})
         );
         assert_eq!(meta["io.modelcontextprotocol/logLevel"], "info");
@@ -1806,27 +1806,29 @@ async fn a_probe_left_unanswered_is_raced_with_initialize() {
 
 /// One HTTP request a fake server got; header names are lowercase.
 #[derive(Clone, Debug)]
-struct Got {
-    method: String,
-    path: String,
-    headers: HashMap<String, String>,
-    body: Value,
+pub(super) struct Got {
+    pub(super) method: String,
+    pub(super) path: String,
+    pub(super) headers: HashMap<String, String>,
+    pub(super) body: Value,
+    /// The body as text, for one that is not JSON.
+    pub(super) raw: String,
 }
 
 /// What a fake server answers: a whole response, or a head and then the
 /// chunks of a stream until their sender is dropped.
-enum Reply {
+pub(super) enum Reply {
     Whole(String),
     Stream(mpsc::UnboundedReceiver<String>),
 }
 
-fn empty(status: &str) -> Reply {
+pub(super) fn empty(status: &str) -> Reply {
     Reply::Whole(format!(
         "HTTP/1.1 {status}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
     ))
 }
 
-fn json_reply(status: &str, extra: &str, value: Value) -> Reply {
+pub(super) fn json_reply(status: &str, extra: &str, value: Value) -> Reply {
     let text = value.to_string();
     Reply::Whole(format!(
         "HTTP/1.1 {status}\r\ncontent-type: application/json\r\n{extra}content-length: {}\r\n\
@@ -1846,7 +1848,7 @@ fn events(chunks: &[String]) -> Reply {
 
 /// An HTTP server that answers each request on its own connection with
 /// what `handle` makes of it, and keeps every request.
-async fn serve(
+pub(super) async fn serve(
     seen: Arc<Mutex<Vec<Got>>>,
     handle: impl Fn(&Got) -> Reply + Send + Sync + 'static,
 ) -> String {
@@ -1894,11 +1896,13 @@ async fn serve(
                 }
                 let body =
                     serde_json::from_slice(&buffer[end..end + length]).unwrap_or(Value::Null);
+                let raw = String::from_utf8_lossy(&buffer[end..end + length]).into_owned();
                 let got = Got {
                     method,
                     path,
                     headers,
                     body,
+                    raw,
                 };
                 seen.lock().expect("seen").push(got.clone());
                 match handle(&got) {
@@ -2640,6 +2644,33 @@ async fn shelf_server(
                                   "content": {"type": "text", "text": "Capital of France?"}}],
                     "systemPrompt": system, "includeContext": "thisServer",
                     "maxTokens": 10}})),
+            ("tools/call", Some("weather")) => Some(json!({
+                "method": "sampling/createMessage", "params": {
+                    "messages": [{"role": "user",
+                                  "content": {"type": "text", "text": "Weather in Paris?"}}],
+                    "tools": [{"name": "get_weather", "description": "A city's weather",
+                               "inputSchema": {"type": "object",
+                                               "properties": {"city": {"type": "string"}}}}],
+                    "toolChoice": {"mode": "required"}, "maxTokens": 50}})),
+            ("tools/call", Some("weather_after" | "mixed")) => {
+                let answer = match params["name"].as_str() {
+                    Some("mixed") => json!([
+                        {"type": "tool_result", "toolUseId": "call_1",
+                         "content": [{"type": "text", "text": "18C"}]},
+                        {"type": "text", "text": "and?"}]),
+                    _ => json!([{"type": "tool_result", "toolUseId": "call_1",
+                                 "content": [{"type": "text", "text": "18C, cloudy"}]}]),
+                };
+                Some(json!({
+                "method": "sampling/createMessage", "params": {
+                    "messages": [
+                        {"role": "user", "content": {"type": "text", "text": "Weather in Paris?"}},
+                        {"role": "assistant", "content": [{"type": "tool_use", "id": "call_1",
+                            "name": "get_weather", "input": {"city": "Paris"}}]},
+                        {"role": "user", "content": answer}],
+                    "tools": [{"name": "get_weather", "inputSchema": {"type": "object"}}],
+                    "toolChoice": {"mode": "none"}, "maxTokens": 50}}))
+            }
             ("tools/call", Some("odd")) => Some(json!({"method": "elicitation/create",
                 "params": {"mode": "telepathy", "message": "Think of it."}})),
             ("tools/call", Some("visit")) => Some(json!({"method": "elicitation/create",
@@ -2829,6 +2860,128 @@ async fn an_older_server_is_subscribed_to_given_roots_and_has_the_model_run() {
     assert!(store.elicitations(session).is_empty());
 }
 
+/// A provider of the Chat Completions format that calls `get_weather` when
+/// a tool is required, and otherwise answers with text.
+async fn weather_provider(seen: Arc<Mutex<Vec<Got>>>) -> String {
+    let url = serve(seen, |got| {
+        let call = json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_1",
+            "type": "function", "function": {"name": "get_weather",
+                                             "arguments": "{\"city\":\"Paris\"}"}}]}}]});
+        let finished = json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]});
+        match got.body["tool_choice"].as_str() {
+            Some("required") => events(&[
+                format!("data: {call}\n\n"),
+                format!("data: {finished}\n\n"),
+                "data: [DONE]\n\n".to_string(),
+            ]),
+            _ => events(&[
+                "data: {\"choices\":[{\"delta\":{\"content\":\"Cloudy, 18C\"}}]}\n\n".to_string(),
+                "data: [DONE]\n\n".to_string(),
+            ]),
+        }
+    })
+    .await;
+    url.replace("/mcp", "/v1")
+}
+
+#[tokio::test]
+async fn sampling_lets_the_model_use_the_servers_tools_as_its_tool_choice_says() {
+    let dir = tempfile::tempdir().expect("dir");
+    let store = Store::open(dir.path().join("inocode.db"))
+        .await
+        .expect("store");
+    let (client_end, server_end) = tokio::io::duplex(1 << 16);
+    let (client_read, client_write) = tokio::io::split(client_end);
+    let (server_read, server_write) = tokio::io::split(server_end);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    tokio::spawn(shelf_server(server_read, server_write, seen.clone()));
+    let connection = Arc::new(Connection::new("shelf", client_read, client_write));
+    connection.open().await.expect("open");
+    let initialize = seen.lock().expect("seen")[1].clone();
+    assert_eq!(
+        initialize["params"]["capabilities"]["sampling"],
+        json!({"tools": {}})
+    );
+
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let model = test_model(weather_provider(calls.clone()).await);
+    let usage = Mutex::new(crate::turn::TurnUsage::default());
+    let (events, received) = mpsc::channel(8);
+    let session = crate::store::SessionId(4);
+    let shown = person(store.clone(), session, received);
+    let (_stop, cancel) = tokio::sync::watch::channel(false);
+    let run = |tool: &'static str| {
+        let (store, connection, cancel) = (&store, &connection, cancel.clone());
+        let (events, model, usage) = (&events, &model, &usage);
+        async move {
+            let asking = Asking {
+                session,
+                events,
+                folder: None,
+                sampling: Some(Sampling { model, usage }),
+            };
+            let call = Call {
+                store,
+                connection,
+                method: "tools/call",
+                name: tool,
+                asking: Some(&asking),
+            };
+            let text = call.run(&json!({}), &cancel).await.expect("called");
+            serde_json::from_str::<Value>(&text).expect("json")
+        }
+    };
+
+    // The tool is offered and required; the model's call goes back to the
+    // server as a tool use.
+    let used = run("weather").await;
+    assert_eq!(
+        used["content"],
+        json!({"type": "tool_use", "id": "call_1", "name": "get_weather",
+               "input": {"city": "Paris"}})
+    );
+    assert_eq!(used["stopReason"], "toolUse");
+    let sent = calls.lock().expect("calls")[0].body.clone();
+    assert_eq!(sent["tool_choice"], "required");
+    assert_eq!(sent["tools"][0]["function"]["name"], "get_weather");
+    assert_eq!(sent["max_tokens"], 50);
+
+    // With the result, and no tool allowed, the model answers in text; the
+    // tool use and its result reach the provider as a call and its answer.
+    let answered = run("weather_after").await;
+    assert_eq!(answered["content"]["text"], "Cloudy, 18C");
+    assert_eq!(answered["stopReason"], "endTurn");
+    let sent = calls.lock().expect("calls")[1].body.clone();
+    assert_eq!(sent["tool_choice"], "none");
+    let messages = sent["messages"].as_array().expect("messages");
+    assert_eq!(messages[1]["tool_calls"][0]["id"], "call_1");
+    assert_eq!(
+        messages[1]["tool_calls"][0]["function"]["name"],
+        "get_weather"
+    );
+    assert_eq!(messages[2]["role"], "tool");
+    assert_eq!(messages[2]["tool_call_id"], "call_1");
+    assert_eq!(messages[2]["content"], "18C, cloudy");
+
+    // Tool results mixed with other content are refused as invalid, without
+    // the model.
+    let mixed = run("mixed").await;
+    assert_eq!(mixed["code"], -32602);
+    assert_eq!(calls.lock().expect("calls").len(), 2);
+
+    // The person was asked each time, and told the tools offered.
+    drop(events);
+    let shown = shown.lock().expect("shown").clone();
+    let asked: Vec<&Value> = shown
+        .iter()
+        .filter(|(_, question)| question["mode"] == "sampling")
+        .map(|(_, question)| question)
+        .collect();
+    assert_eq!(asked.len(), 2);
+    assert_eq!(asked[0]["tools"], json!(["get_weather"]));
+    assert_eq!(asked[0]["toolChoice"], "required");
+}
+
 #[tokio::test]
 async fn a_new_http_server_streams_the_updates_of_a_resource_subscribed_to() {
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -2905,4 +3058,354 @@ async fn a_new_http_server_streams_the_updates_of_a_resource_subscribed_to() {
         listens[0]["params"]["notifications"],
         json!({"resourceSubscriptions": ["file:///a.txt"]})
     );
+}
+
+/// The fields of a form-encoded body.
+fn form(raw: &str) -> HashMap<String, String> {
+    reqwest::Url::parse(&format!("http://form/?{raw}"))
+        .expect("form")
+        .query_pairs()
+        .map(|(name, value)| (name.into_owned(), value.into_owned()))
+        .collect()
+}
+
+/// What the fake MCP server and authorization server share with the test.
+#[derive(Default)]
+struct OAuthWorld {
+    /// The token the MCP server takes now.
+    valid: Mutex<String>,
+    /// The authorization server the resource metadata names.
+    named: Mutex<String>,
+    /// The PKCE challenge of the authorization URL the person opened.
+    challenge: Mutex<String>,
+}
+
+/// The MCP server: it takes the valid token only, answers others with
+/// 401 and a challenge naming its resource metadata, and a call of `write`
+/// with 403 for more scopes.
+async fn protected_server(world: Arc<OAuthWorld>, seen: Arc<Mutex<Vec<Got>>>) -> String {
+    let origin: Arc<Mutex<String>> = Arc::default();
+    let base = origin.clone();
+    let url = serve(seen, move |got| {
+        let origin = base.lock().expect("origin").clone();
+        let metadata = format!("{origin}/.well-known/oauth-protected-resource");
+        if got.method == "GET" {
+            return match got.path.as_str() {
+                "/.well-known/oauth-protected-resource" => json_reply(
+                    "200 OK",
+                    "",
+                    json!({"resource": format!("{origin}/mcp"),
+                           "authorization_servers": [world.named.lock().expect("named").clone()],
+                           "scopes_supported": ["files:read"]}),
+                ),
+                _ => empty("404 Not Found"),
+            };
+        }
+        let valid = format!("Bearer {}", world.valid.lock().expect("valid"));
+        if got.headers.get("authorization") != Some(&valid) {
+            return Reply::Whole(format!(
+                "HTTP/1.1 401 Unauthorized\r\nwww-authenticate: Bearer \
+                 resource_metadata=\"{metadata}\", scope=\"files:read\"\r\n\
+                 content-length: 0\r\nconnection: close\r\n\r\n"
+            ));
+        }
+        let id = got.body["id"].clone();
+        let result = match got.body["method"].as_str() {
+            Some("server/discover") => json!({"supportedVersions": [connection::MODERN_VERSION],
+                                              "capabilities": {"tools": {}}}),
+            Some("tools/list") => json!({"tools": [
+                {"name": "read", "inputSchema": {"type": "object"}},
+                {"name": "write", "inputSchema": {"type": "object"}}]}),
+            Some("tools/call") if got.body["params"]["name"] == "write" => {
+                return Reply::Whole(format!(
+                    "HTTP/1.1 403 Forbidden\r\nwww-authenticate: Bearer \
+                     error=\"insufficient_scope\", scope=\"files:write\", \
+                     resource_metadata=\"{metadata}\"\r\n\
+                     content-length: 0\r\nconnection: close\r\n\r\n"
+                ));
+            }
+            Some("tools/call") => json!({"content": [{"type": "text", "text": "read ok"}]}),
+            _ => json!({}),
+        };
+        json_reply(
+            "200 OK",
+            "",
+            json!({"jsonrpc": "2.0", "id": id, "result": result}),
+        )
+    })
+    .await;
+    *origin.lock().expect("origin") = url.trim_end_matches("/mcp").to_string();
+    url
+}
+
+/// The authorization server: its metadata, registration, and a token
+/// endpoint that checks the code, the PKCE verifier, the client and the
+/// resource, and refreshes.
+async fn authorization_server(
+    world: Arc<OAuthWorld>,
+    resource: String,
+    seen: Arc<Mutex<Vec<Got>>>,
+) -> String {
+    use base64::Engine;
+    use sha2::Digest;
+    let issuer: Arc<Mutex<String>> = Arc::default();
+    let own = issuer.clone();
+    let url = serve(seen, move |got| {
+        let issuer = own.lock().expect("issuer").clone();
+        match (got.method.as_str(), got.path.as_str()) {
+            ("GET", "/.well-known/oauth-authorization-server") => json_reply(
+                "200 OK",
+                "",
+                json!({"issuer": issuer,
+                       "authorization_endpoint": format!("{issuer}/authorize"),
+                       "token_endpoint": format!("{issuer}/token"),
+                       "registration_endpoint": format!("{issuer}/register"),
+                       "code_challenge_methods_supported": ["S256"],
+                       "authorization_response_iss_parameter_supported": true,
+                       "scopes_supported": ["files:read", "files:write", "offline_access"]}),
+            ),
+            ("POST", "/register") if got.body["application_type"] == "native" => {
+                json_reply("201 Created", "", json!({"client_id": "client-1"}))
+            }
+            ("POST", "/token") => {
+                let fields = form(&got.raw);
+                let field = |name: &str| fields.get(name).cloned().unwrap_or_default();
+                let refused = json_reply("400 Bad Request", "", json!({"error": "invalid_grant"}));
+                if field("resource") != resource || field("client_id") != "client-1" {
+                    return refused;
+                }
+                match field("grant_type").as_str() {
+                    "authorization_code" => {
+                        let verified = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                            .encode(sha2::Sha256::digest(field("code_verifier").as_bytes()));
+                        if field("code") != "code-1"
+                            || verified != *world.challenge.lock().expect("challenge")
+                        {
+                            return refused;
+                        }
+                        json_reply(
+                            "200 OK",
+                            "",
+                            json!({"access_token": "token-1",
+                            "token_type": "Bearer", "expires_in": 3600,
+                            "refresh_token": "refresh-1"}),
+                        )
+                    }
+                    "refresh_token" if field("refresh_token") == "refresh-1" => json_reply(
+                        "200 OK",
+                        "",
+                        json!({"access_token": "token-2",
+                            "token_type": "bearer", "expires_in": 3600,
+                            "refresh_token": "refresh-2"}),
+                    ),
+                    _ => refused,
+                }
+            }
+            _ => empty("404 Not Found"),
+        }
+    })
+    .await;
+    let base = url.trim_end_matches("/mcp").to_string();
+    *issuer.lock().expect("issuer") = base.clone();
+    base
+}
+
+/// The browser coming back to inocode's redirect with `query`, once its
+/// listener is up.
+async fn come_back(redirect: &str, query: &str) {
+    for _ in 0..100 {
+        if reqwest::get(format!("{redirect}?{query}")).await.is_ok() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("the redirect was not listened to");
+}
+
+/// Waits for the sign-in `id` to end; its last view.
+async fn ended(store: &Store, id: &str) -> Value {
+    for _ in 0..250 {
+        let view = sign_in_request(store, "mcp/login/status", &json!({"login_id": id}))
+            .await
+            .expect("a sign-in request")
+            .expect("status");
+        if view["status"] != "waiting" {
+            return view;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("the sign-in did not end");
+}
+
+fn sign_in_of(listed: &Value) -> Value {
+    listed["servers"][0]["sign_in"].clone()
+}
+
+#[tokio::test]
+async fn an_http_server_is_signed_in_to_refreshed_and_stepped_up() {
+    let dir = tempfile::tempdir().expect("dir");
+    let world = Arc::new(OAuthWorld::default());
+    let resource_seen = Arc::new(Mutex::new(Vec::new()));
+    let mcp_url = protected_server(world.clone(), resource_seen.clone()).await;
+    let auth_seen = Arc::new(Mutex::new(Vec::new()));
+    let issuer = authorization_server(world.clone(), mcp_url.clone(), auth_seen.clone()).await;
+    *world.named.lock().expect("named") = issuer.clone();
+    *world.valid.lock().expect("valid") = "token-1".into();
+    std::fs::write(
+        dir.path().join("mcp.json"),
+        json!({"mcpServers": {"files": {"url": mcp_url}}}).to_string(),
+    )
+    .expect("mcp.json");
+    let store = Store::open(dir.path().join("inocode.db"))
+        .await
+        .expect("store");
+    let (_keep, cancel) = tokio::sync::watch::channel(false);
+
+    // Without a sign-in the server does not start, and says why.
+    assert_eq!(sign_in_of(&listed(&store).await), "unknown");
+    assert!(loaded(&store).await.specs.is_empty());
+    let problems = render_problems(&store).await.expect("problems");
+    assert!(
+        problems.contains("needs a sign-in: run /mcp login files"),
+        "{problems}"
+    );
+    assert_eq!(sign_in_of(&listed(&store).await), "needs_login");
+
+    // The person signs in: the server's challenge leads to its resource
+    // metadata and its authorization server; inocode registers itself and
+    // asks for the challenged scope with the resource.
+    let started = sign_in_request(&store, "mcp/login/start", &json!({"server": "files"}))
+        .await
+        .expect("a sign-in request")
+        .expect("started");
+    assert_eq!(started["status"], "waiting");
+    let page = reqwest::Url::parse(started["url"].as_str().expect("url")).expect("page");
+    assert_eq!(
+        page.as_str().split('?').next(),
+        Some(format!("{issuer}/authorize").as_str())
+    );
+    let asked: HashMap<String, String> = page.query_pairs().into_owned().collect();
+    assert_eq!(asked["client_id"], "client-1");
+    assert_eq!(asked["resource"], mcp_url);
+    assert_eq!(asked["code_challenge_method"], "S256");
+    assert_eq!(asked["scope"], "files:read offline_access");
+    assert!(asked["redirect_uri"].starts_with("http://localhost:"));
+    *world.challenge.lock().expect("challenge") = asked["code_challenge"].clone();
+    let registered = auth_seen
+        .lock()
+        .expect("seen")
+        .iter()
+        .find(|got| got.path == "/register")
+        .cloned()
+        .expect("registered");
+    assert_eq!(
+        registered.body["redirect_uris"][0],
+        asked["redirect_uri"].as_str()
+    );
+    assert_eq!(registered.body["token_endpoint_auth_method"], "none");
+    assert_eq!(sign_in_of(&listed(&store).await), "signing_in");
+    let back = |iss: &str| {
+        format!(
+            "code=code-1&state={}&iss={}",
+            asked["state"],
+            crate::oauth::urlencode(iss)
+        )
+    };
+    come_back(&asked["redirect_uri"], &back(&issuer)).await;
+    let view = ended(&store, started["login_id"].as_str().expect("id")).await;
+    assert_eq!(view["status"], "done", "{view}");
+    assert_eq!(sign_in_of(&listed(&store).await), "signed_in");
+
+    // The servers start again with the token.
+    let read = call(&store, "mcp__files__read", "{}", cancel.clone(), None)
+        .await
+        .expect("an MCP tool");
+    assert_eq!(read, Ok("read ok".to_string()));
+    assert!(resource_seen.lock().expect("seen").iter().any(|got| got
+        .headers
+        .get("authorization")
+        .map(String::as_str)
+        == Some("Bearer token-1")));
+
+    // A token the server no longer takes is refreshed, with the resource,
+    // once the server still names the same authorization server.
+    *world.valid.lock().expect("valid") = "token-2".into();
+    let read = call(&store, "mcp__files__read", "{}", cancel.clone(), None)
+        .await
+        .expect("an MCP tool");
+    assert_eq!(read, Ok("read ok".to_string()));
+    let refreshed = auth_seen
+        .lock()
+        .expect("seen")
+        .iter()
+        .filter(|got| got.path == "/token")
+        .map(|got| form(&got.raw))
+        .find(|fields| fields["grant_type"] == "refresh_token")
+        .expect("refreshed");
+    assert_eq!(refreshed["resource"], mcp_url);
+    // Nothing of the tokens is kept in plain sight of the logs or the list.
+    assert!(!listed(&store).await.to_string().contains("token-2"));
+
+    // A call that needs more scopes asks the person to sign in again; the
+    // new sign-in asks for the earlier scopes and the new ones.
+    let write = call(&store, "mcp__files__write", "{}", cancel.clone(), None)
+        .await
+        .expect("an MCP tool");
+    let refused = write.expect_err("more scopes needed");
+    assert!(
+        refused.contains("needs more permissions (files:write): run /mcp login files"),
+        "{refused}"
+    );
+    assert_eq!(sign_in_of(&listed(&store).await), "needs_login");
+    let again = sign_in_request(&store, "mcp/login/start", &json!({"server": "files"}))
+        .await
+        .expect("a sign-in request")
+        .expect("started");
+    let page = reqwest::Url::parse(again["url"].as_str().expect("url")).expect("page");
+    let asked: HashMap<String, String> = page.query_pairs().into_owned().collect();
+    assert_eq!(asked["scope"], "files:read offline_access files:write");
+    // An answer that comes from another authorization server is not used.
+    *world.challenge.lock().expect("challenge") = asked["code_challenge"].clone();
+    let back = format!(
+        "code=code-1&state={}&iss={}",
+        asked["state"],
+        crate::oauth::urlencode("https://elsewhere.example")
+    );
+    come_back(&asked["redirect_uri"], &back).await;
+    let view = ended(&store, again["login_id"].as_str().expect("id")).await;
+    assert_eq!(view["status"], "failed");
+    assert!(view["error"]
+        .as_str()
+        .unwrap_or("")
+        .contains("another authorization server"));
+
+    // Once the server names another authorization server, its tokens are
+    // neither refreshed there nor sent again.
+    *world.valid.lock().expect("valid") = "token-3".into();
+    *world.named.lock().expect("named") = "https://other.example".into();
+    store.forget_mcp().await;
+    let refreshes = |seen: &Arc<Mutex<Vec<Got>>>| {
+        seen.lock()
+            .expect("seen")
+            .iter()
+            .filter(|got| got.path == "/token")
+            .count()
+    };
+    let before = refreshes(&auth_seen);
+    assert!(loaded(&store).await.specs.is_empty());
+    let problems = render_problems(&store).await.expect("problems");
+    assert!(
+        problems.contains("no longer names the authorization server"),
+        "{problems}"
+    );
+    assert_eq!(refreshes(&auth_seen), before);
+
+    // Signing out removes the stored sign-in.
+    let out = sign_in_request(&store, "mcp/logout", &json!({"server": "files"}))
+        .await
+        .expect("a sign-in request")
+        .expect("signed out");
+    assert_eq!(out["removed"], 1);
+    let credentials = crate::oauth::Store::load(dir.path().join("auth.json")).expect("store");
+    assert!(credentials.records("mcp").expect("records").is_empty());
 }

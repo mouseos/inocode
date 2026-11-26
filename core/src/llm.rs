@@ -459,19 +459,24 @@ impl Llm {
         conversation: &Conversation,
         tools: &[ToolSpec],
     ) -> Result<ChatStream, ErrorInfo> {
-        self.start(conversation, tools, None, None).await
+        self.start_with(conversation, tools, None, None, None).await
     }
 
-    /// Like [`Self::converse`] without tools, with the answer cut at `cap`
-    /// tokens (Anthropic `max_tokens`, Responses `max_output_tokens`, Chat
-    /// Completions `max_tokens`). A thinking budget that does not fit below
-    /// the cap is left out. DeepAI's service takes no such field.
+    /// Like [`Self::converse`], with the answer cut at `cap` tokens
+    /// (Anthropic `max_tokens`, Responses `max_output_tokens`, Chat
+    /// Completions `max_tokens`) and, with `choice`, the model told whether
+    /// it may, must or must not call one of `tools` (`tool_choice`). A
+    /// thinking budget that does not fit below the cap is left out. DeepAI's
+    /// service takes no cap.
     pub(crate) async fn converse_capped(
         &self,
         conversation: &Conversation,
+        tools: &[ToolSpec],
+        choice: Option<ToolChoice>,
         cap: u64,
     ) -> Result<ChatStream, ErrorInfo> {
-        self.start(conversation, &[], None, Some(cap)).await
+        self.start_with(conversation, tools, None, Some(cap), choice)
+            .await
     }
 
     /// Like [`Self::converse`] without tools, asking for an answer in the
@@ -483,7 +488,8 @@ impl Llm {
         conversation: &Conversation,
         output: &JsonOutput,
     ) -> Result<ChatStream, ErrorInfo> {
-        self.start(conversation, &[], Some(output), None).await
+        self.start_with(conversation, &[], Some(output), None, None)
+            .await
     }
 
     /// The model this client asks, as an assistant turn's origin.
@@ -494,12 +500,13 @@ impl Llm {
         }
     }
 
-    async fn start(
+    async fn start_with(
         &self,
         conversation: &Conversation,
         tools: &[ToolSpec],
         output: Option<&JsonOutput>,
         cap: Option<u64>,
+        choice: Option<ToolChoice>,
     ) -> Result<ChatStream, ErrorInfo> {
         let started = Instant::now();
         let format = self.config.provider;
@@ -528,6 +535,9 @@ impl Llm {
             if let Some(cap) = cap {
                 cap_output(&mut body, format, cap);
             }
+            if let Some(choice) = choice {
+                tool_choice(&mut body, format, choice);
+            }
             body
         };
         let attempt = |account: Option<String>| {
@@ -535,7 +545,7 @@ impl Llm {
             async move {
                 match self.deepai {
                     Some(_) => {
-                        self.deepai_chat(account.as_deref(), conversation, tools, output)
+                        self.deepai_chat(account.as_deref(), conversation, tools, output, choice)
                             .await
                     }
                     None => {
@@ -1179,6 +1189,7 @@ impl Llm {
         conversation: &Conversation,
         tools: &[ToolSpec],
         output: Option<&JsonOutput>,
+        choice: Option<ToolChoice>,
     ) -> Result<ChatStream, Attempt> {
         let (account, credential) = self.credential_of(account).await.map_err(Attempt::Unsent)?;
         let session = self.deepai_session(&account);
@@ -1198,7 +1209,7 @@ impl Llm {
         } else {
             (ProviderKind::OpenAi, self.url("chat/completions"))
         };
-        let body = request_body(
+        let mut body = request_body(
             format,
             &self.config,
             self.effort().await,
@@ -1207,6 +1218,9 @@ impl Llm {
             output,
         )
         .map_err(Attempt::Unsent)?;
+        if let Some(choice) = choice {
+            tool_choice(&mut body, format, choice);
+        }
         loop {
             session
                 .ensure_checked_in(&self.client, base, &api_key)
@@ -2035,6 +2049,37 @@ fn codex_client_version(chosen: Option<&str>) -> String {
     }
 }
 
+/// Whether the model may, must or must not call a tool: MCP sampling's
+/// `toolChoice` modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolChoice {
+    Auto,
+    Required,
+    None,
+}
+
+/// Sets `tool_choice` in a request body of `format`: Chat Completions and
+/// Responses take `auto`, `required` and `none`; Anthropic `auto`, `any`
+/// and `none`, and refuses `any` beside extended thinking, which is then
+/// left out.
+fn tool_choice(body: &mut Value, format: ProviderKind, choice: ToolChoice) {
+    let value = match (format, choice) {
+        (ProviderKind::Anthropic, ToolChoice::Auto) => json!({"type": "auto"}),
+        (ProviderKind::Anthropic, ToolChoice::Required) => json!({"type": "any"}),
+        (ProviderKind::Anthropic, ToolChoice::None) => json!({"type": "none"}),
+        (_, ToolChoice::Auto) => json!("auto"),
+        (_, ToolChoice::Required) => json!("required"),
+        (_, ToolChoice::None) => json!("none"),
+    };
+    let Some(fields) = body.as_object_mut() else {
+        return;
+    };
+    if format == ProviderKind::Anthropic && choice == ToolChoice::Required {
+        fields.remove("thinking");
+    }
+    fields.insert("tool_choice".into(), value);
+}
+
 /// Caps a request body's answer at `cap` tokens in the field of `format`.
 /// An Anthropic thinking budget must stay below `max_tokens`, so one that
 /// does not is left out.
@@ -2833,6 +2878,146 @@ mod tests {
         let mut chat = json!({});
         cap_output(&mut chat, ProviderKind::OpenAi, 10);
         assert_eq!(chat, json!({"max_tokens": 10}));
+    }
+
+    #[test]
+    fn tool_choice_is_written_in_each_format() {
+        let mut chat = json!({});
+        tool_choice(&mut chat, ProviderKind::OpenAi, ToolChoice::Required);
+        assert_eq!(chat, json!({"tool_choice": "required"}));
+        let mut responses = json!({});
+        tool_choice(&mut responses, ProviderKind::Responses, ToolChoice::None);
+        assert_eq!(responses, json!({"tool_choice": "none"}));
+        let thinking = json!({"thinking": {"type": "enabled", "budget_tokens": 1024}});
+        let mut anthropic = thinking.clone();
+        tool_choice(&mut anthropic, ProviderKind::Anthropic, ToolChoice::Auto);
+        assert_eq!(anthropic["tool_choice"], json!({"type": "auto"}));
+        assert_eq!(anthropic["thinking"], thinking["thinking"]);
+        let mut anthropic = thinking.clone();
+        tool_choice(&mut anthropic, ProviderKind::Anthropic, ToolChoice::None);
+        assert_eq!(anthropic["tool_choice"], json!({"type": "none"}));
+        // Anthropic refuses a forced tool beside extended thinking.
+        let mut anthropic = thinking;
+        tool_choice(
+            &mut anthropic,
+            ProviderKind::Anthropic,
+            ToolChoice::Required,
+        );
+        assert_eq!(anthropic, json!({"tool_choice": {"type": "any"}}));
+    }
+
+    /// A provider that keeps the path and body of each request and answers
+    /// with an empty event stream; its base URL.
+    async fn recording_provider(
+        seen: std::sync::Arc<std::sync::Mutex<Vec<(String, Value)>>>,
+    ) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let address = listener.local_addr().expect("address");
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let seen = seen.clone();
+                tokio::spawn(async move {
+                    let mut buffer = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    let end = loop {
+                        if let Some(at) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
+                            break at + 4;
+                        }
+                        match stream.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(read) => buffer.extend_from_slice(&chunk[..read]),
+                        }
+                    };
+                    let head = String::from_utf8_lossy(&buffer[..end]).to_lowercase();
+                    let length: usize = head
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length:"))
+                        .and_then(|value| value.trim().parse().ok())
+                        .unwrap_or(0);
+                    while buffer.len() < end + length {
+                        match stream.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(read) => buffer.extend_from_slice(&chunk[..read]),
+                        }
+                    }
+                    let path = head.split(' ').nth(1).unwrap_or("").to_string();
+                    let body =
+                        serde_json::from_slice(&buffer[end..end + length]).unwrap_or(Value::Null);
+                    seen.lock().expect("seen").push((path, body));
+                    let _ = stream
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                              content-length: 0\r\nconnection: close\r\n\r\n",
+                        )
+                        .await;
+                });
+            }
+        });
+        format!("http://{address}/v1")
+    }
+
+    #[tokio::test]
+    async fn a_capped_request_carries_its_tools_and_tool_choice_to_each_format() {
+        let conversation = Conversation {
+            system: None,
+            messages: vec![Message {
+                id: "m".into(),
+                body: Body::User {
+                    from: Speaker::Person,
+                    parts: vec!["Weather in Paris?".into()],
+                },
+            }],
+        };
+        let tools = [ToolSpec {
+            name: "get_weather".into(),
+            description: "The weather of a city".into(),
+            parameters: json!({"type": "object", "properties": {"city": {"type": "string"}}}),
+        }];
+        let cases = [
+            (
+                ProviderKind::OpenAi,
+                "/v1/chat/completions",
+                json!("required"),
+            ),
+            (
+                ProviderKind::Anthropic,
+                "/v1/messages",
+                json!({"type": "any"}),
+            ),
+            (ProviderKind::Responses, "/v1/responses", json!("required")),
+        ];
+        for (format, path, expected) in cases {
+            let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let llm = Llm::new(LlmConfig {
+                provider: format,
+                auth: AuthKind::ApiKey,
+                base_url: recording_provider(seen.clone()).await,
+                model: "test-model".to_string(),
+                api_key: "test-key".to_string(),
+                auth_store_path: None,
+                reasoning: Default::default(),
+            })
+            .expect("client");
+            let started = llm
+                .converse_capped(&conversation, &tools, Some(ToolChoice::Required), 50)
+                .await;
+            assert!(started.is_ok(), "{format:?}");
+            // Anthropic's model list is read too, for the output limit.
+            let seen = seen.lock().expect("seen").clone();
+            let (_, body) = seen
+                .iter()
+                .find(|(got, _)| got == path)
+                .unwrap_or_else(|| panic!("{format:?}: {seen:?}"));
+            assert_eq!(body["tool_choice"], expected, "{format:?}");
+            assert_eq!(
+                body["tools"].as_array().map(Vec::len),
+                Some(1),
+                "{format:?}"
+            );
+        }
     }
 
     #[test]

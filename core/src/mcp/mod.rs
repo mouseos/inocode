@@ -4,6 +4,7 @@
 //! (2026-07-28) and of the revisions with an `initialize` handshake are both
 //! spoken to. Design and sources: docs/evidence/mcp-client.md.
 
+mod auth;
 mod connection;
 mod features;
 mod http;
@@ -119,6 +120,9 @@ struct ServerConfig {
     /// Sent with every HTTP request, such as an `Authorization` header.
     #[serde(default)]
     headers: HashMap<String, String>,
+    /// How an HTTP server is signed in to with OAuth, when it asks for it.
+    #[serde(default)]
+    oauth: Option<Box<auth::Settings>>,
     /// How many seconds the server may take to start and list its tools;
     /// `START_TIMEOUT` when missing. Codex's name for it.
     #[serde(default)]
@@ -130,6 +134,9 @@ struct ServerConfig {
     /// Where a started server runs: an installed plugin's folder.
     #[serde(skip)]
     folder: Option<PathBuf>,
+    /// The sign-in store an HTTP server's OAuth sign-in is kept in.
+    #[serde(skip)]
+    sign_ins: Option<PathBuf>,
 }
 
 /// The tools of every server that started, in the order of the file.
@@ -940,10 +947,12 @@ impl Call<'_> {
 
     /// Runs the thread's model for the server's `sampling/createMessage`,
     /// once the person approved it; the result, or the JSON-RPC error
-    /// (code and message) of an older server. Tool use was not declared;
-    /// `includeContext` other than `none` is deprecated and taken as none;
-    /// `temperature`, `stopSequences`, `metadata` and `modelPreferences`
-    /// are not used, the thread's own model answering.
+    /// (code and message) of an older server. The model may call the
+    /// request's own `tools` as its `toolChoice` says, and the calls are
+    /// returned for the server to run; `includeContext` other than `none` is
+    /// deprecated and taken as none; `temperature`, `stopSequences`,
+    /// `metadata` and `modelPreferences` are not used, the thread's own
+    /// model answering.
     async fn sample(
         &self,
         params: &Value,
@@ -959,9 +968,20 @@ impl Call<'_> {
                 "no model can answer here (only during a turn of a thread)".to_string(),
             )
         })?;
-        if params.get("tools").is_some_and(|tools| !tools.is_null()) {
-            return Err(invalid("tool use in sampling was not declared"));
+        let tools = sampling_tools(params.get("tools")).map_err(|e| invalid(&e))?;
+        let choice = match params.get("toolChoice").map(|choice| choice.get("mode")) {
+            None | Some(None) => None,
+            Some(Some(mode)) => Some(match mode.as_str() {
+                Some("auto") => crate::llm::ToolChoice::Auto,
+                Some("required") => crate::llm::ToolChoice::Required,
+                Some("none") => crate::llm::ToolChoice::None,
+                _ => return Err(invalid("toolChoice.mode must be auto, required or none")),
+            }),
+        };
+        if tools.is_empty() && choice == Some(crate::llm::ToolChoice::Required) {
+            return Err(invalid("toolChoice required needs tools"));
         }
+        let choice = choice.filter(|_| !tools.is_empty());
         let max_tokens = params
             .get("maxTokens")
             .and_then(Value::as_u64)
@@ -985,6 +1005,8 @@ impl Call<'_> {
             "messages": params.get("messages"),
             "systemPrompt": system,
             "maxTokens": max_tokens,
+            "tools": tools.iter().map(|tool| &tool.name).collect::<Vec<_>>(),
+            "toolChoice": params.pointer("/toolChoice/mode"),
         });
         let answer = put_to_person(self.store, asking, question, cancel.clone(), None).await;
         if answer.get("action").and_then(Value::as_str) != Some("accept") {
@@ -995,7 +1017,7 @@ impl Call<'_> {
         let failed = |message: String| (-32603, message);
         let stopped = || failed("stopped with the turn".into());
         let started = tokio::select! {
-            started = model.converse_capped(&conversation, max_tokens) => started,
+            started = model.converse_capped(&conversation, &tools, choice, max_tokens) => started,
             () = crate::turn::cancelled(&mut cancel) => return Err(stopped()),
         };
         let mut stream = started.map_err(|error| failed(error.message))?;
@@ -1018,20 +1040,65 @@ impl Call<'_> {
         let crate::conversation::Body::Assistant { stop, parts, .. } = stream.assistant() else {
             unreachable!("a stream assembles an assistant turn");
         };
-        let text: String = parts
-            .into_iter()
-            .filter_map(|part| match part {
-                crate::conversation::AssistantPart::Text { text } => Some(text),
-                _ => None,
-            })
-            .collect();
+        let mut text = String::new();
+        let mut calls = Vec::new();
+        for part in parts {
+            match part {
+                crate::conversation::AssistantPart::Text { text: part } => text.push_str(&part),
+                crate::conversation::AssistantPart::ToolCall {
+                    call_id,
+                    name,
+                    arguments,
+                    ..
+                } => calls.push(json!({
+                    "type": "tool_use",
+                    "id": call_id,
+                    "name": name,
+                    "input": serde_json::from_str::<Value>(&arguments)
+                        .ok()
+                        .filter(Value::is_object)
+                        .unwrap_or_else(|| json!({})),
+                })),
+                crate::conversation::AssistantPart::Reasoning { .. } => {}
+            }
+        }
+        // A provider that does not hold to `tool_choice` is caught here.
+        match choice {
+            Some(crate::llm::ToolChoice::None) if !calls.is_empty() => {
+                return Err(failed(
+                    "the model called a tool though toolChoice was none".into(),
+                ))
+            }
+            Some(crate::llm::ToolChoice::Required) if calls.is_empty() => {
+                return Err(failed(
+                    "the model answered without calling a tool though toolChoice was required"
+                        .into(),
+                ))
+            }
+            _ => {}
+        }
         let stop = match stop {
+            _ if !calls.is_empty() => "toolUse",
             crate::conversation::StopReason::Length => "maxTokens",
             _ => "endTurn",
         };
+        let content = match calls.is_empty() {
+            true => json!({"type": "text", "text": text}),
+            false => {
+                let mut blocks = Vec::new();
+                if !text.is_empty() {
+                    blocks.push(json!({"type": "text", "text": text}));
+                }
+                blocks.extend(calls);
+                match blocks.len() {
+                    1 => blocks.remove(0),
+                    _ => Value::Array(blocks),
+                }
+            }
+        };
         Ok(json!({
             "role": "assistant",
-            "content": {"type": "text", "text": text},
+            "content": content,
             "model": model.model(),
             "stopReason": stop,
         }))
@@ -1256,10 +1323,42 @@ async fn put_to_person(
     result
 }
 
+/// The `tools` of a `sampling/createMessage`, as the model is offered them.
+fn sampling_tools(tools: Option<&Value>) -> Result<Vec<ToolSpec>, String> {
+    let Some(tools) = tools.filter(|tools| !tools.is_null()) else {
+        return Ok(Vec::new());
+    };
+    let tools = tools.as_array().ok_or("tools must be a list")?;
+    tools
+        .iter()
+        .map(|tool| {
+            let name = tool
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or("each tool needs a name")?;
+            Ok(ToolSpec {
+                name: name.to_string(),
+                description: tool
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                parameters: tool
+                    .get("inputSchema")
+                    .filter(|schema| schema.is_object())
+                    .cloned()
+                    .unwrap_or_else(|| json!({"type": "object"})),
+            })
+        })
+        .collect()
+}
+
 /// The messages of a `sampling/createMessage` as a conversation for
 /// `model`: text as it is; images and audio, which a person's message here
-/// cannot carry, named with their type and size. Tool use and results are
-/// refused, since tool use in sampling was not declared.
+/// cannot carry, named with their type and size; the model's tool uses as
+/// its calls, and a user message of tool results as their answers. Every
+/// tool use must be answered by the next message, which holds only
+/// results.
 fn sampling_messages(
     messages: Option<&Value>,
     model: &crate::Llm,
@@ -1270,37 +1369,111 @@ fn sampling_messages(
         .filter(|messages| !messages.is_empty())
         .ok_or("messages must be a list of at least one message")?;
     let mut conversation = Vec::new();
+    // The tool uses the next message must answer, by id, with their names.
+    let mut open: Vec<(String, String)> = Vec::new();
     for (index, message) in messages.iter().enumerate() {
         let blocks = match message.get("content") {
             Some(Value::Array(blocks)) => blocks.clone(),
             Some(block) => vec![block.clone()],
             None => Vec::new(),
         };
-        let mut parts = Vec::new();
+        let kind_of = |block: &Value| {
+            block
+                .get("type")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        };
+        let results = blocks
+            .iter()
+            .filter(|block| kind_of(block).as_deref() == Some("tool_result"))
+            .count();
+        let role = message.get("role").and_then(Value::as_str);
+        if results > 0 && (results != blocks.len() || role != Some("user")) {
+            return Err("tool results must make up a user message on their own".into());
+        }
+        if !open.is_empty() && results == 0 {
+            return Err("every tool use must be answered by the next message".into());
+        }
+        if results > 0 {
+            for (at, block) in blocks.iter().enumerate() {
+                let id = block
+                    .get("toolUseId")
+                    .and_then(Value::as_str)
+                    .ok_or("a tool result needs its toolUseId")?;
+                let Some(found) = open.iter().position(|(open, _)| open == id) else {
+                    return Err(format!("the tool result for {id} answers no tool use"));
+                };
+                let (_, name) = open.remove(found);
+                conversation.push(Message {
+                    id: format!("sampling-{index}-{at}"),
+                    body: Body::ToolResult {
+                        call_id: id.to_string(),
+                        name,
+                        content: result_text(block),
+                        is_error: block.get("isError").and_then(Value::as_bool) == Some(true),
+                        images: Vec::new(),
+                    },
+                });
+            }
+            if !open.is_empty() {
+                return Err("every tool use must be answered by the next message".into());
+            }
+            continue;
+        }
+        let mut texts = Vec::new();
+        let mut calls = Vec::new();
         for block in &blocks {
             let field = |key: &str| block.get(key).and_then(Value::as_str).unwrap_or("");
-            parts.push(match field("type") {
-                "text" => field("text").to_string(),
-                kind @ ("image" | "audio") => format!(
+            match field("type") {
+                "text" => texts.push(field("text").to_string()),
+                kind @ ("image" | "audio") => texts.push(format!(
                     "({kind} of type {}, {} bytes, not shown)",
                     field("mimeType"),
                     decoded_len(field("data"))
-                ),
+                )),
+                "tool_use" if role == Some("assistant") => {
+                    let (id, name) = (field("id"), field("name"));
+                    if id.is_empty() || name.is_empty() {
+                        return Err("a tool use needs its id and name".into());
+                    }
+                    open.push((id.to_string(), name.to_string()));
+                    calls.push(AssistantPart::ToolCall {
+                        call_id: id.to_string(),
+                        name: name.to_string(),
+                        arguments: block
+                            .get("input")
+                            .cloned()
+                            .unwrap_or_else(|| json!({}))
+                            .to_string(),
+                        replay: None,
+                    });
+                }
                 kind => return Err(format!("content of type {kind:?} is not taken in sampling")),
-            });
+            }
         }
-        let body = match message.get("role").and_then(Value::as_str) {
+        let body = match role {
             Some("user") => Body::User {
                 from: Speaker::Person,
-                parts,
+                parts: texts,
             },
-            Some("assistant") => Body::Assistant {
-                origin: model.origin(),
-                stop: StopReason::Completed,
-                parts: vec![AssistantPart::Text {
-                    text: parts.join("\n"),
-                }],
-            },
+            Some("assistant") => {
+                let mut parts = Vec::new();
+                if !texts.is_empty() {
+                    parts.push(AssistantPart::Text {
+                        text: texts.join("\n"),
+                    });
+                }
+                let stop = match calls.is_empty() {
+                    true => StopReason::Completed,
+                    false => StopReason::ToolUse,
+                };
+                parts.extend(calls);
+                Body::Assistant {
+                    origin: model.origin(),
+                    stop,
+                    parts,
+                }
+            }
             _ => return Err("each message's role must be user or assistant".into()),
         };
         conversation.push(Message {
@@ -1308,7 +1481,32 @@ fn sampling_messages(
             body,
         });
     }
+    if !open.is_empty() {
+        return Err("every tool use must be answered by the next message".into());
+    }
     Ok(conversation)
+}
+
+/// A tool result of a sampling message as text for the model: its text
+/// blocks, other blocks named, or its structured content.
+fn result_text(block: &Value) -> String {
+    let parts: Vec<String> = block
+        .get("content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|item| {
+            let field = |key: &str| item.get(key).and_then(Value::as_str).unwrap_or("");
+            match field("type") {
+                "text" => field("text").to_string(),
+                kind => format!("(content of type {kind} not shown)"),
+            }
+        })
+        .collect();
+    match (parts.is_empty(), block.get("structuredContent")) {
+        (true, Some(structured)) => structured.to_string(),
+        _ => parts.join("\n"),
+    }
 }
 
 /// How many bytes the Base64 text `data` holds.
@@ -1477,40 +1675,72 @@ impl Source {
     }
 }
 
-/// The servers of `config`, of the plugins installed under `plugins` and the
-/// connectors of the accounts signed in at `accounts`, started.
 /// The servers `mcp.json` names and those of the installed plugins, with
-/// how each is reached, and the tools of the servers already started.
-/// Nothing is started: servers start at a turn's first use.
-pub(crate) async fn listed(store: &Store) -> Value {
+/// the plugin each comes from.
+fn configured_servers(store: &Store) -> (Config, Vec<(String, ServerConfig, Option<String>)>) {
     let mut config = configured(&store.files_folder().with_file_name("mcp.json"));
-    let shown = |name: String, settings: &ServerConfig, plugin: Option<&str>| {
-        json!({
-            "name": name,
-            "command": settings.command,
-            "args": settings.args,
-            "url": settings.url,
-            "plugin": plugin,
-        })
-    };
-    let mut servers: Vec<Value> = std::mem::take(&mut config.servers)
-        .into_iter()
-        .map(|(name, settings)| shown(name, &settings, None))
-        .collect();
+    let mut servers: Vec<(String, ServerConfig, Option<String>)> =
+        std::mem::take(&mut config.servers)
+            .into_iter()
+            .map(|(name, settings)| (name, settings, None))
+            .collect();
     let installed = crate::plugins::Installed::all(&crate::plugins::folder(store));
     for plugin in &installed {
         for server in plugin.mcp_servers(&config.plugin_variables, ambiguous(&installed, plugin)) {
             if let Ok(settings) = serde_json::from_value::<ServerConfig>(server.settings) {
-                servers.push(shown(server.name, &settings, Some(plugin.name())));
+                servers.push((server.name, settings, Some(plugin.name().to_string())));
             }
         }
     }
+    (config, servers)
+}
+
+/// The servers `mcp.json` names and those of the installed plugins, with
+/// how each is reached and, for one reached over HTTP, its sign-in state;
+/// and the tools of the servers already started. Nothing is started:
+/// servers start at a turn's first use.
+pub(crate) async fn listed(store: &Store) -> Value {
+    let (config, configured) = configured_servers(store);
     let kept = store.mcp().lock().await;
     let tools: Option<Vec<String>> = kept
         .as_ref()
         .map(|tools| tools.specs.iter().map(|spec| spec.name.clone()).collect());
     let problems: Option<Vec<String>> = kept.as_ref().map(|tools| tools.problems.clone());
+    let reached: HashSet<String> = kept
+        .as_ref()
+        .map(|tools| {
+            tools
+                .servers
+                .iter()
+                .map(|served| served.name.clone())
+                .collect()
+        })
+        .unwrap_or_default();
     drop(kept);
+    let sign_ins = crate::connectors::store_beside(store);
+    let servers: Vec<Value> = configured
+        .into_iter()
+        .map(|(name, settings, plugin)| {
+            let sign_in = settings.url.as_deref().map(|url| {
+                match settings
+                    .headers
+                    .keys()
+                    .any(|name| name.eq_ignore_ascii_case("authorization"))
+                {
+                    true => "headers",
+                    false => auth::status(&sign_ins, url, reached.contains(&name)),
+                }
+            });
+            json!({
+                "name": name,
+                "command": settings.command,
+                "args": settings.args,
+                "url": settings.url,
+                "plugin": plugin,
+                "sign_in": sign_in,
+            })
+        })
+        .collect();
     let connectors: Value = config
         .connectors
         .iter()
@@ -1526,6 +1756,81 @@ pub(crate) async fn listed(store: &Store) -> Value {
     })
 }
 
+/// `mcp/login/start {server}`, `mcp/login/status {login_id}`,
+/// `mcp/login/cancel {login_id}` and `mcp/logout {server}`: the person's
+/// OAuth sign-ins to the HTTP servers; `None` for other methods.
+pub(crate) async fn sign_in_request(
+    store: &Store,
+    method: &str,
+    params: &Value,
+) -> Option<Result<Value, crate::ErrorInfo>> {
+    use crate::ErrorInfo;
+    let text = |key: &str| {
+        params
+            .get(key)
+            .and_then(Value::as_str)
+            .ok_or_else(|| ErrorInfo::new("invalid_params", format!("requires a \"{key}\" string")))
+    };
+    let failed = |message: String| ErrorInfo::new("mcp_error", message);
+    let target = |server: &str| -> Result<auth::Target, ErrorInfo> {
+        let (_, servers) = configured_servers(store);
+        let (name, settings, _) = servers
+            .into_iter()
+            .find(|(name, _, _)| name == server)
+            .ok_or_else(|| {
+                ErrorInfo::new("invalid_params", format!("no MCP server is named {server}"))
+            })?;
+        let url = settings.url.ok_or_else(|| {
+            ErrorInfo::new(
+                "invalid_params",
+                format!("server {server} is not reached over HTTP; it takes no sign-in"),
+            )
+        })?;
+        Ok(auth::Target {
+            server: name,
+            url,
+            headers: settings.headers,
+            settings: settings.oauth.map(|oauth| *oauth).unwrap_or_default(),
+        })
+    };
+    let sign_ins = crate::connectors::store_beside(store);
+    Some(match method {
+        "mcp/login/start" => {
+            let target = match text("server").and_then(target) {
+                Ok(target) => target,
+                Err(error) => return Some(Err(error)),
+            };
+            let store = store.clone();
+            // The servers start anew, with the new sign-in.
+            auth::login_start(&sign_ins, target, async move { store.forget_mcp().await })
+                .await
+                .map_err(failed)
+        }
+        "mcp/login/status" => {
+            text("login_id").and_then(|id| auth::login_status(id).map_err(failed))
+        }
+        "mcp/login/cancel" => {
+            text("login_id").and_then(|id| auth::login_cancel(id).map_err(failed))
+        }
+        "mcp/logout" => {
+            let target = match text("server").and_then(target) {
+                Ok(target) => target,
+                Err(error) => return Some(Err(error)),
+            };
+            match auth::logout(&sign_ins, &target.url) {
+                Ok(removed) => {
+                    store.forget_mcp().await;
+                    Ok(json!({"server": target.server, "removed": removed}))
+                }
+                Err(error) => Err(failed(error)),
+            }
+        }
+        _ => return None,
+    })
+}
+
+/// The servers of `config`, of the plugins installed under `plugins` and the
+/// connectors of the accounts signed in at `accounts`, started.
 async fn load(
     config: &Path,
     accounts: &Path,
@@ -1536,7 +1841,10 @@ async fn load(
     let mut config = configured(config);
     let mut sources: Vec<(String, Source)> = std::mem::take(&mut config.servers)
         .into_iter()
-        .map(|(name, settings)| (name, Source::Configured(settings)))
+        .map(|(name, mut settings)| {
+            settings.sign_ins = Some(accounts.to_path_buf());
+            (name, Source::Configured(settings))
+        })
         .collect();
     let installed = crate::plugins::Installed::all(plugins);
     for plugin in &installed {
@@ -1558,6 +1866,7 @@ async fn load(
             match serde_json::from_value::<ServerConfig>(server.settings) {
                 Ok(mut settings) => {
                     settings.folder = Some(plugin.root().to_path_buf());
+                    settings.sign_ins = Some(accounts.to_path_buf());
                     sources.push((name, Source::Configured(settings)));
                 }
                 Err(error) => tools
@@ -1800,7 +2109,17 @@ fn connect(server: &str, settings: &ServerConfig) -> Result<Connection, String> 
         (Some(command), None) => spawn(server, command, settings),
         (None, Some(url)) => {
             let shared = Shared::new(server);
-            let http = http::Http::new(url, &settings.headers, None, shared.clone())?;
+            let mut http = http::Http::new(url, &settings.headers, None, shared.clone())?;
+            // A server signed in to with a header of mcp.json gets no token.
+            let by_header = settings
+                .headers
+                .keys()
+                .any(|name| name.eq_ignore_ascii_case("authorization"));
+            if let (Some(store), false) = (&settings.sign_ins, by_header) {
+                let url = reqwest::Url::parse(url)
+                    .map_err(|error| format!("invalid url {url}: {error}"))?;
+                http = http.signed_by(auth::Auth::new(server, url, store.clone()));
+            }
             Ok(Connection::with(Transport::Http(Arc::new(http)), shared))
         }
         _ => Err("give either command or url".into()),

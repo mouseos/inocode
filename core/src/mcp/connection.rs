@@ -510,21 +510,21 @@ fn client_info() -> Value {
 }
 
 /// The client features declared to every server: questions in both modes,
-/// roots, and running the model without tools. A server of the stateless
-/// revision may also make tasks; an older one is told when the roots
-/// change.
+/// roots, and running the model, with the request's tools too. A server of
+/// the stateless revision may also make tasks; an older one is told when
+/// the roots change.
 fn client_capabilities(modern: bool) -> Value {
     match modern {
         true => json!({
             "elicitation": {"form": {}, "url": {}},
             "roots": {},
-            "sampling": {},
+            "sampling": {"tools": {}},
             "extensions": {TASKS: {}},
         }),
         false => json!({
             "elicitation": {"form": {}, "url": {}},
             "roots": {"listChanged": true},
-            "sampling": {},
+            "sampling": {"tools": {}},
         }),
     }
 }

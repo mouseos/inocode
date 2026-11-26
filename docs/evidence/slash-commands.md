@@ -125,7 +125,7 @@
 |---|---|
 | `/plugins` | プラグインの一覧・探す・入れる・外す・有効無効 |
 | `/skills` | 入っているスキルの一覧 |
-| `/mcp` | MCP サーバーと道具の一覧、有効無効 |
+| `/mcp` | MCP サーバーと道具の一覧、有効無効。`/mcp login 〈サーバー〉`・`/mcp status 〈ログイン〉`・`/mcp logout 〈サーバー〉` で HTTP のサーバーへのサインイン（`mcp-client.md`） |
 | `/connectors` | Claude・ChatGPT のコネクタの一覧 |
 
 ### その他
@@ -221,6 +221,7 @@
 | `/plugins`・`search`・`install` | 入っているプラグイン（スキル・MCP サーバー・コマンド）、カタログの検索、入れる |
 | `/skills` | プラグインのスキルと、その呼び名 |
 | `/mcp` | `mcp.json` とプラグインの MCP サーバー、起動済みならその道具、コネクタのオンオフ。サーバーは起動しない |
+| `/mcp login 〈サーバー〉`・`/mcp status 〈ログイン〉`・`/mcp logout 〈サーバー〉` | HTTP のサーバーへの OAuth のサインインを始める（開くページ）・終わったか・保存したサインインを消す。`/mcp` が各サーバーのサインインの状態を見せる（`mcp-client.md`） |
 | `/connectors` | サインイン中のアカウントのコネクタ（通信して取る） |
 | `/init`・`/review [観点]` | 決まった指示文でターンを始める（プロジェクトのフォルダが要る） |
 | `/diff` | `git status --short` と `git diff HEAD` |

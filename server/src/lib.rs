@@ -481,9 +481,14 @@ async fn dispatch(
         "mcp/resources/list"
         | "mcp/resources/templates/list"
         | "mcp/resources/read"
-        | "mcp/complete" => {
-            // MCP servers may be started and asked over the network: off
-            // the read loop, like discovery.
+        | "mcp/complete"
+        | "mcp/login/start"
+        | "mcp/login/status"
+        | "mcp/login/cancel"
+        | "mcp/logout" => {
+            // MCP servers may be started and asked over the network, and
+            // sign-ins find their authorization servers: off the read loop,
+            // like discovery.
             let (id, core, queue) = (request.id, Arc::clone(core), queue.clone());
             let method = request.method.clone();
             let params = request.params.clone().unwrap_or_else(|| json!({}));

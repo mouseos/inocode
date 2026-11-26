@@ -442,6 +442,70 @@ async fn commands_check_their_arguments_and_report_what_is_missing() {
 }
 
 #[tokio::test]
+async fn mcp_shows_each_servers_sign_in_and_signs_in_only_where_it_can() {
+    with_timeout(async {
+        let mock = scripted(Vec::new()).await;
+        let database = database();
+        std::fs::write(
+            database.with_file_name("mcp.json"),
+            json!({"mcpServers": {
+                "files": {"url": "http://127.0.0.1:9/mcp"},
+                "keyed": {"url": "http://127.0.0.1:9/mcp",
+                          "headers": {"Authorization": "Bearer kept"}},
+                "local": {"command": "no-such-program"}}})
+            .to_string(),
+        )
+        .expect("mcp.json");
+        let (addr, _stop, _handle) = start_server(core_for(&mock, &database).await).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client, None).await;
+
+        let listed = command(&mut client, 2, thread, "/mcp").await;
+        let sign_ins: Vec<(String, Value)> = listed["result"]["servers"]
+            .as_array()
+            .expect("servers")
+            .iter()
+            .map(|server| {
+                (
+                    server["name"].as_str().unwrap_or("").to_string(),
+                    server["sign_in"].clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            sign_ins,
+            [
+                ("files".to_string(), json!("unknown")),
+                ("keyed".to_string(), json!("headers")),
+                ("local".to_string(), Value::Null),
+            ]
+        );
+        let local = command(&mut client, 3, thread, "/mcp login local").await;
+        assert_eq!(local["error"]["code"], "invalid_params", "{local}");
+        let keyed = command(&mut client, 4, thread, "/mcp login keyed").await;
+        assert!(
+            keyed["error"]["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("Authorization header"),
+            "{keyed}"
+        );
+        let status = command(&mut client, 5, thread, "/mcp status nothing").await;
+        assert_eq!(status["error"]["code"], "mcp_error", "{status}");
+        let out = command(&mut client, 6, thread, "/mcp logout files").await;
+        assert_eq!(out["result"]["removed"], 0, "{out}");
+        let unknown = call(
+            &mut client,
+            7,
+            json!({"id": 7, "method": "mcp/login/start", "params": {"server": "nobody"}}),
+        )
+        .await;
+        assert_eq!(unknown["error"]["code"], "invalid_params", "{unknown}");
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn threads_are_listed_renamed_forked_exported_and_deleted() {
     with_timeout(async {
         let mock = scripted(vec![text_turn("hello back")]).await;

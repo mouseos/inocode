@@ -1,9 +1,17 @@
 # MCP の受け口（stdio と HTTP のサーバーの道具、リソース、プロンプトなど）
 
-- **対象と範囲：** `~/.inocode/mcp.json` に書かれた MCP サーバーを stdio で起動するか HTTP（Streamable HTTP、古い HTTP+SSE）でつなぎ、その道具（tools）をモデルに渡して呼べるようにする。仕様の最新版 2026-07-28（ハンドシェイクのない版）のサーバーとも、それより前の版（`initialize` で始める版）のサーバーとも話す。道具のほか、リソース（一覧、テンプレート、読むこと、更新の購読）、プロンプト（スラッシュコマンドとして）、補完、ルート、サンプリング、聞き返し（form と url）も、どちらの版の形でも使う（下の「リソース」から「聞き返しの残り」）。
+- **対象と範囲：** `~/.inocode/mcp.json` に書かれた MCP サーバーを stdio で起動するか HTTP（Streamable HTTP、古い HTTP+SSE）でつなぎ、その道具（tools）をモデルに渡して呼べるようにする。仕様の最新版 2026-07-28（ハンドシェイクのない版）のサーバーとも、それより前の版（`initialize` で始める版）のサーバーとも話す。道具のほか、リソース（一覧、テンプレート、読むこと、更新の購読）、プロンプト（スラッシュコマンドとして）、補完、ルート、サンプリング（頼みに付いた道具も）、聞き返し（form と url）も、どちらの版の形でも使う（下の「リソース」から「聞き返しの残り」）。HTTP のサーバーには OAuth でサインインする（下の「サインイン（OAuth）」）。
   - 範囲外（未実装）：
-    - OAuth（HTTP では、設定に書いたヘッダーで認証する）。別の作業で作る予定。
-    - サンプリングでの道具の使用（`sampling.tools`）。inocode のモデルへの要求には `tool_choice` がなく、`toolChoice` の `required`・`none` を守れないため宣言しない。宣言していないので、`tools` 付きの頼みは -32602 で断る。`sampling.context`（`includeContext` の `thisServer`・`allServers`。非推奨）も宣言しない。
+    - サインイン（OAuth）で作らなかったもの：
+      - 足りない権限（403 の `insufficient_scope`）で、サインインのし直しを自動で始めること。サインインはブラウザーでの人の操作が要るので、「`/mcp login サーバー名` で権限を足す」と人に知らせ、人が始める（仕様では、人の代わりに動くクライアントはし直しを試みる SHOULD。ほかの適切な扱いも認めている）。
+      - Client ID Metadata Document を inocode が自分で置くこと。仕様では、この文書はクライアントが HTTPS の URL に置く MUST だが、inocode にはそういう URL がない。そのため、人が自分で置いた文書の URL を `oauth.client_metadata_url` に書いたときだけ使い、書いていなければ次の手（動的登録）に進む（仕様の優先順位で、使えない手は飛ばす）。
+      - 認可サーバーが複数書かれているとき、選ぶこと。最初のものを使う（選び方は仕様の範囲外で、RFC 9728 に任されている）。
+      - サインアウトでトークンを認可サーバーで取り消すこと（RFC 7009）。保存したものを消すだけ。
+      - `private_key_jwt` でのクライアントの証明（仕様の MAY）。
+      - 登録が断られたとき、`application_type` を変えて登録し直すこと（仕様の MAY）。理由を人に見せる。
+      - サインインの終わりを出来事で知らせること。`mcp/login/status` と `/mcp status` で問い合わせる。
+      - stdio のサーバーのサインイン（仕様では stdio はこの仕組みに従わない SHOULD NOT。環境変数で渡す）。
+    - サンプリングで、モデルが出した道具の呼び出しをサーバーに返す前に人に見せること（仕様の図の「Present tool calls for review」）。頼みの承認のときに、渡す道具の名前と `toolChoice` を見せるだけ。`sampling.context`（`includeContext` の `thisServer`・`allServers`。非推奨）は宣言しない。
     - サンプリングで、頼みの文を人が直すこと、モデルの答えをサーバーに返す前に人に見せること（仕様の SHOULD）。頼みを承認するかだけを聞く。`modelPreferences`（モデルのヒントと優先度）でモデルを選ぶこと（スレッドのいまのモデルを使う）。`temperature`・`stopSequences`・`metadata`（仕様では使わなくてよい MAY）。
     - DeepAI のアカウントで `maxTokens` を守ること（DeepAI の受け口に答えの長さの欄がない）。
     - リソースの `https://` の URI を inocode が直接取りに行くこと（仕様の MAY）。必ずサーバーに `resources/read` を送る。
@@ -23,8 +31,12 @@
   - `core/src/mcp/connection.rs`：1 つのサーバーとのやりとり。版の見分け（`server/discover` での探りと `initialize` への切り替え）、版ごとの要求の形、stdio の読み書き、サーバーからの通知と要求の扱い。
   - `core/src/mcp/http.rs`：HTTP。Streamable HTTP（2026-07-28 の見出し、古い版のセッション・GET の流れ・`Last-Event-ID` での再開）と、古い HTTP+SSE 方式。`x-mcp-header` の検査と見出しへの書き出し。
   - `core/src/mcp/features.rs`：リソース・リソースのテンプレート・購読（モデルの道具、クライアントの要求）、プロンプト（コマンド）、補完。
+  - `core/src/mcp/auth.rs`：HTTP のサーバーへのサインイン（OAuth）。認可サーバーの見つけ方、クライアントの登録、認可コードと PKCE、トークンの保存・送り方・更新、サインインの状態、サインインとサインアウトの要求。
+  - `core/src/oauth.rs`：ブラウザーからの戻りの `iss` を読む（`Callback::iss`）。保存先に `Credential` 以上のものを持つ記録を読み書きする（`Store::records`・`put_record`）。`generate_state` を MCP のサインインからも使う。
+  - `core/src/commands.rs`：`/mcp login`・`/mcp status`・`/mcp logout`。`server/src/lib.rs`：`mcp/login/start`・`mcp/login/status`・`mcp/login/cancel`・`mcp/logout`。
+  - `core/src/llm.rs`（`ToolChoice`、`tool_choice`）：モデルへの要求に、道具を使ってよい・使わなければならない・使ってはいけないを書く。
   - `core/src/mcp/tests.rs`：偽のサーバーを使うテスト。
-  - `core/src/llm.rs`（`converse_capped`、`cap_output`）：サンプリングの `maxTokens` で答えの長さを切る。
+  - `core/src/llm.rs`（`converse_capped`、`cap_output`）：サンプリングの `maxTokens` で答えの長さを切る。頼みの道具と `toolChoice` もここで渡す。
   - `core/src/agent_tools.rs`（`Context::sampling`、リソースの道具の振り分け）、`core/src/turn.rs`（サンプリングの使用量をターンに足す）。
   - `core/src/commands.rs`（`Registry` のプロンプト、`Target::Prompt`、`prompt_entry`）、`core/src/review.rs`（プロンプトの文に付ける印の説明）。
   - `core/src/lib.rs`（`turn/answer` の `content` なしの `accept`、`Core::mcp_request`・`mcp_subscribe`）、`core/src/store.rs`（form の問いは `content` なしの `accept` を受けない）、`server/src/lib.rs`（`mcp/resources/list`・`mcp/resources/templates/list`・`mcp/resources/read`・`mcp/complete`・`mcp/resources/subscribe`）。
@@ -35,7 +47,7 @@
   - `core/Cargo.toml`：tokio の `process` 機能。新しいクレートは足していない（Base64 は前からある `base64` を使う）。
 - **根拠の状態：** UNSUPPORTED_APPROVED。
   - MCP の受け口は、ほかの道具と使えるようにするための互換機能で、作業の成功を上げるという研究はない（調べていない。2026-11-20 の提案の時点で「研究はおそらくない、作るなら承認が要る」と伝えた）。
-  - 2026-07-28 版への対応と、仕様のすべての機能（版の選び方、入力の求め、変更の通知、進み具合、取り消し、ログ、キャッシュの目安、古い HTTP+SSE、タスク。続く作業でリソース、プロンプト、補完、ルート、サンプリング、聞き返しの残り）も、効果を示す研究はない（調べていない）。仕様に合わせて、つながるサーバーと使える機能を増やすための作業。
+  - 2026-07-28 版への対応と、仕様のすべての機能（版の選び方、入力の求め、変更の通知、進み具合、取り消し、ログ、キャッシュの目安、古い HTTP+SSE、タスク。続く作業でリソース、プロンプト、補完、ルート、サンプリング、聞き返しの残り、さらに HTTP のサーバーへのサインイン（OAuth）とサンプリングでの道具の使用）も、効果を示す研究はない（調べていない）。仕様に合わせて、つながるサーバーと使える機能を増やすための作業。
   - 道具を増やすと選択の正答が下がるという査読前の報告がある（RAG-MCP、arXiv 2505.03275。LongFuncEval、arXiv 2505.10570。`memory-integration.md`、`web-search.md`）。MCP の道具は数を絞らずにそのまま渡すので、多くのサーバーを書くとこの不利が出うる。どの道具を渡すかは、設定に書くサーバーで利用者が決める。
 - **ユーザーの承認：** 2026-11-20、提案「MCP の受け口（効果を示す研究はおそらくない。作るなら承認が要る）」に対して「１と２やって」。HTTP 接続は同日、「根拠を調べずに実装してよいもの」の質問で「MCP の HTTP 接続」を選んだ（UNSUPPORTED_APPROVED）。2026-07-28 版とすべての機能は 2026-11-26、「新しいのにもつながるようにして。それとＭＣＰが持ってるすべての仕様をつっかえるように。」（UNSUPPORTED_APPROVED）。
 
@@ -46,6 +58,9 @@
   - この版では `initialize` がなく、すべての要求が `_meta` に版（`io.modelcontextprotocol/protocolVersion`）、クライアントの名前（`clientInfo`）、クライアントの機能（`clientCapabilities`）を持つ。セッションも、HTTP の GET の流れも、`Last-Event-ID` での再開もない。サーバーから要求を送ることもなく、人への問いは結果の中で頼む（入力の求め）。
 - リソース・プロンプト・補完・ルート・サンプリング・聞き返し：2026-11-26 に、落とした原文の 2026-07-28 の server/resources・server/prompts・server/utilities/completion・client/sampling・client/roots・client/elicitation・basic/patterns/subscriptions と、2025-11-25 の同じページ（client/sampling の誤りの番号、client/elicitation の `elicitationId`・`notifications/elicitation/complete`・-32042、client/roots の `listChanged`）を読んだ。2026-07-28 ではサンプリングとルートは非推奨（少なくとも 12 か月は仕様に残る）で、新しい版でも使えるので対応した。
   - モデルに渡すリソースの道具の名前（`list_mcp_resources`・`list_mcp_resource_templates`・`read_mcp_resource`）は Codex に合わせるよう作業の指示で与えられた（Codex のソースは読んでいない）。プロンプトのコマンドの名前 `/mcp__サーバー__プロンプト` は Claude Code の形（同じく指示で与えられた）。
+- サインイン（basic/authorization）：2026-11-26 に、落とした原文の 2026-07-28 の authorization の index・authorization-server-discovery・client-registration・security-considerations と、2025-11-25 の authorization を読んだ。2025-06-18 と 2025-03-26 の原文は手元になく、今回は読んでいない。2025-03-26 の形（保護されたリソースのメタデータがなく、サーバーの起点に `/.well-known/oauth-authorization-server` があり、無ければ `/authorize`・`/token`・`/register` を使う。メタデータを取るときに `MCP-Protocol-Version` を付ける）は作業者の記憶によるもので、原文で確かめていない。
+  - 参照される RFC（6750、7591、8414、8707、9207、9728、OAuth 2.1 の草案、OpenID Connect Discovery）の本文は読んでいない。仕様のページが書いている範囲で実装した。保護されたリソースのメタデータの `resource` が MCP の端点の URL かその親であることを確かめる決まりは、RFC 9728 を読まずに決めた（工学上の選択。下）。
+- サンプリングの道具：2026-07-28 と 2025-11-25 の client/sampling の「Tools in Sampling」「Tool Choice Modes」「Tool Result Messages」「Tool Use and Result Balance」を読んだ。提供元の `tool_choice` の書き方（Chat Completions と Responses の `auto`・`required`・`none`、Anthropic の `{"type": "auto"|"any"|"none"}`、Anthropic で考える機能と `any` を同時に使えないこと）は、作業者の知識によるもので、今回は各社の資料を読んでいない。
 - タスクの拡張（`io.modelcontextprotocol/tasks`）：仕様のページは落としたものに無かったので、2026-11-26 に https://github.com/modelcontextprotocol/modelcontextprotocol の `docs/extensions/tasks/overview.mdx` と、https://github.com/modelcontextprotocol/ext-tasks の `packages/ext-tasks/schema/v2/schema.ts`（`tasks/get`・`tasks/update`・`tasks/cancel`、`resultType: "task"`）を読んだ。
 - ほかのハーネス：Codex（https://github.com/openai/codex 、`codex-rs/rmcp-client/src/protocol_mode.rs`、2026-11-26 に読んだ）は 2026-07-28 を設定で選んだときだけ使い、stdio のサーバーを探るのは、サーバーの設定が版を書いたとき（または探る設定のとき）だけ。inocode は利用者の指示で、何も書かなくても探る。
 - 2026-11-20 の確認はサブエージェントが公式サイトを読み、報告したもの。TypeScript のスキーマ（必須の項目の一覧）は、2026-07-28 の `InputResponses`・`MissingRequiredClientCapabilityError` の項だけ確かめた。
@@ -156,14 +171,39 @@
 - サンプリング（仕様の client/sampling）：
   - 新しい版は入力の求め、前の版はサーバーからの要求として届く。前の版の要求は、聞き返しと同じく、そのサーバーで待っている呼び出しがすべて同じスレッドのものなら、その呼び出しが受ける。
   - 人に承認を聞く：ターンの通知 `elicitation`（`mode: "sampling"`、`server`、`message`、`model`、`messages`（元のまま）、`systemPrompt`、`maxTokens`）を出し、`turn/answer` の `accept`（`content` なし）で承認、ほかは断り。待ち方は聞き返しと同じ（10 分、ターンの中断）。
-  - 承認されたら、スレッドのいまのモデルに、道具なしで、`systemPrompt` をシステムプロンプト、`messages` を会話として送り、答えを `maxTokens` で切る（仕様の MUST。Anthropic は `max_tokens`、Responses は `max_output_tokens`、Chat Completions は `max_tokens`。Anthropic の考える量の予算が上限に収まらなければ考えるのをやめる）。メッセージの画像・音声は種類と大きさだけ書く。
+  - 承認されたら、スレッドのいまのモデルに、頼みの道具だけを付けて（下の「道具」）、`systemPrompt` をシステムプロンプト、`messages` を会話として送り、答えを `maxTokens` で切る（仕様の MUST。Anthropic は `max_tokens`、Responses は `max_output_tokens`、Chat Completions は `max_tokens`。Anthropic の考える量の予算が上限に収まらなければ考えるのをやめる）。メッセージの画像・音声は種類と大きさだけ書く。
   - 答えは `{"role": "assistant", "content": {"type": "text", "text"}, "model": モデル名, "stopReason"}`。`stopReason` は長さで切れたら `maxTokens`、ほかは `endTurn`。使ったトークンはターンの使用量に足し、要求の記録に `mcp_sampling` として残す。
-  - 断るとき：前の版には -1（「User rejected sampling request」。仕様の 2025-11-25 の誤りの例）。人が断ったとき、人に聞けないとき（ターンの外、ほかのスレッドの呼び出しも待つとき）、モデルがないとき（ターンの外の要求）。`tools` 付き・`maxTokens` がない・メッセージが空・道具の使用と結果の中身は -32602。モデルの失敗とターンの中断は -32603。新しい版では、どれも呼び出しを失敗で終える。
+  - 断るとき：前の版には -1（「User rejected sampling request」。仕様の 2025-11-25 の誤りの例）。人が断ったとき、人に聞けないとき（ターンの外、ほかのスレッドの呼び出しも待つとき）、モデルがないとき（ターンの外の要求）。`maxTokens` がない・メッセージが空・道具の形が違う・`toolChoice` の `mode` が違う・道具なしの `required`・道具の結果がほかの中身と混ざる・答えられていない道具の使用・どの使用にも当たらない結果は -32602。モデルの失敗、ターンの中断、`toolChoice` を守らなかったモデルの答えは -32603。新しい版では、どれも呼び出しを失敗で終える。
+  - 道具（2025-11-25 と 2026-07-28 の `tools`・`toolChoice`）：機能 `sampling.tools` を宣言する（どちらの版でも、それより前の版のサーバーにも同じものを送る。前の版は知らない機能を無視する）。
+    - 頼みの `tools`（`name`・`description`・`inputSchema`）を、その頼みの間だけモデルに渡す。inocode の道具や MCP の道具は渡さない。`toolChoice.mode` を提供元の `tool_choice` にする：Chat Completions と Responses は `auto`・`required`・`none`、Anthropic は `auto`・`any`・`none`。Anthropic の `any` は考える機能と一緒に使えないので、そのときは考える機能を外す。`toolChoice` がなければ何も書かない（提供元の既定は自分で決める `auto`）。DeepAI の受け口にも同じ欄を送るが、守るかは確かめていない。
+    - 提供元が守らなかったときのために、答えを確かめる：`none` なのに呼び出しがあれば、`required` なのに呼び出しがなければ、-32603 で失敗にする。
+    - メッセージ：アシスタントの `tool_use`（`id`・`name`・`input`）はモデルの呼び出しに、`tool_result` だけの利用者のメッセージは呼び出しの答えに（`toolUseId`、文字の中身、ほかの中身は種類だけ、文字がなければ `structuredContent`、`isError`）。答えの道具の名前は、前の `tool_use` から取る。
+    - 答え：呼び出しがあれば `content` は `tool_use` の並び（文字もあれば先頭に文字）、1 つだけなら配列にしない（仕様の Result Fields）。`stopReason` は `toolUse`。呼び出しがなければ、これまでどおり文字 1 つ。
+    - 人への承認の問いに、渡す道具の名前（`tools`）と `toolChoice` の `mode` を足す。
   - `includeContext` の `thisServer`・`allServers`（非推奨）は `none` とみなす（仕様：クライアントは無視してよい）。
 - 聞き返しの残り（仕様の client/elicitation）：
   - 前の版で、宣言していない `mode`（form と url 以外）の `elicitation/create` には -32602 で答える（仕様の MUST）。新しい版の入力の求めでは、これまでどおり `decline`。
   - 2025-11-25 の url の問いの `elicitationId` は、人に見せる問いにも入れる。その問いが答えを待つ間にサーバーが `notifications/elicitation/complete`（同じ ID）を送ったら、人の代わりに `accept` で答える（仕様：クライアントはこの通知で自動で続けてよい MAY）。知らない ID・答えた後の ID の通知は無視する（仕様の MUST）。-32042 の後の URL の問いも同じ。
   - form の問いへの `accept` は、`content` がなければ受け付けず、問いは待ち続ける（`turn/answer` は `accepted: false`）。
+- サインイン（OAuth。仕様の basic/authorization）：`mcp.json` の HTTP のサーバー（プラグインのものも）に、そのサーバーが求めたときにサインインする。`headers` に `Authorization` を書いたサーバーには使わない（設定のヘッダーで認証する。`/mcp` では `sign_in: "headers"`）。アカウントのコネクタ（claude.ai・ChatGPT）は、これまでどおりアカウントのサインインを使う。
+  - 始めるのは人：モデルはサインインを始められない。サインインが要るサーバーは、起動の問題（モデルに見せる MCP の問題と `/mcp` の `problems`）に「the MCP server 名前 needs a sign-in: run /mcp login 名前」と出て、道具なしで続く（落ちない）。
+  - 要求：`mcp/login/start {server}` が、認可サーバーを見つけて登録し、開くページの `url` と `login_id`・`status: "waiting"`・`expires_in` を返す。ブラウザーが戻るとトークンを取って保存し、MCP のサーバーをすべて次の使用で起動し直す（新しいトークンで）。`mcp/login/status {login_id}` が `waiting`・`done`・`failed`（`error`）・`cancelled`、`mcp/login/cancel {login_id}` が止める（戻りを待つ口も閉じる）。`mcp/logout {server}` が、そのサーバーの保存したサインインを消し（`removed` に数）、サーバーを起動し直させる。形は `accounts/login/*` に合わせた。サインインは 5 分待ち、結果は 25 分残す（このプロセスの間だけ）。
+  - コマンド：`/mcp login サーバー名`、`/mcp status ログインID`、`/mcp logout サーバー名`。`/mcp` の各サーバーに `sign_in`：HTTP のサーバーは `signed_in`・`needs_login`・`signing_in`・`not_needed`（サインインなしでつながった）・`unknown`（まだつないでいない）・`headers`、stdio のサーバーは `null`。
+  - 見つけ方：
+    - 401 の `WWW-Authenticate` の `Bearer` の `resource_metadata` があればそれを読む（読めなければ失敗。ほかは試さない）。なければ、端点の道の下（`/.well-known/oauth-protected-resource/道`）、次に根（`/.well-known/oauth-protected-resource`）の順（仕様の順）。サインインを始めるときにまだ 401 を受けていなければ、認証なしの POST を 1 つ送って断りを受ける。
+    - 保護されたリソースのメタデータの `resource` は、端点と同じ起点で、端点の道かその親でなければ使わない（工学上の選択。ほかのサーバーのためのトークンを取らないため）。この `resource` を RFC 8707 の `resource` として、認可の要求とトークンの要求のすべてに付ける（仕様の MUST）。
+    - 認可サーバーは `authorization_servers` の最初のもの。そのメタデータは、道のある issuer なら OAuth の道の差し込み、OpenID Connect の道の差し込み、OpenID Connect の道の後ろ、道のない issuer なら OAuth、OpenID Connect の順で取る（仕様の順）。`issuer` が取りに行った issuer と文字として同じでなければ使わない（仕様の MUST）。`code_challenge_methods_supported` に `S256` がなければサインインしない（仕様の MUST）。
+    - 保護されたリソースのメタデータがどこにもなければ、2025-03-26 の形とみなす：サーバーの起点の `/.well-known/oauth-authorization-server`（`MCP-Protocol-Version: 2025-03-26` を付ける）、無ければ起点の `/authorize`・`/token`・`/register`。この版はすべてのクライアントに PKCE を求めていたので、メタデータがなくても PKCE で進む。`resource` は端点の URL（断片を除く）。
+    - 認可サーバーの端点とメタデータの URL は HTTPS か、この機械（`localhost`・ループバックの IP）の HTTP だけ（仕様の MUST。テストのためにループバックを許す）。転送には従わない。
+  - 登録（仕様の優先順位）：`mcp.json` の `oauth.client_id`（と `client_secret`）があればそれ。`oauth.authorization_server` に issuer を書けば、ほかの認可サーバーには使わず、誤りにする（仕様：前もって登録したものを別の認可サーバーで使わない）。次に、人が置いた Client ID Metadata Document の URL（`oauth.client_metadata_url`、HTTPS で道のあるもの）を、認可サーバーが `client_id_metadata_document_supported` を言うときだけ。次に動的登録（RFC 7591）：`client_name: "inocode"`、戻り先 1 つ、`authorization_code` と `refresh_token`、`token_endpoint_auth_method: "none"`、`application_type: "native"`（仕様の MUST）、あれば `scope`。登録できるものがなければ、`oauth.client_id` を書くよう人に知らせる（仕様の 4 番目、人に聞く）。登録はサインインのたびにし直す（戻り先の口の番号が毎回変わるため。工学上の選択）。
+    - 秘密のあるクライアントは、トークンの要求で `client_secret_basic`（認可サーバーが `client_secret_post` だけを言うときは `client_secret_post`）。動的登録の答えの `token_endpoint_auth_method` に従う。
+  - 認可：PKCE（S256）、`state`、`resource`、`scope`。戻り先は `http://localhost:番号/callback`（`oauth.callback_port` で番号を決められる。決まった戻り先で登録したクライアントのため。なければ空いている番号）。戻りを待つ口は、ほかのサインインと同じ `oauth::await_callback`。戻りの `state` が違えば使わない。`iss` は仕様の表のとおり：あれば記録した issuer と文字として比べ、違えば使わない（誤りの答えの中身も見せない）。認可サーバーが `authorization_response_iss_parameter_supported` を言うのに `iss` がなければ使わない。
+  - スコープ：最後の 401・403 の `scope`、なければ保護されたリソースのメタデータの `scopes_supported`、どちらもなければ `scope` を付けない（仕様の順）。前のサインインのスコープと合わせる（仕様の step-up の和）。認可サーバーの `scopes_supported` に `offline_access` があれば足す（更新のトークンのため。仕様の MAY）。
+  - トークン：トークンの答えの `token_type` が Bearer でなければ使わない。サーバーへの要求ごとに `Authorization: Bearer` で送る（URL には入れない）。送るのは、保存したサインインの `resource` がその端点を指すときだけ。
+    - 保存：資格情報の保存先（`auth.json`。保存の方式は `credentials.store` の設定どおりで、平文にするのは人がその方式を選んだときだけ）に、名前 `mcp`、アカウント名は issuer と resource の組のハッシュ（組ごとに 1 つ）で、トークン、更新のトークン、期限、issuer、resource、トークンの端点、クライアントの ID と秘密、スコープを入れる。
+    - 更新：期限の 60 秒前と、サーバーが 401 で断ったとき。401 のときは、保護されたリソースのメタデータを読み直し、まだ同じ issuer を名指していれば更新して 1 回だけ送り直す。名指していなければ、トークンも更新のトークンも使わずに（ほかの認可サーバーには決して送らない）サインインが要ることにする（仕様の MUST：認可サーバーが変われば前のクライアントの情報を使わない）。更新は、このプロセスの中と、ほかのプロセスとの間で 1 回ずつ（ファイルの鍵。後の方は先に更新したトークンを使う）。トークンの端点が 400・401・403 で断れば、保存先にサインインのし直しが要る印を付け、使わない。
+    - 403 で `error="insufficient_scope"` なら、その `scope` を覚えて「needs more permissions (スコープ): run /mcp login 名前 to grant them」で呼び出しを失敗にする。
+    - トークンは表示にもログにも出さない。トークンの端点の誤りは `error` の符号だけ見せる。
 - サーバーが出力を閉じたら、待っている要求をすべて失敗にし、以後の要求もすぐ失敗にする。書き込みに失敗した要求は待ち行列から外す。
 - 落ちたサーバーの再起動（stdio のサーバーだけ。このプロジェクトの判断）：呼び出しが、サーバーが止まっていたために失敗したら、そのサーバーを 1 回だけ起動し直す（読み込みごとに 1 回。落ち続けるサーバーを何度も起動しない）。見分けた版で話し、道具の一覧も取り直す。
   - 送る前に止まっていた（呼び出しがサーバーに届いていない）なら、起動し直したサーバーに同じ呼び出しを送り直す。
@@ -199,4 +239,12 @@
   - HTTP の新しい版の購読（`a_new_http_server_streams_the_updates_of_a_resource_subscribed_to`）：購読の `subscriptions/listen` の流れで更新が届き、購読をやめると流れが閉じて、頼むものがないので開き直さないこと。
   - form の問いだけが `content` を要ること（`only_a_form_needs_content_to_be_accepted`）。答えの長さの欄（`llm.rs` の `an_answer_is_capped_in_each_format`）。引数の当て方、プロンプトの文、リソースの文と画像（`features.rs` のテスト）。コマンドの名前の決まり（`commands.rs` の `an_mcp_prompt_is_a_command_of_its_own_name`）。
   - 結合テスト（`server/tests/turn_tcp.rs` の `resources_prompts_completions_and_visits_of_an_mcp_server_are_reached`、Python の 2025-11-25 の偽サーバー）：起動前の `commands/list` にプロンプトがないこと、`mcp/resources/list`（サーバーを起動する）・`templates/list`・`read`・引数の足りない `read` の誤り・`mcp/complete`、`mcp/resources/subscribe` の `started`・`mcp_resource_updated`・`cancel` での `cancelled`、起動後の `commands/list` のプロンプト、url の問いに `content` なしの `accept` で答えられること、`/mcp__docs__review a.rs error handling` が `[command file]` の印の付いたターンになりモデルに届くこと、必須の引数のない実行が「needs <file>」になること。
+- サインイン（OAuth）：
+  - `core/src/mcp/tests.rs` の `an_http_server_is_signed_in_to_refreshed_and_stepped_up`（偽の MCP サーバーと偽の認可サーバー、どちらも手書きの HTTP）：サインインなしでは起動せず「needs a sign-in: run /mcp login files」が問題に出て、`/mcp` が `unknown` から `needs_login` になること。`mcp/login/start` が 401 の `resource_metadata` から認可サーバーを見つけ、動的登録（`application_type: "native"`、戻り先、`token_endpoint_auth_method: "none"`）をし、ページの URL に `client_id`・`resource`・S256・`scope`（challenge の `files:read` と `offline_access`）・`localhost` の戻り先を付けること。サインインの間 `signing_in`。ブラウザーの戻り（`code`・`state`・正しい `iss`）でトークンの要求（コード、PKCE の検証、`client_id`、`resource` を偽の認可サーバーが確かめる）が通り、`done`・`signed_in` になり、サーバーが起動し直してトークンで道具が呼べること。トークンが断られると、メタデータを読み直して `resource` 付きで更新し、送り直して呼べること。`/mcp` の答えにトークンが出ないこと。403 の `insufficient_scope` で、権限を足すよう知らせて `needs_login` になり、次のサインインのスコープが前のものと新しいものの和になること。別の `iss` で戻ったサインインが `failed` になること。サーバーが別の認可サーバーを名指すと、トークンを更新せず（トークンの端点への要求が増えない）、問題に出ること。`mcp/logout` で保存したものが消えること。
+  - `server/tests/commands_tcp.rs` の `mcp_shows_each_servers_sign_in_and_signs_in_only_where_it_can`：`/mcp` の `sign_in`（まだつないでいない HTTP は `unknown`、ヘッダーのものは `headers`、stdio は `null`）、stdio とヘッダーのサーバーへの `/mcp login` の断り、知らないログイン ID の `/mcp status`、`/mcp logout` の `removed: 0`、知らないサーバーへの `mcp/login/start` の `invalid_params`。
+  - `core/src/mcp/auth.rs` のテスト：`WWW-Authenticate` の読み方（ほかの方式と並ぶとき、引用符とエスケープ、パラメーターなし）。`resource` が端点を指すかの決まり、根と道の下の well-known の URL、断片と末尾のスラッシュ、HTTPS かループバックだけを許すこと、スコープの和。`metadata_is_found_in_the_order_of_the_specification`：保護されたリソースのメタデータを道の下、根の順に、道のある issuer の認可サーバーのメタデータを 3 つの URL の順に取り、別の issuer を名乗る文書は使わないこと。`an_older_server_without_resource_metadata_uses_its_origin`：メタデータがどこにもないサーバーで、起点の既定の端点を使い、`MCP-Protocol-Version: 2025-03-26` を付けて聞くこと。`a_server_without_pkce_or_a_named_metadata_document_is_refused`：S256 のない認可サーバー、challenge が名指したメタデータが読めないとき、ループバックでない HTTP の認可サーバーを断ること。
+- サンプリングの道具：
+  - `core/src/mcp/tests.rs` の `sampling_lets_the_model_use_the_servers_tools_as_its_tool_choice_says`（Python を使わないメモリー上の 2025-11-25 のサーバーと偽の Chat Completions の提供元）：`initialize` の機能に `sampling: {tools: {}}` があること。`required` の頼みで、提供元に道具と `tool_choice: "required"`・`max_tokens` が届き、モデルの呼び出しが `tool_use`（`stopReason: "toolUse"`）として返ること。道具の結果を付けた `none` の頼みで、提供元にアシスタントの `tool_calls` と `tool` の答えが届き、文字の答えが返ること。結果とほかの中身が混ざった頼みが -32602 で、モデルを呼ばないこと。人の承認の問いに道具の名前と `toolChoice` が出ること。
+  - `core/src/llm.rs` の `tool_choice_is_written_in_each_format`（3 つの形の書き方と、Anthropic の `any` で考える機能を外すこと）と `a_capped_request_carries_its_tools_and_tool_choice_to_each_format`（偽の提供元 3 つ：Chat Completions・Anthropic・Responses の要求に道具と `tool_choice` が付くこと）。
+- 未検証：実在の認可サーバーと OAuth の MCP サーバー（実際のサインインはしていない）、OpenID Connect だけの認可サーバー（テストは道のある issuer の OpenID Connect の道の後ろの形だけ）、前もって登録したクライアントと `client_secret_basic`・`client_secret_post`、Client ID Metadata Document、`oauth.callback_port`、ほかのプロセスと同時の更新、期限の前の更新（401 での更新だけ確かめた）、`mcp/login/cancel`、コマンドからのサインインが最後まで通ること（コマンドは断りと `/mcp logout` だけ確かめた）、HTTP+SSE と GET の流れでのサインインの断り、実際の提供元が `tool_choice` を守ること（Anthropic の `any`、Responses、DeepAI）、Muse の道具の名前の置き換えとサンプリングの道具。
 - 未検証：実在の MCP サーバー（HTTP も、2026-07-28 版のものも）、実在のサーバーのリソース・プロンプト・補完・サンプリング・ルート、実際の提供元での `maxTokens` の欄（Responses の `max_output_tokens`、推論モデルの Chat Completions の `max_tokens`。偽の提供元でだけ確かめた）、前の版の HTTP の GET の流れでのリソースの更新、HTTP での前の版のサンプリングとルート、`notifications/prompts/list_changed` での取り直し（リソースと同じ作りで、リソースだけ確かめた）、画面での `sampling` の問いの見せ方、実際のモデルが MCP の道具を選んで使えるか、Linux・macOS での起動と終了、新しい版の HTTP での購読（`subscriptions/listen` の流れ）と切れた後の開き直し、HTTP での入力の求めとタスク（stdio でだけ確かめた）、前の版の -32042（URL の訪問）での送り直し、`logging/setLevel`、タスクの `failed`・`cancelled`、ターンの通知 `mcp_progress`・`mcp_log` が inocode-server から送られること（変換の 2 行だけで、テストしていない）、画面での url の問いの見せ方。

@@ -459,13 +459,18 @@ fn block_text(block: &Value) -> String {
 /// completions: `mcp/resources/list` and `mcp/resources/templates/list`
 /// (`server` optional), `mcp/resources/read` (`server`, `uri`) and
 /// `mcp/complete` (`server`, `ref`, `argument`, `context` as in
-/// `completion/complete`). Servers not started yet are started.
+/// `completion/complete`). Servers not started yet are started. The
+/// person's sign-ins to the servers go through here too
+/// ([`super::sign_in_request`]), without starting any.
 pub async fn request(store: &Store, method: &str, params: &Value) -> Result<Value, ErrorInfo> {
     let text = |key: &str| params.get(key).and_then(Value::as_str);
     let needs = |key: &str| {
         text(key)
             .ok_or_else(|| ErrorInfo::new("invalid_params", format!("requires a \"{key}\" string")))
     };
+    if let Some(answer) = super::sign_in_request(store, method, params).await {
+        return answer;
+    }
     let failed = |message: String| ErrorInfo::new("mcp_error", message);
     let tools = loaded(store).await;
     match method {

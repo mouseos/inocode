@@ -40,6 +40,8 @@ pub(super) struct Http {
     headers: HeaderMap,
     /// The account every request signs in with, and its sign-in store.
     account: Option<(crate::connectors::Account, PathBuf)>,
+    /// The OAuth sign-in of a server `mcp.json` names.
+    auth: Option<Arc<super::auth::Auth>>,
     /// The session a legacy server gave at initialization, sent with every
     /// later legacy request.
     session: Mutex<Option<String>>,
@@ -87,6 +89,7 @@ impl Http {
             url,
             headers: map,
             account,
+            auth: None,
             session: Mutex::new(None),
             version: Mutex::new(None),
             shared,
@@ -96,12 +99,34 @@ impl Http {
         })
     }
 
-    /// The headers signing a request in, when the server is an account's.
+    /// Signs every request in with `auth`'s token.
+    pub(super) fn signed_by(mut self, auth: super::auth::Auth) -> Self {
+        self.auth = Some(Arc::new(auth));
+        self
+    }
+
+    /// The headers signing a request in: the account's, when the server is
+    /// an account's, else the OAuth token, if any.
     async fn signed(&self) -> Result<HeaderMap, Fault> {
-        match &self.account {
-            Some((account, store)) => account.headers(store).await.map_err(Fault::Other),
-            None => Ok(HeaderMap::new()),
+        match (&self.account, &self.auth) {
+            (Some((account, store)), _) => account.headers(store).await.map_err(Fault::Other),
+            (None, Some(auth)) => Ok(auth.headers().await),
+            (None, None) => Ok(HeaderMap::new()),
         }
+    }
+
+    /// A refusal of a request sent with the headers `sent`; a refusal for
+    /// the sign-in says the person must sign in.
+    async fn refused(&self, response: reqwest::Response, sent: &HeaderMap) -> Fault {
+        if let Some(auth) = &self.auth {
+            if let super::auth::Verdict::SignIn(why) = auth
+                .refused(response.status(), response.headers(), sent)
+                .await
+            {
+                return Fault::Other(why);
+            }
+        }
+        refusal(response).await
     }
 
     fn link(&self) -> Option<Arc<Link>> {
@@ -128,41 +153,59 @@ impl Http {
         let target = link
             .as_ref()
             .map_or_else(|| self.url.clone(), |link| link.endpoint.clone());
-        let mut request = self
-            .client
-            .post(target)
-            .headers(self.headers.clone())
-            .headers(self.signed().await?)
-            .header(
-                reqwest::header::ACCEPT,
-                "application/json, text/event-stream",
-            )
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .headers(extra.clone())
-            .body(message.to_string());
         let modern = message.pointer(VERSION_POINTER).and_then(Value::as_str);
-        let mut session = None;
-        if let Some(version) = modern {
-            let method = message.get("method").and_then(Value::as_str).unwrap_or("");
-            request = request
-                .header(VERSION_HEADER, version)
-                .header("Mcp-Method", method);
-            if let Some(name) = mcp_name(message) {
-                request = request.header("Mcp-Name", header_text(name));
+        let mut renewed = false;
+        let (response, session) = loop {
+            let signed = self.signed().await?;
+            let mut request = self
+                .client
+                .post(target.clone())
+                .headers(self.headers.clone())
+                .headers(signed.clone())
+                .header(
+                    reqwest::header::ACCEPT,
+                    "application/json, text/event-stream",
+                )
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .headers(extra.clone())
+                .body(message.to_string());
+            let mut session = None;
+            if let Some(version) = modern {
+                let method = message.get("method").and_then(Value::as_str).unwrap_or("");
+                request = request
+                    .header(VERSION_HEADER, version)
+                    .header("Mcp-Method", method);
+                if let Some(name) = mcp_name(message) {
+                    request = request.header("Mcp-Name", header_text(name));
+                }
+            } else if link.is_none() {
+                session = self.session.lock().expect("session lock").clone();
+                if let Some(session) = &session {
+                    request = request.header(SESSION_HEADER, session);
+                }
+                if let Some(version) = self.version.lock().expect("version lock").clone() {
+                    request = request.header(VERSION_HEADER, version);
+                }
             }
-        } else if link.is_none() {
-            session = self.session.lock().expect("session lock").clone();
-            if let Some(session) = &session {
-                request = request.header(SESSION_HEADER, session);
+            let response = request
+                .send()
+                .await
+                .map_err(|error| Fault::Other(format!("cannot reach the MCP server: {error}")))?;
+            if let (Some(auth), 401 | 403) = (&self.auth, response.status().as_u16()) {
+                match auth
+                    .refused(response.status(), response.headers(), &signed)
+                    .await
+                {
+                    super::auth::Verdict::Again if !renewed => {
+                        renewed = true;
+                        continue;
+                    }
+                    super::auth::Verdict::SignIn(why) => return Err(Fault::Other(why)),
+                    _ => {}
+                }
             }
-            if let Some(version) = self.version.lock().expect("version lock").clone() {
-                request = request.header(VERSION_HEADER, version);
-            }
-        }
-        let response = request
-            .send()
-            .await
-            .map_err(|error| Fault::Other(format!("cannot reach the MCP server: {error}")))?;
+            break (response, session);
+        };
         let status = response.status();
         if !status.is_success() {
             if status == reqwest::StatusCode::NOT_FOUND && session.is_some() {
@@ -324,11 +367,12 @@ impl Http {
 
     /// A GET stream of a legacy session, resumed after `last` when given.
     async fn get_stream(&self, last: Option<&str>) -> Result<reqwest::Response, Fault> {
+        let signed = self.signed().await?;
         let mut request = self
             .client
             .get(self.url.clone())
             .headers(self.headers.clone())
-            .headers(self.signed().await?)
+            .headers(signed.clone())
             .header(reqwest::header::ACCEPT, "text/event-stream");
         if let Some(session) = self.session.lock().expect("session lock").clone() {
             request = request.header(SESSION_HEADER, session);
@@ -344,7 +388,7 @@ impl Http {
             .await
             .map_err(|error| Fault::Other(format!("cannot reach the MCP server: {error}")))?;
         if !response.status().is_success() {
-            return Err(refusal(response).await);
+            return Err(self.refused(response, &signed).await);
         }
         if !is_stream(&response) {
             return Err(Fault::Other(
@@ -460,17 +504,18 @@ impl Http {
     /// event names the endpoint messages are posted to, on the server's own
     /// origin, and which brings the answers.
     pub(super) async fn open_sse(self: &Arc<Self>) -> Result<(), Fault> {
+        let signed = self.signed().await?;
         let mut response = self
             .client
             .get(self.url.clone())
             .headers(self.headers.clone())
-            .headers(self.signed().await?)
+            .headers(signed.clone())
             .header(reqwest::header::ACCEPT, "text/event-stream")
             .send()
             .await
             .map_err(|error| Fault::Other(format!("cannot reach the MCP server: {error}")))?;
         if !response.status().is_success() {
-            return Err(refusal(response).await);
+            return Err(self.refused(response, &signed).await);
         }
         if !is_stream(&response) {
             return Err(Fault::Other("its GET answer is not an event stream".into()));
@@ -532,12 +577,15 @@ impl Http {
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return;
         };
-        let request = self
+        let mut request = self
             .client
             .delete(self.url.clone())
             .headers(self.headers.clone())
             .header(SESSION_HEADER, session)
             .timeout(END_TIMEOUT);
+        if let Some(auth) = &self.auth {
+            request = request.headers(auth.held());
+        }
         let account = self.account.clone();
         runtime.spawn(async move {
             let request = match account {

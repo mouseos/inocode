@@ -453,6 +453,43 @@ impl Store {
         })
     }
 
+    /// The values stored for `provider`'s accounts as they are kept, for
+    /// records that hold more than a [`Credential`] (an MCP server's
+    /// sign-in); read anew from the store.
+    pub(crate) fn records(&self, provider: &str) -> Result<BTreeMap<String, Value>, String> {
+        let mut contents = self.vault.load_contents()?;
+        Ok(contents.accounts.remove(provider).unwrap_or_default())
+    }
+
+    /// Stores `record` as the account `account` of `provider`, over what
+    /// was there, as a sign-in that is not refused. `record` must read as a
+    /// [`Credential`] too, as every stored value does.
+    pub(crate) fn put_record(
+        &mut self,
+        provider: &str,
+        account: &str,
+        record: Value,
+    ) -> Result<(), String> {
+        let path = self.path.clone();
+        self.change(provider, |contents| {
+            parse_credential(&record, provider, &path)?;
+            contents
+                .accounts
+                .entry(provider.to_string())
+                .or_default()
+                .insert(account.to_string(), record);
+            let info = contents
+                .info
+                .entry(provider.to_string())
+                .or_default()
+                .entry(account.to_string())
+                .or_default();
+            info.needs_reauth = false;
+            info.added_ms.get_or_insert_with(now_ms);
+            Ok((account.to_string(), ()))
+        })
+    }
+
     /// Removes every account of `provider`, secrets included.
     pub fn remove_provider(&mut self, provider: &str) -> Result<(), String> {
         let ids: Vec<String> = self
@@ -1017,6 +1054,8 @@ pub fn chatgpt_account_id(token: &str) -> Option<String> {
 pub(crate) struct Callback {
     pub(crate) code: String,
     pub(crate) state: String,
+    /// The `iss` of the redirect (RFC 9207), when the server sent one.
+    pub(crate) iss: Option<String>,
 }
 
 /// Interprets a pasted code. A `code#state` paste is an authorization
@@ -1031,10 +1070,15 @@ fn pasted_callback(pasted: &str, expected_state: &str) -> Result<Callback, Strin
         Some(state) if state != expected_state => {
             Err("state mismatch - possible CSRF attack".to_string())
         }
-        Some(state) => Ok(Callback { code, state }),
+        Some(state) => Ok(Callback {
+            code,
+            state,
+            iss: None,
+        }),
         None => Ok(Callback {
             code,
             state: expected_state.to_string(),
+            iss: None,
         }),
     }
 }
@@ -1127,10 +1171,12 @@ async fn handle_callback_connection(
     let query = target.split_once('?').map(|(_, q)| q).unwrap_or_default();
     let mut code = None;
     let mut state = None;
+    let mut iss = None;
     for pair in query.split('&') {
         match pair.split_once('=') {
             Some(("code", value)) => code = Some(urldecode(value)),
             Some(("state", value)) => state = Some(urldecode(value)),
+            Some(("iss", value)) => iss = Some(urldecode(value)),
             _ => {}
         }
     }
@@ -1138,6 +1184,7 @@ async fn handle_callback_connection(
         return Some(Ok(Callback {
             code,
             state: state.unwrap_or_default(),
+            iss,
         }));
     }
     if denied {
@@ -1582,7 +1629,7 @@ pub async fn refresh_gpt(endpoints: &FlowEndpoints, refresh: &str) -> Result<Cre
     credential_from_token(&token, Some(refresh))
 }
 
-fn generate_state() -> String {
+pub(crate) fn generate_state() -> String {
     // The CSRF state must be unguessable: 16 bytes from the OS CSPRNG,
     // hex-encoded (reference `generateState`).
     let mut bytes = [0u8; 16];

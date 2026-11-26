@@ -806,8 +806,32 @@ pub const BUILTINS: &[Builtin] = &[
     ),
     builtin(
         "mcp",
-        "The MCP servers and their tools.",
-        &[form("The servers.", &[], Now)],
+        "The MCP servers and their tools, and signing in to the servers reached over HTTP.",
+        &[
+            form(
+                "The servers, with the sign-in state of each one reached over HTTP.",
+                &[],
+                Now,
+            ),
+            sub(
+                "login",
+                "Start signing in to an MCP server and show the page to open.",
+                &[arg("server", Text)],
+                Now,
+            ),
+            sub(
+                "status",
+                "Whether a sign-in to an MCP server finished.",
+                &[arg("login", Text)],
+                Now,
+            ),
+            sub(
+                "logout",
+                "Remove the sign-in to an MCP server.",
+                &[arg("server", Text)],
+                Now,
+            ),
+        ],
         None,
     ),
     builtin(
@@ -2317,7 +2341,18 @@ impl Core {
                     .collect();
                 json!({ "skills": skills })
             }
-            ("mcp", _) => crate::mcp::listed(store).await,
+            ("mcp", None) => crate::mcp::listed(store).await,
+            ("mcp", Some(sub)) => {
+                let (method, params) = match sub {
+                    "login" => ("mcp/login/start", json!({ "server": value(0) })),
+                    "status" => ("mcp/login/status", json!({ "login_id": value(0) })),
+                    _ => ("mcp/logout", json!({ "server": value(0) })),
+                };
+                match crate::mcp::sign_in_request(store, method, &params).await {
+                    Some(answer) => answer?,
+                    None => unreachable!("{method} is a sign-in request"),
+                }
+            }
             ("connectors", _) => {
                 let servers = crate::connectors::servers(
                     &crate::connectors::store_beside(store),
