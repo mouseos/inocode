@@ -23,7 +23,9 @@ const PROTOCOL_VERSION: &str = "2025-11-25";
 /// Versions whose `initialize`, `tools/list` and `tools/call` are the ones
 /// used here.
 const SUPPORTED_VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
-/// How long a server may take to start and list its tools.
+/// How long a server may take to start and list its tools unless its
+/// settings say otherwise (Codex's `DEFAULT_STARTUP_TIMEOUT` and opencode's
+/// startup timeout are 30 seconds too).
 const START_TIMEOUT: Duration = Duration::from_secs(30);
 /// From this many MCP tools on, none is given to the model up front; it finds
 /// the ones it needs with `SEARCH` (Codex's `DIRECT_MCP_TOOL_EXPOSURE_THRESHOLD`
@@ -86,6 +88,10 @@ struct ServerConfig {
     /// Sent with every HTTP request, such as an `Authorization` header.
     #[serde(default)]
     headers: HashMap<String, String>,
+    /// How many seconds the server may take to start and list its tools;
+    /// `START_TIMEOUT` when missing. Codex's name for it.
+    #[serde(default)]
+    startup_timeout_sec: Option<f64>,
     /// Where a started server runs: an installed plugin's folder.
     #[serde(skip)]
     folder: Option<PathBuf>,
@@ -134,15 +140,7 @@ impl Slot {
             return Err("it was already started again once".into());
         }
         let source = self.source.as_ref().ok_or("it cannot be started again")?;
-        let connection = tokio::time::timeout(START_TIMEOUT, async {
-            let mut connection = source.connect()?;
-            connection.server = self.server.clone();
-            let connection = Arc::new(connection);
-            connection.list_tools().await?;
-            Ok::<_, String>(connection)
-        })
-        .await
-        .unwrap_or_else(|_| Err(format!("did not start within {START_TIMEOUT:?}")))?;
+        let (connection, _) = start(&self.server, source).await?;
         *self.connection.lock().expect("slot lock") = connection.clone();
         Ok(connection)
     }
@@ -638,6 +636,24 @@ enum Source {
 }
 
 impl Source {
+    /// How long the server may take to start and list its tools.
+    fn start_timeout(&self) -> Result<Duration, String> {
+        match self {
+            Self::Configured(ServerConfig {
+                startup_timeout_sec: Some(seconds),
+                ..
+            }) => Duration::try_from_secs_f64(*seconds)
+                .ok()
+                .filter(|timeout| !timeout.is_zero())
+                .ok_or_else(|| {
+                    format!(
+                        "startup_timeout_sec must be a number of seconds above 0, not {seconds}"
+                    )
+                }),
+            _ => Ok(START_TIMEOUT),
+        }
+    }
+
     fn connect(&self) -> Result<Connection, String> {
         match self {
             Self::Configured(settings) => connect(settings),
@@ -760,17 +776,16 @@ async fn load(
             Source::Connector(server, accounts.to_path_buf()),
         ));
     }
-    for (server, source) in sources {
+    // All servers start at once, so a slow one holds the first request up
+    // only as long as itself; their tools are added in the order above.
+    let started =
+        futures_util::future::join_all(sources.into_iter().map(|(server, source)| async {
+            let started = start(&server, &source).await;
+            (server, source, started)
+        }))
+        .await;
+    for (server, source, started) in started {
         let connector = matches!(source, Source::Connector(..));
-        let started = tokio::time::timeout(START_TIMEOUT, async {
-            let mut connection = source.connect()?;
-            connection.server = server.clone();
-            let connection = Arc::new(connection);
-            let listed = connection.list_tools().await?;
-            Ok::<_, String>((connection, listed))
-        })
-        .await
-        .unwrap_or_else(|_| Err(format!("did not start within {START_TIMEOUT:?}")));
         match started {
             Ok((connection, listed)) => {
                 let listed = match connector {
@@ -789,6 +804,20 @@ async fn load(
         }
     }
     tools
+}
+
+/// Starts `server` and lists its tools, within its start timeout.
+async fn start(server: &str, source: &Source) -> Result<(Arc<Connection>, Vec<Value>), String> {
+    let timeout = source.start_timeout()?;
+    tokio::time::timeout(timeout, async {
+        let mut connection = source.connect()?;
+        connection.server = server.to_string();
+        let connection = Arc::new(connection);
+        let listed = connection.list_tools().await?;
+        Ok::<_, String>((connection, listed))
+    })
+    .await
+    .unwrap_or_else(|_| Err(format!("did not start within {timeout:?}")))
 }
 
 /// Whether another installed plugin has `plugin`'s name, so that its
@@ -2160,6 +2189,66 @@ for line in sys.stdin:
             .await
             .is_none());
         assert_eq!(render_problems(&store).await, None);
+    }
+
+    #[tokio::test]
+    async fn servers_start_at_once_each_within_its_own_time() {
+        let Some(python) = python() else {
+            eprintln!("skipped: no Python to run the MCP server");
+            return;
+        };
+        let dir = tempfile::tempdir().expect("dir");
+        let script = dir.path().join("slow.py");
+        std::fs::write(
+            &script,
+            format!("import time\ntime.sleep(3)\n{CRASHING_SERVER}"),
+        )
+        .expect("script");
+        let config = dir.path().join("mcp.json");
+        std::fs::write(
+            &config,
+            json!({"mcpServers": {
+                "first": {"command": python, "args": [script]},
+                "second": {"command": python, "args": [script], "startup_timeout_sec": 20},
+                "third": {"command": python, "args": [script]},
+                "hurried": {"command": python, "args": [script], "startup_timeout_sec": 0.5},
+                "wrong": {"command": python, "args": [script], "startup_timeout_sec": -1}
+            }})
+            .to_string(),
+        )
+        .expect("config");
+        let accounts = dir.path().join("auth.json");
+        let hosts = crate::connectors::Hosts::default();
+
+        let began = std::time::Instant::now();
+        let tools = load(&config, &accounts, Path::new("no-plugins"), &hosts).await;
+        let took = began.elapsed();
+
+        // One after another, the three would take at least 9 seconds.
+        assert!(took < Duration::from_secs(8), "{took:?}");
+        let names: Vec<&str> = tools.specs.iter().map(|spec| spec.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "mcp__first__add",
+                "mcp__first__crash",
+                "mcp__second__add",
+                "mcp__second__crash",
+                "mcp__third__add",
+                "mcp__third__crash"
+            ]
+        );
+        let problems = tools.problems.join("\n");
+        assert!(
+            problems.contains("server hurried did not start: did not start within 500ms"),
+            "{problems}"
+        );
+        assert!(
+            problems.contains(
+                "server wrong did not start: startup_timeout_sec must be a number of seconds above 0, not -1"
+            ),
+            "{problems}"
+        );
     }
 
     #[test]
