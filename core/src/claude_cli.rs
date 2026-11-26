@@ -18,9 +18,8 @@ const KEEP: Duration = Duration::from_secs(24 * 60 * 60);
 const RETRY: Duration = Duration::from_secs(60 * 60);
 const READ_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// The channels the settings may choose (`server.claude_cli_channel`).
-pub const CHANNELS: [&str; 2] = ["latest", "stable"];
-/// The channel when the settings choose none.
+/// The channel when the settings choose none, and the one used when npm no
+/// longer has the chosen one.
 pub const DEFAULT_CHANNEL: &str = "latest";
 
 struct Read {
@@ -52,18 +51,50 @@ fn channel(store: &Path) -> String {
         .unwrap_or_else(|| DEFAULT_CHANNEL.to_string())
 }
 
-/// The channel's version from `tags`; [`FALLBACK`] when there is none or it
-/// is not made of numbers and dots, since it goes into a header.
+/// The channel's version from `tags`, or [`DEFAULT_CHANNEL`]'s when npm
+/// has no such channel; [`FALLBACK`] when neither gives one. A version is
+/// used only when it is a version: it goes into a header.
 fn version(tags: Option<&HashMap<String, String>>, channel: &str) -> String {
-    tags.and_then(|tags| tags.get(channel))
-        .filter(|version| {
-            !version.is_empty()
-                && version
-                    .split('.')
-                    .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
-        })
-        .cloned()
+    let usable = |channel: &str| {
+        tags.and_then(|tags| tags.get(channel))
+            .filter(|version| is_version(version))
+            .cloned()
+    };
+    usable(channel)
+        .or_else(|| usable(DEFAULT_CHANNEL))
         .unwrap_or_else(|| FALLBACK.to_string())
+}
+
+/// Numbers joined by dots, with an optional `-` part of letters, numbers
+/// and dots as npm's prereleases have.
+fn is_version(text: &str) -> bool {
+    let (release, prerelease) = match text.split_once('-') {
+        Some((release, prerelease)) => (release, Some(prerelease)),
+        None => (text, None),
+    };
+    let numbers = release
+        .split('.')
+        .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()));
+    numbers
+        && prerelease.is_none_or(|part| {
+            !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric() || c == '.')
+        })
+}
+
+/// Whether `name` can be a channel's name; which channels exist is npm's
+/// and changes over time, so only the form is checked here.
+pub fn is_channel_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+/// npm's channels and their versions as last read, read again when too
+/// old; `None` when npm has not answered.
+pub async fn channels() -> Option<HashMap<String, String>> {
+    tags().await
 }
 
 /// The channels, read from npm again once the last read is too old.
@@ -129,16 +160,21 @@ mod tests {
         let tags: HashMap<String, String> = [
             ("latest", "2.1.332"),
             ("stable", "2.1.326"),
-            ("next", "2.1.332; evil"),
+            ("next", "2.2.0-beta.1"),
+            ("odd", "2.1.332; evil"),
         ]
         .into_iter()
         .map(|(channel, version)| (channel.to_string(), version.to_string()))
         .collect();
         assert_eq!(version(Some(&tags), "latest"), "2.1.332");
         assert_eq!(version(Some(&tags), "stable"), "2.1.326");
-        assert_eq!(version(Some(&tags), "next"), FALLBACK);
-        assert_eq!(version(Some(&tags), "beta"), FALLBACK);
+        assert_eq!(version(Some(&tags), "next"), "2.2.0-beta.1");
+        assert_eq!(version(Some(&tags), "odd"), "2.1.332");
+        assert_eq!(version(Some(&tags), "gone"), "2.1.332");
         assert_eq!(version(None, "latest"), FALLBACK);
+        assert!(is_channel_name("next"));
+        assert!(!is_channel_name("next; evil"));
+        assert!(!is_channel_name(""));
     }
 
     #[test]

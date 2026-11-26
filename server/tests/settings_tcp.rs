@@ -478,6 +478,10 @@ async fn the_default_roles_and_server_sections_are_read_and_changed() {
             "{read}"
         );
         assert_eq!(read["result"]["effective"]["stream_idle_seconds"], 300);
+        assert_eq!(read["result"]["effective"]["claude_cli_channel"], "latest");
+        // npm's channels when it answered, null when it did not.
+        let channels = &read["result"]["claude_cli_channels"];
+        assert!(channels.is_null() || channels["latest"].is_string(), "{read}");
         // The test process keeps credentials in plain files while the file
         // names no store (auto): that waits for a restart.
         assert_eq!(read["result"]["restart_for"], json!(["credentials"]), "{read}");
@@ -518,6 +522,7 @@ async fn the_default_roles_and_server_sections_are_read_and_changed() {
             json!({"providers": {}}),
             json!({"default": {"provider": "nobody"}}),
             json!({"server": {"port": 0}}),
+            json!({"server": {"claude_cli_channel": "next; evil"}}),
             json!({"roles": {"explore": {"effort": "huge"}}}),
             json!({"roles": {"judge": {"model": "m"}}}),
         ]

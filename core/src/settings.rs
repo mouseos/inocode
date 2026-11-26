@@ -709,10 +709,9 @@ impl Settings {
             return Err("\"server.stream_idle_seconds\" must be from 1 to 86400".into());
         }
         if let Some(channel) = &self.server.claude_cli_channel {
-            if !crate::claude_cli::CHANNELS.contains(&channel.as_str()) {
+            if !crate::claude_cli::is_channel_name(channel) {
                 return Err(format!(
-                    "\"server.claude_cli_channel\" must be one of {}, not {channel}",
-                    crate::claude_cli::CHANNELS.join(", ")
+                    "\"server.claude_cli_channel\" must be a channel name of npm, not {channel}"
                 ));
             }
         }

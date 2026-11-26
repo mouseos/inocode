@@ -11,13 +11,17 @@
 
 - 読む先：`https://registry.npmjs.org/-/package/@anthropic-ai/claude-code/dist-tags`。認証なしで、チャンネル名と版の小さな JSON が返る。npm の道具や依存は使わず、HTTP で 1 回読むだけ。
   - 2026-11-26 の実際の答え：`{"stable":"2.1.326","latest":"2.1.332","next":"2.1.332"}`。
-- チャンネル：設定の `server.claude_cli_channel` で `latest`（書かなければこれ）か `stable`。ほかの値は設定を保存するときに断る。`settings/get` の `effective.claude_cli_channel` に今の値が出る。
-  - `next` もあるが、2026-11-26 の時点では `latest` と同じ版で、選べるようにはしていない。
+- チャンネル：設定の `server.claude_cli_channel` に、npm にあるチャンネルの名前を書く。書かなければ `latest`。どのチャンネルがあるかは npm 側で変わるので、固定の一覧は持たない。
+  - `settings/get` の `claude_cli_channels` に、npm から読んだチャンネルと版がそのまま出る（読めなければ null）。`effective.claude_cli_channel` に今選んでいるチャンネルが出る。
+  - `settings/set` では、npm が読めればそこにないチャンネルを断り、あるチャンネルの一覧を返す。npm が読めないときは、名前の形（英数字と `-`・`_`・`.`、64 文字まで）だけ確かめて保存する。
+  - 選んだチャンネルが後で npm から消えたときは `latest` の版を使う。
+  - 2026-11-26 の時点では `next` は `latest` と同じ版だったが、同じとは限らないので選べるようにした（ユーザーの指示：「nextが常に同じとは限らない。動的にチャンネル読んで選べるようにしろ」）。
 - 読み直し：うまく読めたら 24 時間使い、それから読み直す。失敗したら前に読めた版を使い続け、1 時間後に試し直す。プロセスの中でまだ一度も読めていなければ `2.1.321` を使う。待つのは最大 5 秒。
-- 版は数字と点だけのときに使う（見出しに入れるため）。それ以外の値なら `2.1.321` を使う。
+- 版は、数字と点に、npm の先行版の `-beta.1` のような部分（英数字と点）が付いた形のときだけ使う（見出しに入れるため）。それ以外の値なら `latest` の版、それもだめなら `2.1.321` を使う。
 
 ## 検証
 
-- `claude_cli::tests`：チャンネルごとの版、ないチャンネル、数字と点以外を含む値、設定からのチャンネルの読み取り。
+- `claude_cli::tests`：チャンネルごとの版、先行版の形、ないチャンネル、版でない値、チャンネル名の形、設定からのチャンネルの読み取り。
+- `server/tests/settings_tcp.rs`：`claude_cli_channels` が出ること、形の違うチャンネル名を断ること。
 - `server/tests/oauth_flows.rs` の `claude_usage_sends_the_reference_headers`：送った見出しが `claude-cli/<数字と点> (external, cli)` の形であること。手元では npm を実際に読めた（失敗の表示が出なかった）。
 - 未確認：本家と違う版を名乗ったときに Anthropic が実際に断るかどうか。

@@ -1347,13 +1347,33 @@ impl Core {
     /// values in effect, and which written values wait for a restart.
     pub async fn get_settings(&self) -> Result<Value, ErrorInfo> {
         self.store()?;
-        Ok(self.sections_view(&self.settings().await?))
+        let mut view = self.sections_view(&self.settings().await?);
+        view["claude_cli_channels"] = json!(claude_cli::channels().await);
+        Ok(view)
     }
 
     /// Merges `patch` into the `default`, `roles` and `server` sections. A
     /// change of `server.sandbox` applies to the commands started from now
     /// on, unless `--sandbox` was given at the start.
     pub async fn set_settings(&self, patch: &Value) -> Result<Value, ErrorInfo> {
+        if let Some(channel) = patch
+            .pointer("/server/claude_cli_channel")
+            .and_then(Value::as_str)
+        {
+            if let Some(channels) = claude_cli::channels().await {
+                if !channels.contains_key(channel) {
+                    let mut names: Vec<&str> = channels.keys().map(String::as_str).collect();
+                    names.sort_unstable();
+                    return Err(ErrorInfo::new(
+                        "invalid_params",
+                        format!(
+                            "npm has no channel {channel} of Claude Code; it has {}",
+                            names.join(", ")
+                        ),
+                    ));
+                }
+            }
+        }
         let settings = settings::set_sections(&self.writable_settings().await?, patch)
             .await
             .map_err(|error| ErrorInfo::new("invalid_params", error))?;
