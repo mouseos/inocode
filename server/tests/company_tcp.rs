@@ -307,6 +307,69 @@ async fn a_delegated_member_edits_a_file_and_a_member_of_another_vendor_reviews(
 }
 
 #[tokio::test]
+async fn reviews_the_member_had_done_come_back_with_its_report() {
+    with_timeout(async {
+        let folder = folder();
+        let project = folder.join("project");
+        let lead = scripted(vec![
+            tool_turn(
+                "d1",
+                "delegate",
+                json!({"member": "coder", "task": "Write hello into b.txt.", "files": ["b.txt"]}),
+            ),
+            text_turn("all done"),
+        ])
+        .await;
+        let member = scripted(vec![
+            tool_turn(
+                "w1",
+                "write",
+                json!({"path": "b.txt", "content": "hello
+"}),
+            ),
+            tool_turn("r1", "review", json!({"what": "b.txt"})),
+            text_turn("Wrote b.txt and had it reviewed."),
+        ])
+        .await;
+        let reviewer = scripted(vec![text_turn("No findings in b.txt.")]).await;
+        let core = core_with(&folder, settings(&lead, &member, &reviewer)).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = project_thread(&mut client, &project).await;
+
+        let events = turn(&mut client, 2, thread, "put hello in b.txt").await;
+        assert_eq!(events.last().unwrap()["event"], "completed", "{events:?}");
+        let results = tool_results(&events);
+        assert_eq!(results.len(), 1, "{results:?}");
+        let delegated = &results[0];
+        let reviews = delegated
+            .find(
+                "
+reviews the member already had done (do not ask for them again):
+reviewer doubter",
+            )
+            .unwrap_or_else(|| panic!("{delegated}"));
+        let report = delegated
+            .find(
+                "
+report:
+",
+            )
+            .expect("report");
+        assert!(reviews < report, "{delegated}");
+        assert!(delegated.contains("No findings in b.txt."), "{delegated}");
+        assert!(
+            delegated.ends_with(
+                "report:
+Wrote b.txt and had it reviewed."
+            ),
+            "{delegated}"
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn what_is_not_allowed_is_never_called() {
     with_timeout(async {
         let folder = folder();

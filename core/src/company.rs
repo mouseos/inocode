@@ -871,6 +871,13 @@ async fn run_delegated(lead: &Lead<'_>, arguments: &str) -> Delegated {
             "\nThe work may be unfinished; the report below is its last answer before the stop.",
         );
     }
+    let reviews = reviews_in(lead.store, child).await;
+    if !reviews.is_empty() {
+        text.push_str(&format!(
+            "\nreviews the member already had done (do not ask for them again):\n{}",
+            reviews.join("\n---\n")
+        ));
+    }
     text.push_str(&format!(
         "\nreport:\n{}",
         report.unwrap_or_else(|| "(no answer)".to_string())
@@ -942,6 +949,40 @@ fn task_message(request: &str, profile: &Profile, arguments: &DelegateArguments)
     text.push_str("\n\n");
     text.push_str(REPORT);
     crate::review::from_command_file(DELEGATE, &asked, &text)
+}
+
+/// The answers of the reviews `thread` asked for, oldest first, so the
+/// delegating model sees that the work was already reviewed.
+async fn reviews_in(store: &Store, thread: SessionId) -> Vec<String> {
+    const PAGE: usize = 200;
+    let mut reviews = Vec::new();
+    let mut before = None;
+    loop {
+        let Ok(page) = store.page(thread, before, PAGE).await else {
+            break;
+        };
+        let Some(first) = page.first() else {
+            break;
+        };
+        before = Some(first.seq);
+        let found: Vec<String> = page
+            .iter()
+            .filter_map(|stored| match &stored.message.body {
+                Body::ToolResult {
+                    name,
+                    content,
+                    is_error: false,
+                    ..
+                } if name == REVIEW => Some(content.clone()),
+                _ => None,
+            })
+            .collect();
+        reviews.splice(0..0, found);
+        if page.len() < PAGE {
+            break;
+        }
+    }
+    reviews
 }
 
 /// The text of the last answer of `thread`.

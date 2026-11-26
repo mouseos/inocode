@@ -139,4 +139,6 @@
 - レビュー：別の会社の社員がいないため、同じ会社の `helper` が担当し、結果にそのことが書かれた（「the author's vendor too」）。指摘なし。
 - 全体：12 回の要求、入力 60,889（キャッシュ 39,912）、出力 2,830、32.6 秒。警告なし。
 - 社員の報告に「レビューの指摘」という言葉があった。社員が自分でも `review` を呼んだためと考えられる（社員は `review` を使える）。主はそれを「まだレビューしていないのに」と考えて、別にレビューを頼んだ。二重のレビューになりうる点は、確かめていない。
+  - 対応（2026-11-26、ユーザーの判断「推奨案でやって」で案 B）：社員がその仕事の中で頼んだレビューの答えを、任せた結果の「reviews the member already had done (do not ask for them again)」に入れて主に返す（`company.rs` の `reviews_in`）。社員は今までどおり `review` を使える。主がそれを見ても頼み直すかは、本物のモデルでは確かめていない。
+  - テスト：`server/tests/company_tcp.rs` の `reviews_the_member_had_done_come_back_with_its_report`。
 
