@@ -51,10 +51,9 @@
 | [observation-masking.md](observation-masking.md) | 古いツール出力を隠す | RESEARCH_SUPPORTED（The Complexity Trap、ワークショップ） | 実測を受けて外した（コードなし）。短い課題では差なし。8 問まとめた長いターンでは、キャッシュ外入力が約 6 倍（p=0.031）、得点 0.71 対 0.86（有意でない） |
 | [output-limit.md](output-limit.md) | 出力上限にモデルの上限を使う（公式の一覧、なければ models.dev）、切れたら続きを促す | UNSUPPORTED_APPROVED（公式仕様と公開実装） | `core/src/llm.rs`、`core/src/reasoning.rs`、`core/src/turn.rs` |
 | [harness-tools.md](harness-tools.md) | ファイル・シェルなどの道具：他のハーネスとの比較と研究 | シェルは UNSUPPORTED_APPROVED、read・find は RESEARCH_SUPPORTED、edit・write は `edit-write.md` | シェル・read・find・edit・write は実装済み |
-| [memory-integration.md](memory-integration.md) | 記憶を作業中に使わせる：ツール出力で確かめた発見の自動記録と差し込み、根拠・トークン費用・指示しないと使われない問題 | 自動記録は実測を受けて外した（コードなし）。ほかの案は UNSUPPORTED_PENDING | 外した。実測では効果なし、出力 +2〜3 千トークン・+12 秒／ターン。正しい答えを渡しても 2 問目は減らなかった |
+| [memory-integration.md](memory-integration.md) | 記憶を作業中に使わせる：ツール出力で確かめた発見の自動記録と差し込み、根拠・トークン費用・指示しないと使われない問題 | 自動記録は実測を受けて外した（コードなし）。ほかの案は研究を見て採らない | 外した。実測では効果なし、出力 +2〜3 千トークン・+12 秒／ターン。正しい答えを渡しても 2 問目は減らなかった |
 | [approval-modes.md](approval-modes.md) | 承認の 4 つのモード（いちいち承認・モデルに決めさせる・半自走・完全フルアクセス）、サンドボックスの外での実行の依頼、`auto`（モデルに決めさせる）での判定役（DeepAI は公式の審査 API） | UNSUPPORTED_APPROVED | `core/src/review.rs`、`core/src/turn.rs` |
 | [method-memory.md](method-memory.md) | 確かめた手法をメモにして、別のプロジェクトで使い回す（対照実験） | 使い回しは RESEARCH_SUPPORTED、識別子の必須・自動で見せる方式は UNSUPPORTED_APPROVED | `method` 道具、`recall` の全文表示を実装。実測（Haiku・Muse、各 8 回）：始めに 1 行で見せると、入力 −80〜84%、時間 −55〜66%。`recall` が抜粋しか返さないと効果なし |
-| [compaction-retention.md](compaction-retention.md) | 圧縮のあとも決めたこと・確かめた事実を保つ追加案（確定事項、構造化の要約、追記）の対照実験 | UNSUPPORTED_PENDING | main には入れない。いまの圧縮で 8/8 保たれ、追加案は費用だけ増えた。確定事項は Haiku で古い質問に答え直す失敗を起こした |
 | [compaction-cost-and-overflow.md](compaction-cost-and-overflow.md) | 圧縮の要求でキャッシュを効かせる、送る前の見積もり、窓に入らない履歴を区切って要約する、要約できないときの代替、圧縮モデルの指定（`INOCODE_COMPACT_MODEL`） | 区切った要約は RESEARCH_SUPPORTED（題材は本）、ほかは UNSUPPORTED_APPROVED | `core/src/compaction.rs`、`core/src/turn.rs`。実測（Haiku、4 回ずつ、5abc52f）：要約 1 回のキャッシュ外の入力 −76%、実行全体 −29%（有意ではない） |
 | [large-person-messages.md](large-person-messages.md) | 人の大きな発言で圧縮が毎回起きる問題の 4 案（中略して recall、中略してファイル保存、送らない、繰り返さない）の比較 | B は UNSUPPORTED_APPROVED | B（中略してファイル保存）を実装。`core/src/compaction.rs`、`core/src/turn.rs`。実測（Haiku、各 4 回）：ファイル保存の案が正答 6.75/7、費用 −57%。recall で読ませる案と送らない案は 4.5/7 |
 | [server-auth.md](server-auth.md) | 操作用のポートの合言葉による認証と、サンドボックスの命令から `~/.inocode` を隠すこと | UNSUPPORTED_APPROVED | `server/src/lib.rs`、`server/src/main.rs`、`core/src/sandbox/` |
@@ -65,7 +64,6 @@
 | [usage-log.md](usage-log.md) | 使用量のログとモデルごとの速さ（tok/s、最初の文字までの時間、キャッシュ、時間帯） | UNSUPPORTED_APPROVED | 実装済み（`core/src/usage_log.rs`、`stats/models`） |
 | [goal-command.md](goal-command.md) | goal コマンド（目標の達成まで自動で続ける） | UNSUPPORTED_APPROVED | 実装済み（`core/src/goal.rs`、`goal/set`・`goal/read`・`goal/stop`） |
 | [plugin-mechanism.md](plugin-mechanism.md) | Claude・ChatGPT のサインインで使うコネクタとプラグイン（仕組み、実装） | UNSUPPORTED_APPROVED | コネクタは実装済み（`core/src/connectors.rs`、`core/src/mcp/mod.rs`）。プラグインのストアと読み込みは作業中 |
-| [pageindex.md](pageindex.md) | PageIndex（目次の木をたどる検索） | UNSUPPORTED_PENDING | 採用しない（調査のみ） |
 | [image-input.md](image-input.md) | 画像をモデルに見せる（read で画像、縮小、切り抜き） | 機能は UNSUPPORTED_APPROVED、既定値は公式文書と研究による | 画像は実装済み（`core/src/picture.rs`）、カメラも実装済み（`core/src/camera.rs`、Windows の実物と Linux の仮想カメラで確認） |
 | [lsp-diagnostics.md](lsp-diagnostics.md) | 編集の後の型検査・LSP の診断 | UNSUPPORTED_PENDING | 未実装（適用できる研究なし） |
 | [ask-person.md](ask-person.md) | 人に質問するツール `ask`（フォームの形、ターンの終わりに返す） | UNSUPPORTED_APPROVED | 実装済み（`core/src/ask.rs`） |
