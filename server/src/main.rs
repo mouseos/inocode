@@ -5,10 +5,13 @@
 //! model, the helper roles and the server's port and sandbox. `--port N`
 //! and `--sandbox on|off` override the `server` section for one run. The
 //! listening address is always `127.0.0.1`, so the server is not reachable
-//! from the network. Without a usable provider the server still starts and
-//! answers `ping` and `echo`, while `chat` reports that no provider is
-//! configured. A settings file or database that cannot be read stops the
-//! start with its error, and so does a second server on the same database.
+//! from the network, unless `server.remote` turns on remote access: then it
+//! also takes WebSocket connections on every address at `server.remote_port`
+//! (docs/evidence/remote-access.md). Without a usable provider the server
+//! still starts and answers `ping` and `echo`, while `chat` reports that
+//! no provider is configured. A settings file or database that cannot be
+//! read stops the start with its error, and so does a second server on the
+//! same database.
 //!
 //! Each start writes a new random token to `~/.inocode/server-token`; every
 //! connection must send it first (docs/evidence/server-auth.md).
@@ -69,7 +72,7 @@ fn main() -> io::Result<()> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(command(words, flags.port.or(server.port), flags.sandbox))
+        .block_on(command(words, flags, server))
 }
 
 /// Opens the credential store once, asking for its passphrase at the
@@ -155,11 +158,7 @@ fn server_settings() -> io::Result<settings::Server> {
         .server)
 }
 
-async fn command(
-    words: Vec<String>,
-    port: Option<u16>,
-    sandbox_flag: Option<bool>,
-) -> io::Result<()> {
+async fn command(words: Vec<String>, flags: Flags, server: settings::Server) -> io::Result<()> {
     let mut words = words.into_iter();
     match words.next().as_deref() {
         Some("login") => login_command(words.next().as_deref(), words.next().as_deref()).await,
@@ -180,7 +179,10 @@ async fn command(
         }
         Some("models") => models_command(words.next().as_deref()).await,
         Some("usage") => usage_command().await,
-        None | Some("serve") => serve(port.unwrap_or(settings::DEFAULT_PORT), sandbox_flag).await,
+        None | Some("serve") => {
+            let port = flags.port.or(server.port).unwrap_or(settings::DEFAULT_PORT);
+            serve(port, flags.sandbox, &server).await
+        }
         Some(other) => Err(invalid(format!(
             "unknown command \"{other}\"; expected serve, login, key set, models or usage"
         ))),
@@ -247,7 +249,7 @@ async fn usage_command() -> io::Result<()> {
     Ok(())
 }
 
-async fn serve(port: u16, sandbox_flag: Option<bool>) -> io::Result<()> {
+async fn serve(port: u16, sandbox_flag: Option<bool>, server: &settings::Server) -> io::Result<()> {
     let folder = home_folder()?;
     std::fs::create_dir_all(&folder)?;
     // One server per database: turns, held calls and the settings are kept
@@ -273,19 +275,60 @@ async fn serve(port: u16, sandbox_flag: Option<bool>) -> io::Result<()> {
     }
     let listener = TcpListener::bind(("127.0.0.1", port)).await?;
     let address = listener.local_addr()?;
+    let remote = match server.remote_address() {
+        Some(remote) if remote.port() == address.port() => {
+            return Err(invalid(format!(
+                "server.remote_port {} is the loopback port; choose another",
+                remote.port()
+            )))
+        }
+        Some(remote) => Some(TcpListener::bind(remote).await.map_err(|error| {
+            io::Error::new(error.kind(), format!("remote access on {remote}: {error}"))
+        })?),
+        None => None,
+    };
     let token = write_token(&folder.join(TOKEN_FILE))?;
-    let core = core.with_started(inocode_core::Started {
+    let remote_port = match &remote {
+        Some(listener) => Some(listener.local_addr()?.port()),
+        None => None,
+    };
+    let core = Arc::new(core.with_started(inocode_core::Started {
         port: Some(address.port()),
         sandbox_flag,
-    });
+        remote_port,
+        remote_password_hash: server.remote_password_hash.clone(),
+    }));
     println!(
         "inocode-server listening on {address}; clients authenticate with the token in {}",
         folder.join(TOKEN_FILE).display()
     );
-    inocode_server::run(listener, Arc::new(core), token, async {
+    let stopped = || async {
         let _ = tokio::signal::ctrl_c().await;
-    })
-    .await
+    };
+    let local = inocode_server::run(listener, Arc::clone(&core), token, stopped());
+    let Some(remote) = remote else {
+        return local.await;
+    };
+    let remote_address = remote.local_addr()?;
+    println!(
+        "remote access listening on {remote_address} (WebSocket); {}",
+        if server.remote_password_hash.is_some() {
+            "clients authenticate with the remote access password"
+        } else {
+            "no password is set"
+        }
+    );
+    if server.remote_password_hash.is_none() {
+        eprintln!(
+            "WARNING: remote access is on without a password: anyone who can reach port \
+             {} can operate inocode-server. Set server.remote_password, or let only \
+             Tailscale or a VPN reach the port.",
+            remote_address.port()
+        );
+    }
+    let remote =
+        inocode_server::run_remote(remote, core, server.remote_password_hash.clone(), stopped());
+    tokio::try_join!(local, remote).map(|_| ())
 }
 
 /// The file the token of this start is written to, beside the settings.

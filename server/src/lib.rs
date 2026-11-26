@@ -12,6 +12,9 @@
 //! with an `auth` request; a connection that does not is answered
 //! `unauthorized` and closed (docs/evidence/server-auth.md).
 //!
+//! [`run_remote`] serves the same requests and events over WebSocket for
+//! remote control, one frame per text message (docs/evidence/remote-access.md).
+//!
 //! Each connection has one writer task fed by a bounded queue, so frames from
 //! concurrent requests never interleave and a client that stops reading cannot
 //! grow the queue without limit.
@@ -20,12 +23,24 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Arc;
 
-use inocode::{FrameReader, FrameType, FrameWriter, ProtocolError};
+use futures_util::stream::{SplitSink, SplitStream};
+use futures_util::{SinkExt, StreamExt};
+use inocode::{FrameReader, FrameType, FrameWriter, ProtocolError, DEFAULT_MAX_PAYLOAD_LEN};
 use inocode_core::turn::{Ending, TurnEvent};
 use inocode_core::{Core, ErrorInfo, EventPayload, Request, Response, ResponseBody};
 use serde_json::{json, Value};
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch, Mutex};
+use tokio_tungstenite::tungstenite::error::{CapacityError, Error as WsError};
+use tokio_tungstenite::tungstenite::handshake::server::{
+    ErrorResponse, Request as HandshakeRequest, Response as HandshakeResponse,
+};
+use tokio_tungstenite::tungstenite::http::header::ORIGIN;
+use tokio_tungstenite::tungstenite::http::StatusCode;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::WebSocketStream;
 
 /// Frames buffered per connection before a slow client blocks its senders.
 const SEND_QUEUE_CAPACITY: usize = 64;
@@ -89,6 +104,50 @@ where
     F: Future<Output = ()> + Send,
 {
     let token: Arc<str> = Arc::from(token);
+    accept(listener, shutdown, move |stream| {
+        let (read_half, write_half) = stream.into_split();
+        serve_connection(
+            Source::Tcp(FrameReader::new(read_half)),
+            Sink::Tcp(FrameWriter::new(write_half)),
+            Arc::clone(&core),
+            Admission::Token(Arc::clone(&token)),
+        )
+    })
+    .await
+}
+
+/// Accepts remote WebSocket connections until `shutdown` completes, then
+/// returns (docs/evidence/remote-access.md). Each text message carries one
+/// frame of the TCP protocol as `{"stream_id": n, "message": {...}}`, and
+/// the connection is served like a TCP one. With `password_hash`, the first
+/// request must be `auth` with the password; without it every connection
+/// is served. An upgrade request with an `Origin` header, which browsers
+/// send, is refused with 403.
+pub async fn run_remote<F>(
+    listener: TcpListener,
+    core: Arc<Core>,
+    password_hash: Option<String>,
+    shutdown: F,
+) -> std::io::Result<()>
+where
+    F: Future<Output = ()> + Send,
+{
+    let admission = match password_hash {
+        Some(hash) => Admission::Password(Arc::from(hash)),
+        None => Admission::Open,
+    };
+    accept(listener, shutdown, move |stream| {
+        serve_remote(stream, Arc::clone(&core), admission.clone())
+    })
+    .await
+}
+
+async fn accept<F, S, C>(listener: TcpListener, shutdown: F, serve: S) -> std::io::Result<()>
+where
+    F: Future<Output = ()> + Send,
+    S: Fn(TcpStream) -> C,
+    C: Future<Output = ()> + Send + 'static,
+{
     tokio::pin!(shutdown);
     loop {
         tokio::select! {
@@ -111,7 +170,7 @@ where
                 if stream.set_nodelay(true).is_err() {
                     continue;
                 }
-                tokio::spawn(serve_connection(stream, Arc::clone(&core), Arc::clone(&token)));
+                tokio::spawn(serve(stream));
             }
             () = &mut shutdown => return Ok(()),
         }
@@ -128,83 +187,271 @@ fn is_connection_error(error: &std::io::Error) -> bool {
     )
 }
 
-async fn serve_connection(stream: TcpStream, core: Arc<Core>, token: Arc<str>) {
-    let (read_half, write_half) = stream.into_split();
-    let mut reader = FrameReader::new(read_half);
-    let mut writer = FrameWriter::new(write_half);
+/// The room a WebSocket message has besides the frame it carries:
+/// `{"stream_id":18446744073709551615,"message":}` and some white space.
+const ENVELOPE_ALLOWANCE: usize = 256;
+
+async fn serve_remote(stream: TcpStream, core: Arc<Core>, admission: Admission) {
+    let limit = DEFAULT_MAX_PAYLOAD_LEN + ENVELOPE_ALLOWANCE;
+    let config = WebSocketConfig::default()
+        .max_message_size(Some(limit))
+        .max_frame_size(Some(limit));
+    let handshake =
+        tokio_tungstenite::accept_hdr_async_with_config(stream, refuse_origin, Some(config));
+    let Ok(Ok(socket)) = tokio::time::timeout(AUTH_WAIT, handshake).await else {
+        return;
+    };
+    let (sink, source) = socket.split();
+    serve_connection(
+        Source::WebSocket(source),
+        Sink::WebSocket(sink),
+        core,
+        admission,
+    )
+    .await;
+}
+
+/// Browsers send `Origin` on every WebSocket upgrade and native clients
+/// need not, so refusing it keeps a web page in the person's browser from
+/// driving the agent through the listener, which also answers on loopback.
+// The signature is tungstenite's handshake callback.
+#[allow(clippy::result_large_err)]
+fn refuse_origin(
+    request: &HandshakeRequest,
+    response: HandshakeResponse,
+) -> Result<HandshakeResponse, ErrorResponse> {
+    if request.headers().contains_key(ORIGIN) {
+        let mut refused = ErrorResponse::new(Some(
+            "requests with an Origin header are refused".to_string(),
+        ));
+        *refused.status_mut() = StatusCode::FORBIDDEN;
+        return Err(refused);
+    }
+    Ok(response)
+}
+
+/// What the first request of a connection must prove.
+#[derive(Clone)]
+enum Admission {
+    /// The loopback listener: an `auth` request with the token of this start.
+    Token(Arc<str>),
+    /// Remote access with a password: an `auth` request with the password
+    /// whose hash this is.
+    Password(Arc<str>),
+    /// Remote access without a password: every connection is served.
+    Open,
+}
+
+/// Where a connection's requests are read from.
+enum Source {
+    Tcp(FrameReader<OwnedReadHalf>),
+    WebSocket(SplitStream<WebSocketStream<TcpStream>>),
+}
+
+/// Where a connection's frames are written to.
+enum Sink {
+    Tcp(FrameWriter<OwnedWriteHalf>),
+    WebSocket(SplitSink<WebSocketStream<TcpStream>, Message>),
+}
+
+/// One thing read from a connection.
+enum Received {
+    Request {
+        stream_id: u64,
+        request: Value,
+    },
+    /// Not a request: `error` is answered on `stream_id` and the connection
+    /// goes on.
+    Refused {
+        stream_id: u64,
+        error: Value,
+    },
+    /// A frame over the size limit, which the connection cannot read past:
+    /// `error` is answered and the connection ends.
+    TooLarge(Value),
+    /// The client closed the connection, or sent what can never be read.
+    End,
+}
+
+fn too_large_to_read(payload_len: usize, max: usize) -> Received {
+    Received::TooLarge(error_value(
+        "frame_too_large",
+        &format!(
+            "a frame of {payload_len} bytes is over the limit of {max} bytes; \
+             the connection is closed"
+        ),
+    ))
+}
+
+fn only_json(stream_id: u64) -> Received {
+    Received::Refused {
+        stream_id,
+        error: error_value("invalid_request", "Only JSON request frames are accepted"),
+    }
+}
+
+impl Source {
+    async fn next(&mut self) -> Received {
+        match self {
+            Source::Tcp(reader) => {
+                let header = match reader.read_header().await {
+                    Ok(Some(header)) => header,
+                    Err(ProtocolError::PayloadTooLarge { payload_len, max }) => {
+                        return too_large_to_read(payload_len, max)
+                    }
+                    // Clean close, or a frame that can never complete.
+                    Ok(None) | Err(_) => return Received::End,
+                };
+                if header.frame_type != FrameType::Json {
+                    let mut discard = tokio::io::sink();
+                    if reader.read_payload_to(&header, &mut discard).await.is_err() {
+                        return Received::End;
+                    }
+                    return only_json(header.stream_id);
+                }
+                let Ok(payload) = reader.read_payload_to_vec(&header).await else {
+                    return Received::End;
+                };
+                match serde_json::from_slice(&payload) {
+                    Ok(request) => Received::Request {
+                        stream_id: header.stream_id,
+                        request,
+                    },
+                    Err(_) => Received::Refused {
+                        stream_id: header.stream_id,
+                        error: error_value("invalid_json", "Invalid JSON"),
+                    },
+                }
+            }
+            Source::WebSocket(stream) => loop {
+                match stream.next().await {
+                    Some(Ok(Message::Text(text))) => return unwrap_envelope(text.as_str()),
+                    Some(Ok(Message::Binary(_))) => return only_json(0),
+                    // Pings are answered by the WebSocket layer.
+                    Some(Ok(Message::Ping(_) | Message::Pong(_) | Message::Frame(_))) => {}
+                    Some(Err(WsError::Capacity(CapacityError::MessageTooLong {
+                        size,
+                        max_size,
+                    }))) => return too_large_to_read(size, max_size),
+                    Some(Ok(Message::Close(_)) | Err(_)) | None => return Received::End,
+                }
+            },
+        }
+    }
+}
+
+/// Takes the frame out of a WebSocket message
+/// `{"stream_id": n, "message": {...}}`. A message without that shape is
+/// answered on stream 0, as its stream is not known.
+fn unwrap_envelope(text: &str) -> Received {
+    let Ok(value) = serde_json::from_str::<Value>(text) else {
+        return Received::Refused {
+            stream_id: 0,
+            error: error_value("invalid_json", "Invalid JSON"),
+        };
+    };
+    if let Value::Object(mut envelope) = value {
+        let stream_id = envelope.get("stream_id").and_then(Value::as_u64);
+        let request = envelope.remove("message");
+        if let (Some(stream_id), Some(request), 1) = (stream_id, request, envelope.len()) {
+            return Received::Request { stream_id, request };
+        }
+    }
+    Received::Refused {
+        stream_id: 0,
+        error: error_value(
+            "invalid_request",
+            "a WebSocket message is {\"stream_id\": n, \"message\": {...}}",
+        ),
+    }
+}
+
+impl Sink {
+    /// Writes one frame. An error ends the connection's writer.
+    async fn write(&mut self, message: &Outgoing) -> Result<(), ()> {
+        match self {
+            Sink::Tcp(writer) => {
+                let written = match &message.payload {
+                    Payload::Value(value) => writer.write_json(message.stream_id, value).await,
+                    Payload::Event(event) => writer.write_json(message.stream_id, &**event).await,
+                };
+                match written {
+                    Ok(()) => Ok(()),
+                    // Nothing of the frame was written, so the connection
+                    // stays usable: the client is told what it did not get.
+                    Err(ProtocolError::PayloadTooLarge { payload_len, max }) => {
+                        let replaced = too_large(&message.payload, payload_len, max);
+                        writer
+                            .write_json(message.stream_id, &replaced)
+                            .await
+                            .map_err(|_| ())
+                    }
+                    Err(_) => Err(()),
+                }
+            }
+            Sink::WebSocket(sink) => {
+                let body = match &message.payload {
+                    Payload::Value(value) => serde_json::to_string(value),
+                    Payload::Event(event) => serde_json::to_string(&**event),
+                }
+                .map_err(|_| ())?;
+                // The same limit as a TCP frame's payload.
+                let body = if body.len() > DEFAULT_MAX_PAYLOAD_LEN {
+                    too_large(&message.payload, body.len(), DEFAULT_MAX_PAYLOAD_LEN).to_string()
+                } else {
+                    body
+                };
+                let text = format!("{{\"stream_id\":{},\"message\":{body}}}", message.stream_id);
+                sink.send(Message::text(text)).await.map_err(|_| ())
+            }
+        }
+    }
+
+    /// Ends the connection after its last frame.
+    async fn close(self) {
+        if let Sink::WebSocket(mut sink) = self {
+            let _ = sink.close().await;
+        }
+    }
+}
+
+async fn serve_connection(
+    mut source: Source,
+    mut sink: Sink,
+    core: Arc<Core>,
+    admission: Admission,
+) {
     let (queue, mut queued) = mpsc::channel::<Outgoing>(SEND_QUEUE_CAPACITY);
     let writer_task = tokio::spawn(async move {
         while let Some(message) = queued.recv().await {
-            let written = match &message.payload {
-                Payload::Value(value) => writer.write_json(message.stream_id, value).await,
-                Payload::Event(event) => writer.write_json(message.stream_id, &**event).await,
-            };
-            match written {
-                Ok(()) => {}
-                // Nothing of the frame was written, so the connection stays
-                // usable: the client is told what it did not get.
-                Err(ProtocolError::PayloadTooLarge { payload_len, max }) => {
-                    let replaced = too_large(&message.payload, payload_len, max);
-                    if writer
-                        .write_json(message.stream_id, &replaced)
-                        .await
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-                Err(_) => break,
+            if sink.write(&message).await.is_err() {
+                return;
             }
         }
+        sink.close().await;
     });
 
     let in_flight: InFlight = Arc::new(Mutex::new(HashMap::new()));
-    let mut flush = authenticate(&mut reader, &queue, &token).await;
+    let mut flush = authenticate(&mut source, &queue, &admission).await;
     if !flush {
         loop {
-            let header = match reader.read_header().await {
-                Ok(Some(header)) => header,
-                Err(ProtocolError::PayloadTooLarge { payload_len, max }) => {
+            let (stream_id, request) = match source.next().await {
+                Received::Request { stream_id, request } => (stream_id, request),
+                Received::Refused { stream_id, error } => {
+                    if !send(&queue, stream_id, error).await {
+                        break;
+                    }
+                    continue;
+                }
+                Received::TooLarge(error) => {
                     // The rest of the frame is not read, so the connection
                     // cannot go on; the client is told why it ends.
-                    let message = Outgoing {
-                        stream_id: 0,
-                        payload: Payload::Value(error_value(
-                            "frame_too_large",
-                            &format!(
-                                "a frame of {payload_len} bytes is over the limit of {max} \
-                                 bytes; the connection is closed"
-                            ),
-                        )),
-                    };
-                    flush = queue.send(message).await.is_ok();
+                    flush = send(&queue, 0, error).await;
                     break;
                 }
-                // Clean close, or a frame that can never complete.
-                Ok(None) | Err(_) => break,
+                Received::End => break,
             };
-            if header.frame_type != FrameType::Json {
-                let mut discard = tokio::io::sink();
-                if reader.read_payload_to(&header, &mut discard).await.is_err() {
-                    break;
-                }
-                let message = Outgoing {
-                    stream_id: header.stream_id,
-                    payload: Payload::Value(error_value(
-                        "invalid_request",
-                        "Only JSON request frames are accepted",
-                    )),
-                };
-                if queue.send(message).await.is_err() {
-                    break;
-                }
-                continue;
-            }
-            let payload = match reader.read_payload_to_vec(&header).await {
-                Ok(payload) => payload,
-                Err(_) => break,
-            };
-            if !dispatch(&payload, header.stream_id, &core, &queue, &in_flight).await {
+            if !dispatch(request, stream_id, &core, &queue, &in_flight).await {
                 break;
             }
         }
@@ -230,48 +477,59 @@ async fn serve_connection(stream: TcpStream, core: Arc<Core>, token: Arc<str>) {
     }
 }
 
-/// Reads the first frame of a connection, which must be an `auth` request
-/// with the server's token, and answers it. Returns `true` when the
-/// connection is refused: its answer is queued and nothing more is read.
+/// Reads the first request of a connection, which must be an `auth`
+/// request with what `admission` asks for, and answers it. Returns `true`
+/// when the connection is refused: its answer is queued and nothing more
+/// is read. A connection `admission` lets in without asking is not read.
 async fn authenticate(
-    reader: &mut FrameReader<tokio::net::tcp::OwnedReadHalf>,
+    source: &mut Source,
     queue: &mpsc::Sender<Outgoing>,
-    token: &str,
+    admission: &Admission,
 ) -> bool {
-    let first = tokio::time::timeout(AUTH_WAIT, async {
-        let header = reader.read_header().await.ok()??;
-        if header.frame_type != FrameType::Json {
-            return Some((header.stream_id, Value::Null));
-        }
-        let payload = reader.read_payload_to_vec(&header).await.ok()?;
-        Some((
-            header.stream_id,
-            serde_json::from_slice(&payload).unwrap_or(Value::Null),
-        ))
-    })
-    .await;
-    let Ok(Some((stream_id, request))) = first else {
-        return true;
+    let (field, refusal) = match admission {
+        Admission::Open => return false,
+        Admission::Token(_) => (
+            "token",
+            "the first request must be auth with the token of this server's start",
+        ),
+        Admission::Password(_) => (
+            "password",
+            "the first request must be auth with the password of remote access",
+        ),
+    };
+    let (stream_id, request) = match tokio::time::timeout(AUTH_WAIT, source.next()).await {
+        Ok(Received::Request { stream_id, request }) => (stream_id, request),
+        Ok(Received::Refused { stream_id, .. }) => (stream_id, Value::Null),
+        Ok(Received::TooLarge(_) | Received::End) | Err(_) => return true,
     };
     let id = request.get("id").and_then(Value::as_u64);
     let given = match request.get("method").and_then(Value::as_str) {
         Some("auth") => request
             .get("params")
-            .and_then(|params| params.get("token"))
+            .and_then(|params| params.get(field))
             .and_then(Value::as_str),
         _ => None,
     };
-    let accepted = given.is_some_and(|given| same_secret(given.as_bytes(), token.as_bytes()));
+    let accepted = match (given, admission) {
+        (None, _) | (_, Admission::Open) => false,
+        (Some(given), Admission::Token(token)) => same_secret(given.as_bytes(), token.as_bytes()),
+        (Some(given), Admission::Password(hash)) => {
+            // Slow on purpose: off the runtime's threads.
+            let (hash, given) = (Arc::clone(hash), given.to_string());
+            tokio::task::spawn_blocking(move || {
+                inocode_core::remote_password::verify(&hash, &given)
+            })
+            .await
+            .unwrap_or(false)
+        }
+    };
     let body = if accepted {
         ResponseBody::Result {
             result: json!({ "authenticated": true }),
         }
     } else {
         ResponseBody::Error {
-            error: ErrorInfo::new(
-                "unauthorized",
-                "the first request must be auth with the token of this server's start",
-            ),
+            error: ErrorInfo::new("unauthorized", refusal),
         }
     };
     let answer = serde_json::to_value(Response { id, body }).unwrap_or(Value::Null);
@@ -305,23 +563,12 @@ fn too_large(payload: &Payload, payload_len: usize, max: usize) -> Value {
 
 /// Returns `false` when the connection should stop being read.
 async fn dispatch(
-    payload: &[u8],
+    value: Value,
     stream_id: u64,
     core: &Arc<Core>,
     queue: &mpsc::Sender<Outgoing>,
     in_flight: &InFlight,
 ) -> bool {
-    let value: Value = match serde_json::from_slice(payload) {
-        Ok(value) => value,
-        Err(_) => {
-            return send(
-                queue,
-                stream_id,
-                error_value("invalid_json", "Invalid JSON"),
-            )
-            .await
-        }
-    };
     let request: Request = match serde_json::from_value(value) {
         Ok(request) => request,
         Err(_) => {

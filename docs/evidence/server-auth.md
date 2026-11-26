@@ -1,6 +1,6 @@
 # 操作用のポートの認証と、サンドボックスから設定のフォルダーを隠すこと
 
-- **対象と範囲：** `inocode-server` が 127.0.0.1 で受ける接続すべてに、起動ごとの合言葉（トークン）を求める。サンドボックスの中のシェルの命令から、合言葉と鍵のある `~/.inocode` を読めなくする（OS が許す範囲で）。範囲外：ネットワーク越しの接続（もともと 127.0.0.1 だけ）、TLS、利用者ごとの権限の区別。
+- **対象と範囲：** `inocode-server` が 127.0.0.1 で受ける接続すべてに、起動ごとの合言葉（トークン）を求める。サンドボックスの中のシェルの命令から、合言葉と鍵のある `~/.inocode` を読めなくする（OS が許す範囲で）。範囲外：ネットワーク越しの接続（この受け口は 127.0.0.1 だけ。本人がオンにするリモート操作の受け口は [remote-access.md](remote-access.md)）、TLS、利用者ごとの権限の区別。
 - **関連コード：** `server/src/lib.rs`（`authenticate`、最初のフレームの確認）、`server/src/main.rs`（`write_token`、`serve`）、`core/src/sandbox/mod.rs`（`hide`）、`core/src/sandbox/windows.rs`（`hide`、ラベル）、`core/src/sandbox/linux.rs`（bwrap の `--tmpfs`）、`core/src/sandbox/macos.rs`（`profile`）、`server/tests/support/mod.rs`（試験の接続）。
 - **根拠の状態：** UNSUPPORTED_APPROVED
 - **ユーザーの承認：** 2026-11-25、`docs/known-problems.md` の問題をすべて、深刻なものから直すよう指示（A1「操作用のポートに認証が無い」を含む）。方式（起動ごとの合言葉のファイル＋サンドボックスで隠す＋最初のフレームで確かめる）は、その指示を受けた作業の中で選んだ。

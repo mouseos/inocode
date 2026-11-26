@@ -131,3 +131,61 @@ async fn the_started_server_asks_for_its_token_and_a_second_one_is_refused() {
     let error = String::from_utf8_lossy(&second.stderr);
     assert!(error.contains("another inocode-server"), "{error}");
 }
+
+/// Whether a WebSocket on `port` answers `ping`.
+async fn remote_answers(port: u16) -> bool {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+    let Ok(stream) = tokio::net::TcpStream::connect(("127.0.0.1", port)).await else {
+        return false;
+    };
+    let (mut socket, _) =
+        tokio_tungstenite::client_async(format!("ws://127.0.0.1:{port}/"), stream)
+            .await
+            .expect("handshake");
+    let ping = json!({"stream_id": 1, "message": {"id": 1, "method": "ping"}});
+    socket
+        .send(Message::text(ping.to_string()))
+        .await
+        .expect("send");
+    loop {
+        match socket.next().await.expect("an answer").expect("message") {
+            Message::Text(text) => {
+                let answer: Value = serde_json::from_str(text.as_str()).expect("JSON");
+                return answer["message"]["result"]["pong"] == true;
+            }
+            _ => continue,
+        }
+    }
+}
+
+#[tokio::test]
+async fn remote_access_listens_only_when_turned_on_and_warns_without_a_password() {
+    let remote_port = free_port();
+    let off_home = home(
+        "remote-off",
+        &json!({"server": {"credentials": "plaintext", "remote_port": remote_port}}).to_string(),
+    );
+    let mut child = server(&off_home, free_port()).spawn().expect("start");
+    until_listening(&mut child);
+    let off = Killed(child);
+    assert!(!remote_answers(remote_port).await, "remote access is off");
+    drop(off);
+
+    let remote_port = free_port();
+    let on_home = home(
+        "remote-on",
+        &json!({"server": {"credentials": "plaintext", "remote": true, "remote_port": remote_port}})
+            .to_string(),
+    );
+    let mut child = server(&on_home, free_port()).spawn().expect("start");
+    until_listening(&mut child);
+    assert!(remote_answers(remote_port).await, "remote access is on");
+    let _ = child.kill();
+    let output = child.wait_with_output().expect("output");
+    let warning = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        warning.contains("remote access is on without a password"),
+        "{warning}"
+    );
+}

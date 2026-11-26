@@ -580,10 +580,26 @@ pub struct Server {
     /// Code's: `latest` (the default) or `stable`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_cli_channel: Option<String>,
+    /// Whether the server also takes WebSocket connections on all addresses
+    /// for remote control; off when absent (docs/evidence/remote-access.md).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<bool>,
+    /// The port of remote access; [`DEFAULT_REMOTE_PORT`] when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_port: Option<u16>,
+    /// The hash of the password remote connections give, written only by
+    /// [`set_sections`] from `remote_password`; without it remote
+    /// connections are not asked for one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_password_hash: Option<String>,
 }
 
 /// The loopback port when the settings and the command line name none.
 pub const DEFAULT_PORT: u16 = 8787;
+
+/// The port of remote access when the settings name none: the one after
+/// the loopback port's default.
+pub const DEFAULT_REMOTE_PORT: u16 = DEFAULT_PORT + 1;
 
 /// How long a model's answer may stay silent by default. Providers send
 /// pings or progress much more often while they work, so a longer silence
@@ -604,6 +620,17 @@ impl Server {
             Ok(crate::secrets::StoreMode::Auto),
             crate::secrets::StoreMode::parse,
         )
+    }
+
+    /// Where remote access listens, when the settings turn it on: every
+    /// address of the machine.
+    pub fn remote_address(&self) -> Option<std::net::SocketAddr> {
+        (self.remote == Some(true)).then(|| {
+            std::net::SocketAddr::from((
+                [0, 0, 0, 0],
+                self.remote_port.unwrap_or(DEFAULT_REMOTE_PORT),
+            ))
+        })
     }
 }
 
@@ -700,6 +727,21 @@ impl Settings {
         }
         if self.server.port == Some(0) {
             return Err("\"server.port\" must be from 1 to 65535".into());
+        }
+        if self.server.remote_port == Some(0) {
+            return Err("\"server.remote_port\" must be from 1 to 65535".into());
+        }
+        if let Some(address) = self.server.remote_address() {
+            if address.port() == self.server.port.unwrap_or(DEFAULT_PORT) {
+                return Err(format!(
+                    "\"server.remote_port\" {} is the loopback port; choose another",
+                    address.port()
+                ));
+            }
+        }
+        if let Some(stored) = &self.server.remote_password_hash {
+            crate::remote_password::check(stored)
+                .map_err(|error| format!("\"server.remote_password_hash\": {error}"))?;
         }
         if self
             .server
@@ -932,7 +974,10 @@ pub enum RemoveError {
 pub const SECTIONS: [&str; 3] = ["default", "roles", "server"];
 
 /// Merges `patch` into the sections it names, one level deep: a field set
-/// to `null` is removed. Other sections are refused.
+/// to `null` is removed. Other sections are refused. `server.remote_password`
+/// is taken as the plain password, or `null` or `""` to remove it, and only
+/// its hash is written, as `server.remote_password_hash`, which cannot be
+/// set itself.
 pub async fn set_sections(path: &Path, patch: &Value) -> Result<Settings, String> {
     let patch = patch.as_object().ok_or("the change is not an object")?;
     if let Some(name) = patch.keys().find(|name| !SECTIONS.contains(&name.as_str())) {
@@ -940,8 +985,41 @@ pub async fn set_sections(path: &Path, patch: &Value) -> Result<Settings, String
             "\"{name}\" cannot be set here; the sections are default, roles and server"
         ));
     }
+    let mut patch = patch.clone();
+    if let Some(server) = patch.get_mut("server").and_then(Value::as_object_mut) {
+        if server.contains_key("remote_password_hash") {
+            return Err(
+                "\"server.remote_password_hash\" cannot be set; set \"server.remote_password\""
+                    .into(),
+            );
+        }
+        if let Some(password) = server.remove("remote_password") {
+            let hash = match password {
+                Value::Null => Value::Null,
+                Value::String(text) if text.is_empty() => Value::Null,
+                Value::String(text) if text.len() > crate::remote_password::MAX_LEN => {
+                    return Err(format!(
+                        "\"server.remote_password\" is longer than {} bytes",
+                        crate::remote_password::MAX_LEN
+                    ))
+                }
+                // Slow on purpose: off the runtime's threads.
+                Value::String(text) => Value::String(
+                    tokio::task::spawn_blocking(move || crate::remote_password::hash(&text))
+                        .await
+                        .map_err(|error| error.to_string())??,
+                ),
+                _ => {
+                    return Err(
+                        "\"server.remote_password\" must be a string, or null to remove it".into(),
+                    )
+                }
+            };
+            server.insert("remote_password_hash".into(), hash);
+        }
+    }
     edit_settings(path, |file| {
-        for (name, fields) in patch {
+        for (name, fields) in &patch {
             let fields = fields
                 .as_object()
                 .ok_or_else(|| format!("\"{name}\" is not an object"))?;
@@ -1202,6 +1280,88 @@ mod tests {
             .unwrap();
         assert_eq!(settings.server.port, Some(9000));
         assert_eq!(settings.server.sandbox, Some(false));
+        std::fs::remove_dir_all(folder).unwrap();
+    }
+
+    #[tokio::test]
+    async fn remote_access_is_off_until_turned_on_and_its_password_is_kept_as_a_hash() {
+        let folder = folder("remote");
+        let path = folder.join("settings.json");
+        assert_eq!(Server::default().remote_address(), None);
+        let settings = set_sections(&path, &json!({"server": {"remote_port": 9100}}))
+            .await
+            .unwrap();
+        assert_eq!(settings.server.remote_address(), None, "a port alone");
+        let settings = set_sections(&path, &json!({"server": {"remote": true}}))
+            .await
+            .unwrap();
+        assert_eq!(
+            settings.server.remote_address(),
+            Some(std::net::SocketAddr::from(([0, 0, 0, 0], 9100)))
+        );
+        let settings = set_sections(&path, &json!({"server": {"remote_port": null}}))
+            .await
+            .unwrap();
+        assert_eq!(
+            settings
+                .server
+                .remote_address()
+                .map(|address| address.port()),
+            Some(DEFAULT_REMOTE_PORT)
+        );
+
+        for (patch, refused) in [
+            (json!({"remote_port": 0}), "must be from 1 to 65535"),
+            (json!({"remote_port": DEFAULT_PORT}), "is the loopback port"),
+            (
+                json!({"port": 9200, "remote_port": 9200}),
+                "is the loopback port",
+            ),
+            (json!({"remote": "yes"}), "\"server\""),
+            (json!({"remote_password": 5}), "must be a string"),
+            (
+                json!({"remote_password": "x".repeat(1025)}),
+                "longer than 1024 bytes",
+            ),
+            (
+                json!({"remote_password_hash": "pbkdf2-sha256$1$c2FsdA$AAAA"}),
+                "cannot be set",
+            ),
+        ] {
+            let error = set_sections(&path, &json!({ "server": patch }))
+                .await
+                .unwrap_err();
+            assert!(error.contains(refused), "{patch}: {error}");
+        }
+
+        let settings = set_sections(
+            &path,
+            &json!({"server": {"remote_password": "open sesame"}}),
+        )
+        .await
+        .unwrap();
+        let stored = settings.server.remote_password_hash.clone().unwrap();
+        assert!(crate::remote_password::verify(&stored, "open sesame"));
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("open sesame"), "{text}");
+        assert!(!text.contains("\"remote_password\""), "{text}");
+        assert!(text.contains(&stored));
+
+        for removed in [json!(""), Value::Null] {
+            set_sections(&path, &json!({"server": {"remote_password": "again"}}))
+                .await
+                .unwrap();
+            let settings = set_sections(&path, &json!({"server": {"remote_password": removed}}))
+                .await
+                .unwrap();
+            assert_eq!(settings.server.remote_password_hash, None, "{removed}");
+        }
+        assert!(Settings::from_value(&json!({"server": {"remote_password": "plain"}})).is_err());
+        assert!(
+            Settings::from_value(&json!({"server": {"remote_password_hash": "plain"}}))
+                .unwrap_err()
+                .contains("remote_password_hash")
+        );
         std::fs::remove_dir_all(folder).unwrap();
     }
 

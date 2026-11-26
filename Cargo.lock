@@ -2507,6 +2507,7 @@ dependencies = [
  "grep-regex",
  "grep-searcher",
  "hayro",
+ "hmac",
  "hound",
  "html2text",
  "ignore",
@@ -2555,12 +2556,14 @@ name = "inocode-server"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "futures-util",
  "getrandom 0.2.17",
  "inocode",
  "inocode-core",
  "reqwest",
  "serde_json",
  "tokio",
+ "tokio-tungstenite",
 ]
 
 [[package]]

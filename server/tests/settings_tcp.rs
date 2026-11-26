@@ -478,7 +478,7 @@ async fn the_default_roles_and_server_sections_are_read_and_changed() {
         };
         assert_eq!(
             sections(&read["result"]),
-            json!({"default": {"provider": "mock"}, "roles": {}, "server": {}}),
+            json!({"default": {"provider": "mock"}, "roles": {}, "server": {"remote_password_set": false}}),
             "{read}"
         );
         assert_eq!(read["result"]["effective"]["stream_idle_seconds"], 300);
@@ -506,7 +506,7 @@ async fn the_default_roles_and_server_sections_are_read_and_changed() {
             json!({
                 "default": {"provider": "mock", "model": "model-b", "effort": "low"},
                 "roles": {"compact": {"model": "model-a"}, "colleague": {"provider": "mock"}},
-                "server": {"port": 9100, "sandbox": false},
+                "server": {"port": 9100, "sandbox": false, "remote_password_set": false},
             }),
             "{set}"
         );

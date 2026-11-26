@@ -41,6 +41,7 @@ pub mod pool;
 mod promise;
 mod read;
 pub mod reasoning;
+pub mod remote_password;
 mod review;
 pub mod rules;
 mod rules_import;
@@ -547,13 +548,17 @@ struct Waiting {
 
 /// How the server process was started, for `settings/get` to tell the
 /// values in effect from those in the file.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Started {
     /// The port it listens on.
     pub port: Option<u16>,
     /// `--sandbox on|off` given on the command line, which the file's
     /// `server.sandbox` does not override.
     pub sandbox_flag: Option<bool>,
+    /// The port remote access listens on; `None` when it is off.
+    pub remote_port: Option<u16>,
+    /// The hash of the remote password in effect.
+    pub remote_password_hash: Option<String>,
 }
 
 /// What a thread chose to run on, as stored; an absent field follows
@@ -1455,6 +1460,15 @@ impl Core {
             if file.port.unwrap_or(settings::DEFAULT_PORT) != port {
                 waiting.push("port");
             }
+            let remote_port = file.remote_address().map(|address| address.port());
+            if remote_port.is_some() != self.started.remote_port.is_some() {
+                waiting.push("remote");
+            } else if remote_port != self.started.remote_port {
+                waiting.push("remote_port");
+            }
+            if file.remote_password_hash != self.started.remote_password_hash {
+                waiting.push("remote_password");
+            }
         }
         if file
             .credential_store()
@@ -1462,11 +1476,23 @@ impl Core {
         {
             waiting.push("credentials");
         }
+        // The password's hash is never shown, only whether there is one.
+        let mut server = serde_json::to_value(&settings.server).unwrap_or_else(|_| json!({}));
+        if let Some(fields) = server.as_object_mut() {
+            fields.remove("remote_password_hash");
+            fields.insert(
+                "remote_password_set".into(),
+                json!(file.remote_password_hash.is_some()),
+            );
+        }
         json!({
             "default": settings.default,
             "roles": settings.roles,
-            "server": settings.server,
+            "server": server,
             "effective": {
+                "remote": self.started.remote_port.is_some(),
+                "remote_port": self.started.remote_port,
+                "remote_password_set": self.started.remote_password_hash.is_some(),
                 "port": self.started.port,
                 "sandbox": sandbox::enabled(),
                 "sandbox_from_command_line": self.started.sandbox_flag.is_some(),

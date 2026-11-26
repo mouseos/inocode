@@ -22,6 +22,7 @@ html2text = "0.17"
 image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 ignore = "0.4"
 hayro = "0.9"
+hmac = "0.12"
 hound = "3.5"
 nokhwa = { version = "0.10", default-features = false, features = ["input-native"] }
 p384 = { version = "0.13", default-features = false, features = ["ecdsa", "std"] }
