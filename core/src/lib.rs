@@ -13,6 +13,7 @@ mod camera;
 #[cfg(windows)]
 mod camera_mode;
 pub mod catalog;
+pub mod claude_cli;
 mod colleague;
 pub mod commands;
 mod compaction;
@@ -1390,6 +1391,10 @@ impl Core {
                 "sandbox_from_command_line": self.started.sandbox_flag.is_some(),
                 "credentials": secrets::mode().as_str(),
                 "stream_idle_seconds": file.stream_idle().as_secs(),
+                "claude_cli_channel": file
+                    .claude_cli_channel
+                    .as_deref()
+                    .unwrap_or(claude_cli::DEFAULT_CHANNEL),
             },
             "restart_required": !waiting.is_empty(),
             "restart_for": waiting,

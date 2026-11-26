@@ -576,6 +576,10 @@ pub struct Server {
     /// [`DEFAULT_STREAM_IDLE_SECONDS`] when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_idle_seconds: Option<u64>,
+    /// npm's channel of Claude Code whose version inocode gives as Claude
+    /// Code's: `latest` (the default) or `stable`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_cli_channel: Option<String>,
 }
 
 /// The loopback port when the settings and the command line name none.
@@ -703,6 +707,14 @@ impl Settings {
             .is_some_and(|seconds| !(1..=86_400).contains(&seconds))
         {
             return Err("\"server.stream_idle_seconds\" must be from 1 to 86400".into());
+        }
+        if let Some(channel) = &self.server.claude_cli_channel {
+            if !crate::claude_cli::CHANNELS.contains(&channel.as_str()) {
+                return Err(format!(
+                    "\"server.claude_cli_channel\" must be one of {}, not {channel}",
+                    crate::claude_cli::CHANNELS.join(", ")
+                ));
+            }
         }
         Ok(())
     }

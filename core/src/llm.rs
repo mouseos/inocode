@@ -46,9 +46,6 @@ const USAGE_TIMEOUT: Duration = Duration::from_secs(8);
 const MUSE_USAGE_TIMEOUT: Duration = Duration::from_secs(20);
 /// Largest usage body read (reference `quota-wire.ts`).
 const USAGE_BODY_MAX_BYTES: usize = 512 * 1024;
-/// Identity the reference sends on the Anthropic usage read
-/// (`claude-cli-identity.ts`).
-pub(crate) const CLAUDE_USER_AGENT: &str = "claude-cli/2.1.321 (external, cli)";
 const CLAUDE_USAGE_BETA: &str = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,prompt-caching-scope-2026-01-05";
 /// The ChatGPT backend filters `/models` by a required `client_version`
 /// parameter; asking as a client newer than any release shows the whole
@@ -1513,13 +1510,18 @@ async fn read_usage(
         }
         AuthKind::ClaudeOauth => {
             let host = base.strip_suffix("/v1").unwrap_or(base);
+            let store = match &config.auth_store_path {
+                Some(path) => path.clone(),
+                None => crate::oauth::Store::default_path()
+                    .map_err(|error| ErrorInfo::new("provider_config", error))?,
+            };
             (
                 client
                     .get(format!("{host}/api/oauth/usage"))
                     .timeout(USAGE_TIMEOUT)
                     .header("accept", "application/json, text/plain, */*")
                     .header("content-type", "application/json")
-                    .header("user-agent", CLAUDE_USER_AGENT)
+                    .header("user-agent", crate::claude_cli::user_agent(&store).await)
                     .header("anthropic-beta", CLAUDE_USAGE_BETA)
                     .bearer_auth(&credential.access),
                 crate::usage::from_anthropic,

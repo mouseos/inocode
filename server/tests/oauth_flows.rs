@@ -1120,7 +1120,12 @@ async fn claude_usage_sends_the_reference_headers() {
     let mock = start_mock(|request: &MockRequest| {
         assert_eq!(request.path, "/api/oauth/usage");
         assert_eq!(request.authorization.as_deref(), Some("Bearer stored-access"));
-        assert_eq!(request.headers["user-agent"], "claude-cli/2.1.321 (external, cli)");
+        let user_agent = &request.headers["user-agent"];
+        let version = user_agent
+            .strip_prefix("claude-cli/")
+            .and_then(|rest| rest.strip_suffix(" (external, cli)"))
+            .unwrap_or_else(|| panic!("{user_agent}"));
+        assert!(version.split('.').all(|part| part.parse::<u32>().is_ok()), "{user_agent}");
         assert!(request.headers["anthropic-beta"].starts_with("claude-code-20250219,oauth-2025-04-20"));
         assert!(!request.headers.contains_key("anthropic-version"));
         MockReply::status(

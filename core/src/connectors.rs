@@ -58,12 +58,17 @@ impl Account {
             crate::oauth::fresh(store.to_path_buf(), self.auth(), active.as_deref(), None)
                 .await
                 .map_err(|error| error.message)?;
-        self.sign(&credential)
+        let user_agent = match self {
+            Self::Claude => crate::claude_cli::user_agent(store).await,
+            Self::ChatGpt => String::new(),
+        };
+        self.sign(&credential, &user_agent)
     }
 
     fn sign(
         self,
         credential: &crate::oauth::Credential,
+        user_agent: &str,
     ) -> Result<reqwest::header::HeaderMap, String> {
         let mut headers = reqwest::header::HeaderMap::new();
         let mut add = |name: &'static str, value: &str| -> Result<(), String> {
@@ -74,7 +79,7 @@ impl Account {
         };
         add("authorization", &format!("Bearer {}", credential.access))?;
         match self {
-            Self::Claude => add("user-agent", crate::llm::CLAUDE_USER_AGENT)?,
+            Self::Claude => add("user-agent", user_agent)?,
             Self::ChatGpt => {
                 let account = credential.account_id.as_deref().ok_or(
                     "the stored ChatGPT credential has no account id; run the login again",
@@ -192,6 +197,7 @@ async fn claude(store: &Path, hosts: &Hosts) -> Result<Vec<Server>, String> {
     )
     .await
     .map_err(|error| error.message)?;
+    let user_agent = crate::claude_cli::user_agent(store).await;
     let mut renewed = false;
     let mut read_pages = 0;
     while read_pages < LIST_PAGES {
@@ -201,7 +207,7 @@ async fn claude(store: &Path, hosts: &Hosts) -> Result<Vec<Server>, String> {
         };
         let mut response = client
             .get(url)
-            .headers(Account::Claude.sign(&credential)?)
+            .headers(Account::Claude.sign(&credential, &user_agent)?)
             .header("anthropic-version", "2023-06-01")
             .header("anthropic-beta", CONNECTORS_BETA)
             .header("content-type", "application/json")

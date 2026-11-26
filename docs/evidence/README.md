@@ -31,6 +31,7 @@
 | [oauth-providers.md](oauth-providers.md) | Claude OAuth・GPT OAuth・Muse Code のログインと要求時認証 | UNSUPPORTED_APPROVED | `core/src/oauth.rs` |
 | [deepai-code-provider.md](deepai-code-provider.md) | DeepAI Code（チェックイン、待機、Theos） | UNSUPPORTED_APPROVED | `core/src/deepai.rs` |
 | [account-usage.md](account-usage.md) | アカウントの使用量取得 | UNSUPPORTED_APPROVED | `core/src/usage.rs` |
+| [claude-cli-version.md](claude-cli-version.md) | Claude Code として名乗る版を npm の配布チャンネルから読むこと | UNSUPPORTED_APPROVED | `core/src/claude_cli.rs` |
 | [audit-robustness-fixes.md](audit-robustness-fixes.md) | 監査 A 項目（例外処理・正しさ）の是正 | 項目ごと | 複数 |
 | [streaming-performance.md](streaming-performance.md) | ストリーミング経路の性能改善（監査 B 項目） | UNSUPPORTED_APPROVED（一部は不実施） | `core/src/sse.rs`、`core/src/llm.rs` |
 | [conversation-model.md](conversation-model.md) | 会話の型と 3 形式への変換、自走性の研究の整理 | UNSUPPORTED_APPROVED（判断 6・9 は研究で一部支持） | `core/src/conversation.rs` |
