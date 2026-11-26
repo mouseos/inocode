@@ -103,6 +103,41 @@ impl Store {
         .await
     }
 
+    /// Gives `session` `title` only if it still has none; `false` when it
+    /// has one, so a title given in the meantime is kept.
+    pub(crate) async fn title_untitled(
+        &self,
+        session: SessionId,
+        title: &str,
+    ) -> Result<bool, ErrorInfo> {
+        let title = title.to_string();
+        self.write(move |db| {
+            db.execute(
+                "UPDATE sessions SET title = ?1 WHERE id = ?2 AND title = ''",
+                params![title, session.0],
+            )
+            .map(|changed| changed == 1)
+            .map_err(store_error)
+        })
+        .await
+    }
+
+    /// The title of `session`; empty when it has none or there is no such
+    /// thread.
+    pub async fn session_title(&self, session: SessionId) -> Result<String, ErrorInfo> {
+        self.read(Duration::from_secs(5), move |db| {
+            db.query_row(
+                "SELECT title FROM sessions WHERE id = ?1",
+                [session.0],
+                |row| row.get(0),
+            )
+            .optional()
+            .map(Option::unwrap_or_default)
+            .map_err(store_error)
+        })
+        .await
+    }
+
     /// A new thread in `session`'s project holding a copy of its messages,
     /// with their times, and of its plan, standing instructions and choice
     /// of model. Its goal is not copied.

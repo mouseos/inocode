@@ -1239,6 +1239,8 @@ async fn run_turn(
         TurnEvent::McpProgress(progress) => EventPayload::mcp(id, "mcp_progress", progress),
         TurnEvent::McpLog(log) => EventPayload::mcp(id, "mcp_log", log),
         TurnEvent::Estimate(estimate) => EventPayload::estimate(id, &estimate),
+        TurnEvent::Title(title) => EventPayload::title(id, "title_updated", title),
+        TurnEvent::TitleProposed(title) => EventPayload::title(id, "title_proposed", title),
     };
     let outcome = {
         let run = core.run_turn(

@@ -91,7 +91,9 @@ async fn thread(client: &mut Client, project: Option<&std::path::Path>) -> i64 {
         json!({"id": 1, "method": "thread/start", "params": params}),
     )
     .await;
-    response["result"]["thread_id"].as_i64().expect("thread id")
+    let thread = response["result"]["thread_id"].as_i64().expect("thread id");
+    name_thread(client, thread).await;
+    thread
 }
 
 async fn command(client: &mut Client, id: u64, thread: i64, text: &str) -> Value {

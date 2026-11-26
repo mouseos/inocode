@@ -288,6 +288,7 @@ async fn models_come_from_the_settings_list_or_from_the_provider() {
             ["thread_id"]
             .as_i64()
             .unwrap();
+        name_thread(&mut client, thread).await;
         let chosen = request(
             &mut client,
             5,
@@ -318,6 +319,7 @@ async fn a_thread_runs_on_its_choice_and_a_change_applies_from_the_next_request(
             ["thread_id"]
             .as_i64()
             .unwrap();
+        name_thread(&mut client, thread).await;
         let shown = request(
             &mut client,
             2,
@@ -422,6 +424,7 @@ async fn a_thread_keeps_the_default_it_started_with() {
         let first = request(&mut client, 1, "thread/start", json!({})).await["result"]["thread_id"]
             .as_i64()
             .unwrap();
+        name_thread(&mut client, first).await;
         let set = request(
             &mut client,
             2,
@@ -434,6 +437,7 @@ async fn a_thread_keeps_the_default_it_started_with() {
             ["thread_id"]
             .as_i64()
             .unwrap();
+        name_thread(&mut client, second).await;
         turn(&mut client, 4, json!({"thread_id": first, "prompt": "a"})).await;
         turn(&mut client, 5, json!({"thread_id": second, "prompt": "b"})).await;
         assert_eq!(models_sent(&mock), ["model-a", "model-b"]);
@@ -564,6 +568,7 @@ async fn a_key_set_while_the_server_runs_is_used_from_the_next_request() {
             ["thread_id"]
             .as_i64()
             .unwrap();
+        name_thread(&mut client, thread).await;
         turn(
             &mut client,
             2,
@@ -615,6 +620,7 @@ async fn a_provider_a_thread_chose_is_kept_and_a_removed_one_takes_its_key_along
             ["thread_id"]
             .as_i64()
             .unwrap();
+        name_thread(&mut client, thread).await;
         request(
             &mut client,
             2,
@@ -664,6 +670,7 @@ async fn without_a_provider_a_turn_says_how_to_add_one() {
             ["thread_id"]
             .as_i64()
             .unwrap();
+        name_thread(&mut client, thread).await;
         let events = turn(&mut client, 2, json!({"thread_id": thread, "prompt": "hi"})).await;
         let last = events.last().unwrap();
         assert_eq!(last["event"], "failed", "{events:?}");
@@ -809,6 +816,7 @@ async fn switching_to_auto_during_a_turn_uses_the_reviewer_the_settings_name() {
             ["thread_id"]
             .as_i64()
             .unwrap();
+        name_thread(&mut client, thread).await;
         client
             .1
             .write_json(

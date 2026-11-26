@@ -203,6 +203,7 @@ async fn sign_ins_add_accounts_and_the_provider_uses_the_chosen_one() {
             ["thread_id"]
             .as_i64()
             .unwrap();
+        name_thread(&mut client, thread).await;
 
         let first = sign_in(&mut client, 2, "alice").await;
         assert_eq!(first["account"], "default", "the first account");
@@ -311,6 +312,7 @@ async fn sign_ins_add_accounts_and_the_provider_uses_the_chosen_one() {
             ["thread_id"]
             .as_i64()
             .unwrap();
+        name_thread(&mut client, other).await;
         assert!(answered_with(&mut client, 29, other)
             .await
             .contains("at-bob"));
@@ -401,6 +403,7 @@ async fn a_refused_account_waits_for_a_new_sign_in() {
             ["thread_id"]
             .as_i64()
             .unwrap();
+        name_thread(&mut client, thread).await;
         // `revoked` gets the access token the messages endpoint refuses,
         // and its refresh is refused too.
         sign_in(&mut client, 2, "revoked").await;
@@ -552,6 +555,7 @@ async fn the_account_commands_sign_in_list_choose_and_sign_out() {
             ["thread_id"]
             .as_i64()
             .unwrap();
+        name_thread(&mut client, thread).await;
 
         let listed = request(&mut client, 2, "commands/list", json!({})).await;
         for name in ["login", "logout", "accounts"] {
@@ -667,6 +671,7 @@ async fn live_the_machines_accounts_are_listed_and_used() {
             ["thread_id"]
             .as_i64()
             .unwrap();
+        name_thread(&mut client, thread).await;
         let last = turn(&mut client, 3, thread).await;
         println!("turn: {} answer: {}", last["event"], last["answer"]);
         assert_eq!(last["event"], "completed", "{last}");

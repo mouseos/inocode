@@ -179,9 +179,11 @@ async fn answered_with(client: &mut Client, id: u64, thread: i64) -> String {
 }
 
 async fn new_thread(client: &mut Client, id: u64) -> i64 {
-    request(client, id, "thread/start", json!({})).await["result"]["thread_id"]
+    let thread = request(client, id, "thread/start", json!({})).await["result"]["thread_id"]
         .as_i64()
-        .unwrap()
+        .unwrap();
+    name_thread(client, thread).await;
+    thread
 }
 
 /// The bearers the messages endpoint got, in order.

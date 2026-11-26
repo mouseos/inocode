@@ -1954,6 +1954,7 @@ impl Core {
             ("rename", _) => {
                 let title = value(0).unwrap_or_default();
                 store.rename_session(thread, title).await?;
+                self.announce_title(thread, title).await;
                 json!({ "thread_id": thread.0, "title": title })
             }
             ("fork", _) => {

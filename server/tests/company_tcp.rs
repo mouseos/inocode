@@ -148,7 +148,9 @@ async fn project_thread(client: &mut Client, project: &std::path::Path) -> i64 {
                "params": {"project": project.to_string_lossy()}}),
     )
     .await;
-    response["result"]["thread_id"].as_i64().expect("thread")
+    let thread = response["result"]["thread_id"].as_i64().expect("thread");
+    name_thread(client, thread).await;
+    thread
 }
 
 async fn turn(client: &mut Client, id: u64, thread: i64, prompt: &str) -> Vec<Value> {

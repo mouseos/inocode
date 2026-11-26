@@ -58,6 +58,10 @@ pub enum TurnEvent {
     /// What is left of the task by the estimate, at the start and after
     /// each model request (docs/evidence/effort-estimates.md).
     Estimate(crate::estimate::Estimate),
+    /// The thread's new title.
+    Title(String),
+    /// A title the model proposes for the thread; the title is unchanged.
+    TitleProposed(String),
 }
 
 /// Why a turn ended.
@@ -215,6 +219,9 @@ pub struct Models {
     /// Set for a member's run of a delegated task: the tokens it may use.
     /// Such a run cannot delegate further.
     pub budget: Option<u64>,
+    /// How the thread is named from the person's first message; `None`
+    /// for a run that does not name its thread.
+    pub title: Option<crate::title::Titling>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -575,6 +582,12 @@ struct Thread<'a> {
     /// See [`Models::budget`].
     budget: Option<u64>,
     over_budget: bool,
+    /// No message of the thread before this turn is the person's.
+    first: bool,
+    /// The titles the model proposed in this thread.
+    proposed: HashSet<String>,
+    /// The usage of the automatic title's requests, when it was started.
+    title_spent: Option<crate::title::Spent>,
 }
 
 /// The translation of the thinking as the settings last read give it: one
@@ -721,6 +734,80 @@ impl Thread<'_> {
         }
     }
 
+    /// Starts naming the thread from `prompt` when this is the person's
+    /// first message and the thread has no title.
+    async fn start_title(
+        &mut self,
+        llm: &std::sync::Arc<Llm>,
+        titling: crate::title::Titling,
+        prompt: &str,
+    ) {
+        if !self.first {
+            return;
+        }
+        match self.store.session_title(self.session).await {
+            Ok(title) if title.is_empty() => {}
+            Ok(_) => return,
+            Err(error) => {
+                self.warnings
+                    .push(format!("the thread was not named: {}", error.message));
+                return;
+            }
+        }
+        let spent = crate::title::Spent::new(std::sync::Mutex::new(Some(TurnUsage::default())));
+        crate::title::start(
+            self.store.clone(),
+            self.session,
+            llm.clone(),
+            titling,
+            prompt.to_string(),
+            self.events.clone(),
+            spent.clone(),
+        );
+        self.title_spent = Some(spent);
+    }
+
+    /// A `title` call: proposes a title to the person, or sets it.
+    async fn title(&mut self, arguments: &str) -> Answer {
+        let call = match crate::title::call(arguments) {
+            Ok(call) => call,
+            Err(message) => return (message, true),
+        };
+        let current = match self.store.session_title(self.session).await {
+            Ok(current) => current,
+            Err(error) => return (format!("title failed: {}", error.message), true),
+        };
+        match call.action {
+            crate::title::Action::Propose => {
+                if call.title == current {
+                    return ("This is already the thread's title.".to_string(), false);
+                }
+                if !self.proposed.insert(call.title.clone()) {
+                    return (
+                        "This title was already proposed; it is not shown again. Keep working."
+                            .to_string(),
+                        false,
+                    );
+                }
+                let _ = self.events.send(TurnEvent::TitleProposed(call.title)).await;
+                (
+                    "The proposal is shown to the person; the title is unchanged. Keep working."
+                        .to_string(),
+                    false,
+                )
+            }
+            crate::title::Action::Set => {
+                match self.store.rename_session(self.session, &call.title).await {
+                    Ok(_) => {}
+                    Err(error) => return (format!("title failed: {}", error.message), true),
+                }
+                let answer = format!("The thread's title is now: {}", call.title);
+                let _ = self.events.send(TurnEvent::Title(call.title)).await;
+                (answer, false)
+            }
+        }
+    }
+
     async fn record(&mut self, bodies: Vec<Body>) -> Result<(), ErrorInfo> {
         let base = self.next_seq;
         let messages: Vec<Message> = bodies
@@ -857,8 +944,11 @@ impl Thread<'_> {
             .filter(|goal| goal.is_active())
             .map(crate::goal::Goal::render);
         let now = now(chrono::Local::now().fixed_offset());
+        let title = self.store.session_title(self.session).await?;
+        let title = (!title.is_empty()).then(|| format!("The thread's title: {title}"));
         let parts: Vec<&str> = [
             Some(now.as_str()),
+            title.as_deref(),
             self.git.as_deref(),
             goal.as_deref(),
             plan.as_deref(),
@@ -963,6 +1053,9 @@ impl Thread<'_> {
         };
         if name == crate::goal::GOAL {
             return self.claim(arguments).await;
+        }
+        if name == crate::title::TITLE {
+            return self.title(arguments).await;
         }
         if name == crate::company::REVIEW {
             if let Some(company) = self.company.clone() {
@@ -1879,6 +1972,9 @@ pub async fn run(
             }
             thread.company = models.company.filter(|company| !company.members.is_empty());
             thread.budget = models.budget;
+            if let Some(titling) = models.title {
+                thread.start_title(&llm, titling, &prompt.text).await;
+            }
             if let Some(window) = llm.context_window().await {
                 thread.shorten_people(window);
             }
@@ -1947,6 +2043,9 @@ pub async fn run(
         shell::stop_all(&store.files_folder().join("logs"), session);
     }
     thread.record_attempt(&ending).await;
+    if let Some(spent) = &thread.title_spent {
+        crate::title::settle(spent, &mut usage);
+    }
     if let Err(error) = store.log_requests(session, &usage.records).await {
         thread.warnings.push(format!(
             "the requests of this turn were not logged, so the statistics leave them out: {}",
@@ -2191,6 +2290,12 @@ async fn open<'a>(
     let project = project.map(|(id, _)| id);
     let stored = store.since(session, 0, i64::MAX as usize).await?;
     let next_seq = stored.last().map_or(1, |last| last.seq + 1);
+    let first = !stored
+        .iter()
+        .any(|stored| crate::promise::person_text(&stored.message).is_some());
+    let proposed = crate::title::proposed(stored.iter().map(|stored| &stored.message))
+        .into_iter()
+        .collect();
     let (seqs, messages) = compaction::assemble(stored).into_iter().unzip();
     let lessons = agent_tools::render_lessons(store, project, prompt).await?;
     let language =
@@ -2253,6 +2358,9 @@ async fn open<'a>(
         company: None,
         budget: None,
         over_budget: false,
+        first,
+        proposed,
+        title_spent: None,
     })
 }
 
@@ -2302,6 +2410,10 @@ async fn steps(
         thread.company.as_deref(),
         thread.budget.is_some(),
     );
+    // A member's run works on a task of the lead, not with the person.
+    if thread.budget.is_none() {
+        harness.push(crate::title::spec());
+    }
     let mut opening = Vec::new();
     if thread.conversation.messages.is_empty() {
         match open_issues(thread.store, thread.project).await {

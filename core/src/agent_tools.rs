@@ -935,7 +935,7 @@ async fn issue(context: &Context<'_>, arguments: &str) -> Result<String, String>
     }
 }
 
-fn cut_title(text: &str) -> String {
+pub(crate) fn cut_title(text: &str) -> String {
     text.lines()
         .next()
         .unwrap_or_default()

@@ -808,6 +808,7 @@ async fn run_delegated(lead: &Lead<'_>, arguments: &str) -> Delegated {
         mode,
         company: Some(company.clone()),
         budget: Some(budget),
+        title: None,
     };
     let (_steer, steer) = mpsc::unbounded_channel();
     let (events, _) = mpsc::channel(1);

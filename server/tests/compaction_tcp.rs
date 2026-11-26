@@ -109,6 +109,7 @@ async fn run_turn(mock: &MockApi) -> Vec<Value> {
     let mut client = connect(addr).await;
     let response = call(&mut client, 1, json!({"id": 1, "method": "thread/start"})).await;
     let thread = response["result"]["thread_id"].as_i64().expect("thread");
+    name_thread(&mut client, thread).await;
     client
         .1
         .write_json(
@@ -251,6 +252,7 @@ async fn a_compact_command_without_a_summary_fails_and_leaves_the_thread_as_it_w
         let mut client = connect(addr).await;
         let response = call(&mut client, 1, json!({"id": 1, "method": "thread/start"})).await;
         let thread = response["result"]["thread_id"].as_i64().expect("thread");
+        name_thread(&mut client, thread).await;
         client
             .1
             .write_json(

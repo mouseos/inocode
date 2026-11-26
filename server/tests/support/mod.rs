@@ -92,6 +92,19 @@ pub async fn call(client: &mut Client, stream_id: u64, request: Value) -> Value 
     next_message(client, stream_id).await
 }
 
+/// Gives `thread` a title, so that its first turn starts no request for
+/// one and the provider gets only the requests a test is about.
+pub async fn name_thread(client: &mut Client, thread: i64) {
+    let response = call(
+        client,
+        9_999,
+        json!({"id": 9_999, "method": "command/run",
+               "params": {"thread_id": thread, "text": "/rename test"}}),
+    )
+    .await;
+    assert_eq!(response["result"]["title"], "test", "{response}");
+}
+
 pub async fn next_message(client: &mut Client, stream_id: u64) -> Value {
     let (response_stream, response): (u64, Value) =
         client.0.read_json().await.expect("read response");

@@ -52,6 +52,7 @@ mod sse;
 pub mod store;
 mod store_pool;
 mod store_threads;
+mod title;
 mod transcribe;
 pub mod translate;
 pub mod turn;
@@ -354,6 +355,9 @@ pub struct EventPayload {
     /// What is left of a turn's task by the estimate.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub estimate: Option<Value>,
+    /// The thread's new or proposed title.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 fn translation_service(name: &str) -> Result<translate::Service, ErrorInfo> {
@@ -420,6 +424,15 @@ impl EventPayload {
         }
     }
 
+    /// The thread's new title (`title_updated`), or a title the model
+    /// proposes for it (`title_proposed`).
+    pub fn title(id: u64, event: &'static str, title: String) -> Self {
+        Self {
+            title: Some(title),
+            ..Self::new(id, event)
+        }
+    }
+
     /// What is left of a running turn's task by the estimate.
     pub fn estimate(id: u64, estimate: &estimate::Estimate) -> Self {
         Self {
@@ -478,6 +491,7 @@ impl EventPayload {
             result: None,
             warnings: None,
             estimate: None,
+            title: None,
         }
     }
 }
@@ -492,12 +506,14 @@ enum Provider {
 }
 
 /// A turn that runs: where its steering input goes, where a new model
-/// chosen for its thread goes, and how any connection interrupts it.
+/// chosen for its thread goes, how any connection interrupts it, and,
+/// once it runs, where its events go.
 struct Running {
     steer: mpsc::UnboundedSender<String>,
     model: watch::Sender<Arc<Llm>>,
     mode: watch::Sender<Option<turn::Mode>>,
     cancel: watch::Sender<bool>,
+    events: Option<mpsc::Sender<TurnEvent>>,
 }
 
 /// What [`Core::begin_turn`] claimed for [`Core::run_turn`].
@@ -930,6 +946,7 @@ impl Core {
             mode: chosen_mode,
             company,
             budget: None,
+            title: None,
         })
     }
 
@@ -1093,6 +1110,7 @@ impl Core {
                 model: model_sender,
                 mode: mode_sender,
                 cancel: cancel_sender,
+                events: None,
             },
         );
         Ok(Claim {
@@ -1127,6 +1145,19 @@ impl Core {
     pub fn end_turn(&self, thread: SessionId) {
         if let Ok(mut turns) = self.turns.lock() {
             turns.remove(&thread);
+        }
+    }
+
+    /// Tells the running turn of `thread`, if one runs, that the thread's
+    /// title is now `title`.
+    pub(crate) async fn announce_title(&self, thread: SessionId, title: &str) {
+        let events = self.turns.lock().ok().and_then(|turns| {
+            turns
+                .get(&thread)
+                .and_then(|running| running.events.clone())
+        });
+        if let Some(events) = events {
+            let _ = events.send(TurnEvent::Title(title.to_string())).await;
         }
     }
 
@@ -1711,13 +1742,28 @@ impl Core {
             Ok(project) => project.map(|(_, key)| key),
             Err(error) => return failed(error),
         };
-        let models = match self
+        let mut models = match self
             .helpers(&conversation, project.as_deref(), claim.model, claim.mode)
             .await
         {
             Ok(models) => models,
             Err(error) => return failed(error),
         };
+        models.title = match self.settings().await {
+            Ok(settings) => Some(title::Titling {
+                listed: conversation
+                    .provider
+                    .as_deref()
+                    .and_then(|id| settings.provider(id))
+                    .and_then(|provider| provider.models.clone()),
+            }),
+            Err(error) => return failed(error),
+        };
+        if let Ok(mut turns) = self.turns.lock() {
+            if let Some(running) = turns.get_mut(&thread) {
+                running.events = Some(events.clone());
+            }
+        }
         let prompt = turn::Prompt {
             text: prompt,
             reply_to,

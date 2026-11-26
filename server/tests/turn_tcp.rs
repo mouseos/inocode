@@ -36,12 +36,13 @@ fn database() -> std::path::PathBuf {
 }
 
 /// The state sent after the history, past its first line, the person's
-/// local time.
+/// local time, and the title [`thread`] gives.
 fn after_the_time(state: &serde_json::Value) -> &str {
     let state = state.as_str().expect("text");
     let (time, rest) = state.split_once('\n').expect("the time and more");
     assert!(time.starts_with("Now: "), "{time}");
-    rest
+    rest.strip_prefix("The thread's title: test\n")
+        .unwrap_or(rest)
 }
 
 /// The reply-language line that ends every request.
@@ -80,7 +81,14 @@ fn finish(reason: &str) -> Vec<u8> {
     format!("data: {payload}\n\n").into_bytes()
 }
 
+/// A new thread with a title, so that its turns make no title request.
 async fn thread(client: &mut Client) -> i64 {
+    let thread = untitled_thread(client).await;
+    name_thread(client, thread).await;
+    thread
+}
+
+async fn untitled_thread(client: &mut Client) -> i64 {
     let response = call(client, 1, json!({"id": 1, "method": "thread/start"})).await;
     response["result"]["thread_id"].as_i64().expect("thread id")
 }
@@ -830,7 +838,7 @@ async fn the_plan_is_shown_after_the_history_with_every_request() {
         let requests = chats(&mock);
         assert!(requests[0].body["tools"]
             .as_array()
-            .is_some_and(|tools| tools.len() == 22));
+            .is_some_and(|tools| tools.len() == 23));
         let state = last_message(&requests[1]);
         assert_eq!(state["role"], "user");
         assert_eq!(
@@ -1107,7 +1115,7 @@ async fn tools_of_the_configured_mcp_servers_are_offered_and_called() {
         assert_eq!(tool_results(&events), ["5"]);
         let requests = chats(&mock);
         let tools = requests[0].body["tools"].as_array().expect("tools");
-        assert_eq!(tools.len(), 24);
+        assert_eq!(tools.len(), 25);
         let added = tools
             .iter()
             .find(|tool| tool["function"]["name"] == "mcp__calc__add")
@@ -1486,7 +1494,9 @@ async fn approved_methods_are_shared_across_projects_and_recalled_whole() {
                        "params": {"project": folder.to_string_lossy()}}),
             )
             .await;
-            threads.push(response["result"]["thread_id"].as_i64().expect("thread"));
+            let thread = response["result"]["thread_id"].as_i64().expect("thread");
+            name_thread(&mut client, thread).await;
+            threads.push(thread);
         }
 
         let events = turn(&mut client, 3, threads[0], "unpack the INOF firmware").await;
@@ -1613,6 +1623,7 @@ async fn lessons_need_a_condition_and_rules_are_not_duplicated() {
         )
         .await;
         let thread = response["result"]["thread_id"].as_i64().expect("thread");
+        name_thread(&mut client, thread).await;
 
         let events = turn(&mut client, 2, thread, "flash the tablet").await;
         let results = tool_results(&events);
@@ -2108,7 +2119,7 @@ async fn near_the_window_older_work_is_compacted_and_the_person_kept() {
             .expect("a summary request");
         assert_eq!(
             summary_request.body["tools"].as_array().map(Vec::len),
-            Some(22)
+            Some(23)
         );
         assert!(summary_request.body["messages"]
             .to_string()
@@ -2282,6 +2293,7 @@ async fn commands_run_in_a_terminal_that_can_be_answered() {
         )
         .await;
         let thread = response["result"]["thread_id"].as_i64().expect("thread");
+        name_thread(&mut client, thread).await;
 
         let events = turn(&mut client, 2, thread, "check the build").await;
         let results = tool_results(&events);
@@ -2396,7 +2408,9 @@ async fn project_thread(client: &mut Client, project: &std::path::Path) -> i64 {
                "params": {"project": project.to_string_lossy()}}),
     )
     .await;
-    response["result"]["thread_id"].as_i64().expect("thread")
+    let thread = response["result"]["thread_id"].as_i64().expect("thread");
+    name_thread(client, thread).await;
+    thread
 }
 
 fn shell_call(command: &str) -> Value {
@@ -3420,6 +3434,306 @@ async fn a_goal_is_stopped_when_a_step_uses_up_its_budget() {
             .as_str()
             .unwrap()
             .contains("budget"));
+    })
+    .await;
+}
+
+/// Whether `request` is the request that names a thread.
+fn names_thread(request: &MockRequest) -> bool {
+    request.body["messages"][0]["content"]
+        .as_str()
+        .is_some_and(|system| system.starts_with("You write the title of a conversation"))
+}
+
+fn titles<'a>(events: &'a [Value], kind: &str) -> Vec<&'a str> {
+    events
+        .iter()
+        .filter(|event| event["event"] == kind)
+        .filter_map(|event| event["title"].as_str())
+        .collect()
+}
+
+async fn thread_title(client: &mut Client, stream_id: u64, thread: i64) -> String {
+    let listed = call(
+        client,
+        stream_id,
+        json!({"id": stream_id, "method": "thread/list"}),
+    )
+    .await;
+    listed["result"]["threads"]
+        .as_array()
+        .expect("threads")
+        .iter()
+        .find(|listed| listed["thread_id"] == thread)
+        .and_then(|listed| listed["title"].as_str())
+        .expect("the thread is listed")
+        .to_string()
+}
+
+/// The state sent after the history of `request`, past the time.
+fn state_of(request: &MockRequest) -> String {
+    let messages = request.body["messages"].as_array().expect("messages");
+    after_the_time(&messages.last().unwrap()["content"]).to_string()
+}
+
+#[tokio::test]
+async fn the_first_message_names_the_thread_once_with_a_small_model_of_the_provider() {
+    with_timeout(async {
+        let mock = start_mock(|request: &MockRequest| {
+            if request.method == "GET" {
+                return MockReply::status(
+                    200,
+                    &json!({"data": [{"id": "test-model"}, {"id": "mini-haiku-1"}]}).to_string(),
+                );
+            }
+            if names_thread(request) {
+                return MockReply::stream(vec![
+                    sse_delta("「パーサーの修正」"),
+                    usage_chunk(7),
+                    finish("stop"),
+                    sse_done(),
+                ]);
+            }
+            // The answer comes after the title, so the title's event and
+            // usage are part of the turn.
+            MockReply::stream(vec![
+                sse_delta("hi"),
+                usage_chunk(100),
+                finish("stop"),
+                sse_done(),
+            ])
+            .with_head_delay(Duration::from_millis(500))
+        })
+        .await;
+        let (addr, _stop, _handle) = start_server(core_for(&mock).await).await;
+        let mut client = connect(addr).await;
+        let thread = untitled_thread(&mut client).await;
+
+        let events = turn(&mut client, 2, thread, "パーサーが壊れたので直して").await;
+        assert_eq!(titles(&events, "title_updated"), ["パーサーの修正"]);
+        let last = events.last().unwrap();
+        assert_eq!(last["event"], "completed");
+        assert_eq!(last["usage"]["requests"], 2, "the turn's and the title's");
+        assert_eq!(last["usage"]["input"], 107);
+        assert_eq!(thread_title(&mut client, 3, thread).await, "パーサーの修正");
+
+        let named: Vec<MockRequest> = chats(&mock).into_iter().filter(names_thread).collect();
+        assert_eq!(named.len(), 1);
+        assert_eq!(named[0].body["model"], "mini-haiku-1");
+        let asked = named[0].body["messages"][1]["content"].as_str().unwrap();
+        assert!(asked.contains("パーサーが壊れたので直して"), "{asked}");
+        assert!(named[0].body.get("tools").is_none());
+
+        // A later turn does not name the thread again, and the model sees
+        // the title and is offered the tool.
+        let events = turn(&mut client, 4, thread, "ありがとう").await;
+        assert!(titles(&events, "title_updated").is_empty());
+        let chats = chats(&mock);
+        assert_eq!(chats.iter().filter(|chat| names_thread(chat)).count(), 1);
+        let last_turn = chats.last().unwrap();
+        assert!(
+            state_of(last_turn).starts_with("The thread's title: パーサーの修正\n"),
+            "{}",
+            state_of(last_turn)
+        );
+        assert!(last_turn.body["tools"].to_string().contains("\"title\""));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_thread_is_named_by_its_first_line_when_the_title_requests_fail() {
+    with_timeout(async {
+        let mock = start_mock(|request: &MockRequest| {
+            if request.method == "GET" {
+                return MockReply::status(
+                    200,
+                    &json!({"data": [{"id": "test-model"}, {"id": "tiny-flash"}]}).to_string(),
+                );
+            }
+            if names_thread(request) {
+                return MockReply::status(500, "{\"error\": {\"message\": \"down\"}}");
+            }
+            MockReply::stream(vec![sse_delta("ok"), finish("stop"), sse_done()])
+                .with_head_delay(Duration::from_millis(500))
+        })
+        .await;
+        let (addr, _stop, _handle) = start_server(core_for(&mock).await).await;
+        let mut client = connect(addr).await;
+        let thread = untitled_thread(&mut client).await;
+
+        let events = turn(
+            &mut client,
+            2,
+            thread,
+            "\n直してほしい: parser\n詳しくは後で",
+        )
+        .await;
+        assert_eq!(titles(&events, "title_updated"), ["直してほしい: parser"]);
+        // The small model, then once the thread's model.
+        let tried: Vec<Value> = chats(&mock)
+            .into_iter()
+            .filter(names_thread)
+            .map(|request| request.body["model"].clone())
+            .collect();
+        assert_eq!(tried, [json!("tiny-flash"), json!("test-model")]);
+        assert_eq!(
+            thread_title(&mut client, 3, thread).await,
+            "直してほしい: parser"
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_rename_while_the_title_is_made_wins() {
+    with_timeout(async {
+        let mock = start_mock(|request: &MockRequest| {
+            if request.method == "GET" {
+                return MockReply::status(404, "{}");
+            }
+            if names_thread(request) {
+                return MockReply::stream(vec![
+                    sse_delta("自動の題名"),
+                    finish("stop"),
+                    sse_done(),
+                ])
+                .with_head_delay(Duration::from_millis(1_000));
+            }
+            MockReply::stream(vec![sse_delta("ok"), finish("stop"), sse_done()])
+                .with_head_delay(Duration::from_millis(2_000))
+        })
+        .await;
+        let (addr, _stop, _handle) = start_server(core_for(&mock).await).await;
+        let mut client = connect(addr).await;
+        let mut other = connect(addr).await;
+        let thread = untitled_thread(&mut client).await;
+
+        client
+            .1
+            .write_json(
+                2,
+                &json!({"id": 2, "method": "turn/start",
+                        "params": {"thread_id": thread, "prompt": "何か作って"}}),
+            )
+            .await
+            .expect("send");
+        let mut events = Vec::new();
+        loop {
+            let event = next_message(&mut client, 2).await;
+            let stored = event["event"] == "message";
+            events.push(event);
+            if stored {
+                break;
+            }
+        }
+        let renamed = call(
+            &mut other,
+            3,
+            json!({"id": 3, "method": "command/run",
+                    "params": {"thread_id": thread, "text": "/rename 手で付けた題名"}}),
+        )
+        .await;
+        assert_eq!(renamed["result"]["title"], "手で付けた題名");
+        loop {
+            let event = next_message(&mut client, 2).await;
+            let kind = event["event"].as_str().unwrap_or_default().to_string();
+            events.push(event);
+            if matches!(kind.as_str(), "completed" | "failed" | "cancelled") {
+                break;
+            }
+        }
+        // The rename reaches the running turn; the title made meanwhile is
+        // not saved over it.
+        assert_eq!(titles(&events, "title_updated"), ["手で付けた題名"]);
+        assert_eq!(
+            chats(&mock)
+                .iter()
+                .filter(|chat| names_thread(chat))
+                .count(),
+            1
+        );
+        assert_eq!(thread_title(&mut other, 4, thread).await, "手で付けた題名");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn the_model_proposes_a_title_once_without_changing_it() {
+    with_timeout(async {
+        let propose = json!({"action": "propose", "title": "パーサーの実装"});
+        let mock = scripted(vec![
+            tool_turn("call_1", "title", propose.clone()),
+            tool_turn("call_2", "title", propose),
+        ])
+        .await;
+        let (addr, _stop, _handle) = start_server(core_for(&mock).await).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client).await;
+        let renamed = call(
+            &mut client,
+            2,
+            json!({"id": 2, "method": "command/run",
+                    "params": {"thread_id": thread, "text": "/rename パーサーの検討"}}),
+        )
+        .await;
+        assert_eq!(renamed["result"]["title"], "パーサーの検討");
+
+        let events = turn(&mut client, 3, thread, "パーサーを作って").await;
+        assert_eq!(events.last().unwrap()["event"], "completed");
+        assert_eq!(titles(&events, "title_proposed"), ["パーサーの実装"]);
+        assert!(titles(&events, "title_updated").is_empty());
+        assert_eq!(thread_title(&mut client, 4, thread).await, "パーサーの検討");
+        // The thread was named before its first message: no title request.
+        let chats = chats(&mock);
+        assert_eq!(chats.len(), 3);
+        assert!(!chats.iter().any(names_thread));
+        let results: Vec<&str> = chats[2].body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|message| message["role"] == "tool")
+            .filter_map(|message| message["content"].as_str())
+            .collect();
+        assert_eq!(
+            results,
+            [
+                "The proposal is shown to the person; the title is unchanged. Keep working.",
+                "This title was already proposed; it is not shown again. Keep working.",
+            ]
+        );
+        assert!(state_of(&chats[2]).starts_with("The thread's title: パーサーの検討\n"));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn the_model_sets_the_title_when_asked() {
+    with_timeout(async {
+        let mock = scripted(vec![tool_turn(
+            "call_1",
+            "title",
+            json!({"action": "set", "title": "新しい名前"}),
+        )])
+        .await;
+        let (addr, _stop, _handle) = start_server(core_for(&mock).await).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client).await;
+        call(
+            &mut client,
+            2,
+            json!({"id": 2, "method": "command/run",
+                    "params": {"thread_id": thread, "text": "/rename 古い名前"}}),
+        )
+        .await;
+
+        let events = turn(&mut client, 3, thread, "題名を「新しい名前」に変えて").await;
+        assert_eq!(titles(&events, "title_updated"), ["新しい名前"]);
+        assert!(titles(&events, "title_proposed").is_empty());
+        assert_eq!(thread_title(&mut client, 4, thread).await, "新しい名前");
+        let chats = chats(&mock);
+        assert!(state_of(&chats[0]).starts_with("The thread's title: 古い名前\n"));
+        assert!(state_of(&chats[1]).starts_with("The thread's title: 新しい名前\n"));
     })
     .await;
 }
