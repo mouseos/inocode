@@ -504,6 +504,7 @@ async fn dispatch(
         "mcp/resources/subscribe" => {
             watch_resource(request, stream_id, core, queue, in_flight).await
         }
+        "thread/titles/subscribe" => watch_titles(request, stream_id, core, queue, in_flight).await,
         "models/catalog" => {
             // Fetches prices and scores: off the read loop, like discovery.
             let (id, core, queue) = (request.id, Arc::clone(core), queue.clone());
@@ -1130,6 +1131,85 @@ async fn relay_updates(
         Delivery::Cancelled => Some(Terminal::Cancelled),
     };
     drop(updates);
+    match terminal {
+        Some(terminal) => settle(id, stream_id, &queue, &in_flight, cancelled, terminal).await,
+        None => abandon(&in_flight, id).await,
+    }
+}
+
+/// `thread/titles/subscribe`: a stream of `title_updated` events
+/// (`thread_id`, `title`) for every title a thread is given after `started`,
+/// whether or not a turn runs, until `cancel` names it or the connection
+/// closes.
+async fn watch_titles(
+    request: Request,
+    stream_id: u64,
+    core: &Arc<Core>,
+    queue: &mpsc::Sender<Outgoing>,
+    in_flight: &InFlight,
+) -> bool {
+    let id = request.id;
+    let changes = match core.title_changes() {
+        Ok(changes) => changes,
+        Err(error) => {
+            return send_event(queue, stream_id, EventPayload::failed(id, error))
+                .await
+                .is_ok()
+        }
+    };
+    let mut pending = in_flight.lock().await;
+    if pending.contains_key(&id) {
+        drop(pending);
+        let error = ErrorInfo::new("duplicate_id", "request id is already in flight");
+        let event = EventPayload::failed(id, error);
+        return send_event(queue, stream_id, event).await.is_ok();
+    }
+    let (cancel_tx, cancel_rx) = watch::channel(false);
+    pending.insert(id, Generation::Running(cancel_tx));
+    drop(pending);
+    tokio::spawn(relay_titles(
+        id,
+        changes,
+        stream_id,
+        queue.clone(),
+        Arc::clone(in_flight),
+        cancel_rx,
+    ));
+    true
+}
+
+async fn relay_titles(
+    id: u64,
+    mut changes: tokio::sync::broadcast::Receiver<(inocode_core::store::SessionId, String)>,
+    stream_id: u64,
+    queue: mpsc::Sender<Outgoing>,
+    in_flight: InFlight,
+    mut cancelled: watch::Receiver<bool>,
+) {
+    use tokio::sync::broadcast::error::RecvError;
+    let terminal = match deliver(&queue, stream_id, EventPayload::started(id), &mut cancelled).await
+    {
+        Delivery::Sent => loop {
+            tokio::select! {
+                change = changes.recv() => {
+                    let (thread, title) = match change {
+                        Ok(change) => change,
+                        Err(RecvError::Lagged(_)) => continue,
+                        Err(RecvError::Closed) => break Some(Terminal::Cancelled),
+                    };
+                    let event = EventPayload::thread_title(id, thread, title);
+                    match deliver(&queue, stream_id, event, &mut cancelled).await {
+                        Delivery::Sent => {}
+                        Delivery::ConnectionGone => break None,
+                        Delivery::Cancelled => break Some(Terminal::Cancelled),
+                    }
+                }
+                _ = cancelled.changed() => break Some(Terminal::Cancelled),
+            }
+        },
+        Delivery::ConnectionGone => None,
+        Delivery::Cancelled => Some(Terminal::Cancelled),
+    };
     match terminal {
         Some(terminal) => settle(id, stream_id, &queue, &in_flight, cancelled, terminal).await,
         None => abandon(&in_flight, id).await,

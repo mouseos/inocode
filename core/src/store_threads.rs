@@ -91,16 +91,21 @@ impl Store {
 
     /// Gives `session` a new title; `false` when there is no such thread.
     pub async fn rename_session(&self, session: SessionId, title: &str) -> Result<bool, ErrorInfo> {
-        let title = title.to_string();
-        self.write(move |db| {
-            db.execute(
-                "UPDATE sessions SET title = ?1 WHERE id = ?2",
-                params![title, session.0],
-            )
-            .map(|changed| changed == 1)
-            .map_err(store_error)
-        })
-        .await
+        let given = title.to_string();
+        let renamed = self
+            .write(move |db| {
+                db.execute(
+                    "UPDATE sessions SET title = ?1 WHERE id = ?2",
+                    params![given, session.0],
+                )
+                .map(|changed| changed == 1)
+                .map_err(store_error)
+            })
+            .await?;
+        if renamed {
+            self.titled(session, title);
+        }
+        Ok(renamed)
     }
 
     /// Gives `session` `title` only if it still has none; `false` when it
@@ -110,16 +115,21 @@ impl Store {
         session: SessionId,
         title: &str,
     ) -> Result<bool, ErrorInfo> {
-        let title = title.to_string();
-        self.write(move |db| {
-            db.execute(
-                "UPDATE sessions SET title = ?1 WHERE id = ?2 AND title = ''",
-                params![title, session.0],
-            )
-            .map(|changed| changed == 1)
-            .map_err(store_error)
-        })
-        .await
+        let given = title.to_string();
+        let titled = self
+            .write(move |db| {
+                db.execute(
+                    "UPDATE sessions SET title = ?1 WHERE id = ?2 AND title = ''",
+                    params![given, session.0],
+                )
+                .map(|changed| changed == 1)
+                .map_err(store_error)
+            })
+            .await?;
+        if titled {
+            self.titled(session, title);
+        }
+        Ok(titled)
     }
 
     /// The title of `session`; empty when it has none or there is no such

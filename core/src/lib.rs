@@ -358,6 +358,9 @@ pub struct EventPayload {
     /// The thread's new or proposed title.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// The thread a `thread/titles/subscribe` event is about.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<i64>,
 }
 
 fn translation_service(name: &str) -> Result<translate::Service, ErrorInfo> {
@@ -433,6 +436,14 @@ impl EventPayload {
         }
     }
 
+    /// `thread`'s new title, for `thread/titles/subscribe`.
+    pub fn thread_title(id: u64, thread: SessionId, title: String) -> Self {
+        Self {
+            thread_id: Some(thread.0),
+            ..Self::title(id, "title_updated", title)
+        }
+    }
+
     /// What is left of a running turn's task by the estimate.
     pub fn estimate(id: u64, estimate: &estimate::Estimate) -> Self {
         Self {
@@ -492,6 +503,7 @@ impl EventPayload {
             warnings: None,
             estimate: None,
             title: None,
+            thread_id: None,
         }
     }
 }
@@ -1701,6 +1713,14 @@ impl Core {
     /// beside their tools (docs/evidence/mcp-client.md).
     pub async fn mcp_request(&self, method: &str, params: &Value) -> Result<Value, ErrorInfo> {
         mcp::request(self.store()?, method, params).await
+    }
+
+    /// `thread/titles/subscribe`: the titles threads are given from now on,
+    /// as `(thread, title)`, until the value returned is dropped.
+    pub fn title_changes(
+        &self,
+    ) -> Result<tokio::sync::broadcast::Receiver<(SessionId, String)>, ErrorInfo> {
+        Ok(self.store()?.title_changes())
     }
 
     /// `mcp/resources/subscribe`: the updates of one resource of one MCP

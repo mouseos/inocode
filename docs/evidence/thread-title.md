@@ -4,7 +4,7 @@
   - 自動の題名：スレッドの人の最初のメッセージが記録されるとき、スレッドに題名がなければ、裏で題名を作る要求を 1 回出す（ターンを待たせない）。モデルは、スレッドの提供元に小さいモデル（`luna`・`flash-lite`・`flash`・`haiku` の系統の順に、見つかった系統のうち名前がいちばん後のもの）があればそれ、なければスレッドの今のモデル。小さいモデルが失敗したら、スレッドのモデルで 1 回だけやり直す。それも失敗するか使える答えがなければ、人の最初のメッセージの 1 行目を 80 文字で切ったものにする（`agent_tools::cut_title`）。保存は、そのときまだ題名がない場合だけ（比べてから保存）。後のターンでは作り直さない。
   - モデルの道具 `title`：`action` が `propose`（提案）か `set`（変更）。提案は題名を変えず、人の画面に出す通知を送るだけで、モデルは作業を続ける。同じ題名を 2 度提案すると、通知は送らずにそう返す。今の題名と同じ提案も送らない。変更は、人がこの会話で明示的に題名を変えるよう頼んだときだけ使う（道具の説明に書いた）。
   - 毎回の要求の後ろに付ける状態（`Thread::state`）に、題名があれば `The thread's title: …` の 1 行を入れる。モデルが作業と題名のずれに気づけるようにするため。
-  - 通知：題名が変わったとき（自動、モデルの `set`、`/rename`）に `title_updated`、提案のときに `title_proposed` を、走っているターンの通知の流れに出す。
+  - 通知：題名が変わったとき（自動、モデルの `set`、`/rename`）に `title_updated`、提案のときに `title_proposed` を、走っているターンの通知の流れに出す。ターンの外の変更は `thread/titles/subscribe` で届く。
   - 範囲外：題名の設定項目（題名用のモデルの指定など）は作らない。ターンが走っていないときの題名の変更（例：ターンの後の `/rename`、ターンが終わってから返ってきた自動の題名）は通知されない。inocode にはスレッド全体の通知の流れがなく、通知はターンの要求の ID に付くため。`thread/list` などで読める。
 - **関連ソースコード：**
   - `core/src/title.rs`：小さいモデルの選び方、題名の要求と指示文、答えの読み取り、使用量の数え方、道具の定義と引数。
@@ -45,6 +45,7 @@
 
 - `{"id": <ターンの要求の ID>, "event": "title_updated", "title": "<新しい題名>"}`
 - `{"id": <ターンの要求の ID>, "event": "title_proposed", "title": "<提案された題名>"}`
+- ターンが走っていないときの変更も届くように、`thread/titles/subscribe`（引数なし）がある。`started` の後、どのスレッドの題名が変わっても（自動、モデルの `set`、`/rename`）`{"id": <購読の要求の ID>, "event": "title_updated", "thread_id": <スレッド>, "title": "<新しい題名>"}` を送り、`cancel` か接続が切れるまで続く。題名の変更はデータベースの書き込み（`Store::rename_session`、`Store::title_untitled`）で流すので、変え方を問わない。購読者が遅れて 64 件より多くたまると、古い変更はその購読者に届かない。
 
 ## 使用量
 
@@ -59,5 +60,6 @@
   - `a_rename_while_the_title_is_made_wins`：生成中の `/rename`（別の接続から）が走っているターンに `title_updated` として届き、後から返った自動の題名で上書きされないこと。
   - `the_model_proposes_a_title_once_without_changing_it`：提案で `title_proposed` が 1 度だけ出て、2 度目は送られず、題名は変わらないこと。題名のあるスレッドでは題名の要求が出ないこと。
   - `the_model_sets_the_title_when_asked`：`set` で題名が変わり、`title_updated` が出て、次の要求の状態に新しい題名が出ること。
+- TCP テスト（`server/tests/commands_tcp.rs`）：`title_changes_reach_a_subscriber_while_no_turn_runs`：ターンが走っていないときの `/rename` が、別の接続の購読に `thread_id` 付きの `title_updated` として届き、`cancel` で止まること。
 - 既存の TCP テストは、スレッドを作るときに題名を付ける（`support::name_thread`）。題名の要求が偽の提供元への要求の順番や数を変えないようにするため。道具の数を確かめるテストは 1 つ増やした。
 - 2026-11-26 に実行：`cargo test -p inocode-core`（414 件成功、34 件は手で実行するもの）、`cargo test -p inocode-server`（178 件成功、失敗なし）、`cargo clippy --workspace --all-targets`（警告なし）、`cargo fmt`。実在の提供元では実行していない。

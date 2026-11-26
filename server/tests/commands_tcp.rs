@@ -826,3 +826,49 @@ async fn live_goal_and_prompt_command() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn title_changes_reach_a_subscriber_while_no_turn_runs() {
+    with_timeout(async {
+        let mock = scripted(Vec::new()).await;
+        let database = database();
+        let (addr, _stop, _handle) = start_server(core_for(&mock, &database).await).await;
+        let mut watcher = connect(addr).await;
+        let mut client = connect(addr).await;
+        let first = thread(&mut client, None).await;
+        watcher
+            .1
+            .write_json(
+                5,
+                &json!({"id": 5, "method": "thread/titles/subscribe", "params": {}}),
+            )
+            .await
+            .expect("subscribe");
+        assert_eq!(next_message(&mut watcher, 5).await["event"], "started");
+
+        let renamed = command(&mut client, 2, first, "/rename 実装").await;
+        assert_eq!(renamed["result"]["title"], "実装", "{renamed}");
+        let updated = next_message(&mut watcher, 5).await;
+        assert_eq!(updated["event"], "title_updated", "{updated}");
+        assert_eq!(updated["thread_id"], first);
+        assert_eq!(updated["title"], "実装");
+
+        watcher
+            .1
+            .write_json(
+                6,
+                &json!({"id": 6, "method": "cancel", "params": {"request_id": 5}}),
+            )
+            .await
+            .expect("cancel");
+        let mut ends = Vec::new();
+        for _ in 0..2 {
+            let (stream, frame): (u64, Value) = watcher.0.read_json().await.expect("frame");
+            ends.push((stream, frame));
+        }
+        ends.sort_by_key(|(stream, _)| *stream);
+        assert_eq!(ends[0].1["event"], "cancelled");
+        assert_eq!(ends[1].1["result"]["cancelled"], true);
+    })
+    .await;
+}

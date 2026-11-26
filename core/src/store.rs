@@ -557,6 +557,10 @@ pub struct HistoryQuery {
     pub budget: Duration,
 }
 
+/// Title changes kept for a listener that falls behind; older ones are lost
+/// to it.
+const TITLES_KEPT: usize = 64;
+
 /// The database. Cloning shares it; writes are serialized on one
 /// connection, reads use their own so they never wait for a write (WAL).
 #[derive(Clone)]
@@ -583,6 +587,8 @@ struct Inner {
     /// the thread whose turn asked and the question as it was reported.
     elicitations: Mutex<HashMap<u64, Waiting>>,
     next_elicitation: std::sync::atomic::AtomicU64,
+    /// Each new title a thread is given, for whoever listens.
+    titles: tokio::sync::broadcast::Sender<(SessionId, String)>,
 }
 
 impl Store {
@@ -590,6 +596,15 @@ impl Store {
     /// as command logs: beside the database, named after it.
     pub(crate) fn files_folder(&self) -> PathBuf {
         self.inner.path.with_extension("files")
+    }
+
+    /// The titles threads are given from now on, as `(thread, title)`.
+    pub fn title_changes(&self) -> tokio::sync::broadcast::Receiver<(SessionId, String)> {
+        self.inner.titles.subscribe()
+    }
+
+    pub(crate) fn titled(&self, session: SessionId, title: &str) {
+        let _ = self.inner.titles.send((session, title.to_string()));
     }
 
     pub(crate) fn mcp(&self) -> &tokio::sync::Mutex<Option<Arc<crate::mcp::Tools>>> {
@@ -859,6 +874,7 @@ impl Store {
                 mcp: tokio::sync::Mutex::new(None),
                 elicitations: Mutex::new(HashMap::new()),
                 next_elicitation: std::sync::atomic::AtomicU64::new(last_elicitation),
+                titles: tokio::sync::broadcast::channel(TITLES_KEPT).0,
             }),
         })
     }
