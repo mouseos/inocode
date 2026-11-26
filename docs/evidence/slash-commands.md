@@ -1,7 +1,7 @@
 # スラッシュコマンド
 
 - **対象と範囲：** inocode のエンジンが持つスラッシュコマンドの仕組みと、組み込みコマンドの一覧。UI（CLI・GUI）は、この一覧をエンジンから受け取って表示し、入力をエンジンに渡す。
-- **関連ソースコード：** `core/src/commands.rs`（コマンドの一覧、名前の決まり、引数の読み取り、各コマンドの実行）、`core/src/store_threads.rs`（会話の一覧・名前・写し・削除、会話の使用量、メモの一覧）、`core/src/turn.rs`（`compact_now`、ターン中のモードの切り替え）、`core/src/lib.rs`（`Core::turn_running`、最後のターンが残した保留と質問、`command` の出来事）、`core/src/mcp.rs`（`listed`、MCP の質問の中身を覚える）、`core/src/plugins.rs`（`commands/*.md` を読む）、`server/src/lib.rs`（`commands/list`・`command/run`・`thread/list`）、`server/tests/commands_tcp.rs`。`/login`・`/logout`・`/accounts` は `core/src/accounts.rs` を呼び、試験は `server/tests/accounts_tcp.rs`。
+- **関連ソースコード：** `core/src/commands.rs`（コマンドの一覧、名前の決まり、引数の読み取り、各コマンドの実行）、`core/src/store_threads.rs`（会話の一覧・名前・写し・削除、会話の使用量、メモの一覧）、`core/src/turn.rs`（`compact_now`、ターン中のモードの切り替え）、`core/src/lib.rs`（`Core::turn_running`、最後のターンが残した保留と質問、`command` の出来事）、`core/src/mcp/mod.rs`（`listed`、MCP の質問の中身を覚える）、`core/src/plugins.rs`（`commands/*.md` を読む）、`server/src/lib.rs`（`commands/list`・`command/run`・`thread/list`）、`server/tests/commands_tcp.rs`。`/login`・`/logout`・`/accounts` は `core/src/accounts.rs` を呼び、試験は `server/tests/accounts_tcp.rs`。
 - **根拠の状態：** UNSUPPORTED_APPROVED。学術的な裏付けは調べていない（操作の入口の設計）。ユーザーの指示（2026-11-25）：
   - 「スラッシュコマンドからゴールを制御しないとだめでしょ」
   - 「スラッシュコマンドをもっと定義してからやるべき」

@@ -51,6 +51,10 @@ pub enum TurnEvent {
     /// A question of an MCP server for the person, answered with
     /// `turn/answer` while the call waits.
     Elicitation(serde_json::Value),
+    /// How far an MCP tool call has come, as its server reports it.
+    McpProgress(serde_json::Value),
+    /// A log message an MCP server sent during a call.
+    McpLog(serde_json::Value),
     /// What is left of the task by the estimate, at the start and after
     /// each model request (docs/evidence/effort-estimates.md).
     Estimate(crate::estimate::Estimate),

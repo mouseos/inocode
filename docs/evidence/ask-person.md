@@ -27,7 +27,8 @@
 - **承認：** 2026-11-20 の質問「夜のあいだに inocode へ実装してよいものはどれですか？」で「質問ツールの拡張」（MCP サーバーからの聞き返しを同じフォームで人に出す、答えを lesson の候補にする）を選んだ。UNSUPPORTED_APPROVED、研究なし。
 - 答えを lesson の候補に：`ask` の結果か、ハーネスが人に回した質問（`escalation`）への返信では、引用の後に「答えが今後の作業にも当てはまるなら `lesson` で提案して」と添える（`core/src/turn.rs` の `quote`）。提案するかはモデルが決め、提案は既存の `lesson` の流れ（検証か承認で使われる）に入る。
 - MCP サーバーからの聞き返し：
-  - 道具の呼び出しの途中で MCP サーバーが `elicitation/create`（form）を送ると、ターンの途中の通知 `elicitation` を出す。中身は `id`、`server`（`mcp.json` の名前。仕様は、どのサーバーが聞いているかを画面で示すよう求める）、`message`、`requestedSchema`（元のまま）、`questions`（同じ問いを `ask` の形に直したもの。各問いに元のプロパティ名 `name` と `required`）。
+  - 道具の呼び出しの途中で MCP サーバーが `elicitation/create`（form）を送ると（2026-07-28 版のサーバーでは呼び出しの答えの `inputRequests` で頼むと）、ターンの途中の通知 `elicitation` を出す。中身は `id`、`server`（`mcp.json` の名前。仕様は、どのサーバーが聞いているかを画面で示すよう求める）、`mode`（`form`）、`message`、`requestedSchema`（元のまま）、`questions`（同じ問いを `ask` の形に直したもの。各問いに元のプロパティ名 `name` と `required`）。
+  - URL を訪ねてほしいという問い（`mode: "url"`）は、`questions` の代わりに `url` を持つ。`accept` には `content: {}` を付けて答える（サーバーには `content` なしで返す）。詳細は `mcp-client.md`。
   - 形の対応：文字は `text`（日付の形式なら `date`、ほかの形式は `format` に残す）、`enum`・`oneOf` は `choose_one`（`label` と元の値 `value`）、配列は `choose_many`、真偽は `yes_no`、数値は `number`（`minimum`・`maximum`）。`description`・`default` は引き継ぐ。
   - 人は `turn/answer`（`thread_id`、`elicitation` に通知の `id`、`action` に `accept`・`decline`・`cancel`、`accept` なら `content` にプロパティ名をキーにした答え）で答える。応答は `{"accepted": true|false}`（待っている問いがなければ false）。
   - 呼び出しは答えを待つ（`ask` と違い、ターンは先に進まない。サーバーが答えを待っているため）。10 分過ぎるか中断されたら `cancel`。仕様が求める「断る」「取り消す」の選択と、送る前の見直しは、画面の役目。

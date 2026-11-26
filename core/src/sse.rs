@@ -7,7 +7,9 @@
 //! available, and one event never occupies more than [`MAX_EVENT_LEN`] bytes.
 //!
 //! The parser is API-format agnostic: it yields each event's `data` payload as
-//! a string, and the provider layer decides what the payload means.
+//! a string, and the provider layer decides what the payload means. It also
+//! keeps each event's type, the last event id and the reconnection time, which
+//! MCP's event streams use.
 
 use crate::ErrorInfo;
 
@@ -25,6 +27,15 @@ struct Event {
     has_data: bool,
     /// Bytes of the data line values collected so far.
     bytes: usize,
+    /// The `event` field; empty means `message`.
+    kind: String,
+}
+
+/// What `id` and `retry` fields said so far; they outlive their events.
+#[derive(Default)]
+struct Fields {
+    last_id: Option<String>,
+    retry: Option<u64>,
 }
 
 pub(crate) struct SseParser {
@@ -38,6 +49,7 @@ pub(crate) struct SseParser {
     ended: bool,
     /// No line has been interpreted yet, so a BOM may still be present.
     at_stream_start: bool,
+    fields: Fields,
 }
 
 impl SseParser {
@@ -49,6 +61,7 @@ impl SseParser {
             event: Event::default(),
             ended: false,
             at_stream_start: true,
+            fields: Fields::default(),
         }
     }
 
@@ -70,6 +83,22 @@ impl SseParser {
     /// Returns the next event's `data` payload, or `None` while more bytes are
     /// needed.
     pub(crate) fn next_item(&mut self) -> Option<Result<String, ErrorInfo>> {
+        self.next_event().map(|event| event.map(|(_, data)| data))
+    }
+
+    /// The last event id the stream gave, for resuming it.
+    pub(crate) fn last_id(&self) -> Option<&str> {
+        self.fields.last_id.as_deref()
+    }
+
+    /// The reconnection time in milliseconds the stream asked for.
+    pub(crate) fn retry(&self) -> Option<u64> {
+        self.fields.retry
+    }
+
+    /// Returns the next event's type (`message` when it named none) and
+    /// `data` payload, or `None` while more bytes are needed.
+    pub(crate) fn next_event(&mut self) -> Option<Result<(String, String), ErrorInfo>> {
         loop {
             // The collected data plus the unterminated rest is what the
             // current event can still grow to.
@@ -83,6 +112,7 @@ impl SseParser {
                 match line_item(
                     &mut self.event,
                     &mut self.at_stream_start,
+                    &mut self.fields,
                     &self.buffer[line_start..line_end],
                 ) {
                     Ok(Some(event)) => return Some(Ok(event)),
@@ -100,6 +130,7 @@ impl SseParser {
                     match line_item(
                         &mut self.event,
                         &mut self.at_stream_start,
+                        &mut self.fields,
                         &self.buffer[line_start..line_end],
                     ) {
                         Ok(Some(event)) => return Some(Ok(event)),
@@ -108,9 +139,9 @@ impl SseParser {
                     }
                 }
                 if self.event.has_data {
-                    let data = std::mem::take(&mut self.event).data;
-                    if !data.is_empty() {
-                        return Some(Ok(data));
+                    let event = std::mem::take(&mut self.event);
+                    if !event.data.is_empty() {
+                        return Some(Ok((kind_of(event.kind), event.data)));
                     }
                 }
             }
@@ -157,8 +188,9 @@ impl SseParser {
 fn line_item(
     event: &mut Event,
     at_stream_start: &mut bool,
+    fields: &mut Fields,
     line: &[u8],
-) -> Result<Option<String>, ErrorInfo> {
+) -> Result<Option<(String, String)>, ErrorInfo> {
     let text = match std::str::from_utf8(line) {
         Ok(text) => text,
         Err(_) => {
@@ -176,20 +208,42 @@ fn line_item(
     };
     if text.is_empty() {
         if !event.has_data {
+            event.kind.clear();
             return Ok(None);
         }
         // An event whose only data is an empty string carries nothing for
         // either API format.
-        let data = std::mem::take(event).data;
-        return Ok(if data.is_empty() { None } else { Some(data) });
+        let event = std::mem::take(event);
+        return Ok(if event.data.is_empty() {
+            None
+        } else {
+            Some((kind_of(event.kind), event.data))
+        });
     }
     let (field, value) = match text.split_once(':') {
         Some((field, value)) => (field, value.strip_prefix(' ').unwrap_or(value)),
         None => (text, ""),
     };
-    if field != "data" {
-        // Other fields and `:` comments carry nothing for this protocol.
-        return Ok(None);
+    match field {
+        "data" => {}
+        "event" => {
+            event.kind = value.to_string();
+            return Ok(None);
+        }
+        "id" => {
+            if !value.contains(' ') {
+                fields.last_id = Some(value.to_string());
+            }
+            return Ok(None);
+        }
+        "retry" => {
+            if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
+                fields.retry = value.parse().ok();
+            }
+            return Ok(None);
+        }
+        // Other fields and `:` comments carry nothing.
+        _ => return Ok(None),
     }
     if event.has_data {
         event.data.push('\n');
@@ -198,6 +252,15 @@ fn line_item(
     event.has_data = true;
     event.bytes += value.len();
     Ok(None)
+}
+
+/// An event's type: `message` when the stream named none.
+fn kind_of(kind: String) -> String {
+    if kind.is_empty() {
+        "message".to_string()
+    } else {
+        kind
+    }
 }
 
 #[cfg(test)]
@@ -240,6 +303,34 @@ mod tests {
             items.extend(drain(&mut parser));
         }
         assert_eq!(items, expected);
+    }
+
+    #[test]
+    fn event_types_ids_and_the_retry_time_are_kept() {
+        let mut parser = SseParser::new();
+        parser.push(
+            b"retry: 250
+id: 7
+data:
+
+event: endpoint
+data: /messages
+
+id: 8
+data: x
+
+",
+        );
+        assert_eq!(
+            parser.next_event().expect("event").expect("parsed"),
+            ("endpoint".to_string(), "/messages".to_string())
+        );
+        assert_eq!(
+            parser.next_event().expect("event").expect("parsed"),
+            ("message".to_string(), "x".to_string())
+        );
+        assert_eq!(parser.last_id(), Some("8"));
+        assert_eq!(parser.retry(), Some(250));
     }
 
     #[test]

@@ -1124,6 +1124,8 @@ async fn run_turn(
         TurnEvent::ThinkingTranslation(piece) => EventPayload::thinking_translation(id, piece),
         TurnEvent::Message { seq, message } => EventPayload::message(id, seq, &message),
         TurnEvent::Elicitation(elicitation) => EventPayload::elicitation(id, elicitation),
+        TurnEvent::McpProgress(progress) => EventPayload::mcp(id, "mcp_progress", progress),
+        TurnEvent::McpLog(log) => EventPayload::mcp(id, "mcp_log", log),
         TurnEvent::Estimate(estimate) => EventPayload::estimate(id, &estimate),
     };
     let outcome = {

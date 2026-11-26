@@ -1,7 +1,7 @@
 # Claude Code・Codex のプラグインの仕組み（inocode から呼べるか）
 
 - **対象と範囲：** Claude Code と Codex のプラグインとコネクタを、inocode がログイン済みのアカウント（Claude の OAuth、ChatGPT の OAuth）で使えるようにする。Claude でログインしていれば claude.ai のコネクタとプラグイン、ChatGPT でログインしていれば Codex の apps とプラグイン。両方なら両方。
-- **関連ソース：** `core/src/connectors.rs`、`core/src/mcp.rs`、`core/src/oauth.rs`（下の「実装」）。
+- **関連ソース：** `core/src/connectors.rs`、`core/src/mcp/mod.rs`、`core/src/oauth.rs`（下の「実装」）。
 - **根拠の状態：** UNSUPPORTED_APPROVED。プラグインやコネクタが結果を良くするという研究は確認していない。ユーザーが機能として個別に承認した。
 - **ユーザーの判断：**
   - 2026-11-21「claudeやcodexのプラグイン機能の仕組み調べて。仕組みわかればoauthさえあれば呼び出せるはずだ。」
@@ -11,7 +11,7 @@
 
 ## 実装
 
-### コネクタ（`core/src/connectors.rs`、`core/src/mcp.rs`）
+### コネクタ（`core/src/connectors.rs`、`core/src/mcp/mod.rs`）
 
 - サインインの保存場所は、スレッドの保存場所の隣の `auth.json`（既定では `~/.inocode/auth.json`、`~/.inocode/inocode.db` の隣）。ここに Claude のサインインがあれば claude.ai のコネクタを、ChatGPT のサインインがあれば ChatGPT の apps を、MCP のサーバーとして足す。両方あれば両方。`mcp.json` のサーバーと並ぶ。
 - claude.ai のコネクタ（接続先は Claude Code 2.1.326 の実行ファイルの文字列から読み取った）：
@@ -40,7 +40,7 @@
   - ユーザーの指摘（2026-11-22）：「問題は絶対あんたの実装ミス。公式で問題なく動くものを動かないと言いはるのが大間違い」。道具の多いコネクタや app を数で捨てていたのは inocode の誤り。Codex は同じ apps を捨てずに使っている。
   - 根拠の状態：UNSUPPORTED_APPROVED（上の指示で、公式と同じ動きにすることを求められた）。学術研究で有効性を確かめてはいない。BM25 の式は Robertson, Zaragoza "The Probabilistic Relevance Framework: BM25 and Beyond", Foundations and Trends in Information Retrieval 3(4), 2009, DOI 10.1561/1500000019 による。
   - 公式の動き（`codex-rs` のソース、コミット `683bd170`）：MCP の道具が合わせて 100 個以上（`DIRECT_MCP_TOOL_EXPOSURE_THRESHOLD`、`core/src/mcp_tool_exposure.rs`）なら、最初は 1 つも渡さず、`tool_search` だけを渡す。`tool_search` は道具の名前・説明・引数名に BM25 で当て、既定で 8 個（`TOOL_SEARCH_DEFAULT_LIMIT`）返す。返した道具は次の要求から呼べる（`core/src/tools/handlers/tool_search.rs`、`tools/src/tool_search.rs`）。Codex は Responses API の `tool_search` という種類の道具を使うが、inocode はどの提供元でも使えるよう普通の関数の道具にした。
-  - inocode の実装（`core/src/mcp.rs` の `DEFER_AT`、`SEARCH`、`Tools::offered`、`Tools::search`、`bm25`。`core/src/turn.rs` の `steps` は要求ごとに道具の一覧を作り直す）：会話にある成功した `tool_search` の結果に名前が出た道具を渡す。要約で結果が消えたら、その道具はもう一度探す。道具を数で捨てることはしない。
+  - inocode の実装（`core/src/mcp/mod.rs` の `DEFER_AT`、`SEARCH`、`Tools::offered`、`Tools::search`、`bm25`。`core/src/turn.rs` の `steps` は要求ごとに道具の一覧を作り直す）：会話にある成功した `tool_search` の結果に名前が出た道具を渡す。要約で結果が消えたら、その道具はもう一度探す。道具を数で捨てることはしない。
   - 検証：単体テスト `many_tools_are_found_by_search_and_offered_from_then_on`。実測（2026-11-22、ユーザーの「Run it」。手動のテスト `server/tests/live_tool_search.rs`、claude-oauth、claude-haiku-5-5）：claude.ai のコネクタと ChatGPT の apps の道具が合わせて 100 個を超え、最初は `tool_search` だけが渡った。Haiku は「Notion のユーザー名」を `tool_search` で探し、見つかった `notion-get-self` を次の要求で呼び、答えを返した（要求 3 回、入力 44,989 トークン）。検索結果には claude.ai と ChatGPT の両方の Notion の道具が出た。
 - ChatGPT の apps の中身（2026-11-22、ユーザーの Codex が保存した一覧 `~/.codex/cache/codex_apps_tools/*.json` を数えた。通信はしていない）：道具 532 個、app 19 個。各道具の `_meta._codex_apps.resource_uri` の 2 番目の部分で、出どころが分かれる。
   - ユーザーがつないだ app（`link_…`）：GitHub 91、Google Drive 45、Remote Desktop Commander 32、Gmail 21、Google Calendar 15、Notion 82、ほか 3 つ。

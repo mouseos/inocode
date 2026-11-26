@@ -331,6 +331,9 @@ pub struct EventPayload {
     /// A question of an MCP server for the person, during a turn.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub elicitation: Option<Value>,
+    /// An MCP server's progress or log message during a tool call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<Value>,
     /// Calls of a turn that wait for the person's approval.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub held: Option<Vec<turn::Held>>,
@@ -403,6 +406,15 @@ impl EventPayload {
         }
     }
 
+    /// How far an MCP tool call has come (`mcp_progress`) or a log message
+    /// of its server (`mcp_log`).
+    pub fn mcp(id: u64, event: &'static str, mcp: Value) -> Self {
+        Self {
+            mcp: Some(mcp),
+            ..Self::new(id, event)
+        }
+    }
+
     /// What is left of a running turn's task by the estimate.
     pub fn estimate(id: u64, estimate: &estimate::Estimate) -> Self {
         Self {
@@ -455,6 +467,7 @@ impl EventPayload {
             reason: None,
             usage: None,
             elicitation: None,
+            mcp: None,
             held: None,
             questions: None,
             result: None,
