@@ -146,7 +146,8 @@ async fn chat_checks_in_first_and_sends_the_lane_headers() {
         }
     }
     let check_in = &requests[1];
-    assert!(check_in.headers["x-deepai-code-beacon"].starts_with("v=0.3.37;up="));
+    assert_beacon_version(&check_in.headers["x-deepai-code-beacon"]);
+    assert!(check_in.headers["x-deepai-code-beacon"].contains(";up="));
     assert!(
         !check_in.headers.contains_key("x-deepai-code-check-in"),
         "no nonce has been received yet"
@@ -392,12 +393,25 @@ async fn usage_reads_the_theos_allowance_and_keeps_its_check_in() {
     assert_eq!(theos.granted.as_deref(), Some("200"));
     assert!(usage.windows.is_empty());
     let check_in = &mock.requests()[0];
-    assert!(check_in.headers["x-deepai-code-beacon"].starts_with("v=0.3.37;"));
+    assert_beacon_version(&check_in.headers["x-deepai-code-beacon"]);
 
     // The allowance read was a check-in, so the next chat needs no other.
     with_timeout(collect(&llm)).await.expect("chat");
     assert_eq!(
         paths(&mock),
         ["/v1/theos", "/v1/models", "/v1/chat/completions"]
+    );
+}
+
+/// The beacon starts with `v=` and DeepAI Code's release: the one its
+/// update feed names, or the built-in one when the feed does not answer.
+fn assert_beacon_version(beacon: &str) {
+    let version = beacon
+        .strip_prefix("v=")
+        .and_then(|rest| rest.split(';').next())
+        .unwrap_or_else(|| panic!("{beacon}"));
+    assert!(
+        version.split('.').all(|part| part.parse::<u32>().is_ok()),
+        "{beacon}"
     );
 }

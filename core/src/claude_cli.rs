@@ -67,7 +67,7 @@ fn version(tags: Option<&HashMap<String, String>>, channel: &str) -> String {
 
 /// Numbers joined by dots, with an optional `-` part of letters, numbers
 /// and dots as npm's prereleases have.
-fn is_version(text: &str) -> bool {
+pub(crate) fn is_version(text: &str) -> bool {
     let (release, prerelease) = match text.split_once('-') {
         Some((release, prerelease)) => (release, Some(prerelease)),
         None => (text, None),

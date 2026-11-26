@@ -21,9 +21,20 @@ pub const DEEPAI_BASE: &str = "https://api.deepai.org/deepai_code";
 /// Lane version the server bills under; it answers any other value with 426
 /// `lane_version_unsupported`, so this follows the DeepAI Code release.
 const LANE_VERSION: &str = "6";
-/// The DeepAI Code release whose lane this client speaks, reported in the
-/// check-in beacon. Updated together with [`LANE_VERSION`].
-const APP_VERSION: &str = "0.3.37";
+/// The DeepAI Code release reported in the check-in beacon until the
+/// release feed has been read in this process.
+const FALLBACK_APP_VERSION: &str = "0.3.37";
+/// DeepAI Code's update feed; its `version:` line is the current release.
+const RELEASE_FEED: &str = "https://downloads.deepai.org/deepai-code/releases/latest.yml";
+/// How long a read of the feed is used before it is read again.
+const FEED_KEEP: Duration = Duration::from_secs(24 * 60 * 60);
+/// How long after a failed read of the feed the next one is tried.
+const FEED_RETRY: Duration = Duration::from_secs(60 * 60);
+const FEED_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The release last read from the feed (`None` before one was), when the
+/// last read was tried, and whether it worked.
+static FEED_READ: Mutex<Option<(Option<String>, Instant, bool)>> = Mutex::new(None);
 
 const LANE_HEADER: &str = "X-DeepAI-Code-Theos";
 const INSTANCE_HEADER: &str = "X-DeepAI-Code-Instance";
@@ -102,7 +113,7 @@ impl CheckIn {
         }
     }
 
-    fn beacon(&self, now: Instant, started: Instant) -> String {
+    fn beacon(&self, now: Instant, started: Instant, app_version: &str) -> String {
         let window = if self.nonce.is_some() {
             Duration::from_secs(self.seconds)
         } else {
@@ -113,11 +124,67 @@ impl CheckIn {
             .is_some_and(|at| now.duration_since(at) < window);
         // `focus` is left out: this client has no window to report on.
         format!(
-            "v={APP_VERSION};up={};pi={}",
+            "v={app_version};up={};pi={}",
             now.duration_since(started).as_secs(),
             u8::from(relayed)
         )
     }
+}
+
+/// The current DeepAI Code release from its update feed, read again once
+/// the last read is too old; the last release read, or
+/// [`FALLBACK_APP_VERSION`], while the feed does not answer.
+async fn app_version(client: &reqwest::Client) -> String {
+    let due = match FEED_READ.lock().expect("feed lock").as_ref() {
+        Some((_, tried, worked)) => tried.elapsed() >= if *worked { FEED_KEEP } else { FEED_RETRY },
+        None => true,
+    };
+    if due {
+        let fresh = read_feed(client).await;
+        let mut read = FEED_READ.lock().expect("feed lock");
+        let previous = read.take().and_then(|(version, _, _)| version);
+        *read = Some(match fresh {
+            Ok(version) => (Some(version), Instant::now(), true),
+            Err(error) => {
+                eprintln!("DeepAI Code's release could not be read from its feed: {error}");
+                (previous, Instant::now(), false)
+            }
+        });
+    }
+    known_app_version()
+}
+
+/// The release last read from the feed, or [`FALLBACK_APP_VERSION`].
+fn known_app_version() -> String {
+    FEED_READ
+        .lock()
+        .expect("feed lock")
+        .as_ref()
+        .and_then(|(version, _, _)| version.clone())
+        .unwrap_or_else(|| FALLBACK_APP_VERSION.to_string())
+}
+
+async fn read_feed(client: &reqwest::Client) -> Result<String, String> {
+    let response = client
+        .get(RELEASE_FEED)
+        .timeout(FEED_TIMEOUT)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("status {}", response.status()));
+    }
+    let text = response.text().await.map_err(|error| error.to_string())?;
+    feed_version(&text).ok_or_else(|| "the feed names no usable version".into())
+}
+
+/// The top-level `version:` of the feed, when it is a version: it goes
+/// into a header.
+fn feed_version(feed: &str) -> Option<String> {
+    feed.lines()
+        .find_map(|line| line.strip_prefix("version:"))
+        .map(|value| value.trim().trim_matches(['"', '\'']).to_string())
+        .filter(|version| crate::claude_cli::is_version(version))
 }
 
 /// `check_in: {nonce: <32 lowercase hex>, seconds: <positive number>}`.
@@ -472,7 +539,10 @@ impl Session {
             .get(format!("{}/theos", base.trim_end_matches('/')))
             .timeout(CHECK_IN_TIMEOUT)
             .header("content-type", "application/json")
-            .header(BEACON_HEADER, state.beacon(Instant::now(), self.started));
+            .header(
+                BEACON_HEADER,
+                state.beacon(Instant::now(), self.started, &app_version(client).await),
+            );
         if let Some(nonce) = &state.nonce {
             request = request.header(CHECK_IN_HEADER, nonce);
         }
@@ -593,8 +663,9 @@ pub(crate) async fn require_lane(
         return Err(ErrorInfo::new(
             "provider_http",
             format!(
-                "DeepAI no longer accepts lane {LANE_VERSION} (DeepAI Code {APP_VERSION}); \
-                 inocode must be updated to the newer DeepAI Code release (HTTP 426)"
+                "DeepAI no longer accepts lane {LANE_VERSION} (DeepAI Code {}); \
+                 inocode must be updated to the newer DeepAI Code release (HTTP 426)",
+                known_app_version()
             ),
         ));
     }
@@ -932,9 +1003,18 @@ mod tests {
         let started = Instant::now();
         let mut state = CheckIn::default();
         let now = started + Duration::from_secs(42);
-        assert_eq!(state.beacon(now, started), "v=0.3.37;up=42;pi=0");
+        assert_eq!(state.beacon(now, started, "0.3.52"), "v=0.3.52;up=42;pi=0");
         state.last_relay_at = Some(now - Duration::from_secs(10));
-        assert_eq!(state.beacon(now, started), "v=0.3.37;up=42;pi=1");
+        assert_eq!(state.beacon(now, started, "0.3.52"), "v=0.3.52;up=42;pi=1");
+    }
+
+    #[test]
+    fn the_feed_gives_the_release_only_when_it_is_a_version() {
+        let feed = "version: 0.3.52\nfiles:\n  - url: https://downloads.deepai.org/x.exe\n    size: 1\npath: x.exe\n";
+        assert_eq!(feed_version(feed).as_deref(), Some("0.3.52"));
+        assert_eq!(feed_version("version: '0.4.0'\n").as_deref(), Some("0.4.0"));
+        assert_eq!(feed_version("version: 0.3.52; pi=1\n"), None);
+        assert_eq!(feed_version("files: []\n"), None);
     }
 
     #[test]
