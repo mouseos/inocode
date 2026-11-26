@@ -258,6 +258,7 @@ mod tests {
             seq: 4,
             shown: &shown,
             events: None,
+            sampling: None,
         };
         let call = |quote: &str, message: i64| {
             json!({"items": [{"quote": quote, "message": message}]}).to_string()

@@ -137,7 +137,8 @@ async fn tools_are_listed_by_page_and_called() {
     );
     assert_eq!(
         seen[1]["params"]["capabilities"],
-        json!({"elicitation": {"form": {}, "url": {}}})
+        json!({"elicitation": {"form": {}, "url": {}}, "roots": {"listChanged": true},
+               "sampling": {}})
     );
     assert!(
         seen[3]["params"].get("_meta").is_none(),
@@ -781,6 +782,23 @@ fn a_question_goes_to_the_one_thread_whose_calls_wait() {
 }
 
 #[tokio::test]
+async fn only_a_form_needs_content_to_be_accepted() {
+    let dir = tempfile::tempdir().expect("dir");
+    let store = Store::open(dir.path().join("inocode.db"))
+        .await
+        .expect("store");
+    let session = crate::store::SessionId(1);
+    let (form, _form_answer) = store.wait_elicitation(session);
+    store.describe_elicitation(form, json!({"mode": "form"}));
+    let (url, _url_answer) = store.wait_elicitation(session);
+    store.describe_elicitation(url, json!({"mode": "url"}));
+    let accept = json!({"action": "accept"});
+    assert!(!store.answer_elicitation(session, form, accept.clone()));
+    assert!(store.answer_elicitation(session, form, json!({"action": "accept", "content": {}})));
+    assert!(store.answer_elicitation(session, url, accept));
+}
+
+#[tokio::test]
 async fn missing_and_broken_servers_give_no_tools() {
     let dir = tempfile::tempdir().expect("dir");
     let config = dir.path().join("mcp.json");
@@ -1399,7 +1417,7 @@ async fn a_server_of_the_new_revision_is_spoken_to_without_a_handshake() {
         );
         assert_eq!(
             meta["io.modelcontextprotocol/clientCapabilities"],
-            json!({"elicitation": {"form": {}, "url": {}},
+            json!({"elicitation": {"form": {}, "url": {}}, "roots": {}, "sampling": {},
                    "extensions": {connection::TASKS: {}}})
         );
         assert_eq!(meta["io.modelcontextprotocol/logLevel"], "info");
@@ -1433,6 +1451,16 @@ fn person(
                     let answer = match question["message"].as_str() {
                         Some("Who?") => json!({"action": "accept", "content": {"name": "Bo"}}),
                         Some("Go on?") => json!({"action": "accept", "content": {"go": true}}),
+                        // A visit the server says when it is done is left
+                        // to the server.
+                        _ if question.get("elicitationId").is_some() => {
+                            kept.lock()
+                                .expect("shown")
+                                .push(("question".into(), question));
+                            continue;
+                        }
+                        _ if question["systemPrompt"] == "No." => json!({"action": "decline"}),
+                        _ if question["mode"] == "sampling" => json!({"action": "accept"}),
                         _ => json!({"action": "accept", "content": {}}),
                     };
                     let id = question["id"].as_u64().expect("id");
@@ -1464,11 +1492,14 @@ async fn input_progress_logs_and_tasks_of_a_new_server_reach_the_person() {
     let asking = Asking {
         session,
         events: &events,
+        folder: None,
+        sampling: None,
     };
     let call = |tool: &'static str| Call {
         store: &store,
         connection: &connection,
-        tool,
+        method: "tools/call",
+        name: tool,
         asking: Some(&asking),
     };
     let (_stop, cancel) = tokio::sync::watch::channel(false);
@@ -1488,8 +1519,8 @@ async fn input_progress_logs_and_tasks_of_a_new_server_reach_the_person() {
         Ok(r#"visited: {"action":"accept"}"#.into())
     );
     assert_eq!(run("chore").await, Ok("chore done".into()));
-    let refused = run("sample").await.expect_err("sampling is not offered");
-    assert!(refused.contains("sampling/createMessage"), "{refused}");
+    let refused = run("sample").await.expect_err("no model is given here");
+    assert!(refused.contains("no model can answer here"), "{refused}");
 
     // An interrupted call is given up, and the server told which one.
     let (stop, interrupted) = tokio::sync::watch::channel(false);
@@ -2151,4 +2182,727 @@ async fn a_new_http_server_gets_its_headers_and_bad_tools_are_left_out() {
     assert!(seen
         .iter()
         .all(|got| !got.headers.contains_key("mcp-session-id")));
+}
+
+/// A provider of the Chat Completions format that answers every request
+/// with "Paris"; its base URL.
+async fn provider(seen: Arc<Mutex<Vec<Got>>>) -> String {
+    let url = serve(seen, |_| {
+        events(&[
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Paris\"}}]}\n\n".to_string(),
+            "data: [DONE]\n\n".to_string(),
+        ])
+    })
+    .await;
+    url.replace("/mcp", "/v1")
+}
+
+fn test_model(base_url: String) -> crate::Llm {
+    crate::Llm::new(crate::LlmConfig {
+        provider: crate::ProviderKind::OpenAi,
+        auth: crate::oauth::AuthKind::ApiKey,
+        base_url,
+        model: "test-model".into(),
+        api_key: "test-key".into(),
+        auth_store_path: None,
+        reasoning: Default::default(),
+    })
+    .expect("model")
+}
+
+/// A stdio server of the stateless revision with resources it lets be
+/// subscribed to, prompts and completions. Reading the notes asks for the
+/// roots first; its tool asks for the model to be run.
+async fn library_server(
+    reader: impl AsyncRead + Unpin,
+    writer: impl AsyncWrite + Unpin,
+    seen: Arc<Mutex<Vec<Value>>>,
+) {
+    use base64::Engine;
+    let mut png = Vec::new();
+    image::DynamicImage::new_rgb8(2, 2)
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .expect("png");
+    let logo = base64::engine::general_purpose::STANDARD.encode(&png);
+    let writer = tokio::sync::Mutex::new(writer);
+    let mut lines = BufReader::new(reader).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        let message: Value = serde_json::from_str(&line).expect("json");
+        seen.lock().expect("seen").push(message.clone());
+        let (Some(method), Some(id)) = (message["method"].as_str(), message.get("id").cloned())
+        else {
+            continue;
+        };
+        let params = &message["params"];
+        let responses = &params["inputResponses"];
+        let result = match method {
+            "server/discover" => json!({
+                "supportedVersions": [connection::MODERN_VERSION],
+                "capabilities": {"resources": {"subscribe": true, "listChanged": true},
+                                 "prompts": {"listChanged": true}, "completions": {},
+                                 "tools": {}}}),
+            "subscriptions/listen" => {
+                let tag = json!({"io.modelcontextprotocol/subscriptionId": id});
+                say(
+                    &writer,
+                    json!({"jsonrpc": "2.0", "method": "notifications/subscriptions/acknowledged",
+                       "params": {"_meta": tag, "notifications": params["notifications"]}}),
+                )
+                .await;
+                let watched = params["notifications"]["resourceSubscriptions"].as_array();
+                for uri in watched.into_iter().flatten() {
+                    say(
+                        &writer,
+                        json!({"jsonrpc": "2.0", "method": "notifications/resources/updated",
+                           "params": {"_meta": tag, "uri": uri}}),
+                    )
+                    .await;
+                }
+                continue;
+            }
+            "resources/list" if params.get("cursor").is_none() => json!({
+                "resources": [{"uri": "file:///notes.txt", "name": "notes.txt",
+                    "mimeType": "text/plain", "icons": [{"src": "https://example.com/i.png"}]}],
+                "nextCursor": "2"}),
+            "resources/list" => json!({
+                "resources": [{"uri": "file:///logo.png", "name": "logo.png",
+                    "mimeType": "image/png"}]}),
+            "resources/templates/list" => json!({
+                "resourceTemplates": [{"uriTemplate": "file:///{path}", "name": "files"}]}),
+            "resources/read" => match params["uri"].as_str().unwrap_or("") {
+                "file:///notes.txt" if responses["where"].is_object() => json!({"contents": [{
+                    "uri": "file:///notes.txt", "mimeType": "text/plain",
+                    "text": format!("notes in {}", responses["where"]["roots"][0]["uri"])}]}),
+                "file:///notes.txt" => json!({"resultType": "input_required",
+                    "inputRequests": {"where": {"method": "roots/list"}}}),
+                "file:///logo.png" => json!({"contents": [{"uri": "file:///logo.png",
+                    "mimeType": "image/png", "blob": logo}]}),
+                _ => {
+                    say(
+                        &writer,
+                        json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32602,
+                           "message": "Resource not found"}}),
+                    )
+                    .await;
+                    continue;
+                }
+            },
+            "prompts/list" => json!({"prompts": [{"name": "review",
+                "description": "Review a file", "arguments": [
+                    {"name": "file", "required": true}, {"name": "focus"}]}]}),
+            "prompts/get" => {
+                let arguments = &params["arguments"];
+                json!({"messages": [{"role": "user", "content": {"type": "text",
+                    "text": format!("Review {} for {}", arguments["file"].as_str().unwrap_or("?"),
+                                    arguments["focus"].as_str().unwrap_or("anything"))}}]})
+            }
+            "completion/complete" => {
+                assert_eq!(
+                    params["ref"],
+                    json!({"type": "ref/prompt", "name": "review"})
+                );
+                assert_eq!(params["context"], json!({"arguments": {"file": "a.py"}}));
+                let typed = params["argument"]["value"].as_str().unwrap_or("");
+                let values: Vec<&str> = ["python", "pytorch", "rust"]
+                    .into_iter()
+                    .filter(|value| value.starts_with(typed))
+                    .collect();
+                json!({"completion": {"values": values, "hasMore": false}})
+            }
+            "tools/call" if responses["llm"].is_object() => json!({"content": [
+                {"type": "text", "text": responses["llm"].to_string()}]}),
+            "tools/call" => json!({"resultType": "input_required", "inputRequests": {
+                "llm": {"method": "sampling/createMessage", "params": {
+                    "messages": [{"role": "user",
+                                  "content": {"type": "text", "text": "Capital of France?"}}],
+                    "systemPrompt": "Be brief.", "maxTokens": 10}}}}),
+            _ => json!({}),
+        };
+        say(
+            &writer,
+            json!({"jsonrpc": "2.0", "id": id, "result": result}),
+        )
+        .await;
+    }
+}
+
+/// A store whose MCP servers are `servers`, already started.
+async fn store_serving(dir: &Path, servers: Vec<(&str, Arc<Connection>)>) -> Store {
+    let store = Store::open(dir.join("inocode.db")).await.expect("store");
+    let mut tools = Tools::default();
+    for (name, connection) in servers {
+        tools.servers.push(Served {
+            name: name.into(),
+            slot: Slot::new(connection, None, Listing::default()),
+            connector: false,
+        });
+    }
+    *store.mcp().lock().await = Some(Arc::new(tools));
+    store
+}
+
+/// Waits a little for `seen` to hold what `found` looks for.
+async fn eventually(seen: &Arc<Mutex<Vec<Value>>>, found: impl Fn(&[Value]) -> bool) -> bool {
+    for _ in 0..100 {
+        if found(&seen.lock().expect("seen")) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    false
+}
+
+#[tokio::test]
+async fn resources_prompts_and_completions_of_a_new_server_are_reached() {
+    let dir = tempfile::tempdir().expect("dir");
+    let project = dir.path().join("project");
+    std::fs::create_dir_all(&project).expect("project");
+    let (client_end, server_end) = tokio::io::duplex(1 << 16);
+    let (client_read, client_write) = tokio::io::split(client_end);
+    let (server_read, server_write) = tokio::io::split(server_end);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    tokio::spawn(library_server(server_read, server_write, seen.clone()));
+    let connection = Arc::new(Connection::new("library", client_read, client_write));
+    connection.open().await.expect("open");
+    let store = store_serving(dir.path(), vec![("library", connection.clone())]).await;
+    let count = |method: &str| {
+        seen.lock()
+            .expect("seen")
+            .iter()
+            .filter(|message| message["method"] == method)
+            .count()
+    };
+
+    // The model is given the resource tools since the server offers resources.
+    let offered: Vec<String> = loaded(&store)
+        .await
+        .offered(&[])
+        .into_iter()
+        .map(|spec| spec.name)
+        .collect();
+    assert_eq!(offered, [LIST_RESOURCES, LIST_TEMPLATES, READ_RESOURCE]);
+
+    // Lists follow their pages and are kept until the server says they changed.
+    let listed = request(&store, "mcp/resources/list", &json!({}))
+        .await
+        .expect("resources");
+    assert_eq!(
+        listed,
+        json!({"resources": [
+            {"uri": "file:///notes.txt", "name": "notes.txt", "mimeType": "text/plain",
+             "server": "library"},
+            {"uri": "file:///logo.png", "name": "logo.png", "mimeType": "image/png",
+             "server": "library"}]})
+    );
+    request(&store, "mcp/resources/list", &json!({"server": "library"}))
+        .await
+        .expect("kept");
+    assert_eq!(count("resources/list"), 2);
+    connection
+        .shared
+        .notice(&json!({"method": "notifications/resources/list_changed"}));
+    request(&store, "mcp/resources/list", &json!({}))
+        .await
+        .expect("listed again");
+    assert_eq!(count("resources/list"), 4);
+    let templates = request(&store, "mcp/resources/templates/list", &json!({}))
+        .await
+        .expect("templates");
+    assert_eq!(
+        templates["resourceTemplates"][0]["uriTemplate"],
+        "file:///{path}"
+    );
+    let missing = request(&store, "mcp/resources/list", &json!({"server": "nope"})).await;
+    assert_eq!(missing.expect_err("no such server").code, "mcp_error");
+
+    // Reading asks for the roots: the thread's project folder.
+    let (events, _received) = mpsc::channel(8);
+    let (_stop, cancel) = tokio::sync::watch::channel(false);
+    let images = dir.path().join("images");
+    let read = |uri: &str| {
+        let arguments = json!({"server": "library", "uri": uri}).to_string();
+        let asking = Asking {
+            session: crate::store::SessionId(1),
+            events: &events,
+            folder: Some(project.as_path()),
+            sampling: None,
+        };
+        let (store, cancel, images) = (&store, cancel.clone(), images.clone());
+        async move {
+            resource_tool(
+                store,
+                READ_RESOURCE,
+                &arguments,
+                Some(asking),
+                cancel,
+                &images,
+            )
+            .await
+            .expect("a resource tool")
+        }
+    };
+    let root = reqwest::Url::from_file_path(&project).expect("uri");
+    let (text, shown) = read("file:///notes.txt").await.expect("notes");
+    assert_eq!(
+        text,
+        format!("Resource file:///notes.txt (text/plain):\nnotes in \"{root}\"")
+    );
+    assert!(shown.is_empty());
+    let (text, shown) = read("file:///logo.png").await.expect("logo");
+    assert_eq!(text, "Image file:///logo.png: 2×2 pixels; shown at 2×2.");
+    assert_eq!(shown.len(), 1);
+    let gone = read("file:///gone").await.expect_err("not found");
+    assert!(gone.contains("-32602"), "{gone}");
+    let reads: Vec<Value> = seen
+        .lock()
+        .expect("seen")
+        .iter()
+        .filter(|message| message["method"] == "resources/read")
+        .cloned()
+        .collect();
+    assert_eq!(
+        reads[1]["params"]["inputResponses"],
+        json!({"where": {"roots": [{"uri": root.as_str(), "name": "project"}]}})
+    );
+
+    // Completion of a prompt's argument.
+    let completed = request(
+        &store,
+        "mcp/complete",
+        &json!({"server": "library", "ref": {"type": "ref/prompt", "name": "review"},
+                "argument": {"name": "focus", "value": "py"},
+                "context": {"arguments": {"file": "a.py"}}}),
+    )
+    .await
+    .expect("completion");
+    assert_eq!(
+        completed,
+        json!({"server": "library",
+               "completion": {"values": ["python", "pytorch"], "hasMore": false}})
+    );
+
+    // Prompts become commands; typed words become their arguments.
+    let commands = prompt_commands(&store, false).await;
+    assert_eq!(
+        commands,
+        [PromptCommand {
+            name: "mcp__library__review".into(),
+            server: "library".into(),
+            prompt: "review".into(),
+            description: "Review a file".into(),
+            arguments: vec![
+                features::PromptArgument {
+                    name: "file".into(),
+                    description: None,
+                    required: true
+                },
+                features::PromptArgument {
+                    name: "focus".into(),
+                    description: None,
+                    required: false
+                },
+            ],
+        }]
+    );
+    assert_eq!(
+        get_prompt(&store, &commands[0], "a.rs error handling").await,
+        Ok("Review a.rs for error handling".into())
+    );
+    let needs = get_prompt(&store, &commands[0], "")
+        .await
+        .expect_err("file");
+    assert_eq!(needs.message, "needs <file>");
+
+    // A subscription brings the resource's updates; ending it listens
+    // without the resource again.
+    let mut updates = subscribe(
+        &store,
+        &json!({"server": "library", "uri": "file:///notes.txt"}),
+    )
+    .await
+    .expect("subscribed");
+    let update = tokio::time::timeout(Duration::from_secs(5), updates.next())
+        .await
+        .expect("an update in time");
+    assert_eq!(
+        update,
+        Some(json!({"server": "library", "uri": "file:///notes.txt"}))
+    );
+    drop(updates);
+    assert!(
+        eventually(&seen, |seen| seen
+            .iter()
+            .filter(|message| message["method"] == "subscriptions/listen")
+            .count()
+            == 3)
+        .await
+    );
+    let listens: Vec<Value> = seen
+        .lock()
+        .expect("seen")
+        .iter()
+        .filter(|message| message["method"] == "subscriptions/listen")
+        .cloned()
+        .collect();
+    let wanted = |listen: &Value| listen["params"]["notifications"].clone();
+    assert_eq!(
+        wanted(&listens[0]),
+        json!({"promptsListChanged": true, "resourcesListChanged": true})
+    );
+    assert_eq!(
+        wanted(&listens[1]),
+        json!({"promptsListChanged": true, "resourcesListChanged": true,
+               "resourceSubscriptions": ["file:///notes.txt"]})
+    );
+    assert_eq!(wanted(&listens[2]), wanted(&listens[0]));
+    let ended = listens[1]["id"].clone();
+    assert!(
+        eventually(&seen, |seen| seen.iter().any(|message| {
+            message["method"] == "notifications/cancelled"
+                && message["params"]["requestId"] == ended
+        }))
+        .await,
+        "the subscription with the resource is ended"
+    );
+
+    // The model is run for the server once the person approves, its tokens
+    // counted in the turn.
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let model = test_model(provider(calls.clone()).await);
+    let usage = Mutex::new(crate::turn::TurnUsage::default());
+    let (events, received) = mpsc::channel(8);
+    let session = crate::store::SessionId(1);
+    let shown = person(store.clone(), session, received);
+    let asking = Asking {
+        session,
+        events: &events,
+        folder: None,
+        sampling: Some(Sampling {
+            model: &model,
+            usage: &usage,
+        }),
+    };
+    let call = Call {
+        store: &store,
+        connection: &connection,
+        method: "tools/call",
+        name: "ask_model",
+        asking: Some(&asking),
+    };
+    let answered = call.run(&json!({}), &cancel).await.expect("answered");
+    let answered: Value = serde_json::from_str(&answered).expect("json");
+    assert_eq!(
+        answered,
+        json!({"role": "assistant", "content": {"type": "text", "text": "Paris"},
+               "model": "test-model", "stopReason": "endTurn"})
+    );
+    assert_eq!(usage.lock().expect("usage").requests, 1);
+    let sent = calls.lock().expect("calls")[0].body.clone();
+    assert_eq!(sent["max_tokens"], 10);
+    assert!(sent.get("tools").is_none());
+    assert_eq!(sent["messages"][0]["content"], "Be brief.");
+    assert_eq!(sent["messages"][1]["content"], "Capital of France?");
+    drop(events);
+    let shown = shown.lock().expect("shown").clone();
+    assert_eq!(shown[0].1["mode"], "sampling");
+    assert_eq!(shown[0].1["server"], "library");
+    assert_eq!(shown[0].1["maxTokens"], 10);
+    assert_eq!(shown[0].1["systemPrompt"], "Be brief.");
+}
+
+/// A stdio server of the 2025-11-25 revision with resources to subscribe
+/// to, that asks during its tools' calls for the roots, the model, a
+/// question of an undeclared kind, and a visit it says when it is done.
+async fn shelf_server(
+    reader: impl AsyncRead + Unpin,
+    writer: impl AsyncWrite + Unpin,
+    seen: Arc<Mutex<Vec<Value>>>,
+) {
+    let writer = tokio::sync::Mutex::new(writer);
+    let mut lines = BufReader::new(reader).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        let message: Value = serde_json::from_str(&line).expect("json");
+        seen.lock().expect("seen").push(message.clone());
+        let (Some(method), Some(id)) = (message["method"].as_str(), message.get("id").cloned())
+        else {
+            continue;
+        };
+        let params = &message["params"];
+        let system = match params["name"].as_str() {
+            Some("refused") => "No.",
+            _ => "Be brief.",
+        };
+        let asked = match (method, params["name"].as_str()) {
+            ("tools/call", Some("where")) => Some(json!({"method": "roots/list"})),
+            ("tools/call", Some("summarize" | "refused")) => Some(json!({
+                "method": "sampling/createMessage", "params": {
+                    "messages": [{"role": "user",
+                                  "content": {"type": "text", "text": "Capital of France?"}}],
+                    "systemPrompt": system, "includeContext": "thisServer",
+                    "maxTokens": 10}})),
+            ("tools/call", Some("odd")) => Some(json!({"method": "elicitation/create",
+                "params": {"mode": "telepathy", "message": "Think of it."}})),
+            ("tools/call", Some("visit")) => Some(json!({"method": "elicitation/create",
+                "params": {"mode": "url", "elicitationId": "v1", "message": "Sign in",
+                           "url": "https://example.com/sign-in"}})),
+            _ => None,
+        };
+        let result = match (method, asked) {
+            ("server/discover", _) => {
+                say(
+                    &writer,
+                    json!({"jsonrpc": "2.0", "id": id,
+                       "error": {"code": -32601, "message": "Method not found"}}),
+                )
+                .await;
+                continue;
+            }
+            ("initialize", _) => json!({"protocolVersion": "2025-11-25",
+                "capabilities": {"resources": {"subscribe": true}, "tools": {}},
+                "serverInfo": {"name": "shelf", "version": "1"}}),
+            ("resources/subscribe", _) => {
+                say(&writer, json!({"jsonrpc": "2.0", "id": id, "result": {}})).await;
+                say(
+                    &writer,
+                    json!({"jsonrpc": "2.0", "method": "notifications/resources/updated",
+                       "params": {"uri": params["uri"]}}),
+                )
+                .await;
+                continue;
+            }
+            ("tools/call", Some(mut request)) => {
+                request["jsonrpc"] = json!("2.0");
+                request["id"] = json!("asked");
+                say(&writer, request).await;
+                if params["name"] == "visit" {
+                    // Said once the person could have seen the page.
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    say(
+                        &writer,
+                        json!({"jsonrpc": "2.0", "method": "notifications/elicitation/complete",
+                           "params": {"elicitationId": "v1"}}),
+                    )
+                    .await;
+                }
+                let answer = loop {
+                    let line = lines.next_line().await.expect("line").expect("answer");
+                    let answer: Value = serde_json::from_str(&line).expect("json");
+                    seen.lock().expect("seen").push(answer.clone());
+                    if answer["id"] == "asked" {
+                        break answer;
+                    }
+                };
+                let text = answer
+                    .get("result")
+                    .or_else(|| answer.get("error"))
+                    .cloned()
+                    .unwrap_or(Value::Null)
+                    .to_string();
+                json!({"content": [{"type": "text", "text": text}]})
+            }
+            _ => json!({}),
+        };
+        say(
+            &writer,
+            json!({"jsonrpc": "2.0", "id": id, "result": result}),
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn an_older_server_is_subscribed_to_given_roots_and_has_the_model_run() {
+    let dir = tempfile::tempdir().expect("dir");
+    let store = Store::open(dir.path().join("inocode.db"))
+        .await
+        .expect("store");
+    let (client_end, server_end) = tokio::io::duplex(1 << 16);
+    let (client_read, client_write) = tokio::io::split(client_end);
+    let (server_read, server_write) = tokio::io::split(server_end);
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    tokio::spawn(shelf_server(server_read, server_write, seen.clone()));
+    let connection = Arc::new(Connection::new("shelf", client_read, client_write));
+    connection.open().await.expect("open");
+    assert_eq!(connection.era(), Some(Era::Legacy("2025-11-25".into())));
+
+    // Subscribing sends resources/subscribe, and its end resources/unsubscribe.
+    let mut subscription = connection
+        .subscribe("file:///a.txt")
+        .await
+        .expect("subscribed");
+    let update = tokio::time::timeout(Duration::from_secs(5), subscription.updates.recv())
+        .await
+        .expect("an update in time");
+    assert_eq!(update.as_deref(), Some("file:///a.txt"));
+    drop(subscription);
+    assert!(
+        eventually(&seen, |seen| seen.iter().any(|message| {
+            message["method"] == "resources/unsubscribe"
+                && message["params"]["uri"] == "file:///a.txt"
+        }))
+        .await
+    );
+
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let model = test_model(provider(calls.clone()).await);
+    let usage = Mutex::new(crate::turn::TurnUsage::default());
+    let (events, received) = mpsc::channel(8);
+    let session = crate::store::SessionId(3);
+    let shown = person(store.clone(), session, received);
+    let (_stop, cancel) = tokio::sync::watch::channel(false);
+    let (first, second) = (dir.path().join("first"), dir.path().join("second"));
+    let run = |tool: &'static str, folder: &Path, asked: bool| {
+        let folder = folder.to_path_buf();
+        let (store, connection, cancel) = (&store, &connection, cancel.clone());
+        let (events, model, usage) = (&events, &model, &usage);
+        async move {
+            let asking = Asking {
+                session,
+                events,
+                folder: Some(folder.as_path()),
+                sampling: Some(Sampling { model, usage }),
+            };
+            let call = Call {
+                store,
+                connection,
+                method: "tools/call",
+                name: tool,
+                asking: asked.then_some(&asking),
+            };
+            let text = call.run(&json!({}), &cancel).await.expect("called");
+            serde_json::from_str::<Value>(&text).expect("json")
+        }
+    };
+    let uri = |folder: &Path| {
+        reqwest::Url::from_file_path(folder)
+            .expect("uri")
+            .to_string()
+    };
+
+    // The roots are the folder of the thread that last used the server;
+    // when that folder changes, the server is told.
+    let roots = run("where", &first, true).await;
+    assert_eq!(roots["roots"][0]["uri"], uri(&first));
+    assert_eq!(roots["roots"][0]["name"], "first");
+    let changed = |seen: &[Value]| {
+        seen.iter()
+            .filter(|message| message["method"] == "notifications/roots/list_changed")
+            .count()
+    };
+    assert_eq!(changed(&seen.lock().expect("seen")), 0);
+    let roots = run("where", &second, true).await;
+    assert_eq!(roots["roots"][0]["uri"], uri(&second));
+    assert_eq!(changed(&seen.lock().expect("seen")), 1);
+
+    // The model is run once the person approves; declined or with nobody
+    // to ask, the server gets the error of a rejected request.
+    let sampled = run("summarize", &second, true).await;
+    assert_eq!(sampled["content"]["text"], "Paris");
+    assert_eq!(sampled["stopReason"], "endTurn");
+    assert_eq!(usage.lock().expect("usage").requests, 1);
+    let sent = calls.lock().expect("calls")[0].body.clone();
+    assert_eq!(sent["messages"].as_array().map(Vec::len), Some(2));
+    assert_eq!(
+        run("refused", &second, true).await,
+        json!({"code": -1, "message": "User rejected sampling request"})
+    );
+    let alone = run("summarize", &second, false).await;
+    assert_eq!(alone["code"], -1);
+    assert_eq!(calls.lock().expect("calls").len(), 1);
+
+    // A question of a mode not declared is refused as invalid.
+    let odd = run("odd", &second, true).await;
+    assert_eq!(odd["code"], -32602);
+
+    // A visit the server says is complete is accepted without the person.
+    assert_eq!(
+        run("visit", &second, true).await,
+        json!({"action": "accept"})
+    );
+    drop(events);
+    let shown = shown.lock().expect("shown").clone();
+    let visit = shown
+        .iter()
+        .find(|(_, question)| question["mode"] == "url")
+        .expect("the visit shown");
+    assert_eq!(visit.1["elicitationId"], "v1");
+    assert!(store.elicitations(session).is_empty());
+}
+
+#[tokio::test]
+async fn a_new_http_server_streams_the_updates_of_a_resource_subscribed_to() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let open: Arc<Mutex<Vec<mpsc::UnboundedSender<String>>>> = Arc::default();
+    let kept = open.clone();
+    let url = serve(seen.clone(), move |got| {
+        let id = got.body["id"].clone();
+        let answer = |result: Value| {
+            json_reply(
+                "200 OK",
+                "",
+                json!({"jsonrpc": "2.0", "id": id, "result": result}),
+            )
+        };
+        match got.body["method"].as_str().unwrap_or("") {
+            "server/discover" => answer(json!({
+                "supportedVersions": [connection::MODERN_VERSION],
+                "capabilities": {"resources": {"subscribe": true}}})),
+            "subscriptions/listen" => {
+                let (sender, receiver) = mpsc::unbounded_channel();
+                let tag = json!({"io.modelcontextprotocol/subscriptionId": id});
+                let _ = sender.send(event(&json!({"jsonrpc": "2.0",
+                    "method": "notifications/subscriptions/acknowledged",
+                    "params": {"_meta": tag}})));
+                let watched =
+                    got.body["params"]["notifications"]["resourceSubscriptions"].as_array();
+                for uri in watched.into_iter().flatten() {
+                    let _ = sender.send(event(&json!({"jsonrpc": "2.0",
+                        "method": "notifications/resources/updated",
+                        "params": {"_meta": tag, "uri": uri}})));
+                }
+                kept.lock().expect("open").push(sender);
+                Reply::Stream(receiver)
+            }
+            _ => answer(json!({})),
+        }
+    })
+    .await;
+    let shared = Shared::new("remote");
+    let http = http::Http::new(&url, &HashMap::new(), None, shared.clone()).expect("http");
+    let connection = Arc::new(Connection::with(Transport::Http(Arc::new(http)), shared));
+    connection.open().await.expect("open");
+
+    let mut subscription = connection
+        .subscribe("file:///a.txt")
+        .await
+        .expect("subscribed");
+    let update = tokio::time::timeout(Duration::from_secs(5), subscription.updates.recv())
+        .await
+        .expect("an update in time");
+    assert_eq!(update.as_deref(), Some("file:///a.txt"));
+    drop(subscription);
+
+    // Nothing is left to listen for: the stream is closed and none opened.
+    let stream = open.lock().expect("open")[0].clone();
+    let mut closed = false;
+    for _ in 0..100 {
+        if stream.send(": still there\n\n".into()).is_err() {
+            closed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(closed, "the subscription's stream is closed");
+    let listens: Vec<Value> = seen
+        .lock()
+        .expect("seen")
+        .iter()
+        .filter(|got| got.body["method"] == "subscriptions/listen")
+        .map(|got| got.body.clone())
+        .collect();
+    assert_eq!(listens.len(), 1);
+    assert_eq!(
+        listens[0]["params"]["notifications"],
+        json!({"resourceSubscriptions": ["file:///a.txt"]})
+    );
 }

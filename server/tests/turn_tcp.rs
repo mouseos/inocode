@@ -1120,6 +1120,275 @@ async fn tools_of_the_configured_mcp_servers_are_offered_and_called() {
     .await;
 }
 
+/// An MCP server of the 2025-11-25 revision with resources, prompts and
+/// completions, and a tool that asks the person to visit a page.
+const DOCS_MCP_SERVER: &str = r##"
+import json, sys
+def send(message):
+    print(json.dumps(message), flush=True)
+pending = None
+for line in sys.stdin:
+    message = json.loads(line)
+    if "id" not in message:
+        continue
+    if "method" not in message:
+        if pending is not None:
+            text = json.dumps(message.get("result"))
+            send({"jsonrpc": "2.0", "id": pending,
+                  "result": {"content": [{"type": "text", "text": text}]}})
+            pending = None
+        continue
+    method = message["method"]
+    params = message.get("params", {})
+    if method == "initialize":
+        result = {"protocolVersion": "2025-11-25", "serverInfo": {"name": "docs", "version": "1"},
+                  "capabilities": {"tools": {}, "resources": {"subscribe": True},
+                                   "prompts": {}, "completions": {}}}
+    elif method == "tools/list":
+        result = {"tools": [{"name": "visit", "description": "Visit a page",
+                             "inputSchema": {"type": "object"}}]}
+    elif method == "tools/call":
+        pending = message["id"]
+        send({"jsonrpc": "2.0", "id": "e1", "method": "elicitation/create",
+              "params": {"mode": "url", "message": "Open it", "elicitationId": "x1",
+                         "url": "https://example.com/go"}})
+        continue
+    elif method == "resources/list":
+        result = {"resources": [{"uri": "file:///guide.md", "name": "guide.md",
+                                 "mimeType": "text/markdown"}]}
+    elif method == "resources/templates/list":
+        result = {"resourceTemplates": [{"uriTemplate": "file:///{name}.md", "name": "pages"}]}
+    elif method == "resources/read":
+        result = {"contents": [{"uri": params["uri"], "mimeType": "text/markdown",
+                                "text": "# Guide"}]}
+    elif method == "resources/subscribe":
+        send({"jsonrpc": "2.0", "id": message["id"], "result": {}})
+        send({"jsonrpc": "2.0", "method": "notifications/resources/updated",
+              "params": {"uri": params["uri"]}})
+        continue
+    elif method == "prompts/list":
+        result = {"prompts": [{"name": "review", "description": "Review a file",
+                               "arguments": [{"name": "file", "required": True},
+                                             {"name": "focus"}]}]}
+    elif method == "prompts/get":
+        arguments = params.get("arguments", {})
+        text = "Review %s for %s" % (arguments.get("file"), arguments.get("focus", "anything"))
+        result = {"messages": [{"role": "user", "content": {"type": "text", "text": text}}]}
+    elif method == "completion/complete":
+        result = {"completion": {"values": ["python", "pytorch"], "hasMore": False}}
+    else:
+        result = {}
+    send({"jsonrpc": "2.0", "id": message["id"], "result": result})
+"##;
+
+#[tokio::test]
+async fn resources_prompts_completions_and_visits_of_an_mcp_server_are_reached() {
+    with_timeout(async {
+        let mock = scripted(vec![tool_turn("v1", "mcp__docs__visit", json!({}))]).await;
+        let Some(python) = python() else {
+            eprintln!("skipped: no Python to run the MCP server");
+            return;
+        };
+        let folder = database().with_extension("docs");
+        std::fs::create_dir_all(&folder).expect("folder");
+        let script = folder.join("docs.py");
+        std::fs::write(&script, DOCS_MCP_SERVER).expect("script");
+        let config = json!({"mcpServers": {"docs": {"command": python, "args": [script]}}});
+        std::fs::write(folder.join("mcp.json"), config.to_string()).expect("config");
+        let store = Store::open(folder.join("inocode.db")).await.expect("store");
+        let core = Arc::new(Core::with_llm(llm_for(&mock)).with_store(store));
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client).await;
+        let commands = |listed: &Value| -> Vec<String> {
+            listed["result"]["commands"]
+                .as_array()
+                .expect("commands")
+                .iter()
+                .filter(|command| command["source"] == "mcp")
+                .map(|command| command["name"].as_str().unwrap_or_default().to_string())
+                .collect()
+        };
+        let list = json!({"id": 3, "method": "commands/list", "params": {"thread_id": thread}});
+
+        // No server has started yet, so no prompt is listed.
+        let listed = call(&mut client, 3, list.clone()).await;
+        assert!(commands(&listed).is_empty(), "{listed}");
+
+        // The resource requests start the servers.
+        let resources = call(
+            &mut client,
+            4,
+            json!({"id": 4, "method": "mcp/resources/list", "params": {}}),
+        )
+        .await;
+        assert_eq!(
+            resources["result"],
+            json!({"resources": [{"uri": "file:///guide.md", "name": "guide.md",
+                                  "mimeType": "text/markdown", "server": "docs"}]})
+        );
+        let templates = call(
+            &mut client,
+            5,
+            json!({"id": 5, "method": "mcp/resources/templates/list",
+                   "params": {"server": "docs"}}),
+        )
+        .await;
+        assert_eq!(
+            templates["result"]["resourceTemplates"][0]["uriTemplate"],
+            "file:///{name}.md"
+        );
+        let read = call(
+            &mut client,
+            6,
+            json!({"id": 6, "method": "mcp/resources/read",
+                   "params": {"server": "docs", "uri": "file:///guide.md"}}),
+        )
+        .await;
+        assert_eq!(read["result"]["contents"][0]["text"], "# Guide", "{read}");
+        let unknown = call(
+            &mut client,
+            7,
+            json!({"id": 7, "method": "mcp/resources/read", "params": {"server": "docs"}}),
+        )
+        .await;
+        assert_eq!(unknown["error"]["code"], "invalid_params");
+        let completed = call(
+            &mut client,
+            8,
+            json!({"id": 8, "method": "mcp/complete", "params": {"server": "docs",
+                   "ref": {"type": "ref/prompt", "name": "review"},
+                   "argument": {"name": "focus", "value": "py"}}}),
+        )
+        .await;
+        assert_eq!(
+            completed["result"]["completion"]["values"],
+            json!(["python", "pytorch"])
+        );
+
+        // A subscription streams the resource's updates until cancelled.
+        client
+            .1
+            .write_json(
+                9,
+                &json!({"id": 9, "method": "mcp/resources/subscribe",
+                        "params": {"server": "docs", "uri": "file:///guide.md"}}),
+            )
+            .await
+            .expect("subscribe");
+        assert_eq!(next_message(&mut client, 9).await["event"], "started");
+        let updated = next_message(&mut client, 9).await;
+        assert_eq!(updated["event"], "mcp_resource_updated");
+        assert_eq!(
+            updated["mcp"],
+            json!({"server": "docs", "uri": "file:///guide.md"})
+        );
+        client
+            .1
+            .write_json(
+                10,
+                &json!({"id": 10, "method": "cancel", "params": {"request_id": 9}}),
+            )
+            .await
+            .expect("cancel");
+        let mut ends = Vec::new();
+        for _ in 0..2 {
+            let (stream, frame): (u64, Value) = client.0.read_json().await.expect("frame");
+            ends.push((stream, frame));
+        }
+        ends.sort_by_key(|(stream, _)| *stream);
+        assert_eq!(ends[0].1["event"], "cancelled");
+        assert_eq!(ends[1].1["result"]["cancelled"], true);
+
+        // The server's prompt is now a command.
+        let listed = call(&mut client, 11, list).await;
+        assert_eq!(commands(&listed), ["mcp__docs__review"]);
+
+        // A URL question is accepted without content.
+        client
+            .1
+            .write_json(
+                12,
+                &json!({"id": 12, "method": "turn/start",
+                        "params": {"thread_id": thread, "prompt": "visit", "mode": "full"}}),
+            )
+            .await
+            .expect("send");
+        let mut events = Vec::new();
+        loop {
+            let (stream, frame): (u64, Value) = client.0.read_json().await.expect("frame");
+            if stream != 12 {
+                assert_eq!(frame["result"]["accepted"], true, "{frame}");
+                continue;
+            }
+            if frame["event"] == "elicitation" {
+                let asked = &frame["elicitation"];
+                assert_eq!(asked["mode"], "url");
+                assert_eq!(asked["elicitationId"], "x1");
+                client
+                    .1
+                    .write_json(
+                        13,
+                        &json!({"id": 13, "method": "turn/answer", "params": {
+                            "thread_id": thread, "elicitation": asked["id"],
+                            "action": "accept"}}),
+                    )
+                    .await
+                    .expect("answer");
+            }
+            let end = matches!(frame["event"].as_str(), Some("completed" | "failed"));
+            events.push(frame);
+            if end {
+                break;
+            }
+        }
+        assert_eq!(events.last().expect("end")["event"], "completed");
+        assert_eq!(tool_results(&events), [r#"{"action": "accept"}"#]);
+
+        // The prompt runs as a turn whose message is marked as not the
+        // person's words.
+        client
+            .1
+            .write_json(
+                14,
+                &json!({"id": 14, "method": "command/run", "params": {
+                    "thread_id": thread, "text": "/mcp__docs__review a.rs error handling"}}),
+            )
+            .await
+            .expect("run");
+        let ran = next_message(&mut client, 14).await;
+        assert_eq!(ran["event"], "command", "{ran}");
+        assert_eq!(
+            ran["result"],
+            json!({"command": "mcp__docs__review", "server": "docs"})
+        );
+        loop {
+            let event = next_message(&mut client, 14).await;
+            if matches!(event["event"].as_str(), Some("completed" | "failed")) {
+                assert_eq!(event["event"], "completed", "{event}");
+                break;
+            }
+        }
+        let requests = chats(&mock);
+        let sent = requests.last().expect("a request").body.to_string();
+        assert!(
+            sent.contains(
+                "[command file] /mcp__docs__review a.rs error handling\\nReview a.rs for error handling"
+            ),
+            "{sent}"
+        );
+        let missing = call(
+            &mut client,
+            15,
+            json!({"id": 15, "method": "command/run",
+                   "params": {"thread_id": thread, "text": "/mcp__docs__review"}}),
+        )
+        .await;
+        assert_eq!(missing["error"]["message"], "needs <file>", "{missing}");
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn method_tags_must_be_in_use_unless_given_as_new() {
     with_timeout(async {

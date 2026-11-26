@@ -874,6 +874,9 @@ const RECORDS_NOTHING: &[&str] = &[
     crate::shell::SHELL,
     crate::shell::JOB,
     crate::mcp::SEARCH,
+    crate::mcp::LIST_RESOURCES,
+    crate::mcp::LIST_TEMPLATES,
+    crate::mcp::READ_RESOURCE,
     crate::company::REVIEW,
 ];
 
@@ -1036,12 +1039,15 @@ fn custom(name: String, path: PathBuf, origin: Origin) -> Option<Custom> {
 /// The commands of one thread: the built-in ones and the others found.
 pub(crate) struct Registry {
     customs: Vec<Custom>,
+    /// The prompts of the MCP servers, each `/mcp__<server>__<prompt>`.
+    prompts: Vec<crate::mcp::PromptCommand>,
 }
 
 /// What a typed name refers to.
 pub(crate) enum Target<'a> {
     Builtin(&'static Builtin),
     Custom(&'a Custom),
+    Prompt(&'a crate::mcp::PromptCommand),
 }
 
 fn builtin_named(name: &str) -> Option<&'static Builtin> {
@@ -1052,7 +1058,24 @@ fn builtin_named(name: &str) -> Option<&'static Builtin> {
 
 impl Registry {
     pub(crate) fn new(customs: Vec<Custom>) -> Self {
-        Self { customs }
+        Self {
+            customs,
+            prompts: Vec::new(),
+        }
+    }
+
+    /// Adds the prompts of the MCP servers; one with a built-in command's
+    /// name is left out, since built-in commands are not overridden.
+    fn with_prompts(mut self, prompts: Vec<crate::mcp::PromptCommand>) -> Self {
+        self.prompts = prompts
+            .into_iter()
+            .filter(|prompt| builtin_named(&prompt.name).is_none())
+            .collect();
+        self
+    }
+
+    fn prompt_named(&self, name: &str) -> Option<&crate::mcp::PromptCommand> {
+        self.prompts.iter().find(|prompt| prompt.name == name)
     }
 
     /// The commands of the installed plugins under `plugins`, the user's in
@@ -1098,6 +1121,7 @@ impl Registry {
     /// command has it and no other command shares it.
     fn short_usable(&self, custom: &Custom) -> bool {
         builtin_named(&custom.name).is_none()
+            && self.prompt_named(&custom.name).is_none()
             && self
                 .customs
                 .iter()
@@ -1124,6 +1148,9 @@ impl Registry {
         }
         if let Some(command) = builtin_named(name) {
             return Ok(Target::Builtin(command));
+        }
+        if let Some(prompt) = self.prompt_named(name) {
+            return Ok(Target::Prompt(prompt));
         }
         let found: Vec<&Custom> = self
             .customs
@@ -1154,6 +1181,7 @@ impl Registry {
             .iter()
             .map(builtin_entry)
             .chain(self.customs.iter().map(|custom| self.custom_entry(custom)))
+            .chain(self.prompts.iter().map(prompt_entry))
             .collect()
     }
 
@@ -1204,16 +1232,65 @@ impl Registry {
                     .map(|custom| format!("/{}", custom.full()))
                     .collect();
                 let builtin = builtin_named(name).is_some();
-                (same.len() > 1 || builtin).then(|| {
+                let prompt = self.prompt_named(name).is_some();
+                (same.len() > 1 || builtin || prompt).then(|| {
                     json!({
                         "name": name,
                         "builtin": builtin.then(|| format!("/{name}")),
+                        "prompt": prompt.then(|| format!("/{name}")),
                         "use": same,
                     })
                 })
             })
             .collect()
     }
+}
+
+/// An MCP server's prompt as `commands/list` shows it: one argument per
+/// declared prompt argument, typed in order, the last taking the rest.
+fn prompt_entry(prompt: &crate::mcp::PromptCommand) -> Value {
+    let args: Vec<Value> = prompt
+        .arguments
+        .iter()
+        .map(|argument| {
+            json!({
+                "name": argument.name,
+                "kind": "text",
+                "required": argument.required,
+                "description": argument.description,
+            })
+        })
+        .collect();
+    let mut usage = format!("/{}", prompt.name);
+    for argument in &prompt.arguments {
+        usage.push_str(&match argument.required {
+            true => format!(" <{}>", argument.name),
+            false => format!(" [{}]", argument.name),
+        });
+    }
+    json!({
+        "name": prompt.name,
+        "short": prompt.name,
+        "aliases": [],
+        "description": prompt.description,
+        "source": "mcp",
+        "plugin": null,
+        "kind": "prompt",
+        "server": prompt.server,
+        "prompt": prompt.prompt,
+        "forms": [{
+            "sub": null,
+            "description": prompt.description,
+            "usage": usage,
+            "args": args,
+            "when": When::AfterTurn,
+            "runs": Runs::Turn,
+            "available": true,
+            "reason": null,
+        }],
+        "available": true,
+        "reason": null,
+    })
 }
 
 fn kind_name(kind: Kind) -> &'static str {
@@ -1645,8 +1722,15 @@ impl Core {
         Ok(json!({ "threads": threads }))
     }
 
-    /// The commands `thread` (or a client without one) may call.
-    async fn registry(&self, thread: Option<SessionId>) -> Result<Registry, ErrorInfo> {
+    /// The commands `thread` (or a client without one) may call. With
+    /// `prompts`, the prompts of the MCP servers are among them: of the
+    /// servers already started, or with `Some(true)`, of all, started for
+    /// it.
+    async fn registry(
+        &self,
+        thread: Option<SessionId>,
+        prompts: Option<bool>,
+    ) -> Result<Registry, ErrorInfo> {
         let store = self.store()?;
         let project = match thread {
             Some(thread) => self.project_folder(thread).await?,
@@ -1655,9 +1739,15 @@ impl Core {
         let plugins = crate::plugins::folder(store);
         let user = store.files_folder().with_file_name("commands");
         let project = project.map(|(_, folder)| folder.join(".inocode").join("commands"));
-        tokio::task::spawn_blocking(move || Registry::load(&plugins, &user, project.as_deref()))
-            .await
-            .map_err(|error| ErrorInfo::new("internal", error.to_string()))
+        let registry = tokio::task::spawn_blocking(move || {
+            Registry::load(&plugins, &user, project.as_deref())
+        })
+        .await
+        .map_err(|error| ErrorInfo::new("internal", error.to_string()))?;
+        Ok(match prompts {
+            Some(start) => registry.with_prompts(crate::mcp::prompt_commands(store, start).await),
+            None => registry,
+        })
     }
 
     async fn project_folder(
@@ -1699,7 +1789,7 @@ impl Core {
                 return Err(crate::unknown_thread());
             }
         }
-        let registry = self.registry(thread).await?;
+        let registry = self.registry(thread, Some(false)).await?;
         Ok(json!({ "commands": registry.list(), "conflicts": registry.conflicts() }))
     }
 
@@ -1715,9 +1805,28 @@ impl Core {
         }
         let name = name.trim().trim_start_matches('/');
         let arguments = arguments.trim();
-        let registry = self.registry(Some(thread)).await?;
+        // Every prompt's name has the MCP prefix, and one may be run before
+        // any turn started the servers; /help lists them too.
+        let prompts = match name {
+            _ if name.starts_with(crate::mcp::PREFIX) => Some(true),
+            "help" => Some(false),
+            _ => None,
+        };
+        let registry = self.registry(Some(thread), prompts).await?;
         let running = self.turn_running(thread);
         match registry.resolve(name)? {
+            Target::Prompt(prompt) => {
+                allowed(When::AfterTurn, running)?;
+                let text = crate::mcp::get_prompt(self.store()?, prompt, arguments).await?;
+                // The server's messages are not the person's words.
+                let text = crate::review::from_command_file(&prompt.name, arguments, &text);
+                Ok(Ran::Turn(TurnStart {
+                    prompt: text,
+                    reply_to: None,
+                    approvals: turn::Approvals::default(),
+                    result: json!({ "command": prompt.name, "server": prompt.server }),
+                }))
+            }
             Target::Custom(custom) => {
                 if let Some(reason) = registry.blocked(custom) {
                     return Err(unavailable(&reason));
@@ -1790,6 +1899,7 @@ impl Core {
                     match registry.resolve(asked)? {
                         Target::Builtin(command) => json!({ "help": builtin_entry(command) }),
                         Target::Custom(custom) => json!({ "help": registry.custom_entry(custom) }),
+                        Target::Prompt(prompt) => json!({ "help": prompt_entry(prompt) }),
                     }
                 }
             },
@@ -2789,6 +2899,7 @@ mod tests {
         match registry.resolve(name) {
             Ok(Target::Builtin(command)) => format!("builtin:{}", command.name),
             Ok(Target::Custom(custom)) => custom.full(),
+            Ok(Target::Prompt(prompt)) => prompt.name.clone(),
             Err(error) => error.error.code.to_string(),
         }
     }
@@ -2826,6 +2937,59 @@ mod tests {
             .expect("listed");
         assert_eq!(project_goal["short"], Value::Null);
         assert_eq!(project_goal["source"], "project");
+    }
+
+    #[test]
+    fn an_mcp_prompt_is_a_command_of_its_own_name() {
+        let prompt = |name: &str| crate::mcp::PromptCommand {
+            name: name.into(),
+            server: "docs".into(),
+            prompt: "review".into(),
+            description: "Review".into(),
+            arguments: vec![crate::mcp::PromptArgument {
+                name: "file".into(),
+                description: Some("The file".into()),
+                required: true,
+            }],
+        };
+        let registry = Registry::new(vec![custom("mcp__docs__review", Origin::Project)])
+            .with_prompts(vec![prompt("mcp__docs__review"), prompt("help")]);
+        assert_eq!(
+            resolved(&registry, "mcp__docs__review"),
+            "mcp__docs__review"
+        );
+        // A built-in command is not overridden; the project's command keeps
+        // its prefixed name.
+        assert_eq!(resolved(&registry, "help"), "builtin:help");
+        assert_eq!(
+            resolved(&registry, "project:mcp__docs__review"),
+            "project:mcp__docs__review"
+        );
+        let listed = registry.list();
+        let entry = listed
+            .iter()
+            .find(|entry| entry["source"] == "mcp")
+            .expect("listed");
+        assert_eq!(entry["kind"], "prompt");
+        assert_eq!(entry["server"], "docs");
+        assert_eq!(entry["forms"][0]["usage"], "/mcp__docs__review <file>");
+        assert_eq!(
+            entry["forms"][0]["args"],
+            json!([{"name": "file", "kind": "text", "required": true,
+                    "description": "The file"}])
+        );
+        assert_eq!(
+            listed
+                .iter()
+                .filter(|entry| entry["source"] == "mcp")
+                .count(),
+            1
+        );
+        let project = listed
+            .iter()
+            .find(|entry| entry["name"] == "project:mcp__docs__review")
+            .expect("listed");
+        assert_eq!(project["short"], Value::Null);
     }
 
     #[test]
@@ -3038,6 +3202,9 @@ mod tests {
             .map(|spec| spec.name)
             .collect();
         tools.push(crate::mcp::SEARCH.to_string());
+        tools.push(crate::mcp::LIST_RESOURCES.to_string());
+        tools.push(crate::mcp::LIST_TEMPLATES.to_string());
+        tools.push(crate::mcp::READ_RESOURCE.to_string());
         tools.push(crate::company::DELEGATE.to_string());
         tools.push(crate::company::REVIEW.to_string());
         tools.sort();

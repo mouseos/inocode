@@ -478,6 +478,27 @@ async fn dispatch(
             });
             true
         }
+        "mcp/resources/list"
+        | "mcp/resources/templates/list"
+        | "mcp/resources/read"
+        | "mcp/complete" => {
+            // MCP servers may be started and asked over the network: off
+            // the read loop, like discovery.
+            let (id, core, queue) = (request.id, Arc::clone(core), queue.clone());
+            let method = request.method.clone();
+            let params = request.params.clone().unwrap_or_else(|| json!({}));
+            tokio::spawn(async move {
+                let payload = match core.mcp_request(&method, &params).await {
+                    Ok(result) => json!({ "id": id, "result": result }),
+                    Err(error) => json!({ "id": id, "error": error }),
+                };
+                let _ = send(&queue, stream_id, payload).await;
+            });
+            true
+        }
+        "mcp/resources/subscribe" => {
+            watch_resource(request, stream_id, core, queue, in_flight).await
+        }
         "models/catalog" => {
             // Fetches prices and scores: off the read loop, like discovery.
             let (id, core, queue) = (request.id, Arc::clone(core), queue.clone());
@@ -1022,6 +1043,92 @@ async fn start_chat(
         cancel_rx,
     ));
     true
+}
+
+/// `mcp/resources/subscribe {server, uri}`: a stream of
+/// `mcp_resource_updated` events (`mcp: {server, uri}`) after `started`,
+/// until `cancel` names it or the connection closes; `failed` when the
+/// subscription cannot be made or the server stops.
+async fn watch_resource(
+    request: Request,
+    stream_id: u64,
+    core: &Arc<Core>,
+    queue: &mpsc::Sender<Outgoing>,
+    in_flight: &InFlight,
+) -> bool {
+    let id = request.id;
+    let mut pending = in_flight.lock().await;
+    if pending.contains_key(&id) {
+        drop(pending);
+        let error = ErrorInfo::new("duplicate_id", "request id is already in flight");
+        let event = EventPayload::failed(id, error);
+        return send_event(queue, stream_id, event).await.is_ok();
+    }
+    let (cancel_tx, cancel_rx) = watch::channel(false);
+    pending.insert(id, Generation::Running(cancel_tx));
+    drop(pending);
+    let params = request.params.clone().unwrap_or_else(|| json!({}));
+    tokio::spawn(relay_updates(
+        id,
+        params,
+        stream_id,
+        Arc::clone(core),
+        queue.clone(),
+        Arc::clone(in_flight),
+        cancel_rx,
+    ));
+    true
+}
+
+async fn relay_updates(
+    id: u64,
+    params: Value,
+    stream_id: u64,
+    core: Arc<Core>,
+    queue: mpsc::Sender<Outgoing>,
+    in_flight: InFlight,
+    mut cancelled: watch::Receiver<bool>,
+) {
+    let mut updates = tokio::select! {
+        subscribed = core.mcp_subscribe(&params) => match subscribed {
+            Ok(updates) => updates,
+            Err(error) => {
+                settle(id, stream_id, &queue, &in_flight, cancelled, Terminal::Failed(error)).await;
+                return;
+            }
+        },
+        _ = cancelled.changed() => {
+            settle(id, stream_id, &queue, &in_flight, cancelled, Terminal::Cancelled).await;
+            return;
+        }
+    };
+    let terminal = match deliver(&queue, stream_id, EventPayload::started(id), &mut cancelled).await
+    {
+        Delivery::Sent => loop {
+            tokio::select! {
+                update = updates.next() => {
+                    let Some(update) = update else {
+                        let error = ErrorInfo::new("mcp_error", "the MCP server stopped");
+                        break Some(Terminal::Failed(error));
+                    };
+                    let event = EventPayload::mcp(id, "mcp_resource_updated", update);
+                    match deliver(&queue, stream_id, event, &mut cancelled).await {
+                        Delivery::Sent => {}
+                        Delivery::ConnectionGone => break None,
+                        Delivery::Cancelled => break Some(Terminal::Cancelled),
+                    }
+                }
+                _ = cancelled.changed() => break Some(Terminal::Cancelled),
+            }
+        },
+        Delivery::ConnectionGone => None,
+        Delivery::Cancelled => Some(Terminal::Cancelled),
+    };
+    drop(updates);
+    match terminal {
+        Some(terminal) => settle(id, stream_id, &queue, &in_flight, cancelled, terminal).await,
+        None => abandon(&in_flight, id).await,
+    }
 }
 
 async fn start_turn(

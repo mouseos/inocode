@@ -804,7 +804,8 @@ impl Store {
     }
 
     /// Hands the person's answer to the question `id` of `session`; whether
-    /// such a question was waiting.
+    /// such a question was waiting and took it. A form accepted without its
+    /// `content` is not taken and stays waiting.
     pub fn answer_elicitation(
         &self,
         session: SessionId,
@@ -817,7 +818,15 @@ impl Store {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         match waiting.get(&id) {
-            Some(asked) if asked.session == session => {}
+            Some(asked) if asked.session == session => {
+                let form =
+                    asked.question.get("mode").and_then(|mode| mode.as_str()) == Some("form");
+                let accepted =
+                    answer.get("action").and_then(|action| action.as_str()) == Some("accept");
+                if form && accepted && answer.get("content").is_none() {
+                    return false;
+                }
+            }
             _ => return false,
         }
         let asked = waiting.remove(&id).expect("checked above");

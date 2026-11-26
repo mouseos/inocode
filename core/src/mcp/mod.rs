@@ -5,9 +5,18 @@
 //! spoken to. Design and sources: docs/evidence/mcp-client.md.
 
 mod connection;
+mod features;
 mod http;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) use features::PromptArgument;
+pub(crate) use features::{
+    get_prompt, prompt_commands, resource_tool, PromptCommand, LIST_RESOURCES, LIST_TEMPLATES,
+    READ_RESOURCE,
+};
+pub use features::{request, subscribe, ResourceUpdates};
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -24,7 +33,7 @@ use crate::conversation::ToolSpec;
 use crate::store::Store;
 use connection::{
     Connection, Era, Fault, Listing, Notice, RpcError, Shared, Transport, Waiting, HEADER_MISMATCH,
-    STOPPED, URL_ELICITATION_REQUIRED,
+    NO_PERSON, SAMPLING_REFUSED, STOPPED, URL_ELICITATION_REQUIRED,
 };
 
 pub(crate) const PREFIX: &str = "mcp__";
@@ -158,6 +167,20 @@ pub(crate) struct Slot {
     restarted: AtomicBool,
     /// The server's tools as last listed, and when.
     listing: Mutex<(Listing, Instant)>,
+    /// The server's prompts, resources and resource templates as last
+    /// listed, by the method that lists them.
+    kept: Mutex<HashMap<&'static str, Kept>>,
+}
+
+/// A list kept from an earlier request: while the time the server said it
+/// stays fresh is not over, or, when it said none, while the server says it
+/// tells of changes; and only until it tells of one.
+struct Kept {
+    items: Vec<Value>,
+    ttl: Option<Duration>,
+    at: Instant,
+    /// The count of the server's words of change when it was listed.
+    changes: u64,
 }
 
 impl Slot {
@@ -168,7 +191,43 @@ impl Slot {
             source,
             restarted: AtomicBool::new(false),
             listing: Mutex::new((listing, Instant::now())),
+            kept: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Every item of the list `method` (`prompts/list`,
+    /// `resources/list` or `resources/templates/list`), under `key` in
+    /// its pages; listed again unless a kept list is still fresh.
+    async fn list(&self, method: &'static str, key: &str) -> Result<Vec<Value>, Fault> {
+        let connection = self.current();
+        let (counter, pointer) = match method {
+            "prompts/list" => (&connection.shared.prompts_changed, "/prompts/listChanged"),
+            _ => (
+                &connection.shared.resources_changed,
+                "/resources/listChanged",
+            ),
+        };
+        let changes = counter.load(Ordering::SeqCst);
+        if let Some(kept) = self.kept.lock().expect("kept lock").get(method) {
+            let fresh = match kept.ttl {
+                Some(ttl) => kept.at.elapsed() < ttl,
+                None => connection.offers(pointer),
+            };
+            if fresh && kept.changes == changes {
+                return Ok(kept.items.clone());
+            }
+        }
+        let (items, ttl) = connection.list_all(method, key).await?;
+        self.kept.lock().expect("kept lock").insert(
+            method,
+            Kept {
+                items: items.clone(),
+                ttl,
+                at: Instant::now(),
+                changes,
+            },
+        );
+        Ok(items)
     }
 
     fn current(&self) -> Arc<Connection> {
@@ -185,6 +244,7 @@ impl Slot {
         let source = self.source.as_ref().ok_or("it cannot be started again")?;
         let (connection, listing) = start(&self.server, source, self.current().era()).await?;
         *self.listing.lock().expect("listing lock") = (listing, Instant::now());
+        self.kept.lock().expect("kept lock").clear();
         // The tools given to the model are made again from the new list.
         connection
             .shared
@@ -330,7 +390,26 @@ impl Tools {
         }
     }
 
+    /// The server named `server` that started.
+    fn served(&self, server: &str) -> Option<&Served> {
+        self.servers.iter().find(|served| served.name == server)
+    }
+
+    /// The tools of the servers, and those that read their resources when
+    /// a server offers resources; these are never left to the search.
     fn offered(&self, messages: &[crate::conversation::Message]) -> Vec<ToolSpec> {
+        let mut offered = self.tools_offered(messages);
+        if self
+            .servers
+            .iter()
+            .any(|served| served.slot.current().offers("/resources"))
+        {
+            offered.extend(features::resource_specs());
+        }
+        offered
+    }
+
+    fn tools_offered(&self, messages: &[crate::conversation::Message]) -> Vec<ToolSpec> {
         if self.specs.len() < DEFER_AT {
             return self.specs.clone();
         }
@@ -494,10 +573,21 @@ pub(crate) fn bm25(documents: &[Vec<String>], query: &[String]) -> Vec<usize> {
 }
 
 /// Where a call's server questions, progress and logs for the person go:
-/// the turn's events, for its thread.
+/// the turn's events, for its thread; with the thread's project folder,
+/// given to the server as the roots, and the model that answers the
+/// server's requests to run it.
 pub(crate) struct Asking<'a> {
     pub session: crate::store::SessionId,
     pub events: &'a mpsc::Sender<crate::turn::TurnEvent>,
+    pub folder: Option<&'a Path>,
+    pub sampling: Option<Sampling<'a>>,
+}
+
+/// The thread's current model, and the turn's usage its requests count in.
+#[derive(Clone, Copy)]
+pub(crate) struct Sampling<'a> {
+    pub model: &'a crate::Llm,
+    pub usage: &'a Mutex<crate::turn::TurnUsage>,
 }
 
 /// How long a server's question waits for the person before it is answered
@@ -534,7 +624,8 @@ pub(crate) async fn call(
     let call = Call {
         store,
         connection: &connection,
-        tool,
+        method: "tools/call",
+        name: tool,
         asking: asking.as_ref(),
     };
     let answer = call.run(&arguments, &cancel).await;
@@ -575,25 +666,54 @@ fn progress_token() -> String {
     format!("inocode-{}", TOKENS.fetch_add(1, Ordering::Relaxed))
 }
 
-/// One call of a tool on a connection.
+/// One request on a connection that may need more input or become a task:
+/// a call of a tool, the reading of a resource, the getting of a prompt or
+/// a completion.
 #[derive(Clone, Copy)]
 struct Call<'a> {
     store: &'a Store,
     connection: &'a Arc<Connection>,
-    tool: &'a str,
+    method: &'a str,
+    /// The tool or prompt name, or the resource URI, the request is about.
+    name: &'a str,
     asking: Option<&'a Asking<'a>>,
 }
 
 impl Call<'_> {
-    /// Calls the tool: input the server asks for is gathered and the call
-    /// sent again with it; a task the server makes of the call is polled
-    /// until it ends; the call stops when the turn is interrupted, and the
-    /// server is told so.
+    /// Calls the tool with `arguments`, its result as text for the model.
     async fn run(
         &self,
         arguments: &Value,
         cancel: &tokio::sync::watch::Receiver<bool>,
     ) -> Result<String, Fault> {
+        let params = json!({"name": self.name, "arguments": arguments});
+        let result = self.result(params, cancel).await?;
+        render(&result).map_err(Fault::Other)
+    }
+
+    /// What the request is about, as the person's events name it.
+    fn about(&self) -> serde_json::Map<String, Value> {
+        let mut about = serde_json::Map::new();
+        about.insert("server".into(), json!(self.connection.shared.server));
+        match self.method {
+            "tools/call" => about.insert("tool".into(), json!(self.name)),
+            method => {
+                about.insert("method".into(), json!(method));
+                about.insert("name".into(), json!(self.name))
+            }
+        };
+        about
+    }
+
+    /// Sends the request with `params`: input the server asks for is
+    /// gathered and the request sent again with it; a task the server makes
+    /// of it is polled until it ends; it stops when the turn is
+    /// interrupted, and the server is told so. The complete result.
+    async fn result(
+        &self,
+        base: Value,
+        cancel: &tokio::sync::watch::Receiver<bool>,
+    ) -> Result<Value, Fault> {
         let connection = self.connection;
         let (sender, mut notices) = mpsc::unbounded_channel();
         let token = self.asking.map(|_| progress_token());
@@ -603,11 +723,16 @@ impl Call<'_> {
             self.asking.map(|_| sender),
             token.clone(),
         );
+        if let Some(folder) = self.asking.and_then(|asking| asking.folder) {
+            connection.use_folder(folder).await;
+        }
+        let tool = self.method == "tools/call";
+        let arguments = base.get("arguments").cloned().unwrap_or(Value::Null);
         let mut cancel = cancel.clone();
         let mut retry = serde_json::Map::new();
         let (mut rounds, mut sent_again, mut listed_again) = (0, false, false);
         loop {
-            let mut params = json!({"name": self.tool, "arguments": arguments});
+            let mut params = base.clone();
             if let Some(token) = &token {
                 params["_meta"] = json!({"progressToken": token});
             }
@@ -615,8 +740,11 @@ impl Call<'_> {
                 params[key] = value;
             }
             let id = connection.next_id();
-            let headers = connection.call_headers(self.tool, arguments);
-            let request = connection.exchange(id, "tools/call", params, &headers);
+            let headers = match tool {
+                true => connection.call_headers(self.name, &arguments),
+                false => reqwest::header::HeaderMap::new(),
+            };
+            let request = connection.exchange(id, self.method, params, &headers);
             let Some(answer) = self.wait(request, &mut notices, &mut cancel).await else {
                 connection.cancel(id).await;
                 return Err(Fault::Other("cancelled".into()));
@@ -629,7 +757,8 @@ impl Call<'_> {
                 }
                 // The tool's headers may have changed: they are listed again.
                 Err(fault)
-                    if !listed_again
+                    if tool
+                        && !listed_again
                         && fault.rpc().is_some_and(|rpc| rpc.code == HEADER_MISMATCH) =>
                 {
                     listed_again = true;
@@ -656,7 +785,7 @@ impl Call<'_> {
                 }
             };
             match result.get("resultType").and_then(Value::as_str) {
-                None | Some("complete") => return render(&result).map_err(Fault::Other),
+                None | Some("complete") => return Ok(result),
                 Some("input_required") => {
                     rounds += 1;
                     if rounds > MAX_ROUNDS {
@@ -703,13 +832,17 @@ impl Call<'_> {
                         let answer = self.question(question.params, &interrupted).await;
                         let _ = question.reply.send(answer);
                     }
-                    Notice::Progress(params) => self.show(crate::turn::TurnEvent::McpProgress(json!({
-                        "server": self.connection.shared.server,
-                        "tool": self.tool,
-                        "progress": params.get("progress"),
-                        "total": params.get("total"),
-                        "message": params.get("message"),
-                    }))),
+                    Notice::Sampling(sampled) => {
+                        let answer = self.sample(&sampled.params, &interrupted).await;
+                        let _ = sampled.reply.send(answer);
+                    }
+                    Notice::Progress(params) => {
+                        let mut shown = self.about();
+                        for key in ["progress", "total", "message"] {
+                            shown.insert(key.into(), params.get(key).cloned().unwrap_or(Value::Null));
+                        }
+                        self.show(crate::turn::TurnEvent::McpProgress(Value::Object(shown)))
+                    }
                     Notice::Log(params) => self.show(crate::turn::TurnEvent::McpLog(json!({
                         "server": self.connection.shared.server,
                         "level": params.get("level"),
@@ -732,26 +865,40 @@ impl Call<'_> {
     }
 
     /// The person's answer to a question of the server; `cancel` when
-    /// nobody can be asked.
+    /// nobody can be asked. A URL question with an `elicitationId` is
+    /// answered `accept` for the person when the server says first that
+    /// what the page was for is complete.
     async fn question(&self, params: Value, cancel: &tokio::sync::watch::Receiver<bool>) -> Value {
-        match self.asking {
-            Some(asking) => {
-                ask_person(
-                    self.store,
-                    &self.connection.shared.server,
-                    asking,
-                    params,
-                    cancel.clone(),
-                )
-                .await
-            }
-            None => json!({"action": "cancel"}),
+        let Some(asking) = self.asking else {
+            return json!({"action": "cancel"});
+        };
+        let shared = &self.connection.shared;
+        let id = params
+            .get("elicitationId")
+            .and_then(Value::as_str)
+            .filter(|_| params.get("mode").and_then(Value::as_str) == Some("url"))
+            .map(str::to_string);
+        let completed = id.as_deref().map(|id| shared.await_completion(id));
+        let answer = ask_person(
+            self.store,
+            &shared.server,
+            asking,
+            params,
+            cancel.clone(),
+            completed,
+        )
+        .await;
+        if let Some(id) = &id {
+            shared.forget_completion(id);
         }
+        answer
     }
 
-    /// The answers to a server's input requests, keyed as asked. Only
-    /// questions (`elicitation/create`) are answered; this client declares
-    /// no other input, so asking for one fails the call.
+    /// The answers to a server's input requests, keyed as asked: questions
+    /// go to the person, the roots are the thread's project folder, and a
+    /// request to run the model is put to the person first. A request this
+    /// client did not declare, or one refused, fails the call: an input
+    /// response has no form for an error.
     async fn inputs(
         &self,
         requests: &serde_json::Map<String, Value>,
@@ -759,7 +906,10 @@ impl Call<'_> {
     ) -> Result<serde_json::Map<String, Value>, Fault> {
         for request in requests.values() {
             let method = request.get("method").and_then(Value::as_str).unwrap_or("");
-            if method != "elicitation/create" {
+            if !matches!(
+                method,
+                "elicitation/create" | "roots/list" | "sampling/createMessage"
+            ) {
                 return Err(Fault::Other(format!(
                     "the MCP server asked for {method}, which inocode does not offer (it did \
                      not declare that capability)"
@@ -769,9 +919,122 @@ impl Call<'_> {
         let mut responses = serde_json::Map::new();
         for (key, request) in requests {
             let params = request.get("params").cloned().unwrap_or(Value::Null);
-            responses.insert(key.clone(), self.question(params, cancel).await);
+            let response = match request.get("method").and_then(Value::as_str) {
+                Some("roots/list") => {
+                    connection::roots(self.asking.and_then(|asking| asking.folder))
+                }
+                Some("sampling/createMessage") => {
+                    self.sample(&params, cancel).await.map_err(|(_, message)| {
+                        Fault::Other(format!(
+                            "the MCP server's request to run the model was not answered: \
+                             {message}"
+                        ))
+                    })?
+                }
+                _ => self.question(params, cancel).await,
+            };
+            responses.insert(key.clone(), response);
         }
         Ok(responses)
+    }
+
+    /// Runs the thread's model for the server's `sampling/createMessage`,
+    /// once the person approved it; the result, or the JSON-RPC error
+    /// (code and message) of an older server. Tool use was not declared;
+    /// `includeContext` other than `none` is deprecated and taken as none;
+    /// `temperature`, `stopSequences`, `metadata` and `modelPreferences`
+    /// are not used, the thread's own model answering.
+    async fn sample(
+        &self,
+        params: &Value,
+        cancel: &tokio::sync::watch::Receiver<bool>,
+    ) -> Result<Value, (i64, String)> {
+        let invalid = |message: &str| (-32602, message.to_string());
+        let asking = self
+            .asking
+            .ok_or_else(|| (SAMPLING_REFUSED, NO_PERSON.to_string()))?;
+        let sampling = asking.sampling.ok_or_else(|| {
+            (
+                SAMPLING_REFUSED,
+                "no model can answer here (only during a turn of a thread)".to_string(),
+            )
+        })?;
+        if params.get("tools").is_some_and(|tools| !tools.is_null()) {
+            return Err(invalid("tool use in sampling was not declared"));
+        }
+        let max_tokens = params
+            .get("maxTokens")
+            .and_then(Value::as_u64)
+            .filter(|max| *max > 0)
+            .ok_or_else(|| invalid("maxTokens must be a number above 0"))?;
+        let model = sampling.model;
+        let messages = sampling_messages(params.get("messages"), model).map_err(|e| invalid(&e))?;
+        let system = params
+            .get("systemPrompt")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let server = &self.connection.shared.server;
+        let question = json!({
+            "server": server,
+            "mode": "sampling",
+            "message": format!(
+                "The MCP server {server} asks to run the model {} on these messages.",
+                model.model()
+            ),
+            "model": model.model(),
+            "messages": params.get("messages"),
+            "systemPrompt": system,
+            "maxTokens": max_tokens,
+        });
+        let answer = put_to_person(self.store, asking, question, cancel.clone(), None).await;
+        if answer.get("action").and_then(Value::as_str) != Some("accept") {
+            return Err((SAMPLING_REFUSED, "User rejected sampling request".into()));
+        }
+        let conversation = crate::conversation::Conversation { system, messages };
+        let mut cancel = cancel.clone();
+        let failed = |message: String| (-32603, message);
+        let stopped = || failed("stopped with the turn".into());
+        let started = tokio::select! {
+            started = model.converse_capped(&conversation, max_tokens) => started,
+            () = crate::turn::cancelled(&mut cancel) => return Err(stopped()),
+        };
+        let mut stream = started.map_err(|error| failed(error.message))?;
+        let ended = loop {
+            tokio::select! {
+                next = stream.next() => match next {
+                    Ok(Some(_)) => {}
+                    Ok(None) => break Ok(()),
+                    Err(error) => break Err(failed(error.message)),
+                },
+                () = crate::turn::cancelled(&mut cancel) => break Err(stopped()),
+            }
+        };
+        sampling
+            .usage
+            .lock()
+            .expect("usage lock")
+            .add_stream(&stream, "mcp_sampling");
+        ended?;
+        let crate::conversation::Body::Assistant { stop, parts, .. } = stream.assistant() else {
+            unreachable!("a stream assembles an assistant turn");
+        };
+        let text: String = parts
+            .into_iter()
+            .filter_map(|part| match part {
+                crate::conversation::AssistantPart::Text { text } => Some(text),
+                _ => None,
+            })
+            .collect();
+        let stop = match stop {
+            crate::conversation::StopReason::Length => "maxTokens",
+            _ => "endTurn",
+        };
+        Ok(json!({
+            "role": "assistant",
+            "content": {"type": "text", "text": text},
+            "model": model.model(),
+            "stopReason": stop,
+        }))
     }
 
     /// Puts the URLs a 2025-11-25 server needs the person to visit to the
@@ -799,7 +1062,7 @@ impl Call<'_> {
         created: Value,
         notices: &mut mpsc::UnboundedReceiver<Notice>,
         cancel: &mut tokio::sync::watch::Receiver<bool>,
-    ) -> Result<String, Fault> {
+    ) -> Result<Value, Fault> {
         let connection = self.connection;
         let id = created
             .get("taskId")
@@ -815,18 +1078,17 @@ impl Call<'_> {
                 .and_then(Value::as_str)
                 .map(str::to_string);
             if message.is_some() && message != shown {
-                self.show(crate::turn::TurnEvent::McpProgress(json!({
-                    "server": connection.shared.server,
-                    "tool": self.tool,
-                    "status": task.get("status"),
-                    "message": message,
-                })));
+                let mut about = self.about();
+                about.insert(
+                    "status".into(),
+                    task.get("status").cloned().unwrap_or(Value::Null),
+                );
+                about.insert("message".into(), json!(message));
+                self.show(crate::turn::TurnEvent::McpProgress(Value::Object(about)));
                 shown = message.clone();
             }
             match task.get("status").and_then(Value::as_str) {
-                Some("completed") => {
-                    return render(task.get("result").unwrap_or(&Value::Null)).map_err(Fault::Other)
-                }
+                Some("completed") => return Ok(task.get("result").cloned().unwrap_or(Value::Null)),
                 Some("failed") => {
                     return Err(match task.get("error") {
                         Some(error) => Fault::Rpc(RpcError::of(error)),
@@ -884,7 +1146,7 @@ impl Call<'_> {
 
     /// Asks the server to cancel task `id`, without waiting long; the call
     /// ends as cancelled.
-    async fn cancel_task(&self, id: &str) -> Result<String, Fault> {
+    async fn cancel_task(&self, id: &str) -> Result<Value, Fault> {
         let _ = tokio::time::timeout(
             connection::END_TIMEOUT,
             self.connection
@@ -898,18 +1160,19 @@ impl Call<'_> {
 /// Puts a server's question to the person and waits for the answer, for
 /// `ANSWER_WAIT` at most and until the turn is interrupted; the result for
 /// the server. A form is asked as its questions; a URL (http or https only)
-/// is shown for the person to visit, and accepting it says nothing more.
+/// is shown for the person to visit, and accepting it says nothing more;
+/// `completed` brings the server's word that the visit is done.
 async fn ask_person(
     store: &Store,
     server: &str,
     asking: &Asking<'_>,
     params: Value,
-    mut cancel: tokio::sync::watch::Receiver<bool>,
+    cancel: tokio::sync::watch::Receiver<bool>,
+    completed: Option<tokio::sync::oneshot::Receiver<()>>,
 ) -> Value {
-    let cancelled = json!({"action": "cancel"});
     let mode = params.get("mode").and_then(Value::as_str).unwrap_or("form");
     let message = params.get("message").and_then(Value::as_str).unwrap_or("");
-    let mut question = match mode {
+    let question = match mode {
         "form" => {
             let schema = params
                 .get("requestedSchema")
@@ -932,10 +1195,36 @@ async fn ask_person(
             let Some(url) = url else {
                 return json!({"action": "decline"});
             };
-            json!({"server": server, "mode": "url", "message": message, "url": url.as_str()})
+            let mut question =
+                json!({"server": server, "mode": "url", "message": message, "url": url.as_str()});
+            if let Some(id) = params.get("elicitationId").and_then(Value::as_str) {
+                question["elicitationId"] = json!(id);
+            }
+            question
         }
         _ => return json!({"action": "decline"}),
     };
+    let result = put_to_person(store, asking, question, cancel, completed).await;
+    match mode {
+        "url" if result.get("action").and_then(Value::as_str) == Some("accept") => {
+            json!({"action": "accept"})
+        }
+        _ => result,
+    }
+}
+
+/// Shows `question` to the person as the turn's `elicitation` event and
+/// waits for the answer given with `turn/answer`: for `ANSWER_WAIT` at
+/// most and until the turn is interrupted (then `cancel`), or until
+/// `completed` says the question is settled (then `accept`).
+async fn put_to_person(
+    store: &Store,
+    asking: &Asking<'_>,
+    mut question: Value,
+    mut cancel: tokio::sync::watch::Receiver<bool>,
+    completed: Option<tokio::sync::oneshot::Receiver<()>>,
+) -> Value {
+    let cancelled = json!({"action": "cancel"});
     let (id, answer) = store.wait_elicitation(asking.session);
     question["id"] = json!(id);
     store.describe_elicitation(id, question.clone());
@@ -948,18 +1237,84 @@ async fn ask_person(
         store.forget_elicitation(id);
         return cancelled;
     }
+    let completed = async {
+        let done = match completed {
+            Some(completed) => completed.await.is_ok(),
+            None => false,
+        };
+        if !done {
+            std::future::pending::<()>().await;
+        }
+    };
     let result = tokio::select! {
         answer = answer => answer.unwrap_or_else(|_| cancelled.clone()),
+        () = completed => json!({"action": "accept"}),
         () = tokio::time::sleep(ANSWER_WAIT) => cancelled.clone(),
         () = crate::turn::cancelled(&mut cancel) => cancelled.clone(),
     };
     store.forget_elicitation(id);
-    match mode {
-        "url" if result.get("action").and_then(Value::as_str) == Some("accept") => {
-            json!({"action": "accept"})
+    result
+}
+
+/// The messages of a `sampling/createMessage` as a conversation for
+/// `model`: text as it is; images and audio, which a person's message here
+/// cannot carry, named with their type and size. Tool use and results are
+/// refused, since tool use in sampling was not declared.
+fn sampling_messages(
+    messages: Option<&Value>,
+    model: &crate::Llm,
+) -> Result<Vec<crate::conversation::Message>, String> {
+    use crate::conversation::{AssistantPart, Body, Message, Speaker, StopReason};
+    let messages = messages
+        .and_then(Value::as_array)
+        .filter(|messages| !messages.is_empty())
+        .ok_or("messages must be a list of at least one message")?;
+    let mut conversation = Vec::new();
+    for (index, message) in messages.iter().enumerate() {
+        let blocks = match message.get("content") {
+            Some(Value::Array(blocks)) => blocks.clone(),
+            Some(block) => vec![block.clone()],
+            None => Vec::new(),
+        };
+        let mut parts = Vec::new();
+        for block in &blocks {
+            let field = |key: &str| block.get(key).and_then(Value::as_str).unwrap_or("");
+            parts.push(match field("type") {
+                "text" => field("text").to_string(),
+                kind @ ("image" | "audio") => format!(
+                    "({kind} of type {}, {} bytes, not shown)",
+                    field("mimeType"),
+                    decoded_len(field("data"))
+                ),
+                kind => return Err(format!("content of type {kind:?} is not taken in sampling")),
+            });
         }
-        _ => result,
+        let body = match message.get("role").and_then(Value::as_str) {
+            Some("user") => Body::User {
+                from: Speaker::Person,
+                parts,
+            },
+            Some("assistant") => Body::Assistant {
+                origin: model.origin(),
+                stop: StopReason::Completed,
+                parts: vec![AssistantPart::Text {
+                    text: parts.join("\n"),
+                }],
+            },
+            _ => return Err("each message's role must be user or assistant".into()),
+        };
+        conversation.push(Message {
+            id: format!("sampling-{index}"),
+            body,
+        });
     }
+    Ok(conversation)
+}
+
+/// How many bytes the Base64 text `data` holds.
+fn decoded_len(data: &str) -> usize {
+    let data = data.trim_end_matches('=');
+    data.len() * 3 / 4
 }
 
 /// A server's requested schema as the questions of `ask`, so the person's

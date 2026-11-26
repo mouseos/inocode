@@ -200,6 +200,20 @@ pub(crate) struct Context<'a> {
     pub shown: &'a std::sync::Mutex<Vec<crate::conversation::Image>>,
     /// Where the turn reports, for questions of MCP servers to the person.
     pub events: Option<&'a tokio::sync::mpsc::Sender<crate::turn::TurnEvent>>,
+    /// The model that answers MCP servers' requests to run it, and the
+    /// turn's usage they count in.
+    pub sampling: Option<mcp::Sampling<'a>>,
+}
+
+/// Where an MCP request of the call reaches the person, when the turn
+/// reports.
+fn asking<'a>(context: &Context<'a>) -> Option<mcp::Asking<'a>> {
+    context.events.map(|events| mcp::Asking {
+        session: context.session,
+        events,
+        folder: context.folder,
+        sampling: context.sampling,
+    })
 }
 
 /// The answer to one call: its text and whether it is an error.
@@ -282,17 +296,33 @@ pub(crate) async fn run(context: &Context<'_>, name: &str, arguments: &str) -> O
         }
         shell::SHELL => shell::shell(place(context), arguments).await,
         shell::JOB => shell::job(place(context), arguments).await,
+        mcp::LIST_RESOURCES | mcp::LIST_TEMPLATES | mcp::READ_RESOURCE => {
+            let images = context
+                .store
+                .files_folder()
+                .join("images")
+                .join(format!("thread-{}", context.session.0));
+            mcp::resource_tool(
+                context.store,
+                name,
+                arguments,
+                asking(context),
+                context.cancel.clone(),
+                &images,
+            )
+            .await?
+            .map(|(text, images)| {
+                context.shown.lock().expect("shown lock").extend(images);
+                text
+            })
+        }
         _ => {
-            let asking = context.events.map(|events| mcp::Asking {
-                session: context.session,
-                events,
-            });
             mcp::call(
                 context.store,
                 name,
                 arguments,
                 context.cancel.clone(),
-                asking,
+                asking(context),
             )
             .await?
         }

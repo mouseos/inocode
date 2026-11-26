@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -152,9 +153,18 @@ pub(crate) struct Elicitation {
     pub(super) reply: oneshot::Sender<Value>,
 }
 
+/// A server's request to run the model, and where the result or the
+/// JSON-RPC error (code and message) goes.
+pub(crate) struct Sampled {
+    pub(super) params: Value,
+    pub(super) reply: oneshot::Sender<Result<Value, (i64, String)>>,
+}
+
 /// What a server sends while a call waits.
 pub(super) enum Notice {
     Question(Elicitation),
+    /// `sampling/createMessage` of an older server.
+    Sampling(Sampled),
     /// `notifications/progress` for the call's token.
     Progress(Value),
     /// `notifications/message`.
@@ -180,6 +190,28 @@ pub(super) struct Shared {
     /// Raised when the server says its tools changed; they are listed again
     /// before the next model request.
     pub(super) tools_changed: AtomicBool,
+    /// Counts the server's words that its prompts, or its resources, changed;
+    /// a list kept from an earlier count is listed again.
+    pub(super) prompts_changed: AtomicU64,
+    pub(super) resources_changed: AtomicU64,
+    /// Who waits for the updates of which resource.
+    watchers: Mutex<Vec<Watcher>>,
+    /// URL questions put to the person, by their `elicitationId`: the
+    /// server's word that one is complete answers it.
+    completions: Mutex<HashMap<String, oneshot::Sender<()>>>,
+    /// The project folder of the thread that last made a request here: the
+    /// root an older server is given.
+    folder: Mutex<Option<PathBuf>>,
+    /// Whether an older server asked for the roots, and so is told when
+    /// they change.
+    roots_asked: AtomicBool,
+}
+
+/// One who waits for the updates of the resource `uri`.
+struct Watcher {
+    id: u64,
+    uri: String,
+    updates: mpsc::UnboundedSender<String>,
 }
 
 impl Shared {
@@ -240,9 +272,101 @@ impl Shared {
             Some("notifications/tools/list_changed") => {
                 self.tools_changed.store(true, Ordering::SeqCst);
             }
+            Some("notifications/prompts/list_changed") => {
+                self.prompts_changed.fetch_add(1, Ordering::SeqCst);
+            }
+            Some("notifications/resources/list_changed") => {
+                self.resources_changed.fetch_add(1, Ordering::SeqCst);
+            }
+            Some("notifications/resources/updated") => {
+                let Some(uri) = params.get("uri").and_then(Value::as_str) else {
+                    return;
+                };
+                for watcher in self.watchers.lock().expect("watchers lock").iter() {
+                    if watcher.uri == uri {
+                        let _ = watcher.updates.send(uri.to_string());
+                    }
+                }
+            }
+            Some("notifications/elicitation/complete") => {
+                let id = params.get("elicitationId").and_then(Value::as_str);
+                let waiting = id.and_then(|id| {
+                    self.completions
+                        .lock()
+                        .expect("completions lock")
+                        .remove(id)
+                });
+                // Unknown and already completed ids are ignored.
+                if let Some(waiting) = waiting {
+                    let _ = waiting.send(());
+                }
+            }
             _ => {}
         }
     }
+
+    /// Where the server's word that the URL question `id` is complete
+    /// arrives; given up with [`Self::forget_completion`].
+    pub(super) fn await_completion(&self, id: &str) -> oneshot::Receiver<()> {
+        let (sender, receiver) = oneshot::channel();
+        self.completions
+            .lock()
+            .expect("completions lock")
+            .insert(id.to_string(), sender);
+        receiver
+    }
+
+    pub(super) fn forget_completion(&self, id: &str) {
+        self.completions
+            .lock()
+            .expect("completions lock")
+            .remove(id);
+    }
+
+    /// Notes `folder` as the folder of the thread now using the server;
+    /// whether that changed the roots of an older server that asked for
+    /// them.
+    fn use_folder(&self, folder: &Path) -> bool {
+        let mut known = self.folder.lock().expect("folder lock");
+        if known.as_deref() == Some(folder) {
+            return false;
+        }
+        *known = Some(folder.to_path_buf());
+        self.roots_asked.load(Ordering::SeqCst)
+    }
+
+    /// The URIs watched, each once, in order.
+    fn watched(&self) -> Vec<String> {
+        let mut uris: Vec<String> = self
+            .watchers
+            .lock()
+            .expect("watchers lock")
+            .iter()
+            .map(|watcher| watcher.uri.clone())
+            .collect();
+        uris.sort();
+        uris.dedup();
+        uris
+    }
+}
+
+/// The roots of the client, as `roots/list` answers: the project folder as
+/// a `file://` URI, or none without one.
+pub(super) fn roots(folder: Option<&Path>) -> Value {
+    let roots: Vec<Value> = folder
+        .and_then(|folder| {
+            let uri = reqwest::Url::from_file_path(folder).ok()?;
+            let name = folder
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned());
+            Some(match name {
+                Some(name) => json!({"uri": uri.as_str(), "name": name}),
+                None => json!({"uri": uri.as_str()}),
+            })
+        })
+        .into_iter()
+        .collect();
+    json!({"roots": roots})
 }
 
 /// A progress token as a key: a string as it is, a number as its digits.
@@ -317,26 +441,61 @@ pub(super) fn forward(shared: &Shared, params: Value) -> oneshot::Receiver<Value
 }
 
 /// The answer to a request a legacy server makes: `ping` is answered,
-/// questions go to the person, and the rest is refused, since this client
-/// declares no other client feature.
+/// questions and requests to run the model go to the person of the call
+/// that waits, the roots are the folder of the thread that last used the
+/// server, and the rest is refused.
 pub(super) async fn answer_request(
     shared: &Shared,
     method: &str,
     id: Value,
     params: Value,
 ) -> Value {
+    let failed = |code: i64, message: &str| json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}});
     match method {
         "elicitation/create" => {
+            let mode = params.get("mode").and_then(Value::as_str).unwrap_or("form");
+            if !matches!(mode, "form" | "url") {
+                return failed(
+                    -32602,
+                    &format!("the elicitation mode {mode:?} was not declared"),
+                );
+            }
             let result = forward(shared, params)
                 .await
                 .unwrap_or_else(|_| json!({"action": "cancel"}));
             json!({"jsonrpc": "2.0", "id": id, "result": result})
         }
+        "sampling/createMessage" => {
+            let (reply, answer) = oneshot::channel();
+            match shared.one_thread() {
+                Some(notices) => {
+                    let _ = notices.send(Notice::Sampling(Sampled { params, reply }));
+                }
+                None => {
+                    let _ = reply.send(Err((SAMPLING_REFUSED, NO_PERSON.into())));
+                }
+            }
+            match answer.await {
+                Ok(Ok(result)) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
+                Ok(Err((code, message))) => failed(code, &message),
+                Err(_) => failed(SAMPLING_REFUSED, NO_PERSON),
+            }
+        }
+        "roots/list" => {
+            shared.roots_asked.store(true, Ordering::SeqCst);
+            let folder = shared.folder.lock().expect("folder lock").clone();
+            json!({"jsonrpc": "2.0", "id": id, "result": roots(folder.as_deref())})
+        }
         "ping" => json!({"jsonrpc": "2.0", "id": id, "result": {}}),
-        _ => json!({"jsonrpc": "2.0", "id": id,
-            "error": {"code": -32601, "message": "Method not found"}}),
+        _ => failed(-32601, "Method not found"),
     }
 }
+
+/// The code of a refused request to run the model (2025-11-25: the user
+/// rejected it).
+pub(super) const SAMPLING_REFUSED: i64 = -1;
+pub(super) const NO_PERSON: &str =
+    "no person can approve the request now (no call of a thread waits on this server)";
 
 /// The result of an answer, or its error.
 pub(super) fn answer_of(message: &Value) -> Result<Value, Fault> {
@@ -348,6 +507,26 @@ pub(super) fn answer_of(message: &Value) -> Result<Value, Fault> {
 
 fn client_info() -> Value {
     json!({"name": "inocode", "version": env!("CARGO_PKG_VERSION")})
+}
+
+/// The client features declared to every server: questions in both modes,
+/// roots, and running the model without tools. A server of the stateless
+/// revision may also make tasks; an older one is told when the roots
+/// change.
+fn client_capabilities(modern: bool) -> Value {
+    match modern {
+        true => json!({
+            "elicitation": {"form": {}, "url": {}},
+            "roots": {},
+            "sampling": {},
+            "extensions": {TASKS: {}},
+        }),
+        false => json!({
+            "elicitation": {"form": {}, "url": {}},
+            "roots": {"listChanged": true},
+            "sampling": {},
+        }),
+    }
 }
 
 /// The server's tools as listed once.
@@ -378,6 +557,44 @@ pub(crate) struct Connection {
     era: Mutex<Option<Era>>,
     /// The `x-mcp-header` parameters of each tool, by the tool's name.
     param_headers: Mutex<HashMap<String, Vec<ParamHeader>>>,
+    /// What the server said it offers, from `server/discover` or
+    /// `initialize`.
+    capabilities: Mutex<Value>,
+    /// The open `subscriptions/listen` of a modern server.
+    listening: Mutex<Option<Listening>>,
+}
+
+/// How an open subscription is ended: on stdio by its request id, over
+/// HTTP by closing its stream.
+enum Listening {
+    Pipe(u64),
+    Http(tokio::task::AbortHandle),
+}
+
+/// A wait for the updates of one resource; ended when dropped.
+pub(crate) struct Subscription {
+    connection: Arc<Connection>,
+    id: u64,
+    pub(super) updates: mpsc::UnboundedReceiver<String>,
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        let connection = self.connection.clone();
+        let Some(uri) = connection.unwatch(self.id) else {
+            return;
+        };
+        if connection.modern().is_some() {
+            connection.listen();
+            return;
+        }
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                let unsubscribe = connection.request("resources/unsubscribe", json!({"uri": uri}));
+                let _ = tokio::time::timeout(END_TIMEOUT, unsubscribe).await;
+            });
+        }
+    }
 }
 
 pub(super) enum Transport {
@@ -441,9 +658,17 @@ fn chosen(versions: &[Value], discovered: Value) -> Probed {
     }
 }
 
-/// Whether the server says its tool list may change.
+/// Whether the server says it may send word of changes: of its tool,
+/// prompt or resource lists, or of the resources subscribed to.
 fn tells_changes(capabilities: &Value) -> bool {
-    capabilities.pointer("/tools/listChanged") == Some(&json!(true))
+    [
+        "/tools/listChanged",
+        "/prompts/listChanged",
+        "/resources/listChanged",
+        "/resources/subscribe",
+    ]
+    .iter()
+    .any(|pointer| capabilities.pointer(pointer) == Some(&json!(true)))
 }
 
 impl Connection {
@@ -480,7 +705,86 @@ impl Connection {
             log_level: None,
             era: Mutex::new(None),
             param_headers: Mutex::new(HashMap::new()),
+            capabilities: Mutex::new(Value::Null),
+            listening: Mutex::new(None),
         }
+    }
+
+    /// Whether the server's capabilities hold `pointer` (such as
+    /// `/resources`) as something other than `false` or `null`.
+    pub(crate) fn offers(&self, pointer: &str) -> bool {
+        let capabilities = self.capabilities.lock().expect("capabilities lock");
+        capabilities
+            .pointer(pointer)
+            .is_some_and(|value| !value.is_null() && value != &json!(false))
+    }
+
+    /// Tells an older server that asked for the roots that they changed,
+    /// when `folder`, the project folder of the thread now using it, is not
+    /// the one it was given; without waiting long.
+    pub(super) async fn use_folder(&self, folder: &Path) {
+        if !self.shared.use_folder(folder) || self.modern().is_some() {
+            return;
+        }
+        let _ = tokio::time::timeout(
+            END_TIMEOUT,
+            self.notify("notifications/roots/list_changed", Value::Null),
+        )
+        .await;
+    }
+
+    /// Waits for the updates of the resource `uri`: a modern server is
+    /// subscribed to with `subscriptions/listen`, an older one with
+    /// `resources/subscribe`.
+    pub(super) async fn subscribe(self: &Arc<Self>, uri: &str) -> Result<Subscription, Fault> {
+        if !self.offers("/resources/subscribe") {
+            return Err(Fault::Other(
+                "the MCP server does not offer subscriptions to its resources".into(),
+            ));
+        }
+        static WATCHERS: AtomicU64 = AtomicU64::new(1);
+        let id = WATCHERS.fetch_add(1, Ordering::Relaxed);
+        let (sender, updates) = mpsc::unbounded_channel();
+        let first = {
+            let mut watchers = self.shared.watchers.lock().expect("watchers lock");
+            let first = !watchers.iter().any(|watcher| watcher.uri == uri);
+            watchers.push(Watcher {
+                id,
+                uri: uri.to_string(),
+                updates: sender,
+            });
+            first
+        };
+        if first {
+            let subscribed = match self.modern() {
+                Some(_) => {
+                    self.listen();
+                    Ok(())
+                }
+                None => self
+                    .request("resources/subscribe", json!({"uri": uri}))
+                    .await
+                    .map(drop),
+            };
+            if let Err(fault) = subscribed {
+                self.unwatch(id);
+                return Err(fault);
+            }
+        }
+        Ok(Subscription {
+            connection: self.clone(),
+            id,
+            updates,
+        })
+    }
+
+    /// Removes the watcher `id`; the URI it watched when no one else
+    /// watches it now.
+    fn unwatch(&self, id: u64) -> Option<String> {
+        let mut watchers = self.shared.watchers.lock().expect("watchers lock");
+        let index = watchers.iter().position(|watcher| watcher.id == id)?;
+        let uri = watchers.remove(index).uri;
+        (!watchers.iter().any(|watcher| watcher.uri == uri)).then_some(uri)
     }
 
     pub(super) fn next_id(&self) -> u64 {
@@ -515,10 +819,7 @@ impl Connection {
         }
         meta["io.modelcontextprotocol/protocolVersion"] = json!(version);
         meta["io.modelcontextprotocol/clientInfo"] = client_info();
-        meta["io.modelcontextprotocol/clientCapabilities"] = json!({
-            "elicitation": {"form": {}, "url": {}},
-            "extensions": {TASKS: {}},
-        });
+        meta["io.modelcontextprotocol/clientCapabilities"] = client_capabilities(true);
         if let Some(level) = &self.log_level {
             meta["io.modelcontextprotocol/logLevel"] = json!(level);
         }
@@ -682,22 +983,64 @@ impl Connection {
 
     fn become_modern(&self, version: String, discovered: &Value) {
         *self.era.lock().expect("era lock") = Some(Era::Modern(version));
-        let capabilities = discovered
+        *self.capabilities.lock().expect("capabilities lock") = discovered
             .get("capabilities")
             .cloned()
             .unwrap_or(Value::Null);
-        if tells_changes(&capabilities) {
-            self.listen();
-        }
+        self.listen();
     }
 
-    /// Opens `subscriptions/listen` for the server's tool list changes.
+    /// What `subscriptions/listen` asks for: word of the list changes the
+    /// server says it sends, and the updates of the resources watched.
+    fn filter(&self) -> serde_json::Map<String, Value> {
+        let mut filter = serde_json::Map::new();
+        for (pointer, field) in [
+            ("/tools/listChanged", "toolsListChanged"),
+            ("/prompts/listChanged", "promptsListChanged"),
+            ("/resources/listChanged", "resourcesListChanged"),
+        ] {
+            if self.offers(pointer) {
+                filter.insert(field.into(), json!(true));
+            }
+        }
+        let watched = self.shared.watched();
+        if self.offers("/resources/subscribe") && !watched.is_empty() {
+            filter.insert("resourceSubscriptions".into(), json!(watched));
+        }
+        filter
+    }
+
+    /// Opens `subscriptions/listen` anew for what [`Self::filter`] asks for,
+    /// ending the subscription opened before; none is opened when there is
+    /// nothing to ask for.
     fn listen(&self) {
+        let filter = self.filter();
+        let old = self.listening.lock().expect("listening lock").take();
+        match old {
+            Some(Listening::Http(task)) => task.abort(),
+            Some(Listening::Pipe(old)) => {
+                if let Transport::Pipe(pipe) = &self.transport {
+                    if let Some(pending) = pipe.pending.lock().expect("pending lock").as_mut() {
+                        pending.remove(&old);
+                    }
+                    let writer = pipe.writer.clone();
+                    let cancelled = json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
+                        "params": {"requestId": old}});
+                    tokio::spawn(async move {
+                        let _ = send(&writer, &cancelled).await;
+                    });
+                }
+            }
+            None => {}
+        }
+        if filter.is_empty() {
+            return;
+        }
         let id = self.next_id();
-        let params = self.exchange_params(json!({"notifications": {"toolsListChanged": true}}));
+        let params = self.exchange_params(json!({"notifications": filter}));
         let message = json!({"jsonrpc": "2.0", "id": id, "method": "subscriptions/listen",
                              "params": params});
-        match &self.transport {
+        let listening = match &self.transport {
             Transport::Pipe(pipe) => {
                 let (writer, pending) = (pipe.writer.clone(), pipe.pending.clone());
                 // The answer only ends the subscription; notifications for
@@ -705,9 +1048,11 @@ impl Connection {
                 tokio::spawn(async move {
                     let _ = pipe_request(&writer, &pending, id, &message).await;
                 });
+                Listening::Pipe(id)
             }
-            Transport::Http(http) => http.listen_modern(message),
-        }
+            Transport::Http(http) => Listening::Http(http.listen_modern(message)),
+        };
+        *self.listening.lock().expect("listening lock") = Some(listening);
     }
 
     fn exchange_params(&self, params: Value) -> Value {
@@ -772,6 +1117,7 @@ impl Connection {
         self.notify("notifications/initialized", Value::Null)
             .await?;
         let capabilities = answer.get("capabilities").cloned().unwrap_or(Value::Null);
+        *self.capabilities.lock().expect("capabilities lock") = capabilities.clone();
         if let (Some(level), Some(_)) = (&self.log_level, capabilities.get("logging")) {
             let id = self.next_id();
             let set = self
@@ -801,32 +1147,12 @@ impl Connection {
     /// stateless revision, a tool whose `x-mcp-header` parameters break the
     /// rules is left out, as the transport requires.
     pub(super) async fn list_tools(&self) -> Result<Listing, Fault> {
-        let mut listing = Listing::default();
-        let mut cursor: Option<String> = None;
-        loop {
-            let params = match &cursor {
-                Some(cursor) => json!({"cursor": cursor}),
-                None => json!({}),
-            };
-            let page = self.request("tools/list", params).await?;
-            let ttl = page
-                .get("ttlMs")
-                .and_then(Value::as_f64)
-                .map(|ms| Duration::from_millis(ms.max(0.0) as u64));
-            if let Some(ttl) = ttl {
-                listing.ttl = Some(listing.ttl.map_or(ttl, |known| known.min(ttl)));
-            }
-            listing.tools.extend(
-                page.get("tools")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default(),
-            );
-            match page.get("nextCursor").and_then(Value::as_str) {
-                Some(next) => cursor = Some(next.to_string()),
-                None => break,
-            }
-        }
+        let (tools, ttl) = self.list_all("tools/list", "tools").await?;
+        let mut listing = Listing {
+            tools,
+            ttl,
+            rejected: Vec::new(),
+        };
         let mut headers = HashMap::new();
         if self.headers_apply() {
             let server = &self.shared.server;
@@ -853,6 +1179,43 @@ impl Connection {
         Ok(listing)
     }
 
+    /// Every page of the list `method` answers under `key`, and the
+    /// shortest time a page said it stays fresh.
+    pub(super) async fn list_all(
+        &self,
+        method: &str,
+        key: &str,
+    ) -> Result<(Vec<Value>, Option<Duration>), Fault> {
+        let mut items = Vec::new();
+        let mut fresh: Option<Duration> = None;
+        let mut cursor: Option<String> = None;
+        loop {
+            let params = match &cursor {
+                Some(cursor) => json!({"cursor": cursor}),
+                None => json!({}),
+            };
+            let page = self.request(method, params).await?;
+            let ttl = page
+                .get("ttlMs")
+                .and_then(Value::as_f64)
+                .map(|ms| Duration::from_millis(ms.max(0.0) as u64));
+            if let Some(ttl) = ttl {
+                fresh = Some(fresh.map_or(ttl, |known| known.min(ttl)));
+            }
+            items.extend(
+                page.get(key)
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+            match page.get("nextCursor").and_then(Value::as_str) {
+                Some(next) => cursor = Some(next.to_string()),
+                None => break,
+            }
+        }
+        Ok((items, fresh))
+    }
+
     fn headers_apply(&self) -> bool {
         !self.is_pipe() && self.modern().is_some()
     }
@@ -876,7 +1239,7 @@ impl Connection {
 fn initialize_params() -> Value {
     json!({
         "protocolVersion": LEGACY_VERSION,
-        "capabilities": {"elicitation": {"form": {}, "url": {}}},
+        "capabilities": client_capabilities(false),
         "clientInfo": client_info(),
     })
 }
@@ -967,6 +1330,8 @@ async fn read(
     for (_, sender) in waiting.into_iter().flatten() {
         let _ = sender.send(Err(Fault::Stopped));
     }
+    // No update can come any more: the waits for updates end.
+    shared.watchers.lock().expect("watchers lock").clear();
 }
 
 #[cfg(test)]

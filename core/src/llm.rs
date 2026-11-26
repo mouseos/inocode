@@ -459,7 +459,19 @@ impl Llm {
         conversation: &Conversation,
         tools: &[ToolSpec],
     ) -> Result<ChatStream, ErrorInfo> {
-        self.start(conversation, tools, None).await
+        self.start(conversation, tools, None, None).await
+    }
+
+    /// Like [`Self::converse`] without tools, with the answer cut at `cap`
+    /// tokens (Anthropic `max_tokens`, Responses `max_output_tokens`, Chat
+    /// Completions `max_tokens`). A thinking budget that does not fit below
+    /// the cap is left out. DeepAI's service takes no such field.
+    pub(crate) async fn converse_capped(
+        &self,
+        conversation: &Conversation,
+        cap: u64,
+    ) -> Result<ChatStream, ErrorInfo> {
+        self.start(conversation, &[], None, Some(cap)).await
     }
 
     /// Like [`Self::converse`] without tools, asking for an answer in the
@@ -471,7 +483,15 @@ impl Llm {
         conversation: &Conversation,
         output: &JsonOutput,
     ) -> Result<ChatStream, ErrorInfo> {
-        self.start(conversation, &[], Some(output)).await
+        self.start(conversation, &[], Some(output), None).await
+    }
+
+    /// The model this client asks, as an assistant turn's origin.
+    pub(crate) fn origin(&self) -> crate::conversation::Origin {
+        crate::conversation::Origin {
+            format: self.config.provider,
+            model: self.config.model.clone(),
+        }
     }
 
     async fn start(
@@ -479,6 +499,7 @@ impl Llm {
         conversation: &Conversation,
         tools: &[ToolSpec],
         output: Option<&JsonOutput>,
+        cap: Option<u64>,
     ) -> Result<ChatStream, ErrorInfo> {
         let started = Instant::now();
         let format = self.config.provider;
@@ -503,6 +524,9 @@ impl Llm {
                 if let Some(limit) = self.output_limit().await {
                     crate::reasoning::raise_anthropic_max(&mut body, limit);
                 }
+            }
+            if let Some(cap) = cap {
+                cap_output(&mut body, format, cap);
             }
             body
         };
@@ -2011,6 +2035,28 @@ fn codex_client_version(chosen: Option<&str>) -> String {
     }
 }
 
+/// Caps a request body's answer at `cap` tokens in the field of `format`.
+/// An Anthropic thinking budget must stay below `max_tokens`, so one that
+/// does not is left out.
+fn cap_output(body: &mut Value, format: ProviderKind, cap: u64) {
+    match format {
+        ProviderKind::Anthropic => {
+            let max = body["max_tokens"].as_u64().map_or(cap, |max| max.min(cap));
+            body["max_tokens"] = json!(max);
+            let budget = body
+                .pointer("/thinking/budget_tokens")
+                .and_then(Value::as_u64);
+            if budget.is_some_and(|budget| budget >= max) {
+                if let Some(fields) = body.as_object_mut() {
+                    fields.remove("thinking");
+                }
+            }
+        }
+        ProviderKind::Responses => body["max_output_tokens"] = json!(cap),
+        ProviderKind::OpenAi => body["max_tokens"] = json!(cap),
+    }
+}
+
 /// Reads the response body with the same 16 MiB cap as the SSE streams, so a
 /// discovery endpoint cannot make the client allocate without bound.
 pub(crate) async fn read_bounded_body(
@@ -2768,6 +2814,26 @@ pub(crate) fn live_test_llm() -> Llm {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_answer_is_capped_in_each_format() {
+        let mut anthropic = json!({"max_tokens": 32_000,
+            "thinking": {"type": "enabled", "budget_tokens": 16_000}});
+        cap_output(&mut anthropic, ProviderKind::Anthropic, 100);
+        assert_eq!(anthropic, json!({"max_tokens": 100}));
+        let mut adaptive = json!({"max_tokens": 32_000, "thinking": {"type": "adaptive"}});
+        cap_output(&mut adaptive, ProviderKind::Anthropic, 50_000);
+        assert_eq!(
+            adaptive,
+            json!({"max_tokens": 32_000, "thinking": {"type": "adaptive"}})
+        );
+        let mut responses = json!({});
+        cap_output(&mut responses, ProviderKind::Responses, 10);
+        assert_eq!(responses, json!({"max_output_tokens": 10}));
+        let mut chat = json!({});
+        cap_output(&mut chat, ProviderKind::OpenAi, 10);
+        assert_eq!(chat, json!({"max_tokens": 10}));
+    }
 
     #[test]
     fn responses_delta_reads_deltas_and_ignores_non_json_data_lines() {

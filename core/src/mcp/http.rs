@@ -406,10 +406,11 @@ impl Http {
     }
 
     /// Keeps the `subscriptions/listen` request `message` open: its stream
-    /// tells the tool list changed. A stream that breaks is opened again,
-    /// and the tools listed again since a change may have been missed; the
-    /// server's answer ends the subscription.
-    pub(super) fn listen_modern(self: &Arc<Self>, message: Value) {
+    /// tells of list changes and resource updates. A stream that breaks is
+    /// opened again, and the lists listed again since a change may have
+    /// been missed; the server's answer ends the subscription, and so does
+    /// aborting the task returned.
+    pub(super) fn listen_modern(self: &Arc<Self>, message: Value) -> tokio::task::AbortHandle {
         let http = self.clone();
         let id = message.get("id").and_then(Value::as_u64);
         let task = tokio::spawn(async move {
@@ -438,17 +439,21 @@ impl Http {
                     Err(Fault::Other(_)) => {}
                     Err(_) => return,
                 }
-                http.shared
-                    .tools_changed
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                let shared = &http.shared;
+                let order = std::sync::atomic::Ordering::SeqCst;
+                shared.tools_changed.store(true, order);
+                shared.prompts_changed.fetch_add(1, order);
+                shared.resources_changed.fetch_add(1, order);
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(MAX_BACKOFF);
             }
         });
+        let handle = task.abort_handle();
         self.tasks
             .lock()
             .expect("tasks lock")
             .push(task.abort_handle());
+        handle
     }
 
     /// Opens the deprecated HTTP+SSE transport: a GET stream whose first

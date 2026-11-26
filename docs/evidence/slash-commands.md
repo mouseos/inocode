@@ -26,6 +26,7 @@
 5. 利用者のコマンドは `~/.inocode/commands/*.md`、プロジェクトのコマンドは `.inocode/commands/*.md`。形式はプラグインと同じ。
    - 組み込みの名前は、プラグインのコマンド・プラグインのスキル・利用者・プロジェクトのどれにも上書きさせない（ユーザー：「上書き禁止」）。他人のリポジトリの `.inocode/commands/goal.md` が `/goal` や `/approve` の中身を替える、といったことを防ぐため。
    - 組み込み以外は、定義元を付けた名前で呼ぶ：`/プラグイン名:名前`（プラグインのコマンドとスキル）、`/user:名前`、`/project:名前`。
+   - MCP サーバーのプロンプトは `/mcp__サーバー名__プロンプト名`（Claude Code の形。名前の作り方は道具と同じ）。この名前は組み込みの名前にならないが、組み込みと同じ名前のものは外す。同じ短い名前のほかのコマンドは、定義元を付けた名前でだけ呼べる。詳細は `mcp-client.md`。
    - 定義元を付けない短い名前で呼べるのは、組み込みに無く、組み込み以外でもその名前が 1 つしかないときだけ。ぶつかれば短い名前は使えず、`/help` に呼び分け方を出す。
 6. 道具や記録を足すときは、それを見るコマンドも足す。CLI から参照する方法の無い機能を作らない。この文書の表と、エンジンが持つ道具の一覧を試験で照合する。
 7. 環境変数で決めていたこと（プロバイダ・モデル・思考の深さ・補助役のモデル）は、すべてコマンドと設定ファイルから変えられるようにする（`account-pool.md`）。
@@ -150,7 +151,7 @@
 ### プロトコル
 
 - `commands/list`（`thread_id` は任意）→ `{commands: [...], conflicts: [...]}`。
-  - 各コマンド：`name`（組み込み以外は `プラグイン名:名前`・`user:名前`・`project:名前`）、`short`（定義元なしで呼べるときの短い名前、呼べなければ `null`）、`aliases`、`description`、`source`（`builtin`・`plugin`・`user`・`project`）、`plugin`、`kind`（`builtin`・`command`・`skill`）、`forms`、`bare`（何も付けないときに使うサブコマンド）、`available`、`reason`。
+  - 各コマンド：`name`（組み込み以外は `プラグイン名:名前`・`user:名前`・`project:名前`）、`short`（定義元なしで呼べるときの短い名前、呼べなければ `null`）、`aliases`、`description`、`source`（`builtin`・`plugin`・`user`・`project`・`mcp`）、`plugin`、`kind`（`builtin`・`command`・`skill`・`prompt`。`prompt` には `server` と元の名前 `prompt` も付き、`args` は宣言された引数）、`forms`、`bare`（何も付けないときに使うサブコマンド）、`available`、`reason`。
   - `forms` は呼び方ごと（`sub` が `null` ならコマンドそのもの、そうでなければサブコマンド）に、`usage`、`args`（`name`、`kind`＝`text`・`path`・`number`・`choice`、`choices`、`required`）、`when`（`now`・`next_request`・`after_turn`）、`runs`（`result`・`turn`）、`available`、`reason`。
   - `conflicts`：短い名前が組み込みとぶつかるか、組み込み以外どうしで重なるものと、代わりに使う名前。
   - `thread_id` を付けると、その会話のプロジェクトの `.inocode/commands/*.md` も入る。
@@ -269,5 +270,5 @@
 
 ## 審査役への渡し方
 
-- プロジェクトのコマンドとプラグインのコマンド・スキルから作った依頼は、先頭に `[command file] /名前 引数` の 1 行を付けて保存する。`auto` モードの審査役には、その 1 行だけを「Person:」として渡し、ファイルの文は「Command file (from the repository or a plugin, not the person's words)」として別に渡す。他人のリポジトリのコマンドの文で、審査役に強制 push などを通させないため。自分用のコマンド（`~/.inocode/commands`）は本人の言葉として扱う。
+- プロジェクトのコマンドとプラグインのコマンド・スキルから作った依頼は、先頭に `[command file] /名前 引数` の 1 行を付けて保存する。`auto` モードの審査役には、その 1 行だけを「Person:」として渡し、ファイルの文は「Command file (from the repository, a plugin or an MCP server, not the person's words)」として別に渡す。MCP サーバーのプロンプトから作った依頼も同じ印を付ける。他人のリポジトリのコマンドの文で、審査役に強制 push などを通させないため。自分用のコマンド（`~/.inocode/commands`）は本人の言葉として扱う。
 - 試験：`review::tests::a_command_files_text_is_not_the_persons_words`。

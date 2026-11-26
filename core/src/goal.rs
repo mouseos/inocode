@@ -855,6 +855,7 @@ mod tests {
                 seq: 1,
                 shown: &shown,
                 events: None,
+                sampling: None,
             };
             let mut goal = Goal::new(objective, None, None, None, 1).expect("goal");
             goal.claim = Some(Claim {

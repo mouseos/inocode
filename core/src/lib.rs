@@ -59,6 +59,7 @@ mod usage;
 pub mod usage_log;
 mod web_search;
 
+pub use mcp::ResourceUpdates;
 pub use usage::{Usage, UsageWindow};
 
 pub use llm::{
@@ -218,17 +219,21 @@ impl Request {
                     "\"action\" must be \"accept\", \"decline\" or \"cancel\"",
                 )
             })?;
-        let answer = match action {
-            "accept" => {
-                let content = params
-                    .and_then(|params| params.get("content"))
-                    .filter(|content| content.is_object())
-                    .ok_or_else(|| {
-                        ErrorInfo::new("invalid_params", "accept requires a \"content\" object")
-                    })?;
+        // A form's answer needs its content; a URL visited or a request to
+        // run the model approved is accepted without one. Which the
+        // question is, the store checks.
+        let answer = match (action, params.and_then(|params| params.get("content"))) {
+            ("accept", None | Some(Value::Null)) => json!({ "action": "accept" }),
+            ("accept", Some(content)) if content.is_object() => {
                 json!({ "action": "accept", "content": content })
             }
-            action => json!({ "action": action }),
+            ("accept", Some(_)) => {
+                return Err(ErrorInfo::new(
+                    "invalid_params",
+                    "\"content\" must be an object",
+                ))
+            }
+            (action, _) => json!({ "action": action }),
         };
         Ok((id, answer))
     }
@@ -1658,6 +1663,19 @@ impl Core {
         self.store()
             .map(|store| store.answer_elicitation(thread, elicitation, answer))
             .unwrap_or(false)
+    }
+
+    /// `mcp/resources/list`, `mcp/resources/templates/list`,
+    /// `mcp/resources/read` and `mcp/complete`: what the MCP servers offer
+    /// beside their tools (docs/evidence/mcp-client.md).
+    pub async fn mcp_request(&self, method: &str, params: &Value) -> Result<Value, ErrorInfo> {
+        mcp::request(self.store()?, method, params).await
+    }
+
+    /// `mcp/resources/subscribe`: the updates of one resource of one MCP
+    /// server, until the value returned is dropped.
+    pub async fn mcp_subscribe(&self, params: &Value) -> Result<ResourceUpdates, ErrorInfo> {
+        mcp::subscribe(self.store()?, params).await
     }
 
     /// Runs the turn [`Self::begin_turn`] claimed.

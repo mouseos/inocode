@@ -1,8 +1,17 @@
-# MCP の受け口（stdio と HTTP のサーバーの道具）
+# MCP の受け口（stdio と HTTP のサーバーの道具、リソース、プロンプトなど）
 
-- **対象と範囲：** `~/.inocode/mcp.json` に書かれた MCP サーバーを stdio で起動するか HTTP（Streamable HTTP、古い HTTP+SSE）でつなぎ、その道具（tools）をモデルに渡して呼べるようにする。仕様の最新版 2026-07-28（ハンドシェイクのない版）のサーバーとも、それより前の版（`initialize` で始める版）のサーバーとも話す。
+- **対象と範囲：** `~/.inocode/mcp.json` に書かれた MCP サーバーを stdio で起動するか HTTP（Streamable HTTP、古い HTTP+SSE）でつなぎ、その道具（tools）をモデルに渡して呼べるようにする。仕様の最新版 2026-07-28（ハンドシェイクのない版）のサーバーとも、それより前の版（`initialize` で始める版）のサーバーとも話す。道具のほか、リソース（一覧、テンプレート、読むこと、更新の購読）、プロンプト（スラッシュコマンドとして）、補完、ルート、サンプリング、聞き返し（form と url）も、どちらの版の形でも使う（下の「リソース」から「聞き返しの残り」）。
   - 範囲外（未実装）：
-    - OAuth（HTTP では、設定に書いたヘッダーで認証する）。リソース、プロンプト、補完（completion）、サンプリング、ルート。これらは別の作業で作る予定。サンプリングとルートは宣言していないので、サーバーが求めてきたら「対応していない」として扱う（下の「入力の求め」）。
+    - OAuth（HTTP では、設定に書いたヘッダーで認証する）。別の作業で作る予定。
+    - サンプリングでの道具の使用（`sampling.tools`）。inocode のモデルへの要求には `tool_choice` がなく、`toolChoice` の `required`・`none` を守れないため宣言しない。宣言していないので、`tools` 付きの頼みは -32602 で断る。`sampling.context`（`includeContext` の `thisServer`・`allServers`。非推奨）も宣言しない。
+    - サンプリングで、頼みの文を人が直すこと、モデルの答えをサーバーに返す前に人に見せること（仕様の SHOULD）。頼みを承認するかだけを聞く。`modelPreferences`（モデルのヒントと優先度）でモデルを選ぶこと（スレッドのいまのモデルを使う）。`temperature`・`stopSequences`・`metadata`（仕様では使わなくてよい MAY）。
+    - DeepAI のアカウントで `maxTokens` を守ること（DeepAI の受け口に答えの長さの欄がない）。
+    - リソースの `https://` の URI を inocode が直接取りに行くこと（仕様の MAY）。必ずサーバーに `resources/read` を送る。
+    - `notifications/subscriptions/acknowledged` の中身（サーバーが受けた種類）を見て、断られた種類を扱うこと（仕様の SHOULD）。読み捨てる。
+    - プロンプトのメッセージの画像・音声・バイナリーのリソースをモデルに見せること。人のメッセージは文字だけなので、種類と大きさだけ書く。道具の結果の画像も、これまでどおり見せない（リソースを読む道具の画像だけ見せる）。
+    - ルートを渡す前に人に聞くこと（仕様の SHOULD）。プロジェクトのフォルダーをそのまま渡す。
+    - サーバーの完了の通知で答えた URL の問いを、画面から消す通知。`/answer` の一覧と `turn/answer` からは消える。
+    - `mcp/resources/subscribe` の流れは、`mcp.json` が変わってサーバーが新しくなっても古いサーバーのまま続く（購読し直せば新しいサーバーになる）。HTTP のサーバーが止まっても流れは終わらない（stdio は終わる）。
     - 2025-11-25 の実験的なタスク（要求ごとに `task` を付けて頼む形）。付けて送らないので、その版のサーバーはタスクを作らない。2026-07-28 の拡張のタスクは対応した（下）。
     - タスクの ID を保存して、inocode を起動し直した後に続きを待つこと。タスクの状態の通知（`notifications/tasks` を `subscriptions/listen` で受けること）。待つのは問い合わせ（`tasks/get`）だけ。
     - `server/discover` の答えのキャッシュの目安（`ttlMs`）。起動のときに 1 度だけ聞く。
@@ -13,7 +22,12 @@
   - `core/src/mcp/mod.rs`：設定の読み込み、起動、道具の一覧（と、変わったときの一覧のし直し）、呼び出し（入力の求め、タスク、進み具合、ログ、取り消し）、人への聞き返し、結果の文字列化。
   - `core/src/mcp/connection.rs`：1 つのサーバーとのやりとり。版の見分け（`server/discover` での探りと `initialize` への切り替え）、版ごとの要求の形、stdio の読み書き、サーバーからの通知と要求の扱い。
   - `core/src/mcp/http.rs`：HTTP。Streamable HTTP（2026-07-28 の見出し、古い版のセッション・GET の流れ・`Last-Event-ID` での再開）と、古い HTTP+SSE 方式。`x-mcp-header` の検査と見出しへの書き出し。
+  - `core/src/mcp/features.rs`：リソース・リソースのテンプレート・購読（モデルの道具、クライアントの要求）、プロンプト（コマンド）、補完。
   - `core/src/mcp/tests.rs`：偽のサーバーを使うテスト。
+  - `core/src/llm.rs`（`converse_capped`、`cap_output`）：サンプリングの `maxTokens` で答えの長さを切る。
+  - `core/src/agent_tools.rs`（`Context::sampling`、リソースの道具の振り分け）、`core/src/turn.rs`（サンプリングの使用量をターンに足す）。
+  - `core/src/commands.rs`（`Registry` のプロンプト、`Target::Prompt`、`prompt_entry`）、`core/src/review.rs`（プロンプトの文に付ける印の説明）。
+  - `core/src/lib.rs`（`turn/answer` の `content` なしの `accept`、`Core::mcp_request`・`mcp_subscribe`）、`core/src/store.rs`（form の問いは `content` なしの `accept` を受けない）、`server/src/lib.rs`（`mcp/resources/list`・`mcp/resources/templates/list`・`mcp/resources/read`・`mcp/complete`・`mcp/resources/subscribe`）。
   - `core/src/sse.rs`：イベントの流れの読み取りに、イベントの種類（`event`）、最後のイベント ID（`id`）、つなぎ直すまでの時間（`retry`）を足した。
   - `core/src/turn.rs`（`TurnEvent::McpProgress`・`McpLog`）、`core/src/lib.rs`（`EventPayload::mcp`）、`server/src/lib.rs`：ターンの通知 `mcp_progress`・`mcp_log`。
   - `core/src/store.rs`：起動したサーバーをスレッドの保存先（`Store`）に持たせる。
@@ -21,7 +35,7 @@
   - `core/Cargo.toml`：tokio の `process` 機能。新しいクレートは足していない（Base64 は前からある `base64` を使う）。
 - **根拠の状態：** UNSUPPORTED_APPROVED。
   - MCP の受け口は、ほかの道具と使えるようにするための互換機能で、作業の成功を上げるという研究はない（調べていない。2026-11-20 の提案の時点で「研究はおそらくない、作るなら承認が要る」と伝えた）。
-  - 2026-07-28 版への対応と、仕様のすべての機能（この作業では、版の選び方、入力の求め、変更の通知、進み具合、取り消し、ログ、キャッシュの目安、古い HTTP+SSE、タスク）も、効果を示す研究はない（調べていない）。仕様に合わせて、つながるサーバーを増やすための作業。
+  - 2026-07-28 版への対応と、仕様のすべての機能（版の選び方、入力の求め、変更の通知、進み具合、取り消し、ログ、キャッシュの目安、古い HTTP+SSE、タスク。続く作業でリソース、プロンプト、補完、ルート、サンプリング、聞き返しの残り）も、効果を示す研究はない（調べていない）。仕様に合わせて、つながるサーバーと使える機能を増やすための作業。
   - 道具を増やすと選択の正答が下がるという査読前の報告がある（RAG-MCP、arXiv 2505.03275。LongFuncEval、arXiv 2505.10570。`memory-integration.md`、`web-search.md`）。MCP の道具は数を絞らずにそのまま渡すので、多くのサーバーを書くとこの不利が出うる。どの道具を渡すかは、設定に書くサーバーで利用者が決める。
 - **ユーザーの承認：** 2026-11-20、提案「MCP の受け口（効果を示す研究はおそらくない。作るなら承認が要る）」に対して「１と２やって」。HTTP 接続は同日、「根拠を調べずに実装してよいもの」の質問で「MCP の HTTP 接続」を選んだ（UNSUPPORTED_APPROVED）。2026-07-28 版とすべての機能は 2026-11-26、「新しいのにもつながるようにして。それとＭＣＰが持ってるすべての仕様をつっかえるように。」（UNSUPPORTED_APPROVED）。
 
@@ -30,6 +44,8 @@
 - Model Context Protocol 仕様 2025-11-25：https://modelcontextprotocol.io/specification/2025-11-25 （lifecycle、transports、server/tools、basic/utilities/ping・progress・cancellation、server/utilities/pagination・logging、client/elicitation を参照）。
 - 仕様 2026-07-28：https://modelcontextprotocol.io/specification/2026-07-28 。2026-11-26 に公式のリポジトリから落としたページの原文を読んだ：changelog、basic/index（`_meta` の項目、エラー番号）、basic/versioning（版の選び方と古い版との互換）、transports の stdio と streamable-http（互換の節を含む）、server/discover、patterns の mrtr・progress・cancellation・subscriptions、server/utilities の caching・logging・pagination、client/elicitation。
   - この版では `initialize` がなく、すべての要求が `_meta` に版（`io.modelcontextprotocol/protocolVersion`）、クライアントの名前（`clientInfo`）、クライアントの機能（`clientCapabilities`）を持つ。セッションも、HTTP の GET の流れも、`Last-Event-ID` での再開もない。サーバーから要求を送ることもなく、人への問いは結果の中で頼む（入力の求め）。
+- リソース・プロンプト・補完・ルート・サンプリング・聞き返し：2026-11-26 に、落とした原文の 2026-07-28 の server/resources・server/prompts・server/utilities/completion・client/sampling・client/roots・client/elicitation・basic/patterns/subscriptions と、2025-11-25 の同じページ（client/sampling の誤りの番号、client/elicitation の `elicitationId`・`notifications/elicitation/complete`・-32042、client/roots の `listChanged`）を読んだ。2026-07-28 ではサンプリングとルートは非推奨（少なくとも 12 か月は仕様に残る）で、新しい版でも使えるので対応した。
+  - モデルに渡すリソースの道具の名前（`list_mcp_resources`・`list_mcp_resource_templates`・`read_mcp_resource`）は Codex に合わせるよう作業の指示で与えられた（Codex のソースは読んでいない）。プロンプトのコマンドの名前 `/mcp__サーバー__プロンプト` は Claude Code の形（同じく指示で与えられた）。
 - タスクの拡張（`io.modelcontextprotocol/tasks`）：仕様のページは落としたものに無かったので、2026-11-26 に https://github.com/modelcontextprotocol/modelcontextprotocol の `docs/extensions/tasks/overview.mdx` と、https://github.com/modelcontextprotocol/ext-tasks の `packages/ext-tasks/schema/v2/schema.ts`（`tasks/get`・`tasks/update`・`tasks/cancel`、`resultType: "task"`）を読んだ。
 - ほかのハーネス：Codex（https://github.com/openai/codex 、`codex-rs/rmcp-client/src/protocol_mode.rs`、2026-11-26 に読んだ）は 2026-07-28 を設定で選んだときだけ使い、stdio のサーバーを探るのは、サーバーの設定が版を書いたとき（または探る設定のとき）だけ。inocode は利用者の指示で、何も書かなくても探る。
 - 2026-11-20 の確認はサブエージェントが公式サイトを読み、報告したもの。TypeScript のスキーマ（必須の項目の一覧）は、2026-07-28 の `InputResponses`・`MissingRequiredClientCapabilityError` の項だけ確かめた。
@@ -60,10 +76,10 @@
   - stdio で 5 秒（`PROBE_WAIT`）たっても答えがないときは、`initialize` も送り、先に版が決まるほうに従う：`server/discover` に新しい版の答えが来れば新しい版（`initialize` の答えは捨てる）、`initialize` に答えが来れば前の版。仕様は「しばらく答えがなければ前の版」とする。ただ、起動の遅いサーバー（npx で落としてから動くなど）も、最初の要求にしばらく答えない。stdio は届いた順に読まれるので、遅い新しい版のサーバーは `server/discover` に先に答える。前の版で知らない要求に何も答えないサーバーは `initialize` にだけ答える。どちらの場合もつながるように、両方を待つことにした（工学上の選択）。5 秒は、知らない要求に答えないサーバーの起動を 5 秒遅らせる長さとして選んだ（根拠のない値）。
   - stdio のサーバーが探りの途中で止まった（出力を閉じた）ときは、起動し直して `initialize` だけで話す。前の版のサーバーには、`initialize` より前に届いた要求で終わるもの（rmcp で作られた古いサーバーなど。推測、確かめていない）があるため（工学上の選択）。
   - 見分けた版は、そのサーバーを起動し直すとき（下の「落ちたサーバーの再起動」）に使い、探り直さない（仕様：結果はサーバーのプロセスが続く間覚えておくべき (SHOULD)。起動し直しでも使ってよい (MAY)）。
-- 前の版のハンドシェイク：`initialize`（`protocolVersion` 2025-11-25、`capabilities` は聞き返しの form と url（`{"elicitation": {"form": {}, "url": {}}}`）、`clientInfo` は名前 inocode と版）。返ってきた版が 2025-11-25・2025-06-18・2025-03-26・2024-11-05 のどれでもなければ切る（仕様では「切るべき」(SHOULD)）。そのあと `notifications/initialized` を送る。
+- 前の版のハンドシェイク：`initialize`（`protocolVersion` 2025-11-25、`capabilities` は `{"elicitation": {"form": {}, "url": {}}, "roots": {"listChanged": true}, "sampling": {}}`、`clientInfo` は名前 inocode と版）。返ってきた版が 2025-11-25・2025-06-18・2025-03-26・2024-11-05 のどれでもなければ切る（仕様では「切るべき」(SHOULD)）。そのあと `notifications/initialized` を送る。
   - 前の 3 つの版も受け入れるのは、ここで使う `initialize`・`tools/list`・`tools/call` の形が同じだから（推測。各版のページは読んでいない）。
   - サーバーが `logging` を持ち、設定に `log_level` があれば、`logging/setLevel` を送る。断られたら標準エラーに出して続ける。
-- 新しい版の要求の形：すべての要求の `params._meta` に `io.modelcontextprotocol/protocolVersion`（2026-07-28）、`io.modelcontextprotocol/clientInfo`（inocode と版）、`io.modelcontextprotocol/clientCapabilities`（`{"elicitation": {"form": {}, "url": {}}, "extensions": {"io.modelcontextprotocol/tasks": {}}}`）を入れる（仕様の MUST。clientInfo は SHOULD）。`log_level` があれば `io.modelcontextprotocol/logLevel` も入れる。前の版のサーバーには入れない。
+- 新しい版の要求の形：すべての要求の `params._meta` に `io.modelcontextprotocol/protocolVersion`（2026-07-28）、`io.modelcontextprotocol/clientInfo`（inocode と版）、`io.modelcontextprotocol/clientCapabilities`（`{"elicitation": {"form": {}, "url": {}}, "roots": {}, "sampling": {}, "extensions": {"io.modelcontextprotocol/tasks": {}}}`。新しい版のルートには変更の通知がないので `listChanged` を付けない）を入れる（仕様の MUST。clientInfo は SHOULD）。`log_level` があれば `io.modelcontextprotocol/logLevel` も入れる。前の版のサーバーには入れない。
 - 道具の一覧：`tools/list` を `nextCursor` がなくなるまで繰り返す。
   - 名前：`mcp__<サーバー名>__<道具名>`。英数字・`_`・`-` 以外は `_` にし、64 文字で切る。提供元の API が受け付ける名前にするため（OpenAI の関数名の制限）。同じ名前が 2 つできたら、後のほうを飛ばして、起動の問題として出す。
   - 説明：道具の `description`（なければ `title`）の後に「(tool <元の名前> of MCP server <サーバー名>)」を足す。
@@ -79,7 +95,8 @@
   - 結果：`text` はそのまま。`image`・`audio` は種類だけ書く（モデルには見せない）。`resource_link` は名前と URI。埋め込みの `resource` は文字ならその文字、そうでなければ URI だけ。中身がなく `structuredContent` があれば、その JSON。`isError` が true なら、道具の失敗としてモデルに返す（仕様では、道具の失敗はモデルに渡すべき）。JSON-RPC のエラーは「MCP error <code>: <message>」として返す（-32021 なら求められた機能も書く）。
   - 結果の長さは切っていない。大きな結果はそのまま会話に入る（未対応）。
 - 入力の求め（Multi Round-Trip Requests、仕様 2026-07-28 の basic/patterns/mrtr）：呼び出しの答えが `input_required` なら、`inputRequests` の各要求に答えを集め、同じ呼び出しを新しい ID で、`inputResponses`（同じキー）と、あれば `requestState`（そのまま）を足して送り直す（仕様の MUST）。
-  - 答えられるのは聞き返し（`elicitation/create`、form と url）だけ。下の「聞き返し」と同じく人に聞く。それ以外（`sampling/createMessage`・`roots/list` など）を求められたら、誰にも聞かずに「inocode はそれを持たない（宣言していない）」という失敗で呼び出しを終える。仕様では、宣言していない種類をサーバーは求めてはならず (MUST NOT)、答えの形にエラーを返す形がないため、送り直さない。
+  - 答えるのは聞き返し（`elicitation/create`、form と url。下の「聞き返し」と同じく人に聞く）、ルート（`roots/list`。下の「ルート」）、サンプリング（`sampling/createMessage`。下の「サンプリング」）。それ以外を求められたら、誰にも聞かずに「inocode はそれを持たない（宣言していない）」という失敗で呼び出しを終える。仕様では、宣言していない種類をサーバーは求めてはならず (MUST NOT)、答えの形にエラーを返す形がないため、送り直さない。サンプリングを人が断ったときも、同じ理由で送り直さずに呼び出しを失敗で終える（仕様：断ったときクライアントは送り直さなくてよい）。
+  - 道具の呼び出しのほか、`resources/read`・`prompts/get`・`completion/complete` の答えも同じように扱う（仕様では読む・取る要求も入力を求めてよい）。進み具合の通知は、道具なら `tool`、それ以外は `method` と `name`（プロンプトの名前かリソースの URI）を持つ。
   - `inputRequests` がなく `requestState` だけなら、すぐ送り直す（仕様の MAY）。
   - 1 回の呼び出しで送り直すのは 20 回まで（`MAX_ROUNDS`）。サーバーが同じことを求め続けても止まるように（工学上の選択。根拠のない値）。
   - 2025-11-25 のサーバーが -32042（URL への訪問が要る）で答えたら、`data.elicitations` の URL を人に見せ、すべて `accept` なら呼び出しを送り直す（同じく 20 回まで）。ほかの答えなら、そのエラーを返す。
@@ -106,16 +123,47 @@
 - 古い HTTP+SSE 方式（2024-11-05。仕様 2025-11-25 と 2026-07-28 の transports の互換の節）：`initialize` の POST が 400・404・405 で、本文が新しい版のエラーでなければ、同じ URL に GET（`Accept: text/event-stream`）を送る。最初の `endpoint` イベントが来たら、その URL に以後のメッセージを POST し、答えは GET の流れで受ける。そのあと `initialize` から始め直す。
   - `endpoint` の URL が、設定の URL と違う場所（scheme・ホスト・ポート）なら使わない。設定のヘッダー（トークンなど）をほかへ送らないため（工学上の選択）。
   - 流れが閉じたら、待っている要求をすべて失敗にする（この方式には再開がない）。
-- サーバーからの要求（前の版だけ。新しい版のサーバーは送らない）：`ping` には空の結果で答える（仕様の MUST）。`elicitation/create` は下の「聞き返し」。それ以外の要求（`sampling/createMessage`・`roots/list` など）には -32601（Method not found）を返す（その機能を宣言していないため）。
-- サーバーからの通知：`notifications/progress`・`notifications/message`・`notifications/tools/list_changed` は上のとおり。ほか（`notifications/subscriptions/acknowledged`、`notifications/elicitation/complete` など）は読み捨てる。
+- サーバーからの要求（前の版だけ。新しい版のサーバーは送らない）：`ping` には空の結果で答える（仕様の MUST）。`elicitation/create` は下の「聞き返し」、`roots/list` は「ルート」、`sampling/createMessage` は「サンプリング」。それ以外の要求には -32601（Method not found）を返す。
+- サーバーからの通知：`notifications/progress`・`notifications/message`・`notifications/tools/list_changed` は上のとおり。`notifications/prompts/list_changed`・`notifications/resources/list_changed`・`notifications/resources/updated`・`notifications/elicitation/complete` は下のとおり。ほか（`notifications/subscriptions/acknowledged` など）は読み捨てる。
 - 聞き返し（elicitation、仕様 2025-11-25 と 2026-07-28 の client/elicitation を原文で確認）：道具の呼び出しの途中でサーバーが人に聞いてきたら、呼び出しを待たせて人に聞く（UNSUPPORTED_APPROVED。`ask-person.md` の「MCP サーバーからの聞き返し」）。
   - 新しい版では問いは呼び出しの答え（入力の求め）の中にあり、どの呼び出しのものかがはっきりしている。前の版の問いはサーバーからの要求として届く。
   - 前の版：呼び出しのあいだだけ受け口を開く。呼び出しの外で届いた聞き返しや、ターンの通知の先がないときは `cancel` で答える。
   - 前の版の聞き返しには、どの呼び出しのものかが書かれていない。そのため、そのサーバーで待っている呼び出しがすべて同じスレッドのものなら、そのスレッドの人に聞く。別のスレッドの呼び出しも待っているときは、取り違えないよう `cancel` で答える（このプロジェクトの判断）。
   - ターンの通知 `elicitation` の中身：`id`、`server`、`mode`（`form` か `url`）、`message`。form なら `requestedSchema` と `questions`（`ask-person.md`）。url なら `url`。
-  - url：http か https の URL だけを見せる（ほかは `decline`）。inocode は URL を開かず、先読みもしない（仕様：同意なしに開いてはならない、先読みしてはならない MUST）。人が `accept` したら、`content` を付けずに `{"action": "accept"}` を返す（仕様：url の accept には content を付けない）。`turn/answer` はこれまでどおり `accept` に `content` のオブジェクトを求めるので、url の問いには `content: {}` を付けて答える（その中身は捨てる）。全体の URL を見せること、ドメインを目立たせることは画面の役目。
+  - url：http か https の URL だけを見せる（ほかは `decline`）。inocode は URL を開かず、先読みもしない（仕様：同意なしに開いてはならない、先読みしてはならない MUST）。人が `accept` したら、`content` を付けずに `{"action": "accept"}` を返す（仕様：url の accept には content を付けない）。`turn/answer` の `accept` は `content` なしでよい（付けたなら中身は捨てる）。全体の URL を見せること、ドメインを目立たせることは画面の役目。
   - それ以外の `mode` は `decline` で答える。
   - 待つのは 10 分まで。過ぎたら、またはターンが中断されたら `cancel`。人の答えはそのままサーバーに返す（`accept` なら `content` が必要。中身の型は確かめていない）。
+- 宣言する機能（上の「前の版のハンドシェイク」と「新しい版の要求の形」）：聞き返しの form と url、ルート、サンプリング（道具なし）。サーバーの機能（`server/discover` か `initialize` の答えの `capabilities`）は接続ごとに覚え、リソース・プロンプト・補完を使うかと、何を購読するかを決める。
+- 一覧のページと新しさ（仕様の server/utilities の pagination・caching）：`resources/list`・`resources/templates/list`・`prompts/list` も `nextCursor` がなくなるまで繰り返す。取った一覧は、サーバーが `ttlMs` を言ったならその間、言わなかったならサーバーが変更を通知すると言った（`listChanged`）間だけ使い回し、変更の通知が来たら取り直す（テンプレートはリソースの変更の通知で取り直す）。どちらもないサーバーの一覧は使うたびに取る。仕様は「`ttlMs` がなければ 0 とみなすべき (SHOULD)、または通知などに頼る」とする。道具の一覧（上）と違って、取り直してもモデルへのプロンプトのキャッシュが崩れないので、仕様の SHOULD に従った（工学上の選択）。サーバーを起動し直したら捨てる。
+- リソース（仕様の server/resources）：
+  - モデルの道具：起動したサーバーのどれかが `resources` を持つときだけ、`list_mcp_resources`（`server` は任意）、`list_mcp_resource_templates`（同じ）、`read_mcp_resource`（`server` と `uri`）を渡す。道具の数が多いときの検索（`tool_search`）には回さず、いつも渡す。一覧は各項目にサーバー名 `server` を付け、`icons` を外した JSON。一覧に失敗したサーバーは `problems` に書く。テンプレートの `{...}` はモデルが埋めて `uri` にする（inocode は URI テンプレートを展開しない）。
+  - 読んだ中身：文字はそのまま（「Resource URI (種類):」の後）。`blob` で種類が `image/` のものは、`read` の画像と同じく縮めて保存し、モデルに見せる（`image-input.md`。png・jpeg・gif・webp だけ）。ほかのバイナリーは種類と大きさだけ書く。
+  - 承認：読むだけの道具なので、どのモードでも承認を待たない（工学上の選択。読むときにサーバーが聞き返しやサンプリングを頼めば、それは人に聞く）。
+  - クライアントの要求（画面のため）：`mcp/resources/list`・`mcp/resources/templates/list`（`server` は任意）、`mcp/resources/read`（`server`・`uri`。答えはサーバーの結果に `server` を足したもの、`blob` もそのまま）。まだ起動していないサーバーは起動する。誤りは `mcp_error`。名前は、ほかの要求の「名詞/動詞」の形に、MCP のメソッド名を `mcp/` の下に置いた形にした（工学上の選択）。
+  - 購読：クライアントの要求 `mcp/resources/subscribe`（`server`・`uri`）は流れの要求で、`started` の後、更新のたびに出来事 `mcp_resource_updated`（`mcp: {server, uri}`）を出す。やめるのは、ほかの流れと同じ `cancel`（`request_id`）か接続を閉じること（そのため別の unsubscribe の要求は作らなかった。工学上の選択）。購読できないときと、stdio のサーバーが止まったときは `failed`。
+    - 新しい版：`subscriptions/listen` の `notifications.resourceSubscriptions` に、購読中の URI をすべて入れる。購読が増減するたびに、前の購読をやめて（stdio は `notifications/cancelled` に要求の ID、HTTP は流れを閉じる。仕様の subscriptions の Cancellation）新しい `subscriptions/listen` を開く。購読は 1 つにまとめるので、`subscriptionId` での照らし合わせはしない。一覧の変更（`toolsListChanged`・`promptsListChanged`・`resourcesListChanged`）は、サーバーが `listChanged` を言った種類だけ同じ購読で頼む。何も頼むものがなければ開かない。HTTP の購読の流れが切れたら、道具・プロンプト・リソースの一覧を取り直す（その間の変更を逃したかもしれないため）。
+    - 前の版：同じ URI の最初の購読で `resources/subscribe`、最後の購読が終わると `resources/unsubscribe`（5 秒まで待つ）。`notifications/resources/updated` は stdio ではいつでも、HTTP では GET の流れ（サーバーが一覧の変更か購読を言ったときに開く）か呼び出しの流れで受ける。
+    - サーバーが `resources.subscribe` を言わなければ購読を断る。
+- プロンプト（仕様の server/prompts）：プロンプトを持つサーバーのプロンプトを、スラッシュコマンド `/mcp__サーバー名__プロンプト名`（名前の作り方は道具と同じ）として `commands/list` に出す（`source: "mcp"`、`kind: "prompt"`、`server`、元の名前 `prompt`、引数ごとの `args`）。
+  - `commands/list` には、起動済みのサーバーのプロンプトだけを出す（`commands/list` でサーバーを起動しない。`/mcp` と同じ）。`mcp__` で始まるコマンドを `command/run` で実行するときは、まだならサーバーを起動する。それ以外のコマンドの実行ではプロンプトを取らない（`/help` を除く）。
+  - 組み込みのコマンドは上書きさせない（同じ名前のプロンプトは外す）。プラグイン・利用者・プロジェクトのコマンドと短い名前が同じときは、プロンプトがその名前を持ち、ほかは定義元を付けた名前でだけ呼べる（プロンプトの名前は定義元を付けた形にならないため。工学上の選択）。2 つのサーバーで名前が同じになったら、後のほうを外す。
+  - 引数：コマンドの後の文を空白で区切り、宣言の順に 1 語ずつ当て、最後の引数が残りをすべて取る。必須の引数が足りなければ「needs <a> <b>」、引数のないプロンプトに文があれば誤りにする。
+  - 返ったメッセージは、`[command file] /コマンド 引数` の 1 行の後に置いて、ターンを始める（プロジェクトやプラグインのコマンドの文と同じ印。審査役に人の言葉として扱わせないため）。文字はそのまま。アシスタントのメッセージは「(the prompt's assistant message)」の後に置く。埋め込みのリソースは文字ならその文字、それ以外とリソースへのリンク・画像・音声は名前・URI・種類・大きさだけ書く（人のメッセージは文字だけのため）。`prompts/get` の途中の聞き返しは、ターンの前で聞く先がないので `cancel` で答える。
+- 補完（仕様の server/utilities/completion）：クライアントの要求 `mcp/complete`（`server`、`ref`、`argument`、任意の `context`）を `completion/complete` としてそのまま送り、`{"server", "completion"}` を返す（プロンプトの引数とリソースのテンプレートの引数の入力補完のため）。サーバーが `completions` を言わなければ断る。
+- ルート（仕様の client/roots）：ルートはスレッドのプロジェクトのフォルダー 1 つ（`file://` の URI と、フォルダー名の `name`）。フォルダーのないスレッドでは空。
+  - 新しい版：入力の求め `roots/list` に、その呼び出しのスレッドのフォルダーで答える。
+  - 前の版：サーバーからの要求 `roots/list` には、そのサーバーを最後に使ったスレッドのフォルダーで答える（要求にはどの呼び出しのものかが書かれていないため）。サーバーは全スレッドで 1 つなので、プロジェクトの違うスレッドがサーバーを使うとルートが変わる。そのとき、ルートを一度でも聞いたサーバーには、呼び出しの前に `notifications/roots/list_changed` を送る（5 秒まで）。
+- サンプリング（仕様の client/sampling）：
+  - 新しい版は入力の求め、前の版はサーバーからの要求として届く。前の版の要求は、聞き返しと同じく、そのサーバーで待っている呼び出しがすべて同じスレッドのものなら、その呼び出しが受ける。
+  - 人に承認を聞く：ターンの通知 `elicitation`（`mode: "sampling"`、`server`、`message`、`model`、`messages`（元のまま）、`systemPrompt`、`maxTokens`）を出し、`turn/answer` の `accept`（`content` なし）で承認、ほかは断り。待ち方は聞き返しと同じ（10 分、ターンの中断）。
+  - 承認されたら、スレッドのいまのモデルに、道具なしで、`systemPrompt` をシステムプロンプト、`messages` を会話として送り、答えを `maxTokens` で切る（仕様の MUST。Anthropic は `max_tokens`、Responses は `max_output_tokens`、Chat Completions は `max_tokens`。Anthropic の考える量の予算が上限に収まらなければ考えるのをやめる）。メッセージの画像・音声は種類と大きさだけ書く。
+  - 答えは `{"role": "assistant", "content": {"type": "text", "text"}, "model": モデル名, "stopReason"}`。`stopReason` は長さで切れたら `maxTokens`、ほかは `endTurn`。使ったトークンはターンの使用量に足し、要求の記録に `mcp_sampling` として残す。
+  - 断るとき：前の版には -1（「User rejected sampling request」。仕様の 2025-11-25 の誤りの例）。人が断ったとき、人に聞けないとき（ターンの外、ほかのスレッドの呼び出しも待つとき）、モデルがないとき（ターンの外の要求）。`tools` 付き・`maxTokens` がない・メッセージが空・道具の使用と結果の中身は -32602。モデルの失敗とターンの中断は -32603。新しい版では、どれも呼び出しを失敗で終える。
+  - `includeContext` の `thisServer`・`allServers`（非推奨）は `none` とみなす（仕様：クライアントは無視してよい）。
+- 聞き返しの残り（仕様の client/elicitation）：
+  - 前の版で、宣言していない `mode`（form と url 以外）の `elicitation/create` には -32602 で答える（仕様の MUST）。新しい版の入力の求めでは、これまでどおり `decline`。
+  - 2025-11-25 の url の問いの `elicitationId` は、人に見せる問いにも入れる。その問いが答えを待つ間にサーバーが `notifications/elicitation/complete`（同じ ID）を送ったら、人の代わりに `accept` で答える（仕様：クライアントはこの通知で自動で続けてよい MAY）。知らない ID・答えた後の ID の通知は無視する（仕様の MUST）。-32042 の後の URL の問いも同じ。
+  - form の問いへの `accept` は、`content` がなければ受け付けず、問いは待ち続ける（`turn/answer` は `accepted: false`）。
 - サーバーが出力を閉じたら、待っている要求をすべて失敗にし、以後の要求もすぐ失敗にする。書き込みに失敗した要求は待ち行列から外す。
 - 落ちたサーバーの再起動（stdio のサーバーだけ。このプロジェクトの判断）：呼び出しが、サーバーが止まっていたために失敗したら、そのサーバーを 1 回だけ起動し直す（読み込みごとに 1 回。落ち続けるサーバーを何度も起動しない）。見分けた版で話し、道具の一覧も取り直す。
   - 送る前に止まっていた（呼び出しがサーバーに届いていない）なら、起動し直したサーバーに同じ呼び出しを送り直す。
@@ -145,4 +193,10 @@
   - イベントの流れの読み取り（`core/src/sse.rs` の `event_types_ids_and_the_retry_time_are_kept`）。
 - 結合テスト（`server/tests/turn_tcp.rs` の `tools_of_the_configured_mcp_servers_are_offered_and_called`）：Python で書いた偽の MCP サーバー（探りに空の結果で答える前の版のサーバー）を実際に起動し、ターンの中でモデル（模擬 API）が呼んだ道具の結果が返ること、道具の一覧の数。Python が動かない環境では飛ばす。
 - 聞き返し：結合テスト `a_question_of_an_mcp_server_waits_for_the_persons_answer`（Python の偽の stdio サーバーが呼び出しの途中で聞き返し、ターンの通知 `elicitation` が届き、`turn/answer` の `accept` と `decline` がサーバーに返ること、待っていない番号への答えは受け付けないこと）。単体テスト `a_requested_schema_becomes_the_questions_of_ask`。HTTP の聞き返しとセッションのつなぎ直しは単体テスト `an_ended_http_session_is_started_anew_and_questions_are_answered`（手書きの HTTP サーバーが最初のセッションを道具の呼び出しで終わらせ、新しいセッションで送り直されること。呼び出しの SSE の流れの中の聞き返しが接続の受け口に届き、答えが別の POST で返ること）。
-- 未検証：実在の MCP サーバー（HTTP も、2026-07-28 版のものも）、実際のモデルが MCP の道具を選んで使えるか、Linux・macOS での起動と終了、新しい版の HTTP での購読（`subscriptions/listen` の流れ）と切れた後の開き直し、HTTP での入力の求めとタスク（stdio でだけ確かめた）、前の版の -32042（URL の訪問）での送り直し、`logging/setLevel`、タスクの `failed`・`cancelled`、ターンの通知 `mcp_progress`・`mcp_log` が inocode-server から送られること（変換の 2 行だけで、テストしていない）、画面での url の問いの見せ方。
+- リソース・プロンプト・補完・ルート・サンプリング（`core/src/mcp/tests.rs`）：
+  - 新しい版（`resources_prompts_and_completions_of_a_new_server_are_reached`、メモリー上の管の偽サーバー）：リソースの道具が渡されること、2 ページの一覧と `server` の付加・`icons` の除外、変更の通知までの使い回しと取り直し、テンプレート、読むときの入力の求め `roots/list` にプロジェクトのフォルダーの URI で答えること、画像の `blob` がモデルに見せる画像になること、無いリソースの誤り、`mcp/complete`、プロンプトのコマンド（名前・説明・引数）と `prompts/get`（引数の当て方、必須の不足の誤り）、購読で `resourceSubscriptions` を足した `subscriptions/listen` が開き更新が届くこと、購読をやめると前の購読に `notifications/cancelled` を送り、URI のない購読を開き直すこと、入力の求め `sampling/createMessage` が人の承認の後に偽の提供元で動き（`max_tokens` 10、道具なし、システムプロンプト）、答えと使用量が返ること。
+  - 前の版（`an_older_server_is_subscribed_to_given_roots_and_has_the_model_run`）：`resources/subscribe` と更新、`resources/unsubscribe`。サーバーからの `roots/list` に最後に使ったスレッドのフォルダーで答え、別のフォルダーのスレッドが使うと `notifications/roots/list_changed` を 1 回送ること。サーバーからの `sampling/createMessage` が承認の後に動くこと、断ると・人がいないと -1 になりモデルを呼ばないこと。宣言していない `mode` の聞き返しが -32602 になること。`elicitationId` の url の問いが、人が答えなくても完了の通知で `accept` になり、待っている問いが残らないこと。
+  - HTTP の新しい版の購読（`a_new_http_server_streams_the_updates_of_a_resource_subscribed_to`）：購読の `subscriptions/listen` の流れで更新が届き、購読をやめると流れが閉じて、頼むものがないので開き直さないこと。
+  - form の問いだけが `content` を要ること（`only_a_form_needs_content_to_be_accepted`）。答えの長さの欄（`llm.rs` の `an_answer_is_capped_in_each_format`）。引数の当て方、プロンプトの文、リソースの文と画像（`features.rs` のテスト）。コマンドの名前の決まり（`commands.rs` の `an_mcp_prompt_is_a_command_of_its_own_name`）。
+  - 結合テスト（`server/tests/turn_tcp.rs` の `resources_prompts_completions_and_visits_of_an_mcp_server_are_reached`、Python の 2025-11-25 の偽サーバー）：起動前の `commands/list` にプロンプトがないこと、`mcp/resources/list`（サーバーを起動する）・`templates/list`・`read`・引数の足りない `read` の誤り・`mcp/complete`、`mcp/resources/subscribe` の `started`・`mcp_resource_updated`・`cancel` での `cancelled`、起動後の `commands/list` のプロンプト、url の問いに `content` なしの `accept` で答えられること、`/mcp__docs__review a.rs error handling` が `[command file]` の印の付いたターンになりモデルに届くこと、必須の引数のない実行が「needs <file>」になること。
+- 未検証：実在の MCP サーバー（HTTP も、2026-07-28 版のものも）、実在のサーバーのリソース・プロンプト・補完・サンプリング・ルート、実際の提供元での `maxTokens` の欄（Responses の `max_output_tokens`、推論モデルの Chat Completions の `max_tokens`。偽の提供元でだけ確かめた）、前の版の HTTP の GET の流れでのリソースの更新、HTTP での前の版のサンプリングとルート、`notifications/prompts/list_changed` での取り直し（リソースと同じ作りで、リソースだけ確かめた）、画面での `sampling` の問いの見せ方、実際のモデルが MCP の道具を選んで使えるか、Linux・macOS での起動と終了、新しい版の HTTP での購読（`subscriptions/listen` の流れ）と切れた後の開き直し、HTTP での入力の求めとタスク（stdio でだけ確かめた）、前の版の -32042（URL の訪問）での送り直し、`logging/setLevel`、タスクの `failed`・`cancelled`、ターンの通知 `mcp_progress`・`mcp_log` が inocode-server から送られること（変換の 2 行だけで、テストしていない）、画面での url の問いの見せ方。

@@ -942,6 +942,9 @@ impl Thread<'_> {
                 return answer;
             }
         }
+        // What MCP servers have the model run during the call counts in the
+        // turn's usage.
+        let sampled = std::sync::Mutex::new(TurnUsage::default());
         let context = agent_tools::Context {
             store: self.store,
             session: self.session,
@@ -953,6 +956,10 @@ impl Thread<'_> {
             seq: self.next_seq,
             events: Some(&self.events),
             shown: &self.shown,
+            sampling: Some(crate::mcp::Sampling {
+                model: llm,
+                usage: &sampled,
+            }),
         };
         if name == crate::goal::GOAL {
             return self.claim(arguments).await;
@@ -973,7 +980,7 @@ impl Thread<'_> {
         // dropped when the turn is stopped; one that does (shell, MCP) is
         // polled first, so its own answer wins.
         let mut cancel = self.cancel.clone();
-        tokio::select! {
+        let answer = tokio::select! {
             biased;
             answer = agent_tools::run(&context, name, arguments) => {
                 answer.unwrap_or_else(|| (format!("no tool named {name} is available"), true))
@@ -982,7 +989,17 @@ impl Thread<'_> {
                 "Stopped with the turn before it finished.".to_string(),
                 true,
             ),
-        }
+        };
+        drop(context);
+        let sampled = sampled
+            .into_inner()
+            .unwrap_or_else(|error| error.into_inner());
+        usage.requests += sampled.requests;
+        usage.input += sampled.input;
+        usage.output += sampled.output;
+        usage.cached += sampled.cached;
+        usage.records.extend(sampled.records);
+        answer
     }
 
     /// Why a call needs approval in this mode, if it does; `asked_rules`
@@ -1497,6 +1514,7 @@ impl Thread<'_> {
             seq: self.next_seq,
             events: None,
             shown: &self.shown,
+            sampling: None,
         };
         let checked = crate::goal::check(
             checker.as_deref().unwrap_or(llm),
