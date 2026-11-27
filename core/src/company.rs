@@ -17,7 +17,7 @@ use tokio::sync::{mpsc, watch};
 use crate::agent_tools::{Answer, Context};
 use crate::conversation::{AssistantPart, Body, ToolSpec};
 use crate::store::{ProjectId, SessionId, Store};
-use crate::turn::{Held, Mode, Outcome, TurnUsage};
+use crate::turn::{Mode, Outcome, TurnUsage};
 use crate::{settings, Core, ErrorInfo, Llm};
 
 pub(crate) const DELEGATE: &str = "delegate";
@@ -713,7 +713,6 @@ pub(crate) struct Lead<'a> {
 pub(crate) struct Delegated {
     pub answer: Answer,
     pub usage: TurnUsage,
-    pub held: Vec<Held>,
     pub warnings: Vec<String>,
 }
 
@@ -722,7 +721,6 @@ impl Delegated {
         Self {
             answer: (text, true),
             usage: TurnUsage::default(),
-            held: Vec::new(),
             warnings: Vec::new(),
         }
     }
@@ -816,10 +814,7 @@ async fn run_delegated(lead: &Lead<'_>, arguments: &str) -> Delegated {
         text: task_message(&lead.request, profile, &arguments),
         reply_to: None,
     };
-    let approvals = crate::turn::Approvals {
-        mode: lead.mode,
-        ..Default::default()
-    };
+    let approvals = crate::turn::Approvals { mode: lead.mode };
     let run: Pin<Box<dyn Future<Output = Outcome> + Send + '_>> = Box::pin(crate::turn::run(
         models,
         lead.store,
@@ -856,17 +851,6 @@ async fn run_delegated(lead: &Lead<'_>, arguments: &str) -> Delegated {
         usage.output,
         usage.requests,
     );
-    if !outcome.held.is_empty() {
-        let held: Vec<String> = outcome
-            .held
-            .iter()
-            .map(|held| format!("{} {}", held.tool, held.arguments))
-            .collect();
-        text.push_str(&format!(
-            "\nheld for the person (not run): {}",
-            held.join("; ")
-        ));
-    }
     if outcome.over_budget {
         text.push_str(
             "\nThe work may be unfinished; the report below is its last answer before the stop.",
@@ -897,7 +881,6 @@ async fn run_delegated(lead: &Lead<'_>, arguments: &str) -> Delegated {
             cached: usage.cached,
             records: Vec::new(),
         },
-        held: outcome.held,
         warnings,
     }
 }

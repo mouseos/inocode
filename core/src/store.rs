@@ -18,7 +18,7 @@ pub use crate::store_pool::{PoolBinding, PoolCooldown};
 pub use crate::store_threads::{SessionUsage, ThreadSummary};
 use crate::ErrorInfo;
 
-const SCHEMA_VERSION: i64 = 15;
+const SCHEMA_VERSION: i64 = 16;
 /// Tool results above this size are stored once in `blobs` and referenced.
 const BLOB_THRESHOLD: usize = 16 * 1024;
 /// Text indexed per message; the rest stays readable but unsearchable.
@@ -364,10 +364,27 @@ CREATE TABLE snapshots(
 );
 "#;
 
+/// Calls the person allowed to run from now on without asking, by tool and
+/// arguments: in the thread `session_id`, or in every thread of the project
+/// `project_id` (docs/evidence/approval-modes.md). Exactly one of the two
+/// is set.
+const SCHEMA_V16: &str = r#"
+CREATE TABLE allowances(
+    id INTEGER PRIMARY KEY,
+    session_id INTEGER REFERENCES sessions(id),
+    project_id INTEGER REFERENCES projects(id),
+    tool TEXT NOT NULL,
+    arguments TEXT NOT NULL,
+    created INTEGER NOT NULL
+);
+CREATE INDEX allowances_session ON allowances(session_id);
+CREATE INDEX allowances_project ON allowances(project_id);
+"#;
+
 /// Schema steps; step `i` brings the database to version `i + 1`.
-const MIGRATIONS: [&str; 15] = [
+const MIGRATIONS: [&str; 16] = [
     SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9,
-    SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15,
+    SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16,
 ];
 
 /// A thread id never given before (`SCHEMA_V10`).
@@ -580,7 +597,8 @@ pub struct Store {
     inner: Arc<Inner>,
 }
 
-/// A question of an MCP server waiting for the person.
+/// A question for the person waiting for the answer: an MCP server's, or
+/// whether a call may run.
 struct Waiting {
     session: SessionId,
     question: serde_json::Value,
@@ -595,8 +613,8 @@ struct Inner {
     /// stopped when they are forgotten or the last copy of the store is
     /// dropped.
     mcp: tokio::sync::Mutex<Option<Arc<crate::mcp::Tools>>>,
-    /// Questions of MCP servers waiting for the person's answer, by id, with
-    /// the thread whose turn asked and the question as it was reported.
+    /// Questions waiting for the person's answer, by id, with the thread
+    /// whose turn asked and the question as it was reported.
     elicitations: Mutex<HashMap<u64, Waiting>>,
     next_elicitation: std::sync::atomic::AtomicU64,
     /// Each new title a thread is given, for whoever listens.
@@ -629,8 +647,8 @@ impl Store {
         *self.inner.mcp.lock().await = None;
     }
 
-    /// Registers a question of an MCP server for the person: its id, and
-    /// where the answer arrives. [`Self::describe_elicitation`] keeps the
+    /// Registers a question for the person: its id, and where the answer
+    /// arrives. [`Self::describe_elicitation`] keeps the
     /// question as reported, for listing.
     pub(crate) fn wait_elicitation(
         &self,
@@ -758,22 +776,22 @@ impl Store {
         .await
     }
 
-    /// What the latest turn of `session` left for the person, as JSON: the
-    /// held calls and the questions.
+    /// The questions the latest turn of `session` left for the person, as
+    /// JSON. The table's `held` column is no longer used and is written
+    /// empty.
     pub(crate) async fn set_waiting(
         &self,
         session: SessionId,
-        held: String,
         questions: String,
     ) -> Result<(), ErrorInfo> {
         self.write(move |db| {
             db.execute(
                 "INSERT INTO waiting(session_id, held, questions, updated)
-                 VALUES (?1, ?2, ?3, ?4)
+                 VALUES (?1, '[]', ?2, ?3)
                  ON CONFLICT(session_id) DO UPDATE SET
                      held = excluded.held, questions = excluded.questions,
                      updated = excluded.updated",
-                params![session.0, held, questions, now()],
+                params![session.0, questions, now()],
             )
             .map(|_| ())
             .map_err(store_error)
@@ -781,15 +799,12 @@ impl Store {
         .await
     }
 
-    pub(crate) async fn waiting(
-        &self,
-        session: SessionId,
-    ) -> Result<Option<(String, String)>, ErrorInfo> {
+    pub(crate) async fn waiting(&self, session: SessionId) -> Result<Option<String>, ErrorInfo> {
         self.read(Duration::from_secs(5), move |db| {
             db.query_row(
-                "SELECT held, questions FROM waiting WHERE session_id = ?1",
+                "SELECT questions FROM waiting WHERE session_id = ?1",
                 [session.0],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| row.get(0),
             )
             .optional()
             .map_err(store_error)
@@ -797,8 +812,57 @@ impl Store {
         .await
     }
 
-    /// The questions of MCP servers that `session`'s turn waits on, oldest
-    /// first.
+    /// Lets calls of `tool` with `arguments` run from now on without asking
+    /// the person: in every thread of `project`, or in `session` when no
+    /// project is given.
+    pub(crate) async fn allow(
+        &self,
+        session: SessionId,
+        project: Option<ProjectId>,
+        tool: &str,
+        arguments: &str,
+    ) -> Result<(), ErrorInfo> {
+        let (tool, arguments) = (tool.to_string(), arguments.to_string());
+        let session = project.is_none().then_some(session.0);
+        let project = project.map(|project| project.0);
+        self.write(move |db| {
+            db.execute(
+                "INSERT INTO allowances(session_id, project_id, tool, arguments, created)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![session, project, tool, arguments, now()],
+            )
+            .map(|_| ())
+            .map_err(store_error)
+        })
+        .await
+    }
+
+    /// The arguments of the calls of `tool` allowed to run without asking
+    /// in `session` or in `project`, as they were allowed.
+    pub(crate) async fn allowances(
+        &self,
+        session: SessionId,
+        project: Option<ProjectId>,
+        tool: &str,
+    ) -> Result<Vec<String>, ErrorInfo> {
+        let tool = tool.to_string();
+        let project = project.map(|project| project.0);
+        self.read(Duration::from_secs(5), move |db| {
+            let mut statement = db
+                .prepare_cached(
+                    "SELECT arguments FROM allowances
+                     WHERE tool = ?1 AND (session_id = ?2 OR project_id = ?3) ORDER BY id",
+                )
+                .map_err(store_error)?;
+            let rows = statement
+                .query_map(params![tool, session.0, project], |row| row.get(0))
+                .map_err(store_error)?;
+            rows.collect::<Result<_, _>>().map_err(store_error)
+        })
+        .await
+    }
+
+    /// The questions that `session`'s turn waits on, oldest first.
     pub(crate) fn elicitations(&self, session: SessionId) -> Vec<(u64, serde_json::Value)> {
         let waiting = self
             .inner
@@ -832,7 +896,8 @@ impl Store {
 
     /// Hands the person's answer to the question `id` of `session`; whether
     /// such a question was waiting and took it. A form accepted without its
-    /// `content` is not taken and stays waiting.
+    /// `content`, or an approval accepted with a scope that is not `once`,
+    /// `thread` or `project`, is not taken and stays waiting.
     pub fn answer_elicitation(
         &self,
         session: SessionId,
@@ -846,11 +911,16 @@ impl Store {
             .unwrap_or_else(|error| error.into_inner());
         match waiting.get(&id) {
             Some(asked) if asked.session == session => {
-                let form =
-                    asked.question.get("mode").and_then(|mode| mode.as_str()) == Some("form");
+                let mode = asked.question.get("mode").and_then(|mode| mode.as_str());
                 let accepted =
                     answer.get("action").and_then(|action| action.as_str()) == Some("accept");
-                if form && accepted && answer.get("content").is_none() {
+                if accepted && mode == Some("form") && answer.get("content").is_none() {
+                    return false;
+                }
+                if accepted
+                    && mode == Some(crate::turn::APPROVAL_MODE)
+                    && crate::turn::Scope::of(answer.get("content")).is_none()
+                {
                     return false;
                 }
             }
@@ -2109,10 +2179,7 @@ mod tests {
         run(async {
             let store = store(&dir).await;
             let thread = store.start_session(None, "").await.unwrap();
-            store
-                .set_waiting(thread, "[1]".into(), "[2]".into())
-                .await
-                .unwrap();
+            store.set_waiting(thread, "[2]".into()).await.unwrap();
             let (id, _answer) = store.wait_elicitation(thread);
             store.describe_elicitation(id, serde_json::json!({"message": "Which?"}));
             // The saving runs beside the caller.
@@ -2122,7 +2189,7 @@ mod tests {
             let store = Store::open(dir.path().join("inocode.db")).await.unwrap();
             assert_eq!(
                 store.waiting(thread).await.unwrap(),
-                Some(("[1]".to_string(), "[2]".to_string()))
+                Some("[2]".to_string())
             );
             assert!(store.expired_elicitations(thread).await.unwrap().is_empty());
             store.expire_elicitations().await.unwrap();
@@ -2135,6 +2202,44 @@ mod tests {
 
             assert!(store.delete_session(thread).await.unwrap());
             assert_eq!(store.waiting(thread).await.unwrap(), None);
+        });
+    }
+
+    #[test]
+    fn calls_allowed_for_a_thread_or_a_project_are_kept_forked_and_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        run(async {
+            let store = store(&dir).await;
+            let project = store.project("/p").await.unwrap();
+            let thread = store.start_session(Some(project), "").await.unwrap();
+            let other = store.start_session(Some(project), "").await.unwrap();
+            store
+                .allow(thread, None, "shell", "{\"a\":1}")
+                .await
+                .unwrap();
+            store
+                .allow(thread, Some(project), "write", "{\"b\":2}")
+                .await
+                .unwrap();
+            let of = |session, tool: &'static str| {
+                let store = store.clone();
+                async move {
+                    store
+                        .allowances(session, Some(project), tool)
+                        .await
+                        .unwrap()
+                }
+            };
+            assert_eq!(of(thread, "shell").await, ["{\"a\":1}"]);
+            assert!(of(other, "shell").await.is_empty());
+            assert_eq!(of(other, "write").await, ["{\"b\":2}"]);
+
+            let fork = store.fork_session(thread).await.unwrap();
+            assert_eq!(of(fork, "shell").await, ["{\"a\":1}"]);
+            assert!(store.delete_session(thread).await.unwrap());
+            assert!(of(thread, "shell").await.is_empty());
+            assert_eq!(of(fork, "shell").await, ["{\"a\":1}"]);
+            assert_eq!(of(other, "write").await, ["{\"b\":2}"]);
         });
     }
 

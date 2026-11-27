@@ -1283,7 +1283,8 @@ async fn ask_person(
 /// Shows `question` to the person as the turn's `elicitation` event and
 /// waits for the answer given with `turn/answer`: for `ANSWER_WAIT` at
 /// most and until the turn is interrupted (then `cancel`), or until
-/// `completed` says the question is settled (then `accept`).
+/// `completed` says the question is settled (then `accept`). Its
+/// settling is reported as the turn's `Answered` event.
 async fn put_to_person(
     store: &Store,
     asking: &Asking<'_>,
@@ -1320,6 +1321,10 @@ async fn put_to_person(
         () = crate::turn::cancelled(&mut cancel) => cancelled.clone(),
     };
     store.forget_elicitation(id);
+    let _ = asking
+        .events
+        .send(crate::turn::TurnEvent::Answered(id))
+        .await;
     result
 }
 

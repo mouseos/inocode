@@ -48,9 +48,13 @@ pub enum TurnEvent {
     ThinkingTranslation(crate::translate::Translated),
     /// A message now stored in the thread.
     Message { seq: i64, message: Message },
-    /// A question of an MCP server for the person, answered with
-    /// `turn/answer` while the call waits.
+    /// A question for the person, answered with `turn/answer` while the
+    /// call waits: an MCP server's, or whether a call may run (`mode`
+    /// `approval`).
     Elicitation(serde_json::Value),
+    /// The question of an `Elicitation` with this id is settled: answered,
+    /// or no longer waited for.
+    Answered(u64),
     /// How far an MCP tool call has come, as its server reports it.
     McpProgress(serde_json::Value),
     /// A log message an MCP server sent during a call.
@@ -115,18 +119,6 @@ impl TurnUsage {
     }
 }
 
-/// A call that waits for the person's approval. It was not run; approving
-/// its `ask` rules, or the call itself, on the next turn lets it run.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Held {
-    pub rules: Vec<i64>,
-    pub titles: Vec<String>,
-    pub tool: String,
-    pub arguments: String,
-    /// Why it needs the person.
-    pub reason: String,
-}
-
 /// How much a turn may do without the person. Design:
 /// docs/evidence/approval-modes.md.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -163,15 +155,40 @@ impl Mode {
     }
 }
 
-/// What the person allowed for one turn: its mode, the `ask` rules
-/// approved, and held calls approved by their exact tool and arguments,
-/// each for one run.
+/// What the person allowed for one turn: its mode.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Approvals {
     pub mode: Mode,
-    pub rules: Vec<NoteId>,
-    pub calls: Vec<(String, String)>,
 }
+
+/// How far the person's approval of a call reaches: this call only, or
+/// from now on every call with the same tool and arguments in the thread,
+/// or in every thread of its project.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Scope {
+    Once,
+    Thread,
+    Project,
+}
+
+impl Scope {
+    /// The scope of an accepted approval prompt's `content`; `once` when
+    /// it names none.
+    pub(crate) fn of(content: Option<&serde_json::Value>) -> Option<Self> {
+        match content.and_then(|content| content.get("scope")) {
+            None | Some(serde_json::Value::Null) => Some(Self::Once),
+            Some(scope) => match scope.as_str()? {
+                "once" => Some(Self::Once),
+                "thread" => Some(Self::Thread),
+                "project" => Some(Self::Project),
+                _ => None,
+            },
+        }
+    }
+}
+
+/// The `mode` of the elicitation that asks the person to approve a call.
+pub(crate) const APPROVAL_MODE: &str = "approval";
 
 /// Refusals of the reviewer in a row, and in a turn, after which calls go
 /// to the person instead (the counts of Claude Code and DeepAI Code).
@@ -228,7 +245,6 @@ pub struct Models {
 pub struct Outcome {
     pub ending: Ending,
     pub usage: TurnUsage,
-    pub held: Vec<Held>,
     pub questions: Vec<Asked>,
     /// What went wrong beside the work without ending the turn, such as a
     /// colleague that could not be asked or requests that were not logged.
@@ -522,9 +538,6 @@ struct Thread<'a> {
     /// on are always sent whole.
     turn_start: i64,
     events: mpsc::Sender<TurnEvent>,
-    /// `ask` rules the person approved for this turn.
-    allowed: HashSet<NoteId>,
-    held: Vec<Held>,
     /// The `ask` calls of this turn, by call id, and their questions.
     asked: Vec<(String, serde_json::Value)>,
     /// Identical failed calls and how often they failed.
@@ -535,8 +548,6 @@ struct Thread<'a> {
     /// prompt, since the tool output in between is mostly English.
     language: Option<String>,
     mode: Mode,
-    /// Held calls the person approved, each run once.
-    approved: Vec<(String, String)>,
     /// The model that reviews calls when it is not the turn's own.
     reviewer: Option<std::sync::Arc<Llm>>,
     /// The model that writes compaction summaries when it is not the turn's own.
@@ -1005,26 +1016,9 @@ impl Thread<'_> {
                     true,
                 );
             }
-            Decision::Ask(rules) => {
-                if !rules.iter().all(|rule| self.allowed.contains(rule)) {
-                    asked_rules = rules;
-                } else {
-                    for rule in &rules {
-                        self.record_allowed(*rule, Actor::Person, name).await;
-                    }
-                }
-            }
+            Decision::Ask(rules) => asked_rules = rules,
         }
-        let approved = self
-            .approved
-            .iter()
-            .position(|(tool, args)| tool == name && same_arguments(args, arguments));
-        if let Some(index) = approved {
-            self.approved.remove(index);
-            for rule in &asked_rules {
-                self.record_allowed(*rule, Actor::Person, name).await;
-            }
-        } else if self.mode != Mode::Full {
+        if self.mode != Mode::Full {
             if let Some(answer) = self
                 .approval(llm, pending, name, arguments, asked_rules, usage)
                 .await
@@ -1096,7 +1090,7 @@ impl Thread<'_> {
     }
 
     /// Why a call needs approval in this mode, if it does; `asked_rules`
-    /// are the `ask` rules it met that the person has not approved.
+    /// are the `ask` rules it met.
     fn needs(&self, name: &str, arguments: &str, asked_rules: bool) -> Option<Need> {
         let person = |reason: String| {
             Some(Need {
@@ -1180,8 +1174,9 @@ impl Thread<'_> {
         }
     }
 
-    /// Holds the call for the person, or in the `auto` mode has it reviewed.
-    /// `None` lets the call run.
+    /// Asks the person whether the call may run, or in the `auto` mode has
+    /// it reviewed; a call the person allowed before in this thread or its
+    /// project runs without asking. `None` lets the call run.
     async fn approval(
         &mut self,
         llm: &Llm,
@@ -1192,13 +1187,19 @@ impl Thread<'_> {
         usage: &mut TurnUsage,
     ) -> Option<Answer> {
         let Need { mut reason, person } = self.needs(name, arguments, !asked_rules.is_empty())?;
+        if self.allowed_before(name, arguments).await {
+            for rule in &asked_rules {
+                self.record_allowed(*rule, Actor::Person, name).await;
+            }
+            return None;
+        }
         if name == crate::plugins::INSTALL {
             reason.push_str(&crate::plugins::preview(self.store, arguments).await);
         }
         if self.mode == Mode::Auto && !person {
             if self.denials.0 >= DENIALS_IN_A_ROW || self.denials.1 >= DENIALS_PER_TURN {
                 let reason = "the reviewer refused too many calls in this turn".to_string();
-                return Some(self.hold(name, arguments, asked_rules, reason).await);
+                return self.ask_person(name, arguments, asked_rules, reason).await;
             }
             let mut seen = self.conversation.messages.clone();
             seen.push(Message {
@@ -1245,39 +1246,118 @@ impl Thread<'_> {
                 }
                 crate::review::Verdict::Unavailable(why) => {
                     let reason = format!("the reviewer could not decide ({why})");
-                    Some(self.hold(name, arguments, asked_rules, reason).await)
+                    self.ask_person(name, arguments, asked_rules, reason).await
                 }
             };
         }
-        Some(self.hold(name, arguments, asked_rules, reason).await)
+        self.ask_person(name, arguments, asked_rules, reason).await
     }
 
-    async fn hold(
+    /// Whether the person allowed calls of `name` with these arguments
+    /// from now on, in this thread or in its project. A failed lookup is
+    /// reported and the person is asked.
+    async fn allowed_before(&mut self, name: &str, arguments: &str) -> bool {
+        match self
+            .store
+            .allowances(self.session, self.project, name)
+            .await
+        {
+            Ok(allowed) => allowed
+                .iter()
+                .any(|allowed| same_arguments(allowed, arguments)),
+            Err(error) => {
+                self.warnings.push(format!(
+                    "the calls the person allowed before could not be read: {}",
+                    error.message
+                ));
+                false
+            }
+        }
+    }
+
+    /// Asks the person whether the call may run, as an `elicitation` event
+    /// answered with `turn/answer`, and waits for the answer for as long as
+    /// the turn runs. `None` lets the call run. The `ask` rules it met are
+    /// recorded as allowed by the person when it runs.
+    async fn ask_person(
         &mut self,
         name: &str,
         arguments: &str,
         rules: Vec<NoteId>,
         reason: String,
-    ) -> Answer {
+    ) -> Option<Answer> {
         let titles = self.titles(&rules).await;
-        let under = if titles.is_empty() {
-            String::new()
-        } else {
-            format!(" (project rule: {})", titles.join("; "))
-        };
-        let text = format!(
-            "Held for the person's approval: {reason}{under}. It was not run. Go on with \
-             work that does not depend on it; the person sees the held calls when this \
-             turn ends."
-        );
-        self.held.push(Held {
-            rules: rules.iter().map(|rule| rule.0).collect(),
-            titles,
-            tool: name.to_string(),
-            arguments: arguments.to_string(),
-            reason,
+        let (id, answer) = self.store.wait_elicitation(self.session);
+        let question = serde_json::json!({
+            "mode": APPROVAL_MODE,
+            "id": id,
+            "tool": name,
+            "arguments": arguments,
+            "reason": reason,
+            "rules": titles,
         });
-        (text, true)
+        self.store.describe_elicitation(id, question.clone());
+        if self
+            .events
+            .send(TurnEvent::Elicitation(question))
+            .await
+            .is_err()
+        {
+            self.store.forget_elicitation(id);
+            return Some((
+                format!(
+                    "Not run: it needs the person's approval ({reason}), and nobody could be \
+                     asked. Go on with work that does not depend on it."
+                ),
+                true,
+            ));
+        }
+        let mut cancel = self.cancel.clone();
+        let answer = tokio::select! {
+            answer = answer => answer.ok(),
+            () = cancelled(&mut cancel) => None,
+        };
+        self.store.forget_elicitation(id);
+        let _ = self.events.send(TurnEvent::Answered(id)).await;
+        let Some(answer) = answer else {
+            return Some((
+                "Not run: the turn was stopped before the person answered.".to_string(),
+                true,
+            ));
+        };
+        if answer.get("action").and_then(serde_json::Value::as_str) != Some("accept") {
+            return Some((
+                "Denied by the person. It was not run. Do not retry it or work around the \
+                 refusal; go on with other work, or if this exact action is essential, say so \
+                 to the person."
+                    .to_string(),
+                true,
+            ));
+        }
+        let scope = Scope::of(answer.get("content")).unwrap_or(Scope::Once);
+        let project = match scope {
+            Scope::Once => None,
+            Scope::Thread => Some(None),
+            // A thread outside any project keeps the allowance to itself.
+            Scope::Project => Some(self.project),
+        };
+        if let Some(project) = project {
+            if let Err(error) = self
+                .store
+                .allow(self.session, project, name, arguments)
+                .await
+            {
+                self.warnings.push(format!(
+                    "the person's approval of later {name} calls could not be saved, so they \
+                     will be asked again: {}",
+                    error.message
+                ));
+            }
+        }
+        for rule in &rules {
+            self.record_allowed(*rule, Actor::Person, name).await;
+        }
+        None
     }
 
     /// Has the colleague advise on the steps since its last advice, and
@@ -1710,7 +1790,7 @@ impl Thread<'_> {
     /// Answers the `delegate` calls among `parts`, by call id, with how
     /// long each took: at the same time when [`crate::company::together`]
     /// allows it, else one after another. Each passes the project's rules
-    /// first; what a member's run held for the person is held here too.
+    /// first.
     async fn delegate_all(
         &mut self,
         parts: &[AssistantPart],
@@ -1768,21 +1848,22 @@ impl Thread<'_> {
                     let text = format!("Blocked by the project rule: {}.", titles.join("; "));
                     answers.insert(call.to_string(), ((text, true), std::time::Duration::ZERO));
                 }
-                Ok(Decision::Ask(rules))
-                    if rules.iter().all(|rule| self.allowed.contains(rule)) =>
-                {
-                    for rule in &rules {
-                        self.record_allowed(*rule, Actor::Person, crate::company::DELEGATE)
-                            .await;
-                    }
-                    runnable.push((call, arguments));
-                }
                 Ok(Decision::Ask(rules)) => {
+                    let delegate = crate::company::DELEGATE;
+                    if self.allowed_before(delegate, arguments).await {
+                        for rule in &rules {
+                            self.record_allowed(*rule, Actor::Person, delegate).await;
+                        }
+                        runnable.push((call, arguments));
+                        continue;
+                    }
                     let reason = "it falls under a project rule that asks first".to_string();
-                    let answer = self
-                        .hold(crate::company::DELEGATE, arguments, rules, reason)
-                        .await;
-                    answers.insert(call.to_string(), (answer, std::time::Duration::ZERO));
+                    match self.ask_person(delegate, arguments, rules, reason).await {
+                        None => runnable.push((call, arguments)),
+                        Some(answer) => {
+                            answers.insert(call.to_string(), (answer, std::time::Duration::ZERO));
+                        }
+                    }
                 }
                 Err(error) => {
                     let text = format!("Not run: the rule check failed ({}).", error.message);
@@ -1830,7 +1911,6 @@ impl Thread<'_> {
             usage.input += delegated.usage.input;
             usage.output += delegated.usage.output;
             usage.cached += delegated.usage.cached;
-            self.held.extend(delegated.held);
             self.warnings.extend(delegated.warnings);
             answers.insert(call, (delegated.answer, took));
         }
@@ -1936,8 +2016,7 @@ fn person(text: String) -> Body {
 /// Runs one turn of `session`, starting with `prompt`. Input from `steer`
 /// joins the thread before the next request. Every message is stored as it
 /// is made, so an interrupted or failed turn leaves what happened. The turn
-/// works in the mode of `approvals`, and what it lists runs as approved by
-/// the person.
+/// works in the mode of `approvals`.
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     models: Models,
@@ -1984,7 +2063,6 @@ pub async fn run(
             return Outcome {
                 ending: Ending::Failed(error),
                 usage,
-                held: Vec::new(),
                 questions: Vec::new(),
                 warnings: Vec::new(),
                 edited: Vec::new(),
@@ -2066,7 +2144,6 @@ pub async fn run(
     Outcome {
         ending,
         usage,
-        held: thread.held,
         questions,
         warnings: thread.warnings,
         edited,
@@ -2327,14 +2404,11 @@ async fn open<'a>(
         turn_start: next_seq,
         rules,
         events,
-        allowed: approvals.rules.into_iter().collect(),
-        held: Vec::new(),
         asked: Vec::new(),
         failures: HashMap::new(),
         lessons,
         language,
         mode: approvals.mode,
-        approved: approvals.calls,
         reviewer: None,
         compactor: None,
         explorer: None,

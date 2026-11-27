@@ -757,8 +757,9 @@ async fn records_of_the_agent_are_shown_and_changed_by_commands() {
         assert_eq!(promises["result"]["items"], json!([]));
         let none = command(&mut client, 14, thread, "/promise remove 1").await;
         assert_eq!(none["error"]["code"], "invalid_arguments");
-        let held = command(&mut client, 15, thread, "/approve").await;
-        assert_eq!(held["result"]["held"], json!([]));
+        // Calls are approved when the turn asks; there is no command for it.
+        let approve = command(&mut client, 15, thread, "/approve").await;
+        assert_eq!(approve["error"]["code"], "unknown_command");
         let questions = command(&mut client, 16, thread, "/answer").await;
         assert_eq!(questions["result"]["questions"], json!([]));
         let colleague = command(&mut client, 17, thread, "/colleague").await;

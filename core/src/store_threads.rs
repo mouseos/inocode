@@ -149,8 +149,8 @@ impl Store {
     }
 
     /// A new thread in `session`'s project holding a copy of its messages,
-    /// with their times, and of its plan, standing instructions and choice
-    /// of model. Its goal is not copied.
+    /// with their times, and of its plan, standing instructions, choice of
+    /// model and the calls allowed in it. Its goal is not copied.
     pub async fn fork_session(&self, session: SessionId) -> Result<SessionId, ErrorInfo> {
         self.fork_session_through(session, i64::MAX).await
     }
@@ -209,6 +209,12 @@ impl Store {
             )
             .map_err(store_error)?;
             tx.execute(
+                "INSERT INTO allowances(session_id, tool, arguments, created)
+                 SELECT ?2, tool, arguments, ?3 FROM allowances WHERE session_id = ?1",
+                params![session.0, fork, time],
+            )
+            .map_err(store_error)?;
+            tx.execute(
                 "INSERT INTO thread_lineage(session_id, parent) VALUES (?1, ?2)",
                 params![fork, session.0],
             )
@@ -220,7 +226,7 @@ impl Store {
     }
 
     /// Deletes the messages of `session` from the one numbered `from` on,
-    /// the held calls and questions its latest turn left, and the standing
+    /// the questions its latest turn left, and the standing
     /// instructions quoted from the messages deleted; returns how many
     /// messages went.
     pub async fn rewind_session(&self, session: SessionId, from: i64) -> Result<usize, ErrorInfo> {
@@ -279,7 +285,8 @@ impl Store {
     }
 
     /// Deletes `session` with its messages, plan, goal, standing
-    /// instructions, choice of model, held calls and questions; `false`
+    /// instructions, choice of model, questions and the calls allowed in
+    /// it; `false`
     /// when there is no such thread. The log of its requests to models, the
     /// records of its tasks and the events of notes are kept, no longer
     /// linked to the thread, and
@@ -307,6 +314,7 @@ impl Store {
                 "thread_lineage",
                 "delegations",
                 "snapshots",
+                "allowances",
             ] {
                 tx.execute(
                     &format!("DELETE FROM {table} WHERE session_id = ?1"),

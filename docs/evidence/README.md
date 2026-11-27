@@ -41,7 +41,7 @@
 | [project-memory.md](project-memory.md) | SQLite の保存層：履歴・大きな中身・教訓・手順・根拠台帳・知識・タグ・リンク・検索・連想 | 部分ごと（RESEARCH_SUPPORTED と UNSUPPORTED_APPROVED） | `core/src/store.rs` |
 | [rules-and-local-issues.md](rules-and-local-issues.md) | 守ってほしいこと（規則）とローカル issue | UNSUPPORTED_APPROVED（規則の一部は研究で支持） | `core/src/rules.rs` |
 | [turn-protocol.md](turn-protocol.md) | スレッドとターンの要求、サーバー側のループと続けるかの判定 | UNSUPPORTED_APPROVED（継続の規則は実験で決める） | `core/src/turn.rs`、`server/src/lib.rs` |
-| [agent-tools.md](agent-tools.md) | 作業一覧・読み直し・教訓のツール、規則の検査と保留・事前承認、繰り返しへの注意、AGENTS.md の読み込み、圧縮後の復元 | 部分ごと（A・B・C は UNSUPPORTED_APPROVED） | `core/src/turn.rs`、`core/src/agent_tools.rs` |
+| [agent-tools.md](agent-tools.md) | 作業一覧・読み直し・教訓のツール、規則の検査と人への確認、繰り返しへの注意、AGENTS.md の読み込み、圧縮後の復元 | 部分ごと（A・B・C は UNSUPPORTED_APPROVED） | `core/src/turn.rs`、`core/src/agent_tools.rs` |
 | [web-search.md](web-search.md) | Web などの検索ツール（ZeroSearch_MCP の組み込み）の設計 | UNSUPPORTED_APPROVED（既定は全エンジン） | 実装済み（単体テスト） |
 | [web-fetch.md](web-fetch.md) | Web ページ取得ツールの設計 | 本文抽出は RESEARCH_SUPPORTED、Markdown は UNSUPPORTED_APPROVED | 実装済み（単体・TCP テスト） |
 | [repo-understanding.md](repo-understanding.md) | リポジトリを広く把握する技術の研究 | RESEARCH_SUPPORTED（outline・名前検索） | outline・名前検索は実装済み |

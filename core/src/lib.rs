@@ -118,27 +118,10 @@ impl Request {
             .ok_or_else(|| ErrorInfo::new("invalid_params", "requires a \"thread_id\" number"))
     }
 
-    /// The `ask` rules a `turn/start` request approves for that turn
-    /// (`allow`, rule ids); none when absent.
-    pub fn allowed_rules(&self) -> Result<Vec<store::NoteId>, ErrorInfo> {
-        let invalid = || ErrorInfo::new("invalid_params", "\"allow\" must be a list of rule ids");
-        match self.params.as_ref().and_then(|params| params.get("allow")) {
-            None | Some(Value::Null) => Ok(Vec::new()),
-            Some(Value::Array(ids)) => ids
-                .iter()
-                .map(|id| id.as_i64().map(store::NoteId).ok_or_else(invalid))
-                .collect(),
-            Some(_) => Err(invalid()),
-        }
-    }
-
     /// What a `turn/start` request allows: `mode` (`ask`, `on-request`,
-    /// `auto` or `full`; `on-request` when absent), the `ask` rules in
-    /// `allow`, and the held calls in `approve`, each `{"tool", "arguments"}`
-    /// as the turn reported them.
+    /// `auto` or `full`; `on-request` when absent).
     pub fn approvals(&self) -> Result<turn::Approvals, ErrorInfo> {
-        let params = self.params.as_ref();
-        let mode = match params.and_then(|params| params.get("mode")) {
+        let mode = match self.params.as_ref().and_then(|params| params.get("mode")) {
             None | Some(Value::Null) => turn::Mode::default(),
             Some(value) => value.as_str().and_then(turn::Mode::parse).ok_or_else(|| {
                 ErrorInfo::new(
@@ -147,34 +130,7 @@ impl Request {
                 )
             })?,
         };
-        let invalid = || {
-            ErrorInfo::new(
-                "invalid_params",
-                "\"approve\" must be a list of {\"tool\", \"arguments\"} strings",
-            )
-        };
-        let calls = match params.and_then(|params| params.get("approve")) {
-            None | Some(Value::Null) => Vec::new(),
-            Some(Value::Array(calls)) => calls
-                .iter()
-                .map(|call| {
-                    let tool = call.get("tool").and_then(Value::as_str);
-                    let arguments = call.get("arguments").and_then(Value::as_str);
-                    match (tool, arguments) {
-                        (Some(tool), Some(arguments)) => {
-                            Ok((tool.to_string(), arguments.to_string()))
-                        }
-                        _ => Err(invalid()),
-                    }
-                })
-                .collect::<Result<_, _>>()?,
-            Some(_) => return Err(invalid()),
-        };
-        Ok(turn::Approvals {
-            mode,
-            rules: self.allowed_rules()?,
-            calls,
-        })
+        Ok(turn::Approvals { mode })
     }
 
     /// Whether a `turn/start` request names its `mode`; one that does not
@@ -222,9 +178,9 @@ impl Request {
                     "\"action\" must be \"accept\", \"decline\" or \"cancel\"",
                 )
             })?;
-        // A form's answer needs its content; a URL visited or a request to
-        // run the model approved is accepted without one. Which the
-        // question is, the store checks.
+        // A form's answer needs its content; a URL visited, a request to
+        // run the model approved or a call approved once is accepted
+        // without one. Which the question is, the store checks.
         let answer = match (action, params.and_then(|params| params.get("content"))) {
             ("accept", None | Some(Value::Null)) => json!({ "action": "accept" }),
             ("accept", Some(content)) if content.is_object() => {
@@ -336,15 +292,13 @@ pub struct EventPayload {
     pub reason: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<turn::TurnUsage>,
-    /// A question of an MCP server for the person, during a turn.
+    /// A question for the person during a turn (`elicitation`), or the id
+    /// of one that is settled (`answered`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub elicitation: Option<Value>,
     /// An MCP server's progress or log message during a tool call.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mcp: Option<Value>,
-    /// Calls of a turn that wait for the person's approval.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub held: Option<Vec<turn::Held>>,
     /// Questions of a turn for the person, from `ask`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub questions: Option<Vec<turn::Asked>>,
@@ -427,6 +381,14 @@ impl EventPayload {
         }
     }
 
+    /// The question `elicitation` is settled, so other screens can close it.
+    pub fn answered(id: u64, elicitation: u64) -> Self {
+        Self {
+            elicitation: Some(json!(elicitation)),
+            ..Self::new(id, "answered")
+        }
+    }
+
     /// How far an MCP tool call has come (`mcp_progress`) or a log message
     /// of its server (`mcp_log`).
     pub fn mcp(id: u64, event: &'static str, mcp: Value) -> Self {
@@ -469,7 +431,6 @@ impl EventPayload {
         Self {
             reason: Some(end.ending),
             usage: Some(end.usage),
-            held: Some(end.held),
             questions: Some(end.questions),
             warnings: (!end.warnings.is_empty()).then_some(end.warnings),
             error: end.error,
@@ -511,7 +472,6 @@ impl EventPayload {
         Self {
             reason: Some(reason),
             usage: Some(outcome.usage),
-            held: Some(outcome.held),
             questions: Some(outcome.questions),
             warnings: (!outcome.warnings.is_empty()).then_some(outcome.warnings),
             ..Self::new(id, "completed")
@@ -544,7 +504,6 @@ impl EventPayload {
             usage: None,
             elicitation: None,
             mcp: None,
-            held: None,
             questions: None,
             result: None,
             warnings: None,
@@ -575,8 +534,8 @@ struct Running {
     mode: watch::Sender<Option<turn::Mode>>,
     cancel: watch::Sender<bool>,
     events: Option<mpsc::Sender<TurnEvent>>,
-    /// Whether the person has calls to approve or questions to answer
-    /// once the turn ends: as before the turn until the turn leaves its own.
+    /// Whether the person has questions to answer once the turn ends: as
+    /// before the turn until the turn leaves its own.
     waiting: bool,
 }
 
@@ -592,7 +551,9 @@ pub enum ThreadStatus {
     Idle,
     /// A turn (or a compaction) runs.
     Running,
-    /// No turn runs; the latest left calls to approve or questions to answer.
+    /// A running turn waits for the person to answer a question (an
+    /// approval prompt or an MCP server's), or no turn runs and the latest
+    /// left questions to answer.
     Waiting,
 }
 
@@ -618,7 +579,6 @@ pub struct TurnEnd {
     /// `completed`, `length`, `cancelled` or `failed`.
     pub ending: &'static str,
     pub usage: turn::TurnUsage,
-    pub held: Vec<turn::Held>,
     pub questions: Vec<turn::Asked>,
     pub warnings: Vec<String>,
     pub error: Option<ErrorInfo>,
@@ -632,18 +592,16 @@ pub struct Claim {
     cancel: watch::Receiver<bool>,
 }
 
-/// What the latest turn of a thread left for the person: the calls held
-/// for approval and the questions asked. Kept in the store, so a restart
-/// does not lose them.
+/// What the latest turn of a thread left for the person: the questions
+/// asked. Kept in the store, so a restart does not lose them.
 #[derive(Debug, Clone, Default)]
 struct Waiting {
-    held: Vec<turn::Held>,
     questions: Vec<turn::Asked>,
 }
 
 impl Waiting {
     fn is_empty(&self) -> bool {
-        self.held.is_empty() && self.questions.is_empty()
+        self.questions.is_empty()
     }
 }
 
@@ -1363,8 +1321,8 @@ impl Core {
 
     /// `thread/rewind`: deletes the person's message numbered `seq` and
     /// everything after it, with the quote of a reply that came with it,
-    /// and returns the message's text to be written again. The held calls
-    /// and questions go, and so do the standing instructions quoted from
+    /// and returns the message's text to be written again. The questions
+    /// go, and so do the standing instructions quoted from
     /// what was deleted. With `restore` naming the files, the project's
     /// files are first put back as they were before that message's turn;
     /// with [`Restore::Files`] the messages stay. Refused while a turn runs.
@@ -1431,7 +1389,11 @@ impl Core {
             return Err(unknown_thread());
         }
         if self.turn_running(thread) {
-            return Ok(ThreadStatus::Running);
+            return Ok(if self.store()?.elicitations(thread).is_empty() {
+                ThreadStatus::Running
+            } else {
+                ThreadStatus::Waiting
+            });
         }
         Ok(if self.waiting(thread).await?.is_empty() {
             ThreadStatus::Idle
@@ -2007,12 +1969,28 @@ impl Core {
         self.store()?.model_stats(since, utc_offset_minutes).await
     }
 
-    /// Hands the person's answer to a question of an MCP server that the
-    /// running turn of `thread` waits for; `false` when none waits.
+    /// Hands the person's answer to a question (an MCP server's, or an
+    /// approval prompt) that the running turn of `thread` waits for;
+    /// `false` when none waits.
     pub fn answer(&self, thread: SessionId, elicitation: u64, answer: Value) -> bool {
         self.store()
             .map(|store| store.answer_elicitation(thread, elicitation, answer))
             .unwrap_or(false)
+    }
+
+    /// The questions the running turn of `thread` waits on, oldest first,
+    /// as the `elicitation` events showed them.
+    pub fn elicitations(&self, thread: SessionId) -> Vec<Value> {
+        self.store()
+            .map(|store| {
+                store
+                    .elicitations(thread)
+                    .into_iter()
+                    .map(|(_, question)| question)
+                    .filter(|question| !question.is_null())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// `mcp/resources/list`, `mcp/resources/templates/list`,
@@ -2061,7 +2039,6 @@ impl Core {
         let end = TurnEnd {
             ending,
             usage: outcome.usage.clone(),
-            held: outcome.held.clone(),
             questions: outcome.questions.clone(),
             warnings: outcome.warnings.clone(),
             error,
@@ -2084,7 +2061,6 @@ impl Core {
         let failed = |error| Outcome {
             ending: turn::Ending::Failed(error),
             usage: Default::default(),
-            held: Vec::new(),
             questions: Vec::new(),
             warnings: Vec::new(),
             edited: Vec::new(),
@@ -2120,12 +2096,31 @@ impl Core {
             Err(error) => return failed(error),
         };
         // Every event passes here on its way to `events`, so those watching
-        // the thread see it too, in the same order.
+        // the thread see it too, in the same order. The thread waits while
+        // a question to the person is open: `waiting` goes out before the
+        // first question and `running` after the last is settled, all
+        // between the statuses `begin_turn` and `end_turn` send.
         let (teed, mut teeing) = mpsc::channel(1);
         let activity = self.activity.clone();
         let tee = tokio::spawn(async move {
+            let mut open = std::collections::HashSet::new();
             while let Some(event) = teeing.recv().await {
+                let status = match &event {
+                    TurnEvent::Elicitation(question) => question["id"]
+                        .as_u64()
+                        .filter(|&id| open.insert(id) && open.len() == 1)
+                        .map(|_| ThreadStatus::Waiting),
+                    _ => None,
+                };
+                if let Some(status) = status {
+                    let _ = activity.send((thread, Activity::Status(status)));
+                }
                 let _ = activity.send((thread, Activity::Event(Clone::clone(&event))));
+                if let TurnEvent::Answered(id) = &event {
+                    if open.remove(id) && open.is_empty() {
+                        let _ = activity.send((thread, Activity::Status(ThreadStatus::Running)));
+                    }
+                }
                 let _ = events.send(event).await;
             }
         });
@@ -2167,7 +2162,6 @@ impl Core {
         .await;
         forward.abort();
         let waiting = Waiting {
-            held: outcome.held.clone(),
             questions: outcome.questions.clone(),
         };
         if let Ok(mut turns) = self.turns.lock() {
@@ -2187,8 +2181,7 @@ impl Core {
         }
         if let Err(error) = self.set_waiting(thread, &waiting).await {
             outcome.warnings.push(format!(
-                "the held calls and questions were not saved, so /approve and /answer may not \
-                 find them: {}",
+                "the questions were not saved, so /answer may not find them: {}",
                 error.message
             ));
         }
@@ -2200,24 +2193,19 @@ impl Core {
             value.map_err(|error| ErrorInfo::new("internal", error.to_string()))
         };
         self.store()?
-            .set_waiting(
-                thread,
-                text(serde_json::to_string(&waiting.held))?,
-                text(serde_json::to_string(&waiting.questions))?,
-            )
+            .set_waiting(thread, text(serde_json::to_string(&waiting.questions))?)
             .await
     }
 
     /// What the latest turn of `thread` left for the person.
     async fn waiting(&self, thread: SessionId) -> Result<Waiting, ErrorInfo> {
-        let Some((held, questions)) = self.store()?.waiting(thread).await? else {
+        let Some(questions) = self.store()?.waiting(thread).await? else {
             return Ok(Waiting::default());
         };
         let parse = |error: serde_json::Error| {
-            ErrorInfo::new("store", format!("the waiting calls and questions: {error}"))
+            ErrorInfo::new("store", format!("the waiting questions: {error}"))
         };
         Ok(Waiting {
-            held: serde_json::from_str(&held).map_err(parse)?,
             questions: serde_json::from_str(&questions).map_err(parse)?,
         })
     }

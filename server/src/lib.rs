@@ -1261,7 +1261,7 @@ async fn run_command(
     run_turn(
         id,
         thread,
-        ((start.prompt, start.reply_to), (start.approvals, false)),
+        ((start.prompt, start.reply_to), (Default::default(), false)),
         stream_id,
         core,
         queue,
@@ -1531,9 +1531,11 @@ async fn relay_titles(
 
 /// `thread/subscribe {thread_id}`: what happens in one thread from now on,
 /// whichever connection started its turns. After `started`, a `status`
-/// event says where the thread stands; then each turn comes as
-/// `turn_started`, the events its own connection receives, and
-/// `turn_ended`, with a `status` event whenever the status changes.
+/// event says where the thread stands, and an `elicitation` event comes
+/// for each question its running turn waits on; then each turn comes as
+/// `turn_started`, the events its own connection receives (with
+/// `answered` when a question is settled), and `turn_ended`, with a
+/// `status` event whenever the status changes.
 /// `lagged` says events were missed, so `thread/read` should be asked
 /// again. `thread/status/subscribe`: the `status` events of every thread,
 /// with `thread_id`. Both last until `cancel` names them or the connection
@@ -1622,8 +1624,17 @@ async fn relay_threads(
         }
     };
     let mut opening = vec![first];
-    if thread.is_some() {
+    // The questions already open, which the activity may still bring
+    // again.
+    let mut shown = std::collections::HashSet::new();
+    if let Some(thread) = thread {
         opening.insert(0, EventPayload::started(id));
+        for question in core.elicitations(thread) {
+            if let Some(asked) = question["id"].as_u64() {
+                shown.insert(asked);
+            }
+            opening.push(EventPayload::elicitation(id, question));
+        }
     }
     let mut terminal = None;
     for event in opening {
@@ -1657,6 +1668,13 @@ async fn relay_threads(
                             (Some(_), Activity::TurnStarted) => {
                                 EventPayload::named(id, "turn_started")
                             }
+                            (Some(_), Activity::Event(TurnEvent::Elicitation(question)))
+                                if question["id"]
+                                    .as_u64()
+                                    .is_some_and(|asked| shown.remove(&asked)) =>
+                            {
+                                continue
+                            }
                             (Some(_), Activity::Event(event)) => turn_event(id, event),
                             (Some(_), Activity::TurnEnded(end)) => EventPayload::turn_ended(id, end),
                             (Some(_), Activity::Rewound(from)) => EventPayload::rewound(id, from),
@@ -1688,6 +1706,7 @@ fn turn_event(id: u64, event: TurnEvent) -> EventPayload {
         TurnEvent::ThinkingTranslation(piece) => EventPayload::thinking_translation(id, piece),
         TurnEvent::Message { seq, message } => EventPayload::message(id, seq, &message),
         TurnEvent::Elicitation(elicitation) => EventPayload::elicitation(id, elicitation),
+        TurnEvent::Answered(elicitation) => EventPayload::answered(id, elicitation),
         TurnEvent::McpProgress(progress) => EventPayload::mcp(id, "mcp_progress", progress),
         TurnEvent::McpLog(log) => EventPayload::mcp(id, "mcp_log", log),
         TurnEvent::Estimate(estimate) => EventPayload::estimate(id, &estimate),

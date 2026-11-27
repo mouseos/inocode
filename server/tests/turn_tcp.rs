@@ -311,6 +311,102 @@ fn tool_results(events: &[Value]) -> Vec<String> {
         .collect()
 }
 
+/// Sends `turn/start` with `params` and collects its events through the
+/// terminal one, answering each approval prompt with the next of `answers`
+/// (the `turn/answer` params beside the thread and the prompt's id) on a
+/// stream of its own; the prompts shown, in order.
+async fn turn_answering(
+    client: &mut Client,
+    stream_id: u64,
+    params: Value,
+    answers: Vec<Value>,
+) -> (Vec<Value>, Vec<Value>) {
+    client
+        .1
+        .write_json(
+            stream_id,
+            &json!({"id": stream_id, "method": "turn/start", "params": params}),
+        )
+        .await
+        .expect("send");
+    let mut answers = answers.into_iter();
+    let (mut events, mut asked) = (Vec::new(), Vec::new());
+    let mut unanswered = 0;
+    let mut ended = false;
+    while !ended || unanswered > 0 {
+        let (stream, frame): (u64, Value) = client.0.read_json().await.expect("frame");
+        if stream != stream_id {
+            assert_eq!(frame["result"]["accepted"], true, "{frame}");
+            unanswered -= 1;
+            continue;
+        }
+        if frame["event"] == "elicitation" {
+            let question = frame["elicitation"].clone();
+            let mut answer = answers.next().expect("an answer for each prompt");
+            answer["thread_id"] = params["thread_id"].clone();
+            answer["elicitation"] = question["id"].clone();
+            let id = 10_000 + stream_id * 100 + asked.len() as u64;
+            client
+                .1
+                .write_json(
+                    id,
+                    &json!({"id": id, "method": "turn/answer", "params": answer}),
+                )
+                .await
+                .expect("answer");
+            unanswered += 1;
+            asked.push(question);
+        }
+        ended = matches!(
+            frame["event"].as_str(),
+            Some("completed" | "failed" | "cancelled")
+        );
+        events.push(frame);
+    }
+    assert!(answers.next().is_none(), "a prompt for each answer");
+    (events, asked)
+}
+
+fn decline() -> Value {
+    json!({"action": "decline"})
+}
+
+fn accept(scope: &str) -> Value {
+    json!({"action": "accept", "content": {"scope": scope}})
+}
+
+/// A rule that asks the person before a plan step touches prod.
+async fn prod_rule(store: &Store) {
+    let ask = store
+        .add_rule(None, "Ask before anything touches prod.")
+        .await
+        .expect("rule");
+    store
+        .propose_enforcement(
+            ask,
+            inocode_core::rules::Enforcement {
+                tool: "plan".into(),
+                patterns: vec!["prod".into()],
+                action: inocode_core::rules::Action::Ask,
+            },
+        )
+        .await
+        .expect("propose");
+    store.approve_enforcement(ask).await.expect("approve");
+}
+
+/// Reads frames of `turn/start` on `stream_id` until its first approval
+/// prompt; that prompt.
+async fn until_prompt(client: &mut Client, stream_id: u64) -> Value {
+    loop {
+        let event = next_message(client, stream_id).await;
+        assert!(event["event"] != "completed", "{event}");
+        if event["event"] == "elicitation" {
+            return event["elicitation"].clone();
+        }
+    }
+}
+
 #[tokio::test]
 async fn explore_answers_with_places_found_by_a_helper_that_only_reads() {
     with_timeout(async {
@@ -651,19 +747,22 @@ async fn the_camera_takes_pictures_only_with_the_persons_approval() {
         // Neither the default mode nor auto lets a photo be taken without
         // the person, and auto does not ask the reviewer about it.
         for (stream, mode) in [(2, "on-request"), (3, "auto")] {
-            let events = turn_with(
+            let (events, asked) = turn_answering(
                 &mut client,
                 stream,
                 json!({"thread_id": thread, "prompt": "take a photo", "mode": mode}),
+                vec![decline()],
             )
             .await;
             let last = events.last().unwrap();
             assert_eq!(last["event"], "completed", "{last}");
-            assert_eq!(last["held"][0]["tool"], "camera", "{last}");
+            assert_eq!(asked[0]["mode"], "approval", "{asked:?}");
+            assert_eq!(asked[0]["tool"], "camera", "{asked:?}");
             assert_eq!(
-                last["held"][0]["reason"],
+                asked[0]["reason"],
                 "photos and videos are taken only with the person's approval"
             );
+            assert!(tool_results(&events)[0].starts_with("Denied by the person"));
         }
         // No request went to a reviewer: only the turns' own requests.
         assert!(chats(&mock)
@@ -1664,68 +1763,310 @@ async fn lessons_need_a_condition_and_rules_are_not_duplicated() {
 }
 
 #[tokio::test]
-async fn ask_rules_hold_calls_and_the_turn_goes_on() {
+async fn ask_rules_ask_the_person_and_the_turn_goes_on_after_a_refusal() {
     with_timeout(async {
         let plan = json!({"items": [{"step": "deploy to prod", "status": "pending"}]});
         let mock = scripted(vec![
             tool_turn("a1", "plan", plan.clone()),
             vec![sse_delta("did the rest"), finish("stop"), sse_done()],
-            tool_turn("a2", "plan", plan),
+            tool_turn("a2", "plan", plan.clone()),
         ])
         .await;
         let (core, store) = core_and_store(&mock).await;
-        let ask = store
-            .add_rule(None, "Ask before anything touches prod.")
-            .await
-            .expect("rule");
-        store
-            .propose_enforcement(
-                ask,
-                inocode_core::rules::Enforcement {
-                    tool: "plan".into(),
-                    patterns: vec!["prod".into()],
-                    action: inocode_core::rules::Action::Ask,
-                },
-            )
-            .await
-            .expect("propose");
-        store.approve_enforcement(ask).await.expect("approve");
+        prod_rule(&store).await;
         let (addr, _stop, _handle) = start_server(core).await;
         let mut client = connect(addr).await;
         let thread = thread(&mut client).await;
 
-        let events = turn(&mut client, 2, thread, "ship it").await;
-        assert!(tool_results(&events)[0].starts_with("Held for the person's approval"));
+        let (events, asked) = turn_answering(
+            &mut client,
+            2,
+            json!({"thread_id": thread, "prompt": "ship it"}),
+            vec![decline()],
+        )
+        .await;
+        assert_eq!(asked[0]["mode"], "approval");
+        assert_eq!(asked[0]["tool"], "plan");
+        assert_eq!(asked[0]["arguments"], plan.to_string());
+        assert_eq!(
+            asked[0]["reason"],
+            "it falls under a project rule that asks first"
+        );
+        assert_eq!(asked[0]["rules"].as_array().map(Vec::len), Some(1));
+        assert!(tool_results(&events)[0].starts_with(
+            "Denied by the person. It was not run. Do not retry it or work around the refusal"
+        ));
+        assert!(kinds(&events).contains(&"answered"));
         let last = events.last().unwrap();
         assert_eq!(last["event"], "completed");
-        assert_eq!(last["held"][0]["rules"][0], ask.0);
-        assert_eq!(last["held"][0]["tool"], "plan");
+        assert!(last.get("held").is_none(), "{last}");
 
-        // Approved for the next turn, the same call runs.
+        // Accepted, the same call runs.
+        let (events, asked) = turn_answering(
+            &mut client,
+            3,
+            json!({"thread_id": thread, "prompt": "go ahead"}),
+            vec![json!({"action": "accept"})],
+        )
+        .await;
+        assert_eq!(asked.len(), 1);
+        assert_eq!(
+            tool_results(&events)[0],
+            "Plan updated: 1 pending, 0 in progress, 0 completed."
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn an_approval_for_the_thread_covers_the_same_call_there_and_not_elsewhere() {
+    with_timeout(async {
+        let plan = json!({"items": [{"step": "deploy to prod", "status": "pending"}]});
+        // The same arguments written another way.
+        let pretty = serde_json::to_string_pretty(&plan).expect("json");
+        let payload = json!({ "choices": [{ "delta": { "tool_calls": [{
+            "index": 0, "id": "a2", "type": "function",
+            "function": { "name": "plan", "arguments": pretty }
+        }] } }] });
+        let again = vec![
+            format!("data: {payload}\n\n").into_bytes(),
+            finish("tool_calls"),
+            sse_done(),
+        ];
+        let mock = scripted(vec![
+            tool_turn("a1", "plan", plan.clone()),
+            text_turn("Planned."),
+            again,
+            text_turn("Planned again."),
+            tool_turn("a3", "plan", plan.clone()),
+        ])
+        .await;
+        let (core, store) = core_and_store(&mock).await;
+        prod_rule(&store).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let first = thread(&mut client).await;
+
+        let (events, asked) = turn_answering(
+            &mut client,
+            2,
+            json!({"thread_id": first, "prompt": "ship it"}),
+            vec![accept("thread")],
+        )
+        .await;
+        assert_eq!(asked.len(), 1);
+        assert!(tool_results(&events)[0].starts_with("Plan updated"));
+
+        let (events, asked) = turn_answering(
+            &mut client,
+            3,
+            json!({"thread_id": first, "prompt": "again"}),
+            Vec::new(),
+        )
+        .await;
+        assert!(asked.is_empty(), "allowed in this thread: {asked:?}");
+        assert!(tool_results(&events)[0].starts_with("Plan updated"));
+
+        let second = thread(&mut client).await;
+        let (events, asked) = turn_answering(
+            &mut client,
+            4,
+            json!({"thread_id": second, "prompt": "ship it"}),
+            vec![decline()],
+        )
+        .await;
+        assert_eq!(asked.len(), 1, "another thread is asked");
+        assert!(tool_results(&events)[0].starts_with("Denied by the person"));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn another_screen_sees_an_approval_prompt_and_its_answer() {
+    with_timeout(async {
+        let plan = json!({"items": [{"step": "deploy to prod", "status": "pending"}]});
+        let mock = scripted(vec![tool_turn("a1", "plan", plan)]).await;
+        let (core, store) = core_and_store(&mock).await;
+        prod_rule(&store).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let mut watcher = connect(addr).await;
+        let thread = thread(&mut client).await;
+        watcher
+            .1
+            .write_json(
+                5,
+                &json!({"id": 5, "method": "thread/subscribe", "params": {"thread_id": thread}}),
+            )
+            .await
+            .expect("subscribe");
+        assert_eq!(next_message(&mut watcher, 5).await["event"], "started");
+        assert_eq!(next_message(&mut watcher, 5).await["status"], "idle");
+
+        let own = tokio::spawn(async move { turn(&mut client, 2, thread, "ship it").await });
+        // The watcher answers; the turn's own connection only sees the prompt.
+        let mut seen = Vec::new();
+        let (mut ended, mut answered) = (false, false);
+        while !ended || !answered {
+            let (stream, frame): (u64, Value) = watcher.0.read_json().await.expect("frame");
+            if stream == 6 {
+                assert_eq!(frame["result"]["accepted"], true, "{frame}");
+                answered = true;
+                continue;
+            }
+            assert_eq!(stream, 5);
+            if frame["event"] == "elicitation" {
+                watcher
+                    .1
+                    .write_json(
+                        6,
+                        &json!({"id": 6, "method": "turn/answer",
+                                "params": {"thread_id": thread, "action": "accept",
+                                           "elicitation": frame["elicitation"]["id"]}}),
+                    )
+                    .await
+                    .expect("answer");
+            }
+            ended = frame["event"] == "turn_ended";
+            seen.push(frame);
+        }
+        let marks: Vec<String> = seen
+            .iter()
+            .filter_map(|event| match event["event"].as_str()? {
+                "status" => Some(format!("status {}", event["status"].as_str()?)),
+                kind @ ("turn_started" | "elicitation" | "answered" | "turn_ended") => {
+                    Some(kind.to_string())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            marks,
+            [
+                "status running",
+                "turn_started",
+                "status waiting",
+                "elicitation",
+                "answered",
+                "status running",
+                "turn_ended"
+            ]
+        );
+        let prompt = seen.iter().find(|event| event["event"] == "elicitation");
+        let settled = seen.iter().find(|event| event["event"] == "answered");
+        assert_eq!(
+            settled.unwrap()["elicitation"],
+            prompt.unwrap()["elicitation"]["id"]
+        );
+        assert_eq!(next_message(&mut watcher, 5).await["status"], "idle");
+        let own = own.await.expect("turn");
+        assert!(kinds(&own).contains(&"elicitation"));
+        assert!(kinds(&own).contains(&"answered"));
+        assert!(tool_results(&own)[0].starts_with("Plan updated"));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_screen_that_subscribes_while_a_prompt_is_open_is_shown_it() {
+    with_timeout(async {
+        let plan = json!({"items": [{"step": "deploy to prod", "status": "pending"}]});
+        let mock = scripted(vec![tool_turn("a1", "plan", plan)]).await;
+        let (core, store) = core_and_store(&mock).await;
+        prod_rule(&store).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let mut watcher = connect(addr).await;
+        let mut answerer = connect(addr).await;
+        let thread = thread(&mut client).await;
         client
             .1
             .write_json(
-                3,
-                &json!({"id": 3, "method": "turn/start",
-                        "params": {"thread_id": thread, "prompt": "approved", "allow": [ask.0]}}),
+                2,
+                &json!({"id": 2, "method": "turn/start",
+                        "params": {"thread_id": thread, "prompt": "ship it"}}),
             )
             .await
             .expect("send");
-        let mut results = Vec::new();
-        loop {
-            let event = next_message(&mut client, 3).await;
-            if event["message"]["message"]["body"]["role"] == "tool_result" {
-                results.push(event["message"]["message"]["body"]["content"].clone());
-            }
-            if event["event"] == "completed" {
-                assert_eq!(event["held"], json!([]));
-                break;
-            }
-        }
+        let prompt = until_prompt(&mut client, 2).await;
+
+        watcher
+            .1
+            .write_json(
+                5,
+                &json!({"id": 5, "method": "thread/subscribe", "params": {"thread_id": thread}}),
+            )
+            .await
+            .expect("subscribe");
+        assert_eq!(next_message(&mut watcher, 5).await["event"], "started");
+        assert_eq!(next_message(&mut watcher, 5).await["status"], "waiting");
+        let shown = next_message(&mut watcher, 5).await;
+        assert_eq!(shown["event"], "elicitation", "{shown}");
+        assert_eq!(shown["elicitation"], prompt);
+
+        let answered = call(
+            &mut answerer,
+            7,
+            json!({"id": 7, "method": "turn/answer",
+                   "params": {"thread_id": thread, "elicitation": prompt["id"],
+                              "action": "decline"}}),
+        )
+        .await;
+        assert_eq!(answered["result"]["accepted"], true, "{answered}");
+        let settled = next_message(&mut watcher, 5).await;
+        assert_eq!(settled["event"], "answered", "{settled}");
+        assert_eq!(settled["elicitation"], prompt["id"]);
+        assert_eq!(next_message(&mut watcher, 5).await["status"], "running");
+        let events = events_until(&mut client, 2, "completed").await;
+        assert!(tool_results(&events)[0].starts_with("Denied by the person"));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn an_interrupt_while_a_prompt_is_open_ends_the_turn_without_the_call() {
+    with_timeout(async {
+        let (project, _) = project_and_outside("interrupt-prompt");
+        let mock = scripted(vec![tool_turn("k1", "shell", shell_call("mkdir made"))]).await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let mut other = connect(addr).await;
+        let thread = project_thread(&mut client, &project).await;
+        client
+            .1
+            .write_json(
+                2,
+                &json!({"id": 2, "method": "turn/start",
+                        "params": {"thread_id": thread, "prompt": "make it", "mode": "ask"}}),
+            )
+            .await
+            .expect("send");
+        let prompt = until_prompt(&mut client, 2).await;
+
+        let interrupted = call(
+            &mut other,
+            3,
+            json!({"id": 3, "method": "turn/interrupt", "params": {"thread_id": thread}}),
+        )
+        .await;
+        assert_eq!(interrupted["result"]["interrupted"], true, "{interrupted}");
+        let events = events_until(&mut client, 2, "cancelled").await;
+        assert!(kinds(&events).contains(&"answered"));
         assert_eq!(
-            results[0],
-            "Plan updated: 1 pending, 0 in progress, 0 completed."
+            tool_results(&events),
+            ["Not run: the turn was stopped before the person answered."]
         );
+        assert!(!project.join("made").exists());
+        let late = call(
+            &mut other,
+            4,
+            json!({"id": 4, "method": "turn/answer",
+                   "params": {"thread_id": thread, "elicitation": prompt["id"],
+                              "action": "accept"}}),
+        )
+        .await;
+        assert_eq!(late["result"]["accepted"], false, "{late}");
     })
     .await;
 }
@@ -2447,7 +2788,7 @@ fn shell_tool(request: &MockRequest) -> Value {
 }
 
 #[tokio::test]
-async fn in_the_ask_mode_changes_wait_and_an_approved_call_runs_once() {
+async fn in_the_ask_mode_changes_wait_for_the_person_and_an_approval_once_runs_once() {
     with_timeout(async {
         let (project, _) = project_and_outside("ask");
         let make = shell_call("mkdir made");
@@ -2456,6 +2797,8 @@ async fn in_the_ask_mode_changes_wait_and_an_approved_call_runs_once() {
             tool_turn("k2", "shell", shell_call("ls")),
             vec![sse_delta("waiting"), finish("stop"), sse_done()],
             tool_turn("k3", "shell", make.clone()),
+            text_turn("Made."),
+            tool_turn("k4", "shell", make.clone()),
         ])
         .await;
         let (core, _store) = core_and_store(&mock).await;
@@ -2463,36 +2806,53 @@ async fn in_the_ask_mode_changes_wait_and_an_approved_call_runs_once() {
         let mut client = connect(addr).await;
         let thread = project_thread(&mut client, &project).await;
 
-        let events = turn_with(
+        let (events, asked) = turn_answering(
             &mut client,
             2,
             json!({"thread_id": thread, "prompt": "make a folder", "mode": "ask"}),
+            vec![decline()],
         )
         .await;
         let results = tool_results(&events);
-        assert!(results[0]
-            .starts_with("Held for the person's approval: every change waits for the person"));
         assert!(
-            !results[1].starts_with("Held"),
+            results[0].starts_with("Denied by the person"),
+            "{results:?}"
+        );
+        assert!(
+            !results[1].starts_with("Denied"),
             "reading runs: {}",
             results[1]
         );
         assert!(!project.join("made").exists());
-        let held = events.last().unwrap()["held"].clone();
-        assert_eq!(held[0]["tool"], "shell");
-        assert_eq!(held[0]["arguments"], make.to_string());
-        assert_eq!(held[0]["rules"], json!([]));
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        assert_eq!(asked[0]["mode"], "approval");
+        assert_eq!(asked[0]["tool"], "shell");
+        assert_eq!(asked[0]["arguments"], make.to_string());
+        assert_eq!(
+            asked[0]["reason"],
+            "every change waits for the person in this mode"
+        );
+        assert_eq!(asked[0]["rules"], json!([]));
 
-        let events = turn_with(
+        let (events, _) = turn_answering(
             &mut client,
             3,
-            json!({"thread_id": thread, "prompt": "approved", "mode": "ask",
-                   "approve": [{"tool": "shell", "arguments": held[0]["arguments"]}]}),
+            json!({"thread_id": thread, "prompt": "go ahead", "mode": "ask"}),
+            vec![json!({"action": "accept", "content": {"scope": "once"}})],
         )
         .await;
         assert!(tool_results(&events)[0].contains("exit code 0"));
         assert!(project.join("made").is_dir());
-        assert_eq!(events.last().unwrap()["held"], json!([]));
+
+        // Approved once, the same call is asked about again.
+        let (_, asked) = turn_answering(
+            &mut client,
+            4,
+            json!({"thread_id": thread, "prompt": "again", "mode": "ask"}),
+            vec![decline()],
+        )
+        .await;
+        assert_eq!(asked.len(), 1);
     })
     .await;
 }
@@ -2507,7 +2867,6 @@ async fn the_model_asks_to_run_outside_the_sandbox_and_the_person_decides() {
             tool_turn("o1", "shell", shell_call("mkdir inside")),
             tool_turn("o2", "shell", escape.clone()),
             vec![sse_delta("asked"), finish("stop"), sse_done()],
-            tool_turn("o3", "shell", escape.clone()),
         ])
         .await;
         let (core, _store) = core_and_store(&mock).await;
@@ -2515,25 +2874,22 @@ async fn the_model_asks_to_run_outside_the_sandbox_and_the_person_decides() {
         let mut client = connect(addr).await;
         let thread = project_thread(&mut client, &project).await;
 
-        let events = turn(&mut client, 2, thread, "make folders").await;
+        let (events, asked) = turn_answering(
+            &mut client,
+            2,
+            json!({"thread_id": thread, "prompt": "make folders"}),
+            vec![json!({"action": "accept"})],
+        )
+        .await;
         let results = tool_results(&events);
         assert!(results[0].contains("exit code 0"), "{}", results[0]);
         assert!(project.join("inside").is_dir());
-        assert!(results[1]
-            .starts_with("Held for the person's approval: it asks to run outside the sandbox"));
-        assert!(!outside.exists());
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        assert_eq!(asked[0]["reason"], "it asks to run outside the sandbox");
+        assert_eq!(asked[0]["arguments"], escape.to_string());
         let shell = shell_tool(&chats(&mock)[0]);
         assert!(shell["function"]["parameters"]["properties"]["outside_sandbox"].is_object());
-
-        let held = events.last().unwrap()["held"][0]["arguments"].clone();
-        let events = turn_with(
-            &mut client,
-            3,
-            json!({"thread_id": thread, "prompt": "go ahead",
-                   "approve": [{"tool": "shell", "arguments": held}]}),
-        )
-        .await;
-        assert!(tool_results(&events)[0].contains("exit code 0"));
+        assert!(results[1].contains("exit code 0"), "{}", results[1]);
         assert!(outside.is_dir(), "approved, it ran outside the sandbox");
         let _ = std::fs::remove_dir_all(&outside);
     })
@@ -2561,38 +2917,44 @@ async fn writes_outside_the_project_wait_for_the_person_in_every_mode_but_full()
         let mut client = connect(addr).await;
         let thread = project_thread(&mut client, &project).await;
 
-        let events = turn(&mut client, 2, thread, "write the notes").await;
+        let (events, asked) = turn_answering(
+            &mut client,
+            2,
+            json!({"thread_id": thread, "prompt": "write the notes"}),
+            vec![decline()],
+        )
+        .await;
         let results = tool_results(&events);
         assert!(results[0].starts_with("Created"), "{}", results[0]);
         assert!(
-            results[1].starts_with(
-                "Held for the person's approval: it writes outside the project folder"
-            ),
-            "{}",
-            results[1]
+            asked[0]["reason"]
+                .as_str()
+                .unwrap()
+                .starts_with("it writes outside the project folder"),
+            "{asked:?}"
         );
+        assert!(results[1].starts_with("Denied by the person"));
         assert!(!target.exists());
 
-        let events = turn_with(
+        let (_, asked) = turn_answering(
             &mut client,
             3,
             json!({"thread_id": thread, "prompt": "write it", "mode": "auto"}),
+            vec![decline()],
         )
         .await;
-        assert!(tool_results(&events)[0].starts_with("Held for the person's approval"));
+        assert_eq!(asked.len(), 1);
         assert!(
             review_requests(&mock).is_empty(),
             "the reviewer never decides it"
         );
         assert!(!target.exists());
 
-        // The approval names the same call written another way.
-        let approved = serde_json::to_string_pretty(&escape).expect("json");
-        let events = turn_with(
+        let (events, _) = turn_answering(
             &mut client,
             4,
-            json!({"thread_id": thread, "prompt": "go ahead",
-                   "approve": [{"tool": "write", "arguments": approved}]}),
+            json!({"thread_id": thread, "prompt": "go ahead"}),
+            vec![json!({"action": "accept"})],
         )
         .await;
         assert!(tool_results(&events)[0].starts_with("Created"));
@@ -2632,7 +2994,6 @@ async fn in_the_auto_mode_the_reviewer_decides_and_sees_only_the_person_and_the_
         assert!(!project.join("refused").exists());
         assert!(project.join("allowed").is_dir());
         let last = events.last().unwrap();
-        assert_eq!(last["held"], json!([]));
         assert_eq!(last["usage"]["requests"], 6, "four steps and two reviews");
 
         // Reading commands are not reviewed; the reviewer gets the person's
@@ -2678,36 +3039,40 @@ async fn repeated_refusals_and_unreadable_reviews_go_to_the_person() {
         let mut client = connect(addr).await;
         let thread = project_thread(&mut client, &project).await;
 
-        let events = turn_with(
+        let (events, asked) = turn_answering(
             &mut client,
             2,
             json!({"thread_id": thread, "prompt": "go", "mode": "auto"}),
+            vec![decline()],
         )
         .await;
         let results = tool_results(&events);
         assert!(results[..3]
             .iter()
             .all(|result| result.starts_with("Denied by the reviewer")));
-        assert!(results[3]
-            .starts_with("Held for the person's approval: the reviewer refused too many calls"));
+        assert_eq!(
+            asked[0]["reason"],
+            "the reviewer refused too many calls in this turn"
+        );
+        assert_eq!(asked[0]["arguments"], shell_call("mkdir four").to_string());
+        assert!(results[3].starts_with("Denied by the person"));
         assert_eq!(
             review_requests(&mock).len(),
             3,
             "the fourth is not reviewed"
         );
-        assert_eq!(
-            events.last().unwrap()["held"][0]["arguments"],
-            shell_call("mkdir four").to_string()
-        );
 
-        let events = turn_with(
+        let (_, asked) = turn_answering(
             &mut client,
             3,
             json!({"thread_id": thread, "prompt": "again", "mode": "auto"}),
+            vec![decline()],
         )
         .await;
-        assert!(tool_results(&events)[0]
-            .starts_with("Held for the person's approval: the reviewer could not decide"));
+        assert!(asked[0]["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("the reviewer could not decide"));
         assert!(!project.join("five").exists());
     })
     .await;
@@ -3226,91 +3591,61 @@ async fn a_provider_that_goes_silent_ends_the_turn_with_an_error() {
 }
 
 #[tokio::test]
-async fn held_calls_outlive_a_restart_and_approve_runs_only_that_call() {
+async fn an_approval_for_the_project_outlives_a_restart_and_covers_its_other_threads() {
     with_timeout(async {
+        let (project, _) = project_and_outside("allow-project");
         let deploy = json!({"items": [{"step": "deploy to prod", "status": "pending"}]});
         let wipe = json!({"items": [{"step": "wipe prod", "status": "pending"}]});
         let mock = scripted(vec![
             tool_turn("a1", "plan", deploy.clone()),
-            text_turn("Waiting for approval."),
+            text_turn("Deployed."),
             tool_turn("a2", "plan", deploy),
             tool_turn("a3", "plan", wipe),
-            text_turn("Deployed."),
+            text_turn("Done."),
         ])
         .await;
         let database = database();
         let store = Store::open(&database).await.expect("store");
-        let ask = store
-            .add_rule(None, "Ask before anything touches prod.")
-            .await
-            .expect("rule");
-        store
-            .propose_enforcement(
-                ask,
-                inocode_core::rules::Enforcement {
-                    tool: "plan".into(),
-                    patterns: vec!["prod".into()],
-                    action: inocode_core::rules::Action::Ask,
-                },
-            )
-            .await
-            .expect("propose");
-        store.approve_enforcement(ask).await.expect("approve");
+        prod_rule(&store).await;
         let core = Arc::new(Core::with_llm(llm_for(&mock)).with_store(store));
         let (addr, stop, handle) = start_server(core).await;
         let mut client = connect(addr).await;
-        let thread = thread(&mut client).await;
-        let events = turn(&mut client, 2, thread, "ship it").await;
-        assert_eq!(events.last().unwrap()["held"][0]["tool"], "plan");
+        let first = project_thread(&mut client, &project).await;
+        let (events, asked) = turn_answering(
+            &mut client,
+            2,
+            json!({"thread_id": first, "prompt": "ship it"}),
+            vec![accept("project")],
+        )
+        .await;
+        assert_eq!(asked.len(), 1);
+        assert!(tool_results(&events)[0].starts_with("Plan updated"));
         drop(client);
         stop.send(()).expect("stop");
         handle.await.expect("server").expect("clean stop");
 
-        // A new server on the same database still has the held call.
+        // On a new server, another thread of the project runs the same call
+        // without asking, and is asked about another call.
         let store = Store::open(&database).await.expect("store again");
         let core = Arc::new(Core::with_llm(llm_for(&mock)).with_store(store));
         let (addr, _stop, _handle) = start_server(core).await;
         let mut client = connect(addr).await;
-        let listed = call(
+        let second = project_thread(&mut client, &project).await;
+        let (events, asked) = turn_answering(
             &mut client,
             3,
-            json!({"id": 3, "method": "command/run",
-                   "params": {"thread_id": thread, "text": "/approve"}}),
+            json!({"thread_id": second, "prompt": "ship it again"}),
+            vec![decline()],
         )
         .await;
-        assert_eq!(listed["result"]["held"][0]["tool"], "plan", "{listed}");
-
-        client
-            .1
-            .write_json(
-                4,
-                &json!({"id": 4, "method": "command/run",
-                        "params": {"thread_id": thread, "text": "/approve 1"}}),
-            )
-            .await
-            .expect("send");
-        let mut events = Vec::new();
-        loop {
-            let event = next_message(&mut client, 4).await;
-            let end = matches!(
-                event["event"].as_str(),
-                Some("completed" | "failed" | "cancelled")
-            );
-            events.push(event);
-            if end {
-                break;
-            }
-        }
         let results = tool_results(&events);
         assert!(results[0].starts_with("Plan updated"), "{results:?}");
-        // The approval was for that call alone, not for its rule.
         assert!(
-            results[1].starts_with("Held for the person's approval"),
+            results[1].starts_with("Denied by the person"),
             "{results:?}"
         );
-        let last = events.last().unwrap();
-        assert_eq!(last["held"].as_array().map(Vec::len), Some(1), "{last}");
-        assert!(last["held"][0]["arguments"]
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        assert!(asked[0]["arguments"]
             .as_str()
             .unwrap()
             .contains("wipe prod"));

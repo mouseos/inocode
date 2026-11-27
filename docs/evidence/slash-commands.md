@@ -1,7 +1,7 @@
 # スラッシュコマンド
 
 - **対象と範囲：** inocode のエンジンが持つスラッシュコマンドの仕組みと、組み込みコマンドの一覧。UI（CLI・GUI）は、この一覧をエンジンから受け取って表示し、入力をエンジンに渡す。
-- **関連ソースコード：** `core/src/commands.rs`（コマンドの一覧、名前の決まり、引数の読み取り、各コマンドの実行）、`core/src/store_threads.rs`（会話の一覧・名前・写し・削除、会話の使用量、メモの一覧）、`core/src/turn.rs`（`compact_now`、ターン中のモードの切り替え）、`core/src/lib.rs`（`Core::turn_running`、最後のターンが残した保留と質問、`command` の出来事）、`core/src/mcp/mod.rs`（`listed`、MCP の質問の中身を覚える）、`core/src/plugins.rs`（`commands/*.md` を読む）、`server/src/lib.rs`（`commands/list`・`command/run`・`thread/list`）、`server/tests/commands_tcp.rs`。`/login`・`/logout`・`/accounts` は `core/src/accounts.rs` を呼び、試験は `server/tests/accounts_tcp.rs`。
+- **関連ソースコード：** `core/src/commands.rs`（コマンドの一覧、名前の決まり、引数の読み取り、各コマンドの実行）、`core/src/store_threads.rs`（会話の一覧・名前・写し・削除、会話の使用量、メモの一覧）、`core/src/turn.rs`（`compact_now`、ターン中のモードの切り替え）、`core/src/lib.rs`（`Core::turn_running`、最後のターンが残した質問、`command` の出来事）、`core/src/mcp/mod.rs`（`listed`、MCP の質問の中身を覚える）、`core/src/plugins.rs`（`commands/*.md` を読む）、`server/src/lib.rs`（`commands/list`・`command/run`・`thread/list`）、`server/tests/commands_tcp.rs`。`/login`・`/logout`・`/accounts` は `core/src/accounts.rs` を呼び、試験は `server/tests/accounts_tcp.rs`。
 - **根拠の状態：** UNSUPPORTED_APPROVED。学術的な裏付けは調べていない（操作の入口の設計）。ユーザーの指示（2026-11-25）：
   - 「スラッシュコマンドからゴールを制御しないとだめでしょ」
   - 「スラッシュコマンドをもっと定義してからやるべき」
@@ -24,7 +24,7 @@
 3. 画面だけで済むもの（色、キーの割り当て、コピー、画面の消去）は UI のコマンドにして、エンジンには置かない。
 4. プラグインのコマンドは `/プラグイン名:コマンド`。Claude Code の `commands/*.md` の形式で、本文を指示文として使い、`$ARGUMENTS` に引数を入れる。
 5. 利用者のコマンドは `~/.inocode/commands/*.md`、プロジェクトのコマンドは `.inocode/commands/*.md`。形式はプラグインと同じ。
-   - 組み込みの名前は、プラグインのコマンド・プラグインのスキル・利用者・プロジェクトのどれにも上書きさせない（ユーザー：「上書き禁止」）。他人のリポジトリの `.inocode/commands/goal.md` が `/goal` や `/approve` の中身を替える、といったことを防ぐため。
+   - 組み込みの名前は、プラグインのコマンド・プラグインのスキル・利用者・プロジェクトのどれにも上書きさせない（ユーザー：「上書き禁止」）。他人のリポジトリの `.inocode/commands/goal.md` が `/goal` や `/answer` の中身を替える、といったことを防ぐため。
    - 組み込み以外は、定義元を付けた名前で呼ぶ：`/プラグイン名:名前`（プラグインのコマンドとスキル）、`/user:名前`、`/project:名前`。
    - MCP サーバーのプロンプトは `/mcp__サーバー名__プロンプト名`（Claude Code の形。名前の作り方は道具と同じ）。この名前は組み込みの名前にならないが、組み込みと同じ名前のものは外す。同じ短い名前のほかのコマンドは、定義元を付けた名前でだけ呼べる。詳細は `mcp-client.md`。
    - 定義元を付けない短い名前で呼べるのは、組み込みに無く、組み込み以外でもその名前が 1 つしかないときだけ。ぶつかれば短い名前は使えず、`/help` に呼び分け方を出す。
@@ -76,7 +76,6 @@
 | コマンド | 動き |
 |---|---|
 | `/mode [モード]` | 承認の 4 つのモード（いちいち承認・モデルに決めさせる・半自走・完全フルアクセス）を見る・変える |
-| `/approve [番号]`・`/deny [番号]` | 承認待ちの呼び出しの一覧と、許可・拒否 |
 | `/answer [番号]` | 答えを待っている質問（`ask`、MCP の質問）の一覧と回答 |
 | `/sandbox` | サンドボックスの状態と、書き込める範囲 |
 
@@ -173,7 +172,7 @@
 
 ### ターンの途中
 
-- 決めたとおり：表示と `/translate` は `now`、`/model`・`/effort`・`/mode` は `next_request`、会話を変えるもの（`/new`・`/resume`・`/fork`・`/compact`・`/delete`）とターンを始めるもの（`/goal 〈目標〉`・`/init`・`/review`・`/approve 〈番号〉`・`/deny 〈番号〉`・`ask` への `/answer`・プロンプトのコマンド）は `after_turn`。
+- 決めたとおり：表示と `/translate` は `now`、`/model`・`/effort`・`/mode` は `next_request`、会話を変えるもの（`/new`・`/resume`・`/fork`・`/compact`・`/delete`）とターンを始めるもの（`/goal 〈目標〉`・`/init`・`/review`・`ask` への `/answer`・プロンプトのコマンド）は `after_turn`。
 - 表に無いものの扱い（実装での判断）：`/rename`・`/notes` の変更・`/issues done`・`/promise remove`・`/providers` の変更・`/plugins install`・`/roles` の変更は `now`（会話の中身を変えない記録・設定のため）。`/roles` の変更は、ターンの補助役がターンの始めに作られるので、次のターンから効く（結果の `applies: "next_turn"`）。`/rules import` はモデルに頼むので `after_turn`。
 - `/mode` を途中で変えると、走っているターンの次のモデルへの要求から、新しいモードで承認を判断する。ただし、そのターンで渡した `shell` の説明（サンドボックスの有無）と、`auto` の判定役のモデルは、ターンの始めのまま（判定役が無ければ会話のモデルが判定する）。
 
@@ -203,7 +202,6 @@
 | `/members`（別名 `/profiles`）・`list`・`add 〈名前〉 〈プロバイダ/モデル〉 [役割]`・`set 〈名前〉 〈provider・model・effort・role〉 〈値〉`・`remove 〈名前〉` | `members/*`。何も付けなければ `list`：社員、この会話のプロジェクトで許された一覧、この会話が任せた仕事（任された会話の番号）。`add` でプロバイダを書かなければこの会話のプロバイダ。`set … effort default` で深さの指定を外す（`company.md`） |
 | `/allow`・`show`・`default 〈一覧〉`・`project 〈一覧〉`・`approve` | `allow/*`。一覧は社員の名前か `プロバイダ/モデル` を空白かカンマで区切る。`default none` で既定を空に、`project default` でこのプロジェクトの一覧を外す。`approve` はリポジトリの `.inocode/models.json` を今の中身で承認する（`company.md`） |
 | `/mode [モード]` | 会話の設定の `mode` |
-| `/approve`・`/deny [番号・all]` | 最後のターンが保留した呼び出しの一覧。番号を付けると、承認（`approve` にその呼び出しだけを入れたターン。その呼び出しが当たった規則は許さないので、同じ規則に当たる別の呼び出しはまた保留になる）または拒否を伝えるターンを始める。一覧はデータベースから読み、次のターンが終わるまで残る（ターンが始められなかったときも消えない） |
 | `/answer [番号 答え]` | 最後のターンの `ask` の質問と、走っているターンが待つ MCP の質問の一覧（サーバーを起動し直す前の MCP の質問は `expired: true` で出し、答えると `expired` の誤りを返して消す）。`ask` には `reply_to` 付きのターンで答え、MCP には JSON の内容・`decline`・`cancel` で答える |
 | `/sandbox` | 有効か、会話のモード、閉じ込めるか、書ける場所 |
 | `/model [プロバイダ/モデル・モデル・default]`・`/effort [深さ・default]` | 会話の設定 |
@@ -242,7 +240,7 @@
 - `/model` からのモデルの設定（思考の深さの既定、送る文の翻訳、モデルの言語）は無い。
 - `/status` にアカウントは出さない（アカウントは `/accounts list` で見る）。
 - `/accounts` からはプールの方式・優先度・クールダウンの解除・状態だけを扱う。`sticky_limit`・`auto_switch_threshold`・`failover_threshold`・`cache_affinity`、アカウントごとの閾値、会話の固定の解除は `pool/set`・`accounts/priority`・`pool/reset_affinity` で行う（`account-pool.md`）。`excluded_plans`・`start_idle_windows`・`priority_failback`・`host_circuit_threshold`、アカウントごとの `credits` も同じ。API キーのプロバイダの id を書けば、そのキーのプールのキーを扱う。キーを足すのは `accounts/add_key` と `inocode-server key set` だけで、スラッシュコマンドは無い（会話の記録にキーを残さないため）。
-- 保留と質問の一覧は、サーバーが動いている間だけ覚えている（再起動で消える）。
+- 質問の一覧は、サーバーが動いている間だけ覚えている（再起動で消える）。
 
 ### 道具とコマンドの照合（決まり 6）
 
@@ -254,11 +252,11 @@
 ### 試験
 
 - 単体（`core/src/commands.rs`）：入力の分け方、組み込みの上書き禁止、一意な短い名前、同名には定義元が要る、`*.md` と前書きの読み取りと `$ARGUMENTS`、スキルの指示文、引数の結び付け、ターン途中の可否、組み込みの定義の整合、道具とコマンドの照合。
-- プロトコル（`server/tests/commands_tcp.rs`、モックのプロバイダ）：一覧と名前の決まり・プロンプトのコマンドのターン、`/goal` と `/goal status`・`stop`、引数の誤り・未対応・未知のコマンド、会話の一覧・名前・写し・書き出し・検索・削除・新規・再開、ターン途中の可否、手法メモ・課題・約束・保留・質問・同僚・翻訳・ヘルプ。
+- プロトコル（`server/tests/commands_tcp.rs`、モックのプロバイダ）：一覧と名前の決まり・プロンプトのコマンドのターン、`/goal` と `/goal status`・`stop`、引数の誤り・未対応・未知のコマンド、会話の一覧・名前・写し・書き出し・検索・削除・新規・再開、ターン途中の可否、手法メモ・課題・約束・質問・同僚・翻訳・ヘルプ。`/approve` はもうない（`unknown_command`。承認はターンがその場で聞く、`approval-modes.md`）。
 
 ### 未確認
 
-- `/compact`、`/rules import`、`/connectors`、`/devices`、`/transcribe`、`/plugins search・install`、`/diff`、`/init`、`/review`、`/approve 〈番号〉`・`/deny 〈番号〉`、MCP への `/answer` はプロトコルの試験で動かしていない（呼ぶ先の機能はそれぞれの試験がある）。
+- `/compact`、`/rules import`、`/connectors`、`/devices`、`/transcribe`、`/plugins search・install`、`/diff`、`/init`、`/review`、MCP への `/answer` はプロトコルの試験で動かしていない（呼ぶ先の機能はそれぞれの試験がある）。
 - `/promise remove` の後、人がその後に書いていれば、モデルは約束の一覧を確かめ直すよう求められ、消した約束を元の発言から戻す可能性がある（一覧の位置は変えずに残しているため）。
 
 ### 実際のモデルでの確認（2026-11-25）

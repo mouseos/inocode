@@ -471,26 +471,6 @@ pub const BUILTINS: &[Builtin] = &[
         None,
     ),
     builtin(
-        "approve",
-        "The calls held for approval in the latest turn, or approve them.",
-        &[form(
-            "The held calls, or approve the one numbered (or all) and go on.",
-            &[optional("number", Text)],
-            Now,
-        )],
-        None,
-    ),
-    builtin(
-        "deny",
-        "The calls held for approval in the latest turn, or refuse them.",
-        &[form(
-            "The held calls, or refuse the one numbered (or all) and go on.",
-            &[optional("number", Text)],
-            Now,
-        )],
-        None,
-    ),
-    builtin(
         "answer",
         "The questions waiting for the person, or answer one.",
         &[form(
@@ -1524,8 +1504,6 @@ fn unavailable(reason: &str) -> CommandError {
 pub struct TurnStart {
     pub prompt: String,
     pub reply_to: Option<i64>,
-    /// What the turn may run as approved; the mode is the thread's.
-    pub approvals: turn::Approvals,
     /// What the command did before the turn.
     pub result: Value,
 }
@@ -1850,7 +1828,6 @@ impl Core {
                 Ok(Ran::Turn(TurnStart {
                     prompt: text,
                     reply_to: None,
-                    approvals: turn::Approvals::default(),
                     result: json!({ "command": prompt.name, "server": prompt.server }),
                 }))
             }
@@ -1870,7 +1847,6 @@ impl Core {
                 Ok(Ran::Turn(TurnStart {
                     prompt,
                     reply_to: None,
-                    approvals: turn::Approvals::default(),
                     result: json!({ "command": custom.full() }),
                 }))
             }
@@ -2012,7 +1988,6 @@ impl Core {
                 return Ok(Ran::Turn(TurnStart {
                     prompt: objective.to_string(),
                     reply_to: None,
-                    approvals: turn::Approvals::default(),
                     result: json!({ "goal": goal }),
                 }));
             }
@@ -2073,7 +2048,6 @@ impl Core {
                     json!({ "mode": settings["mode"], "applies": When::NextRequest })
                 }
             },
-            ("approve" | "deny", _) => return self.held(thread, name, value(0)).await,
             ("answer", _) => return self.answer_question(thread, value(0), value(1)).await,
             ("sandbox", _) => {
                 let mode = self.thread_mode(thread).await?.unwrap_or_default();
@@ -2380,7 +2354,6 @@ impl Core {
                 return Ok(Ran::Turn(TurnStart {
                     prompt: INIT_PROMPT.to_string(),
                     reply_to: None,
-                    approvals: turn::Approvals::default(),
                     result: json!({}),
                 }));
             }
@@ -2393,7 +2366,6 @@ impl Core {
                 return Ok(Ran::Turn(TurnStart {
                     prompt,
                     reply_to: None,
-                    approvals: turn::Approvals::default(),
                     result: json!({}),
                 }));
             }
@@ -2723,62 +2695,6 @@ impl Core {
         Ok(json!({ "on": !role.is_null(), "colleague": role, "advice": advice }))
     }
 
-    /// `/approve` and `/deny`: the held calls of the thread's latest turn,
-    /// or a turn that runs (or refuses) the one numbered, or all.
-    async fn held(
-        &self,
-        thread: SessionId,
-        name: &str,
-        number: Option<&str>,
-    ) -> Result<Ran, CommandError> {
-        // The held calls stay listed until a turn runs: its end replaces
-        // them, so a turn that cannot start leaves them to approve again.
-        let held = self.waiting(thread).await?.held;
-        let Some(number) = number else {
-            return Ok(Ran::Result(json!({ "command": name, "held": held })));
-        };
-        allowed(When::AfterTurn, self.turn_running(thread))?;
-        let chosen: Vec<turn::Held> = match number {
-            "all" if !held.is_empty() => held.clone(),
-            "all" => return Err(invalid("no call is held").into()),
-            number => vec![held[index(number, held.len())?].clone()],
-        };
-        let lines: Vec<String> = chosen
-            .iter()
-            .map(|call| format!("- {} {}", call.tool, call.arguments))
-            .collect();
-        let approve = name == "approve";
-        let prompt = match approve {
-            true => format!(
-                "I approve these held calls; run them now, exactly as written:\n{}",
-                lines.join("\n")
-            ),
-            false => format!(
-                "I do not approve these held calls; do not run them, and go on without them:\n{}",
-                lines.join("\n")
-            ),
-        };
-        // Only these exact calls are approved: approving the rules they met
-        // would let every other call under those rules through as well.
-        let approvals = match approve {
-            true => turn::Approvals {
-                mode: turn::Mode::default(),
-                rules: Vec::new(),
-                calls: chosen
-                    .iter()
-                    .map(|call| (call.tool.clone(), call.arguments.clone()))
-                    .collect(),
-            },
-            false => turn::Approvals::default(),
-        };
-        Ok(Ran::Turn(TurnStart {
-            prompt,
-            reply_to: None,
-            approvals,
-            result: json!({ "command": name, "calls": chosen }),
-        }))
-    }
-
     /// `/answer`: the questions of `ask` from the thread's latest turn and
     /// those of MCP servers its running turn waits on, or the answer to the
     /// one numbered.
@@ -2832,7 +2748,6 @@ impl Core {
             return Ok(Ran::Turn(TurnStart {
                 prompt: answer.to_string(),
                 reply_to: Some(seq),
-                approvals: turn::Approvals::default(),
                 result: json!({ "command": "answer", "reply_to": seq }),
             }));
         }
@@ -2962,11 +2877,11 @@ mod tests {
     fn built_in_names_cannot_be_taken_by_other_commands() {
         let registry = Registry::new(vec![
             custom("goal", Origin::Project),
-            custom("approve", Origin::User),
-            custom("approve", Origin::PluginSkill("evil".into())),
+            custom("answer", Origin::User),
+            custom("answer", Origin::PluginSkill("evil".into())),
         ]);
         assert_eq!(resolved(&registry, "goal"), "builtin:goal");
-        assert_eq!(resolved(&registry, "approve"), "builtin:approve");
+        assert_eq!(resolved(&registry, "answer"), "builtin:answer");
         // Still reachable under their prefix, never under the short name.
         assert_eq!(resolved(&registry, "project:goal"), "project:goal");
         let listed = registry.list();
