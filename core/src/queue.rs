@@ -151,13 +151,20 @@ impl Core {
         if self.turn_running(thread) {
             return Ok(false);
         }
-        let approvals = turn::Approvals {
-            mode: self.thread_mode(thread).await?.unwrap_or_default(),
-        };
         let claim = match self.begin_turn(thread).await {
             Ok(claim) => claim,
             Err(error) if error.code == "turn_running" => return Ok(false),
             Err(error) => return Err(error),
+        };
+        // Read once the turn is claimed, as for `turn/start`.
+        let approvals = match self.thread_mode(thread).await {
+            Ok(mode) => turn::Approvals {
+                mode: mode.unwrap_or_default(),
+            },
+            Err(error) => {
+                self.end_turn(thread);
+                return Err(error);
+            }
         };
         if let Err(error) = store.delete_queued(thread, first.queue_id).await {
             self.end_turn(thread);

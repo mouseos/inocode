@@ -330,7 +330,7 @@ async fn a_thread_runs_on_its_choice_and_a_change_applies_from_the_next_request(
         assert_eq!(
             shown["result"],
             json!({"thread_id": thread, "provider": "mock", "model": "model-a",
-                   "effort": null, "summary": null, "mode": "on-request"}),
+                   "effort": null, "summary": null, "mode": "on-request", "plan": false}),
             "{shown}"
         );
 

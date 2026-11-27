@@ -37,6 +37,7 @@ pub mod oauth;
 mod outline;
 mod pdf;
 mod picture;
+mod plan_mode;
 mod plugins;
 pub mod pool;
 mod promise;
@@ -144,6 +145,19 @@ impl Request {
             .is_some_and(|mode| !mode.is_null())
     }
 
+    /// Plan mode as a `turn/start` sets it for its thread (`plan`, a
+    /// boolean); `None` when absent.
+    pub fn plan(&self) -> Result<Option<bool>, ErrorInfo> {
+        match self.params.as_ref().and_then(|params| params.get("plan")) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::Bool(on)) => Ok(Some(*on)),
+            Some(_) => Err(ErrorInfo::new(
+                "invalid_params",
+                "\"plan\" must be true or false",
+            )),
+        }
+    }
+
     /// The earlier message of the thread a `turn/start` prompt replies to
     /// (`reply_to`, its seq); none when absent.
     pub fn reply_to(&self) -> Result<Option<i64>, ErrorInfo> {
@@ -199,6 +213,10 @@ impl Request {
                     "invalid_params",
                     "\"content\" must be an object",
                 ))
+            }
+            // The feedback on a declined plan.
+            (action, Some(content)) if content.is_object() => {
+                json!({ "action": action, "content": content })
             }
             (action, _) => json!({ "action": action }),
         };
@@ -339,6 +357,9 @@ pub struct EventPayload {
     /// What changed in the project's files during a turn.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diff: Option<Value>,
+    /// Whether plan mode is now on (`plan_mode`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan: Option<bool>,
 }
 
 fn translation_service(name: &str) -> Result<translate::Service, ErrorInfo> {
@@ -479,6 +500,15 @@ impl EventPayload {
         }
     }
 
+    /// Plan mode of the thread turned on or off during its turn
+    /// (`plan_mode`).
+    pub fn plan_mode(id: u64, on: bool) -> Self {
+        Self {
+            plan: Some(on),
+            ..Self::new(id, "plan_mode")
+        }
+    }
+
     /// A change to the list of threads, of `thread` when the subscription
     /// is not of that thread alone: `thread_created` (with `from` for a
     /// fork), `thread_deleted`, `thread_archived`, `thread_unarchived`, or
@@ -568,6 +598,7 @@ impl EventPayload {
             from: None,
             queue: None,
             diff: None,
+            plan: None,
         }
     }
 }
@@ -722,6 +753,10 @@ struct ThreadChoice {
     /// The approval mode of a `turn/start` that names none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mode: Option<String>,
+    /// Plan mode (docs/evidence/plan-mode.md); the field
+    /// [`plan_mode`] reads and writes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    plan: bool,
 }
 
 /// A provider, model and reasoning to make a client for.
@@ -1175,6 +1210,7 @@ impl Core {
                 effort: default.effort,
                 summary: default.summary,
                 mode: None,
+                plan: false,
             };
             let text = serde_json::to_string(&chosen)
                 .map_err(|error| ErrorInfo::new("internal", error.to_string()))?;
@@ -1608,12 +1644,13 @@ impl Core {
             "effort": choice.effort,
             "summary": choice.summary,
             "mode": chosen.mode.unwrap_or_else(|| turn::Mode::default().as_str().to_string()),
+            "plan": chosen.plan,
         }))
     }
 
     /// Changes what `thread` runs on: the fields of `patch` among
     /// `provider`, `model`, `effort`, `summary` and `mode`, `null` returning
-    /// a field to `default`. A new provider without a model gets the
+    /// a field to `default`, and `plan` (`true`, `false` or `null` for off). A new provider without a model gets the
     /// provider's default model. A running turn uses the new model from its
     /// next request on.
     pub async fn set_thread_settings(
@@ -1631,6 +1668,14 @@ impl Core {
         let settings = self.settings().await?;
         let mut chosen = self.thread_choice(thread).await?;
         for (name, value) in patch.iter().filter(|(name, _)| *name != "thread_id") {
+            if name == "plan" {
+                chosen.plan = match value {
+                    Value::Bool(on) => *on,
+                    Value::Null => false,
+                    _ => return Err(invalid("\"plan\" must be true, false or null".into())),
+                };
+                continue;
+            }
             let text = match value {
                 Value::Null => None,
                 Value::String(text) if !text.trim().is_empty() => Some(text.trim().to_string()),

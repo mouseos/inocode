@@ -53,7 +53,7 @@
 | `/goal 〈目標〉` | 目標を決め、達成まで自動で続ける |
 | `/goal status` | 今の目標と進み、判定役の最後の判断 |
 | `/goal stop` | 目標を止める |
-| `/plan` | 今の計画（`plan` の道具の記録）を表示する |
+| `/plan` | 今の計画（`plan` の道具の記録）を表示する。`/plan on`・`/plan off` でプランモードを切り替える（`plan-mode.md`） |
 | `/promise` | 約束の一覧を表示する。`/promise remove 〈番号〉`・`/promise clear` |
 | `/issues` | 未完了の課題の一覧。`/issues done 〈番号〉`・`/issues drop 〈番号〉` |
 
@@ -142,7 +142,7 @@
 - `/goal status` に見積もりを出す（「だす」）。ここまでの時間とトークン、残りの見込みの幅（`effort-estimates.md`）。
 - ターンの途中で使える範囲（「これでいい」）：
   - 表示だけのもの（`/notes`、`/plan`、`/status`、`/issues` など）と `/translate` は、途中でもすぐ効く。
-  - `/model`・`/effort`・`/mode` は、次のモデルへの要求から効く。
+  - `/model`・`/effort`・`/mode` は、次のモデルへの要求から効く。`/plan on`・`/plan off` も同じ（作業者が決めた）。
   - 会話を変えるもの（`/new`、`/resume`、`/fork`、`/compact`、`/delete` など）は、ターンが終わってから。
 
 ## 実装の状態
@@ -193,7 +193,7 @@
 | `/history 〈語〉` | `search_history`（全プロジェクト、20 件） |
 | `/goal 〈目標〉`・`status`・`stop` | `goal/set` の後、目標の文でターンを始める。目標の前に `--check "命令"`・`--rounds 回数`・`--tokens 数` を書くと、`goal/set` の `check`・`rounds`・`tokens` になる。何も付けなければ `status` |
 | `/stop` | この会話の走っているターンを止める（`turn/interrupt` と同じ。どの接続からでも）。いつでも使える |
-| `/plan` | `plan` の道具の記録 |
+| `/plan`・`on`・`off` | `plan` の道具の記録。`on`・`off` は `thread/settings` の `plan` を変え、次の要求から効く（`applies: "next_request"`） |
 | `/promise`・`remove 〈番号〉`・`clear` | `promise` の道具の記録 |
 | `/issues`・`done 〈番号〉 [理由]`・`drop 〈番号〉 [理由]` | 課題の一覧、done・wontfix で閉じる（記録者は人） |
 | `/notes`・`search`・`show`・`edit`・`tag`・`vote`・`retire` | 手法メモ（`lesson`・`method`）。`edit` は新しいメモを作って古いものを `supersede` で置き換える（古いものは履歴として残る） |

@@ -935,6 +935,7 @@ impl Store {
         id: u64,
         answer: serde_json::Value,
     ) -> bool {
+        let mut answer = answer;
         let mut waiting = self
             .inner
             .elicitations
@@ -945,6 +946,12 @@ impl Store {
                 let mode = asked.question.get("mode").and_then(|mode| mode.as_str());
                 let accepted =
                     answer.get("action").and_then(|action| action.as_str()) == Some("accept");
+                // Only a declined plan carries content: the feedback on it.
+                if !accepted && mode != Some(crate::plan_mode::PLAN_MODE) {
+                    if let Some(fields) = answer.as_object_mut() {
+                        fields.remove("content");
+                    }
+                }
                 if accepted && mode == Some("form") && answer.get("content").is_none() {
                     return false;
                 }

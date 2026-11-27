@@ -282,8 +282,18 @@ pub const BUILTINS: &[Builtin] = &[
     ),
     builtin(
         "plan",
-        "Show the plan the agent keeps.",
-        &[form("The plan.", &[], Now)],
+        "Show the plan the agent keeps, or turn plan mode on or off.",
+        &[
+            form("The plan.", &[], Now),
+            sub(
+                "on",
+                "Plan mode: the agent investigates without changing files and presents a \
+                 plan for approval.",
+                &[],
+                NextRequest,
+            ),
+            sub("off", "End plan mode.", &[], NextRequest),
+        ],
         None,
     ),
     builtin(
@@ -2080,7 +2090,13 @@ impl Core {
             }
             ("goal", Some("status")) => self.goal_status(thread).await?,
             ("goal", Some(_)) => json!({ "goal": self.stop_goal(thread).await? }),
-            ("plan", _) => {
+            ("plan", Some(sub)) => {
+                let settings = self
+                    .set_thread_settings(thread, &json!({ "plan": sub == "on" }))
+                    .await?;
+                json!({ "plan": settings["plan"], "applies": When::NextRequest })
+            }
+            ("plan", None) => {
                 let items = match store.plan(thread).await? {
                     Some(text) => serde_json::from_str(&text)
                         .map_err(|error| ErrorInfo::new("store", error.to_string()))?,
@@ -3182,7 +3198,13 @@ mod tests {
         ] {
             assert_eq!(when(name, text), When::Now, "/{name} {text}");
         }
-        for (name, text) in [("model", "x"), ("effort", "high"), ("mode", "full")] {
+        for (name, text) in [
+            ("model", "x"),
+            ("effort", "high"),
+            ("mode", "full"),
+            ("plan", "on"),
+            ("plan", "off"),
+        ] {
             assert_eq!(when(name, text), When::NextRequest, "/{name} {text}");
         }
         for (name, text) in [

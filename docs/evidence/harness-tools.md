@@ -22,6 +22,7 @@
 | シェル | `exec_command`＋`write_stdin`：PTY を保つ、出力はトークン数で上限、サンドボックス | `Bash`/`PowerShell`：既定 2 分・最大 10 分、出力 3 万字、バックグラウンド実行 | `bash`/`pwsh`：既定 120 秒・最大 600 秒、64KB、時間切れはバックグラウンドへ移す | `bash`：時間制限の既定なし、末尾 2,000 行・50KB、全文は一時ファイル | `shell`：既定 120 秒、時間切れはバックグラウンドへ、コマンドごとに許可規則 |
 | 探す | なし（シェル） | `Glob`（100 件）・`Grep`（250 件、ページ送り） | `glob`（100 件）・`grep`（250 件） | `grep`・`find`・`ls`（既定では無効） | `glob`・`grep`（100 件） |
 | 作業一覧 | `update_plan` | `TodoWrite` | `todo_write` | なし | `todowrite` |
+| 計画を見せて承認を求める | なし（協働のモードの Plan） | `ExitPlanMode` | 調べていない | 調べていない | `plan` のエージェント（プラグイン） |
 | 人に聞く | `request_user_input` | `AskUserQuestion` | `ask_user_question`（期限つきモードあり） | なし | `question` |
 | Web | 提供元のホスト型検索 | `WebSearch`・`WebFetch`（取得したページにモデルを通す） | `web_search`・`web_fetch` | なし（DeepAI は MCP で検索） | `websearch`・`webfetch` |
 | サブエージェント | `spawn_agent` など | `Agent` | `subagent` など | なし | `subagent` |

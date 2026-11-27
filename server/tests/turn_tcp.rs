@@ -5672,3 +5672,255 @@ async fn every_screen_hears_of_threads_created_renamed_archived_and_deleted() {
     })
     .await;
 }
+
+/// The names of the tools a request offers.
+fn offered(request: &MockRequest) -> Vec<String> {
+    request.body["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .filter_map(|tool| tool["function"]["name"].as_str().map(str::to_string))
+        .collect()
+}
+
+async fn thread_settings(client: &mut Client, stream_id: u64, params: Value) -> Value {
+    call(
+        client,
+        stream_id,
+        json!({"id": stream_id, "method": "thread/settings", "params": params}),
+    )
+    .await
+}
+
+async fn slash(client: &mut Client, stream_id: u64, thread: i64, text: &str) -> Value {
+    call(
+        client,
+        stream_id,
+        json!({"id": stream_id, "method": "command/run",
+               "params": {"thread_id": thread, "text": text}}),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn in_plan_mode_changes_are_refused_and_commands_wait_for_the_person() {
+    with_timeout(async {
+        let (project, _) = project_and_outside("plan-refuse");
+        let mock = scripted(vec![
+            tool_turn("p1", "write", json!({"path": "new.txt", "content": "x"})),
+            tool_turn("p2", "shell", shell_call("mkdir made")),
+            tool_turn("p3", "shell", shell_call("ls")),
+            text_turn("planned"),
+            tool_turn("p4", "shell", shell_call("mkdir made")),
+        ])
+        .await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = project_thread(&mut client, &project).await;
+        let set = thread_settings(&mut client, 2, json!({"thread_id": thread, "plan": true})).await;
+        assert_eq!(set["result"]["plan"], true, "{set}");
+
+        let (events, asked) = turn_answering(
+            &mut client,
+            3,
+            json!({"thread_id": thread, "prompt": "plan the folder", "mode": "on-request"}),
+            vec![decline()],
+        )
+        .await;
+        let results = tool_results(&events);
+        assert!(
+            results[0].starts_with("Not run: plan mode is on"),
+            "{results:?}"
+        );
+        assert!(!project.join("new.txt").exists());
+        assert_eq!(asked.len(), 1, "only the change is asked about: {asked:?}");
+        assert_eq!(asked[0]["mode"], "approval");
+        assert_eq!(asked[0]["tool"], "shell");
+        assert_eq!(
+            asked[0]["reason"],
+            "plan mode is on, and this may change something"
+        );
+        assert!(results[1].starts_with("Denied by the person"));
+        assert!(
+            results[2].contains("exit code 0"),
+            "reading runs: {}",
+            results[2]
+        );
+        assert!(!project.join("made").exists());
+        let first = &chats(&mock)[0];
+        assert!(offered(first).contains(&"exit_plan".to_string()));
+        assert!(state_of(first).contains("Plan mode is on"));
+
+        // In the auto mode too the person is asked, not the reviewer.
+        let (_, asked) = turn_answering(
+            &mut client,
+            4,
+            json!({"thread_id": thread, "prompt": "again", "mode": "auto"}),
+            vec![decline()],
+        )
+        .await;
+        assert_eq!(asked.len(), 1);
+        assert!(review_requests(&mock).is_empty());
+        assert!(!project.join("made").exists());
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn an_approved_plan_ends_plan_mode_and_the_turn_implements_it() {
+    with_timeout(async {
+        let (project, _) = project_and_outside("plan-approve");
+        let mock = scripted(vec![
+            tool_turn("e1", "exit_plan", json!({"plan": "1. write a.txt"})),
+            tool_turn(
+                "e2",
+                "exit_plan",
+                json!({"plan": "1. write a.txt\n2. write b.txt"}),
+            ),
+            tool_turn("e3", "write", json!({"path": "a.txt", "content": "a"})),
+            text_turn("done"),
+        ])
+        .await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let mut other = connect(addr).await;
+        let thread = project_thread(&mut client, &project).await;
+
+        client
+            .1
+            .write_json(
+                2,
+                &json!({"id": 2, "method": "turn/start",
+                        "params": {"thread_id": thread, "prompt": "plan it", "plan": true}}),
+            )
+            .await
+            .expect("send");
+        let prompt = until_prompt(&mut client, 2).await;
+        assert_eq!(prompt["mode"], "plan", "{prompt}");
+        assert_eq!(prompt["plan"], "1. write a.txt");
+        let listed = call(&mut other, 3, json!({"id": 3, "method": "thread/list"})).await;
+        let status = listed["result"]["threads"]
+            .as_array()
+            .expect("threads")
+            .iter()
+            .find(|listed| listed["thread_id"] == thread)
+            .map(|listed| listed["status"].clone());
+        assert_eq!(status, Some(json!("waiting")), "{listed}");
+        let declined = call(
+            &mut other,
+            4,
+            json!({"id": 4, "method": "turn/answer",
+                   "params": {"thread_id": thread, "elicitation": prompt["id"],
+                              "action": "decline", "content": {"feedback": "also write b.txt"}}}),
+        )
+        .await;
+        assert_eq!(declined["result"]["accepted"], true, "{declined}");
+
+        let prompt = until_prompt(&mut client, 2).await;
+        assert_eq!(prompt["plan"], "1. write a.txt\n2. write b.txt");
+        let settings = thread_settings(&mut other, 5, json!({"thread_id": thread})).await;
+        assert_eq!(
+            settings["result"]["plan"], true,
+            "declined, plan mode stays"
+        );
+        let accepted = call(
+            &mut other,
+            6,
+            json!({"id": 6, "method": "turn/answer",
+                   "params": {"thread_id": thread, "elicitation": prompt["id"],
+                              "action": "accept"}}),
+        )
+        .await;
+        assert_eq!(accepted["result"]["accepted"], true, "{accepted}");
+        let mut events = Vec::new();
+        loop {
+            let event = next_message(&mut client, 2).await;
+            let end = event["event"] == "completed";
+            events.push(event);
+            if end {
+                break;
+            }
+        }
+        assert!(
+            events
+                .iter()
+                .any(|event| event["event"] == "plan_mode" && event["plan"] == false),
+            "{events:?}"
+        );
+        let results = tool_results(&events);
+        assert!(
+            results[0].starts_with("The person approved the plan"),
+            "{results:?}"
+        );
+        assert!(results[1].starts_with("Created"), "{results:?}");
+        assert_eq!(
+            std::fs::read_to_string(project.join("a.txt")).expect("written"),
+            "a"
+        );
+
+        let requests = chats(&mock);
+        let second = requests[1].body["messages"].to_string();
+        assert!(second.contains("did not approve the plan"), "{second}");
+        assert!(second.contains("also write b.txt"), "{second}");
+        assert!(offered(&requests[2]).iter().all(|tool| tool != "exit_plan"));
+        assert!(!state_of(&requests[2]).contains("Plan mode is on"));
+        let settings = thread_settings(&mut other, 7, json!({"thread_id": thread})).await;
+        assert_eq!(settings["result"]["plan"], false, "{settings}");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn plan_mode_is_switched_by_command_and_settings_and_exit_plan_is_offered_only_then() {
+    with_timeout(async {
+        let mock = scripted(vec![
+            tool_turn("x1", "exit_plan", json!({"plan": "p"})),
+            text_turn("ok"),
+            text_turn("ok"),
+        ])
+        .await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client).await;
+
+        let shown = thread_settings(&mut client, 2, json!({"thread_id": thread})).await;
+        assert_eq!(shown["result"]["plan"], false, "{shown}");
+        let events = turn(&mut client, 3, thread, "hi").await;
+        assert!(offered(&chats(&mock)[0])
+            .iter()
+            .all(|tool| tool != "exit_plan"));
+        assert!(
+            tool_results(&events)[0].contains("no tool named exit_plan"),
+            "{events:?}"
+        );
+
+        let on = slash(&mut client, 4, thread, "/plan on").await;
+        assert_eq!(on["result"]["plan"], true, "{on}");
+        assert_eq!(on["result"]["applies"], "next_request");
+        let shown = thread_settings(&mut client, 5, json!({"thread_id": thread})).await;
+        assert_eq!(shown["result"]["plan"], true);
+        let list = slash(&mut client, 6, thread, "/plan").await;
+        assert_eq!(list["result"]["items"], json!([]), "{list}");
+        turn(&mut client, 7, thread, "look").await;
+        assert!(offered(chats(&mock).last().unwrap()).contains(&"exit_plan".to_string()));
+
+        let off = slash(&mut client, 8, thread, "/plan off").await;
+        assert_eq!(off["result"]["plan"], false, "{off}");
+        let set = thread_settings(&mut client, 9, json!({"thread_id": thread, "plan": true})).await;
+        assert_eq!(set["result"]["plan"], true);
+        let cleared =
+            thread_settings(&mut client, 10, json!({"thread_id": thread, "plan": null})).await;
+        assert_eq!(cleared["result"]["plan"], false);
+        let bad =
+            thread_settings(&mut client, 11, json!({"thread_id": thread, "plan": "yes"})).await;
+        assert_eq!(bad["error"]["code"], "invalid_params", "{bad}");
+        turn(&mut client, 12, thread, "go").await;
+        assert!(offered(chats(&mock).last().unwrap())
+            .iter()
+            .all(|tool| tool != "exit_plan"));
+    })
+    .await;
+}

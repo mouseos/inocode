@@ -95,6 +95,7 @@
 | [thread-operations.md](thread-operations.md) | スレッドの名前の変更・削除・アーカイブ・書き出し・検索の要求と、一覧の変化の通知（`thread_created` など） | UNSUPPORTED_APPROVED | `core/src/commands.rs`（`rename_thread`・`delete_thread`・`set_thread_archived`）、`core/src/lib.rs`（`ThreadChange`）、`server/src/lib.rs`（`thread_operation`・`relay_threads`） |
 | [message-queue.md](message-queue.md) | ターンの間に並べた文を、ターンが終わるたびに次のターンとして送る列（`thread/queue/*`、購読の `queue`） | UNSUPPORTED_APPROVED | `core/src/queue.rs`、`core/src/store_threads.rs`（`queue` 表）、`server/src/lib.rs`（`queue_request`） |
 | [input-attachments.md](input-attachments.md) | 人のメッセージに画像・PDF・文字のファイルを添える（`turn/start` の `attachments`。画像はそのまま見せ、画像を読めないモデルは断る） | UNSUPPORTED_APPROVED | `core/src/attach.rs`、`core/src/conversation.rs`（`Body::User` の `images`）、`core/src/lib.rs`（`turn_prompt`） |
+| [plan-mode.md](plan-mode.md) | プランモード：ファイルを変えずに調べ、`exit_plan` の計画を人が承認したら、そのまま実装へ（`thread/settings` の `plan`、`/plan on`・`off`、`plan` の問い、`plan_mode` のイベント） | UNSUPPORTED_APPROVED | `core/src/plan_mode.rs`、`core/src/turn.rs`（`plan_refuses`・`plan_asks`・`exit_plan`）、`core/src/lib.rs`（`ThreadChoice::plan`） |
 | [file-mentions.md](file-mentions.md) | @ で指したファイルの中身を渡す（大きいものは頭だけ、`turn/start` の `mentions`）と、補完のためのパスの検索（`files/search`） | UNSUPPORTED_APPROVED | `core/src/attach.rs`、`core/src/find.rs`（`fuzzy_paths`）、`core/src/lib.rs`（`search_files`） |
 
 ## 状態の判定

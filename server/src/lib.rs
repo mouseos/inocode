@@ -1444,7 +1444,7 @@ async fn run_command(
         thread,
         (
             (start.prompt, start.reply_to, Default::default()),
-            (Default::default(), false),
+            (Default::default(), false, None),
         ),
         stream_id,
         core,
@@ -1933,6 +1933,7 @@ fn turn_event(id: u64, event: TurnEvent) -> EventPayload {
         TurnEvent::Title(title) => EventPayload::title(id, "title_updated", title),
         TurnEvent::TitleProposed(title) => EventPayload::title(id, "title_proposed", title),
         TurnEvent::Diff(diff) => EventPayload::diff(id, diff),
+        TurnEvent::PlanMode(on) => EventPayload::plan_mode(id, on),
     }
 }
 
@@ -1949,7 +1950,11 @@ async fn start_turn(
             request.reply_to()?,
             request.attached()?,
         );
-        Ok((thread, prompt, (request.approvals()?, request.names_mode())))
+        Ok((
+            thread,
+            prompt,
+            (request.approvals()?, request.names_mode(), request.plan()?),
+        ))
     });
     let (thread, prompt, allowed) = match parsed {
         Ok(parsed) => parsed,
@@ -1983,15 +1988,19 @@ async fn start_turn(
     true
 }
 
+/// What a `turn/start` chose for its turn: the approvals, whether it named
+/// its mode, and plan mode when it sets it.
+type TurnChoices = (inocode_core::turn::Approvals, bool, Option<bool>);
+
 /// Runs one turn and relays its events. The turn goes on when the
 /// connection closes: what it makes is stored and `thread/read` returns it.
 #[allow(clippy::too_many_arguments)]
 async fn run_turn(
     id: u64,
     thread: inocode_core::store::SessionId,
-    ((prompt, reply_to, attached), (mut approvals, names_mode)): (
+    ((prompt, reply_to, attached), (mut approvals, names_mode, plan)): (
         (String, Option<i64>, inocode_core::attach::Requested),
-        (inocode_core::turn::Approvals, bool),
+        TurnChoices,
     ),
     stream_id: u64,
     core: Arc<Core>,
@@ -1999,24 +2008,6 @@ async fn run_turn(
     in_flight: InFlight,
     cancelled: watch::Receiver<bool>,
 ) {
-    if !names_mode {
-        match core.thread_mode(thread).await {
-            Ok(Some(mode)) => approvals.mode = mode,
-            Ok(None) => {}
-            Err(error) => {
-                settle(
-                    id,
-                    stream_id,
-                    &queue,
-                    &in_flight,
-                    cancelled,
-                    Terminal::Failed(error),
-                )
-                .await;
-                return;
-            }
-        }
-    }
     let prompt = match core.turn_prompt(thread, prompt, reply_to, attached).await {
         Ok(prompt) => prompt,
         Err(error) => {
@@ -2047,6 +2038,47 @@ async fn run_turn(
             return;
         }
     };
+    // Read once the turn is claimed: a mode chosen after this reaches the
+    // running turn, so none chosen while the turn starts is lost.
+    if !names_mode {
+        match core.thread_mode(thread).await {
+            Ok(Some(mode)) => approvals.mode = mode,
+            Ok(None) => {}
+            Err(error) => {
+                core.end_turn(thread);
+                settle(
+                    id,
+                    stream_id,
+                    &queue,
+                    &in_flight,
+                    cancelled,
+                    Terminal::Failed(error),
+                )
+                .await;
+                return;
+            }
+        }
+    }
+    // Set once the turn is claimed, so a refused turn leaves plan mode as
+    // it was.
+    if let Some(plan) = plan {
+        if let Err(error) = core
+            .set_thread_settings(thread, &json!({ "plan": plan }))
+            .await
+        {
+            core.end_turn(thread);
+            settle(
+                id,
+                stream_id,
+                &queue,
+                &in_flight,
+                cancelled,
+                Terminal::Failed(error),
+            )
+            .await;
+            return;
+        }
+    }
     let _ = send_event(&queue, stream_id, EventPayload::started(id)).await;
     let (events, mut received) = mpsc::channel(SEND_QUEUE_CAPACITY);
     let relay = |event: TurnEvent| turn_event(id, event);

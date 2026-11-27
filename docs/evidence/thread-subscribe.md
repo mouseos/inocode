@@ -8,6 +8,7 @@
     - `turn_ended` の `reason` は `completed`・`length`・`cancelled`・`failed`。`usage`・`questions`・`warnings`・`error` も付く。
     - 状態が変わるたびに `status` を送る。
     - ターンが走っている間、プロジェクトのファイルの差分 `diff` も、ほかのターンのイベントと同じく流す（`turn-diff.md`）。
+    - 計画が承認されてプランモードが切れたときの `plan_mode` も同じく流す（`plan-mode.md`）。
     - そのスレッドの `thread_renamed`・`thread_archived`・`thread_unarchived` も流す。スレッドが消えると `thread_deleted` を送り、購読はそこで終わる（`thread-operations.md`）。
   - `thread/status/subscribe`：すべてのスレッドの `status` を、`thread_id` を付けて流す。スレッドの一覧の変化（`thread_created`・`thread_deleted`・`thread_renamed`・`thread_archived`・`thread_unarchived`）も、名前を変えずにこの購読で流す（`thread-operations.md`）。
   - 状態は 3 つ：`idle`（何も走らず、人を待つものもない）、`running`（ターンか圧縮が走っている）、`waiting`（走っているターンが人の答えを待っている、または走っていないが最後のターンが質問を残した）。

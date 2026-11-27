@@ -70,6 +70,9 @@ pub enum TurnEvent {
     /// turn, as `{seq, files, text, truncated}`
     /// (docs/evidence/turn-diff.md).
     Diff(serde_json::Value),
+    /// Plan mode of the thread is now on or off
+    /// (docs/evidence/plan-mode.md).
+    PlanMode(bool),
 }
 
 /// Why a turn ended.
@@ -198,6 +201,41 @@ pub(crate) const APPROVAL_MODE: &str = "approval";
 /// to the person instead (the counts of Claude Code and DeepAI Code).
 const DENIALS_IN_A_ROW: u32 = 3;
 const DENIALS_PER_TURN: u32 = 20;
+
+/// How the person answered a question put to them during the turn.
+enum Heard {
+    /// The question could not be shown: nobody receives the turn's events.
+    Nobody,
+    /// The turn was stopped before an answer came.
+    Stopped,
+    Answer(serde_json::Value),
+}
+
+/// Whether plan mode refuses the call: it changes files, installs, hands
+/// work on, or captures pictures or sound.
+fn plan_refuses(name: &str, arguments: &str) -> bool {
+    matches!(
+        name,
+        crate::edit::EDIT
+            | crate::edit::EDITS
+            | crate::edit::WRITE
+            | crate::plugins::INSTALL
+            | crate::company::DELEGATE
+    ) || (name == crate::camera::CAMERA && crate::camera::takes_pictures(arguments))
+        || (name == crate::audio::AUDIO && crate::audio::records(arguments))
+}
+
+/// Whether the call waits for the person in plan mode, whatever the
+/// approval mode: a command that may change something or leave the
+/// sandbox, input to a running command, or an MCP tool.
+fn plan_asks(name: &str, arguments: &str) -> bool {
+    match name {
+        shell::SHELL => shell::shell_arguments(arguments)
+            .is_none_or(|command| command.outside_sandbox || !shell::reads_only(&command.command)),
+        shell::JOB => shell::job_types(arguments),
+        _ => name.starts_with(crate::mcp::PREFIX),
+    }
+}
 
 /// Why a call waits, and whether only the person may let it run (the
 /// reviewer of the `auto` mode never decides it).
@@ -476,6 +514,7 @@ a video after setting them; taking pictures waits for the person.\n\
 the format asked for, after the person approves; transcribe turns speech in an audio \
 file into text through the person's Claude or ChatGPT sign-in, or Google's speech \
 service.\n\
+- exit_plan, offered only in plan mode, presents your plan to the person for approval.\n\
 - Tools named mcp__<server>__<tool> come from the MCP servers the person set up.\n\
 - plugin_search finds plugins in the Claude Code and Codex catalogs; plugin_install \
 installs one after the person approves.";
@@ -605,6 +644,8 @@ struct Thread<'a> {
     first: bool,
     /// The titles the model proposed in this thread.
     proposed: HashSet<String>,
+    /// Plan mode, as the thread's settings said at the latest request.
+    plan: bool,
     /// The usage of the automatic title's requests, when it was started.
     title_spent: Option<crate::title::Spent>,
 }
@@ -965,9 +1006,11 @@ impl Thread<'_> {
         let now = now(chrono::Local::now().fixed_offset());
         let title = self.store.session_title(self.session).await?;
         let title = (!title.is_empty()).then(|| format!("The thread's title: {title}"));
+        let plan_mode = self.plan.then_some(crate::plan_mode::STATE);
         let parts: Vec<&str> = [
             Some(now.as_str()),
             title.as_deref(),
+            plan_mode,
             self.git.as_deref(),
             goal.as_deref(),
             plan.as_deref(),
@@ -1026,13 +1069,19 @@ impl Thread<'_> {
             }
             Decision::Ask(rules) => asked_rules = rules,
         }
-        if self.mode != Mode::Full {
+        if self.plan && plan_refuses(name, arguments) {
+            return (crate::plan_mode::REFUSED.to_string(), true);
+        }
+        if self.mode != Mode::Full || (self.plan && plan_asks(name, arguments)) {
             if let Some(answer) = self
                 .approval(llm, pending, name, arguments, asked_rules, usage)
                 .await
             {
                 return answer;
             }
+        }
+        if name == crate::plan_mode::EXIT_PLAN && self.plan {
+            return self.exit_plan(arguments).await;
         }
         // What MCP servers have the model run during the call counts in the
         // turn's usage.
@@ -1112,6 +1161,9 @@ impl Thread<'_> {
                 person: false,
             })
         };
+        if self.plan && plan_asks(name, arguments) {
+            return person(crate::plan_mode::ASKS.into());
+        }
         let command = (name == shell::SHELL)
             .then(|| shell::shell_arguments(arguments))
             .flatten();
@@ -1295,43 +1347,30 @@ impl Thread<'_> {
         reason: String,
     ) -> Option<Answer> {
         let titles = self.titles(&rules).await;
-        let (id, answer) = self.store.wait_elicitation(self.session);
         let question = serde_json::json!({
             "mode": APPROVAL_MODE,
-            "id": id,
             "tool": name,
             "arguments": arguments,
             "reason": reason,
             "rules": titles,
         });
-        self.store.describe_elicitation(id, question.clone());
-        if self
-            .events
-            .send(TurnEvent::Elicitation(question))
-            .await
-            .is_err()
-        {
-            self.store.forget_elicitation(id);
-            return Some((
-                format!(
-                    "Not run: it needs the person's approval ({reason}), and nobody could be \
-                     asked. Go on with work that does not depend on it."
-                ),
-                true,
-            ));
-        }
-        let mut cancel = self.cancel.clone();
-        let answer = tokio::select! {
-            answer = answer => answer.ok(),
-            () = cancelled(&mut cancel) => None,
-        };
-        self.store.forget_elicitation(id);
-        let _ = self.events.send(TurnEvent::Answered(id)).await;
-        let Some(answer) = answer else {
-            return Some((
-                "Not run: the turn was stopped before the person answered.".to_string(),
-                true,
-            ));
+        let answer = match self.put_to_person(question).await {
+            Heard::Answer(answer) => answer,
+            Heard::Nobody => {
+                return Some((
+                    format!(
+                        "Not run: it needs the person's approval ({reason}), and nobody could \
+                         be asked. Go on with work that does not depend on it."
+                    ),
+                    true,
+                ))
+            }
+            Heard::Stopped => {
+                return Some((
+                    "Not run: the turn was stopped before the person answered.".to_string(),
+                    true,
+                ))
+            }
         };
         if answer.get("action").and_then(serde_json::Value::as_str) != Some("accept") {
             return Some((
@@ -1366,6 +1405,102 @@ impl Thread<'_> {
             self.record_allowed(*rule, Actor::Person, name).await;
         }
         None
+    }
+
+    /// Shows `question` to the person as an `elicitation` event, with its
+    /// `id` added, answered with `turn/answer`, and waits for the answer for
+    /// as long as the turn runs.
+    async fn put_to_person(&mut self, mut question: serde_json::Value) -> Heard {
+        let (id, answer) = self.store.wait_elicitation(self.session);
+        question["id"] = serde_json::json!(id);
+        self.store.describe_elicitation(id, question.clone());
+        if self
+            .events
+            .send(TurnEvent::Elicitation(question))
+            .await
+            .is_err()
+        {
+            self.store.forget_elicitation(id);
+            return Heard::Nobody;
+        }
+        let mut cancel = self.cancel.clone();
+        let answer = tokio::select! {
+            answer = answer => answer.ok(),
+            () = cancelled(&mut cancel) => None,
+        };
+        self.store.forget_elicitation(id);
+        let _ = self.events.send(TurnEvent::Answered(id)).await;
+        answer.map_or(Heard::Stopped, Heard::Answer)
+    }
+
+    /// An `exit_plan` call: shows the plan to the person. Approved, plan
+    /// mode ends for the thread and the model implements the plan in the
+    /// same turn; declined, plan mode stays and the model gets the
+    /// person's feedback.
+    async fn exit_plan(&mut self, arguments: &str) -> Answer {
+        let plan = match crate::plan_mode::plan(arguments) {
+            Ok(plan) => plan,
+            Err(message) => return (message, true),
+        };
+        let question = serde_json::json!({
+            "mode": crate::plan_mode::PLAN_MODE,
+            "plan": plan,
+        });
+        let answer = match self.put_to_person(question).await {
+            Heard::Answer(answer) => answer,
+            Heard::Nobody => {
+                return (
+                    "The plan could not be shown: nobody could be asked. Plan mode stays on; \
+                     end your answer with the plan, so the person can read it."
+                        .to_string(),
+                    true,
+                )
+            }
+            Heard::Stopped => {
+                return (
+                    "The turn was stopped before the person answered.".to_string(),
+                    true,
+                )
+            }
+        };
+        if answer.get("action").and_then(serde_json::Value::as_str) == Some("accept") {
+            if let Err(error) = crate::plan_mode::set(self.store, self.session, false).await {
+                return (
+                    format!(
+                        "The person approved the plan, but plan mode could not be turned off \
+                         ({}). Tell the person.",
+                        error.message
+                    ),
+                    true,
+                );
+            }
+            self.plan = false;
+            let _ = self.events.send(TurnEvent::PlanMode(false)).await;
+            return (
+                "The person approved the plan. Plan mode is off: implement the plan now."
+                    .to_string(),
+                false,
+            );
+        }
+        let feedback = answer
+            .get("content")
+            .and_then(|content| content.get("feedback"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|feedback| !feedback.is_empty());
+        let text = match feedback {
+            Some(feedback) => format!(
+                "The person did not approve the plan; plan mode stays on. Their feedback:\n\
+                 {feedback}\n\
+                 Revise the plan, investigating more if needed, and present it again with \
+                 exit_plan."
+            ),
+            None => "The person did not approve the plan and gave no feedback; plan mode stays \
+                     on. Revise the plan and present it again with exit_plan, or end your \
+                     answer and ask the person what to change."
+                .to_string(),
+        };
+        (text, false)
     }
 
     /// Has the colleague advise on the steps since its last advice, and
@@ -1827,6 +1962,12 @@ impl Thread<'_> {
             return answers;
         }
         let refused = |text: &str| ((text.to_string(), true), std::time::Duration::ZERO);
+        if self.plan {
+            for (call, _) in calls {
+                answers.insert(call.to_string(), refused(crate::plan_mode::REFUSED));
+            }
+            return answers;
+        }
         let company = match (&self.company, self.budget) {
             (_, Some(_)) => {
                 for (call, _) in calls {
@@ -2448,6 +2589,7 @@ async fn open<'a>(
         first,
         proposed,
         title_spent: None,
+        plan: false,
     })
 }
 
@@ -2539,10 +2681,17 @@ async fn steps(
                 thread.mode = chosen;
             }
         }
+        match crate::plan_mode::on(thread.store, thread.session).await {
+            Ok(on) => thread.plan = on,
+            Err(error) => return Ending::Failed(error),
+        }
         let llm = main.borrow().clone();
         let llm = llm.as_ref();
         // MCP tools found by a search are offered from the next request on.
         let mut tools = harness.clone();
+        if thread.plan {
+            tools.push(crate::plan_mode::spec());
+        }
         tools.extend(crate::mcp::specs(thread.store, &thread.conversation.messages).await);
         let compacted = tokio::select! {
             compacted = thread.compact_if_due(llm, &tools, usage) => Some(compacted),
@@ -2712,6 +2861,29 @@ mod tests {
         ));
         assert!(same_arguments("not json", "not json"));
         assert!(!same_arguments("not json", "not  json"));
+    }
+
+    #[test]
+    fn plan_mode_refuses_changes_and_asks_before_what_may_change() {
+        for name in [
+            crate::edit::EDIT,
+            crate::edit::EDITS,
+            crate::edit::WRITE,
+            crate::plugins::INSTALL,
+            crate::company::DELEGATE,
+        ] {
+            assert!(plan_refuses(name, "{}"), "{name}");
+        }
+        assert!(!plan_refuses(crate::read::READ, r#"{"path":"a"}"#));
+        assert!(!plan_refuses(shell::SHELL, r#"{"command":"mkdir x"}"#));
+        assert!(plan_asks(shell::SHELL, r#"{"command":"mkdir x"}"#));
+        assert!(!plan_asks(shell::SHELL, r#"{"command":"ls"}"#));
+        assert!(plan_asks(
+            shell::SHELL,
+            r#"{"command":"ls","outside_sandbox":true}"#
+        ));
+        assert!(plan_asks("mcp__docs__search", "{}"));
+        assert!(!plan_asks(crate::read::READ, r#"{"path":"a"}"#));
     }
 
     #[test]
