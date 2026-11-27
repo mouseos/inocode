@@ -637,7 +637,7 @@ async fn dispatch(
             )
             .await
         }
-        "thread/start" | "thread/read" | "goal/set" | "goal/read" | "goal/stop" => {
+        "thread/start" | "thread/read" | "thread/fork" | "goal/set" | "goal/read" | "goal/stop" => {
             // Store work runs off the read loop, like discovery.
             tokio::spawn(thread_request(
                 request,
@@ -988,6 +988,7 @@ async fn thread_request(
 ) {
     let result = match request.method.as_str() {
         "thread/start" => start_thread(&request, &core).await,
+        "thread/fork" => fork_thread(&request, &core).await,
         "goal/set" => set_goal(&request, &core).await,
         "goal/read" => match request.thread() {
             Ok(thread) => core.goal(thread).await.map(|goal| json!({ "goal": goal })),
@@ -1027,6 +1028,37 @@ async fn start_thread(request: &Request, core: &Core) -> Result<Value, ErrorInfo
     };
     let thread = core.start_thread(project).await?;
     Ok(json!({ "thread_id": thread.0 }))
+}
+
+/// `thread/fork {thread_id, before?, through?}`: a copy of the thread, of
+/// all its messages, of those before the person's message numbered
+/// `before`, or of those through the person's message numbered `through`
+/// and what followed it until the person's next message.
+async fn fork_thread(request: &Request, core: &Core) -> Result<Value, ErrorInfo> {
+    use inocode_core::ForkCut;
+    let thread = request.thread()?;
+    let field = |name: &str| match request.params.as_ref().and_then(|params| params.get(name)) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value.as_i64().map(Some).ok_or_else(|| {
+            ErrorInfo::new(
+                "invalid_params",
+                format!("\"{name}\" must be a message number"),
+            )
+        }),
+    };
+    let cut = match (field("before")?, field("through")?) {
+        (None, None) => ForkCut::Whole,
+        (Some(seq), None) => ForkCut::Before(seq),
+        (None, Some(seq)) => ForkCut::Through(seq),
+        (Some(_), Some(_)) => {
+            return Err(ErrorInfo::new(
+                "invalid_params",
+                "give \"before\" or \"through\", not both",
+            ))
+        }
+    };
+    let fork = core.fork_thread(thread, cut).await?;
+    Ok(json!({ "thread_id": fork.0, "from": thread.0 }))
 }
 
 /// `goal/set`: `objective`, and optionally the `check` command, the

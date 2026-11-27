@@ -1270,6 +1270,36 @@ impl Core {
         }
     }
 
+    /// `thread/fork`: a new thread with `thread`'s messages up to `cut`,
+    /// and its plan, standing instructions and choice of model. Refused
+    /// while a turn runs, whose messages are not all stored yet.
+    pub async fn fork_thread(
+        &self,
+        thread: SessionId,
+        cut: ForkCut,
+    ) -> Result<SessionId, ErrorInfo> {
+        let store = self.store()?;
+        if !store.session_exists(thread).await? {
+            return Err(unknown_thread());
+        }
+        if self.turn_running(thread) {
+            return Err(ErrorInfo::new(
+                "turn_running",
+                "a turn is running in this thread; fork it when the turn ends",
+            ));
+        }
+        let through = match cut {
+            ForkCut::Whole => i64::MAX,
+            ForkCut::Before(seq) | ForkCut::Through(seq) => {
+                let messages = store.since(thread, i64::MIN, usize::MAX >> 1).await?;
+                fork_end(&messages, cut, seq)?
+            }
+        };
+        let fork = store.fork_session_through(thread, through).await?;
+        self.pool.note_lineage(fork, thread).await;
+        Ok(fork)
+    }
+
     /// Where `thread` stands now.
     pub async fn thread_status(&self, thread: SessionId) -> Result<ThreadStatus, ErrorInfo> {
         if !self.store()?.session_exists(thread).await? {
@@ -2210,6 +2240,62 @@ fn listed_model(id: &str) -> ModelInfo {
         access_programs: None,
         theos_per_request: None,
     }
+}
+
+/// Where `thread/fork` cuts a thread, by the number of a message of the
+/// person.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForkCut {
+    /// Every message.
+    Whole,
+    /// The messages before the person's message, so that it can be written
+    /// again.
+    Before(i64),
+    /// The person's message and what followed it until the person's next
+    /// message.
+    Through(i64),
+}
+
+/// The number of the last message a fork at `cut` keeps of `messages`; the
+/// quote of a reply that came with a message left out is left out too.
+fn fork_end(messages: &[StoredMessage], cut: ForkCut, seq: i64) -> Result<i64, ErrorInfo> {
+    use conversation::{Body, Speaker};
+    let by_person = |stored: &StoredMessage| {
+        matches!(
+            &stored.message.body,
+            Body::User {
+                from: Speaker::Person,
+                ..
+            }
+        )
+    };
+    let at = messages
+        .iter()
+        .position(|stored| stored.seq == seq && by_person(stored))
+        .ok_or_else(|| {
+            ErrorInfo::new(
+                "invalid_params",
+                format!("message {seq} is not a message of the person in this thread"),
+            )
+        })?;
+    let mut end = match cut {
+        ForkCut::Before(_) => at,
+        _ => messages[at + 1..]
+            .iter()
+            .position(by_person)
+            .map_or(messages.len(), |next| at + 1 + next),
+    };
+    while end > 0
+        && matches!(
+            &messages[end - 1].message.body,
+            Body::User { from: Speaker::Harness(kind), .. } if kind == turn::REPLY_KIND
+        )
+    {
+        end -= 1;
+    }
+    Ok(end
+        .checked_sub(1)
+        .map_or(i64::MIN, |last| messages[last].seq))
 }
 
 fn unknown_thread() -> ErrorInfo {

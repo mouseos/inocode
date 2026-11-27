@@ -259,7 +259,7 @@ pub struct Prompt {
 /// Characters of a replied-to message that are quoted; the rest is read
 /// with `recall`.
 const QUOTE_CHARS: usize = 2_000;
-const REPLY_KIND: &str = "reply";
+pub(crate) const REPLY_KIND: &str = "reply";
 const BUDGET_KIND: &str = "budget";
 const ESCALATION_KIND: &str = "escalation";
 /// Characters of a turn's last words kept with an unfinished attempt.

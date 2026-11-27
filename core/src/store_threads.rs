@@ -152,6 +152,16 @@ impl Store {
     /// with their times, and of its plan, standing instructions and choice
     /// of model. Its goal is not copied.
     pub async fn fork_session(&self, session: SessionId) -> Result<SessionId, ErrorInfo> {
+        self.fork_session_through(session, i64::MAX).await
+    }
+
+    /// [`Self::fork_session`] with only the messages up to the one numbered
+    /// `through`, inclusive.
+    pub async fn fork_session_through(
+        &self,
+        session: SessionId,
+        through: i64,
+    ) -> Result<SessionId, ErrorInfo> {
         self.write(move |db| {
             let tx = db.transaction().map_err(store_error)?;
             let time = now();
@@ -169,8 +179,8 @@ impl Store {
             tx.execute(
                 "INSERT INTO messages(session_id, seq, role, body, text, created)
                  SELECT ?2, seq, role, body, text, created FROM messages
-                 WHERE session_id = ?1 ORDER BY seq",
-                params![session.0, fork],
+                 WHERE session_id = ?1 AND seq <= ?3 ORDER BY seq",
+                params![session.0, fork, through],
             )
             .map_err(store_error)?;
             tx.execute(

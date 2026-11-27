@@ -3859,3 +3859,140 @@ async fn another_connection_follows_a_threads_turns_and_its_status() {
     })
     .await;
 }
+
+/// The stored messages of `thread`, as `(seq, role, speaker or "")`.
+async fn stored(client: &mut Client, stream_id: u64, thread: i64) -> Vec<(i64, String, String)> {
+    let read = call(
+        client,
+        stream_id,
+        json!({"id": stream_id, "method": "thread/read", "params": {"thread_id": thread}}),
+    )
+    .await;
+    read["result"]["messages"]
+        .as_array()
+        .expect("messages")
+        .iter()
+        .map(|stored| {
+            let body = &stored["message"]["body"];
+            let from = match &body["from"] {
+                Value::String(from) => from.clone(),
+                Value::Object(harness) => {
+                    format!("harness:{}", harness["harness"].as_str().unwrap_or(""))
+                }
+                _ => String::new(),
+            };
+            (
+                stored["seq"].as_i64().expect("seq"),
+                body["role"].as_str().expect("role").to_string(),
+                from,
+            )
+        })
+        .collect()
+}
+
+async fn fork(client: &mut Client, stream_id: u64, params: Value) -> Value {
+    call(
+        client,
+        stream_id,
+        json!({"id": stream_id, "method": "thread/fork", "params": params}),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn a_thread_forks_before_or_through_a_message_of_the_person() {
+    with_timeout(async {
+        let mock = scripted(Vec::new()).await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client).await;
+        turn(&mut client, 2, thread, "first").await;
+        let after_first = stored(&mut client, 3, thread).await;
+        let first = after_first
+            .iter()
+            .find(|(_, role, from)| role == "user" && from == "person")
+            .expect("the first message")
+            .0;
+        turn_with(
+            &mut client,
+            4,
+            json!({"thread_id": thread, "prompt": "second", "reply_to": first}),
+        )
+        .await;
+        let whole = stored(&mut client, 5, thread).await;
+        assert!(
+            whole.iter().any(|(_, _, from)| from == "harness:reply"),
+            "{whole:?}"
+        );
+        let second = whole
+            .iter()
+            .filter(|(_, role, from)| role == "user" && from == "person")
+            .nth(1)
+            .expect("the second message")
+            .0;
+
+        // Before the second message, or through the first: the first turn,
+        // without the quote that came with the second message.
+        for params in [
+            json!({"thread_id": thread, "before": second}),
+            json!({"thread_id": thread, "through": first}),
+        ] {
+            let forked = fork(&mut client, 6, params.clone()).await;
+            assert_eq!(forked["result"]["from"], thread, "{forked}");
+            let id = forked["result"]["thread_id"].as_i64().expect("fork");
+            assert_eq!(stored(&mut client, 7, id).await, after_first, "{params}");
+        }
+        let all = fork(
+            &mut client,
+            8,
+            json!({"thread_id": thread, "through": second}),
+        )
+        .await;
+        let all = all["result"]["thread_id"].as_i64().expect("fork");
+        assert_eq!(stored(&mut client, 9, all).await, whole);
+        let none = fork(
+            &mut client,
+            10,
+            json!({"thread_id": thread, "before": first}),
+        )
+        .await;
+        let none = none["result"]["thread_id"].as_i64().expect("fork");
+        let left = stored(&mut client, 11, none).await;
+        assert!(left.iter().all(|(seq, _, _)| *seq < first), "{left:?}");
+
+        // The fork goes on from where it was cut.
+        let forked = fork(
+            &mut client,
+            12,
+            json!({"thread_id": thread, "before": second}),
+        )
+        .await;
+        let id = forked["result"]["thread_id"].as_i64().expect("fork");
+        let events = turn(&mut client, 13, id, "another second").await;
+        assert_eq!(events.last().unwrap()["event"], "completed");
+        let requests = chats(&mock);
+        let sent = &requests.last().unwrap().body["messages"];
+        let texts = sent.to_string();
+        assert!(
+            texts.contains("another second") && !texts.contains("\"second\""),
+            "{sent}"
+        );
+
+        let assistant = whole
+            .iter()
+            .find(|(_, role, _)| role == "assistant")
+            .expect("an answer")
+            .0;
+        for params in [
+            json!({"thread_id": thread, "before": assistant}),
+            json!({"thread_id": thread, "before": first, "through": second}),
+        ] {
+            let refused = fork(&mut client, 14, params).await;
+            assert_eq!(refused["error"]["code"], "invalid_params", "{refused}");
+        }
+        let unknown = fork(&mut client, 15, json!({"thread_id": thread + 100})).await;
+        assert_eq!(unknown["error"]["code"], "unknown_thread", "{unknown}");
+    })
+    .await;
+}
