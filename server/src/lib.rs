@@ -990,20 +990,7 @@ async fn thread_request(
     let result = match request.method.as_str() {
         "thread/start" => start_thread(&request, &core).await,
         "thread/fork" => fork_thread(&request, &core).await,
-        "thread/rewind" => match (
-            request.thread(),
-            request
-                .params
-                .as_ref()
-                .and_then(|params| params["seq"].as_i64()),
-        ) {
-            (Ok(thread), Some(seq)) => core.rewind_thread(thread, seq).await,
-            (Err(error), _) => Err(error),
-            (_, None) => Err(ErrorInfo::new(
-                "invalid_params",
-                "requires \"seq\", the number of a message of the person",
-            )),
-        },
+        "thread/rewind" => rewind_thread(&request, &core).await,
         "goal/set" => set_goal(&request, &core).await,
         "goal/read" => match request.thread() {
             Ok(thread) => core.goal(thread).await.map(|goal| json!({ "goal": goal })),
@@ -1074,6 +1061,35 @@ async fn fork_thread(request: &Request, core: &Core) -> Result<Value, ErrorInfo>
     };
     let fork = core.fork_thread(thread, cut).await?;
     Ok(json!({ "thread_id": fork.0, "from": thread.0 }))
+}
+
+/// `thread/rewind {thread_id, seq, restore?}`: `restore` is
+/// `conversation` (the default), `files` or `both`.
+async fn rewind_thread(request: &Request, core: &Core) -> Result<Value, ErrorInfo> {
+    use inocode_core::Restore;
+    let thread = request.thread()?;
+    let params = request.params.as_ref();
+    let seq = params
+        .and_then(|params| params["seq"].as_i64())
+        .ok_or_else(|| {
+            ErrorInfo::new(
+                "invalid_params",
+                "requires \"seq\", the number of a message of the person",
+            )
+        })?;
+    let restore = match params.map(|params| &params["restore"]) {
+        None | Some(Value::Null) => Restore::Conversation,
+        Some(Value::String(restore)) if restore == "conversation" => Restore::Conversation,
+        Some(Value::String(restore)) if restore == "files" => Restore::Files,
+        Some(Value::String(restore)) if restore == "both" => Restore::Both,
+        Some(_) => {
+            return Err(ErrorInfo::new(
+                "invalid_params",
+                "\"restore\" is \"conversation\", \"files\" or \"both\"",
+            ))
+        }
+    };
+    core.rewind_thread(thread, seq, restore).await
 }
 
 /// `goal/set`: `objective`, and optionally the `check` command, the

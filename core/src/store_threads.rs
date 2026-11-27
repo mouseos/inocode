@@ -184,6 +184,13 @@ impl Store {
             )
             .map_err(store_error)?;
             tx.execute(
+                "INSERT INTO snapshots(session_id, seq, tree, created)
+                 SELECT ?2, seq, tree, created FROM snapshots
+                 WHERE session_id = ?1 AND seq <= ?3",
+                params![session.0, fork, through],
+            )
+            .map_err(store_error)?;
+            tx.execute(
                 "INSERT INTO plans(session_id, items, updated)
                  SELECT ?2, items, ?3 FROM plans WHERE session_id = ?1",
                 params![session.0, fork, time],
@@ -233,6 +240,11 @@ impl Store {
                 .map_err(store_error)?;
             tx.execute("DELETE FROM waiting WHERE session_id = ?1", [session.0])
                 .map_err(store_error)?;
+            tx.execute(
+                "DELETE FROM snapshots WHERE session_id = ?1 AND seq >= ?2",
+                params![session.0, from],
+            )
+            .map_err(store_error)?;
             let promises: Option<(String, i64)> = tx
                 .query_row(
                     "SELECT items, seq FROM promises WHERE session_id = ?1",
@@ -294,6 +306,7 @@ impl Store {
                 "elicitations",
                 "thread_lineage",
                 "delegations",
+                "snapshots",
             ] {
                 tx.execute(
                     &format!("DELETE FROM {table} WHERE session_id = ?1"),

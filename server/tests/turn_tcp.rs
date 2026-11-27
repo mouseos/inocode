@@ -4096,3 +4096,115 @@ async fn a_rewind_deletes_from_a_message_of_the_person_and_returns_its_text() {
     })
     .await;
 }
+
+async fn rewind(client: &mut Client, stream_id: u64, params: Value) -> Value {
+    call(
+        client,
+        stream_id,
+        json!({"id": stream_id, "method": "thread/rewind", "params": params}),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn a_rewind_can_put_the_projects_files_back_as_they_were_before_the_turn() {
+    with_timeout(async {
+        let (project, _outside) = project_and_outside("restore");
+        std::fs::write(project.join("kept.txt"), "before").expect("write");
+        let mock = scripted(vec![
+            tool_turn(
+                "w1",
+                "write",
+                json!({"path": "kept.txt", "content": "after"}),
+            ),
+            tool_turn("w2", "write", json!({"path": "new.txt", "content": "new"})),
+        ])
+        .await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = project_thread(&mut client, &project).await;
+        let events = turn(&mut client, 2, thread, "change the files").await;
+        let last = events.last().unwrap();
+        assert_eq!(last["event"], "completed", "{last}");
+        assert!(last.get("warnings").is_none(), "{last}");
+        assert_eq!(
+            std::fs::read_to_string(project.join("kept.txt")).unwrap(),
+            "after"
+        );
+        assert!(project.join("new.txt").exists());
+        let messages = stored(&mut client, 3, thread).await;
+        let asked = messages
+            .iter()
+            .find(|(_, role, from)| role == "user" && from == "person")
+            .expect("the message")
+            .0;
+
+        // The files only: the messages stay.
+        let restored = rewind(
+            &mut client,
+            4,
+            json!({"thread_id": thread, "seq": asked, "restore": "files"}),
+        )
+        .await;
+        assert_eq!(restored["result"]["files_restored"], true, "{restored}");
+        assert_eq!(restored["result"]["files_deleted"], 1, "{restored}");
+        assert_eq!(
+            std::fs::read_to_string(project.join("kept.txt")).unwrap(),
+            "before"
+        );
+        assert!(!project.join("new.txt").exists());
+        assert_eq!(stored(&mut client, 5, thread).await, messages);
+
+        // Both: the files again, then the messages.
+        std::fs::write(project.join("kept.txt"), "changed by hand").expect("write");
+        let both = rewind(
+            &mut client,
+            6,
+            json!({"thread_id": thread, "seq": asked, "restore": "both"}),
+        )
+        .await;
+        assert_eq!(both["result"]["text"], "change the files", "{both}");
+        assert_eq!(
+            std::fs::read_to_string(project.join("kept.txt")).unwrap(),
+            "before"
+        );
+        assert!(stored(&mut client, 7, thread)
+            .await
+            .iter()
+            .all(|(seq, _, _)| *seq < asked));
+
+        // No copy was taken before a message that is gone, nor in a thread
+        // without a project.
+        let gone = rewind(
+            &mut client,
+            8,
+            json!({"thread_id": thread, "seq": asked, "restore": "files"}),
+        )
+        .await;
+        assert_eq!(gone["error"]["code"], "invalid_params", "{gone}");
+        let bad = rewind(
+            &mut client,
+            9,
+            json!({"thread_id": thread, "seq": asked, "restore": "everything"}),
+        )
+        .await;
+        assert_eq!(bad["error"]["code"], "invalid_params", "{bad}");
+        let plain = self::thread(&mut client).await;
+        turn(&mut client, 10, plain, "hello").await;
+        let plain_messages = stored(&mut client, 11, plain).await;
+        let hello = plain_messages
+            .iter()
+            .find(|(_, role, from)| role == "user" && from == "person")
+            .expect("the message")
+            .0;
+        let none = rewind(
+            &mut client,
+            12,
+            json!({"thread_id": plain, "seq": hello, "restore": "files"}),
+        )
+        .await;
+        assert_eq!(none["error"]["code"], "no_snapshot", "{none}");
+    })
+    .await;
+}

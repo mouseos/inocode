@@ -49,6 +49,7 @@ pub mod sandbox;
 pub mod secrets;
 pub mod settings;
 mod shell;
+mod snapshot;
 mod sse;
 pub mod store;
 mod store_pool;
@@ -1315,12 +1316,64 @@ impl Core {
         Ok(fork)
     }
 
+    /// Copies the files of `thread`'s project before a turn; nothing for a
+    /// thread without a project.
+    async fn take_snapshot(&self, thread: SessionId) -> Result<(), ErrorInfo> {
+        let store = self.store()?;
+        let Some((project, folder)) = store.session_project(thread).await? else {
+            return Ok(());
+        };
+        let tree = snapshot::take(&self.snapshots(project), std::path::Path::new(&folder)).await?;
+        store.add_snapshot(thread, tree).await
+    }
+
+    /// Where the copies of `project`'s files are kept.
+    fn snapshots(&self, project: store::ProjectId) -> std::path::PathBuf {
+        self.store
+            .as_ref()
+            .map(|store| store.files_folder())
+            .unwrap_or_default()
+            .join("snapshots")
+            .join(format!("project-{}", project.0))
+    }
+
+    /// Puts the files of `thread`'s project back as they were before the
+    /// turn the message numbered `seq` came in; how many files added since
+    /// were deleted.
+    async fn restore_files(&self, thread: SessionId, seq: i64) -> Result<usize, ErrorInfo> {
+        let store = self.store()?;
+        let no_copy = || {
+            ErrorInfo::new(
+                "no_snapshot",
+                format!("no copy of the project's files was taken before message {seq}"),
+            )
+        };
+        let (project, folder) = store.session_project(thread).await?.ok_or_else(no_copy)?;
+        let tree = store
+            .snapshot_before(thread, seq)
+            .await?
+            .ok_or_else(no_copy)?;
+        snapshot::restore(
+            &self.snapshots(project),
+            std::path::Path::new(&folder),
+            &tree,
+        )
+        .await
+    }
+
     /// `thread/rewind`: deletes the person's message numbered `seq` and
     /// everything after it, with the quote of a reply that came with it,
     /// and returns the message's text to be written again. The held calls
     /// and questions go, and so do the standing instructions quoted from
-    /// what was deleted. Refused while a turn runs.
-    pub async fn rewind_thread(&self, thread: SessionId, seq: i64) -> Result<Value, ErrorInfo> {
+    /// what was deleted. With `restore` naming the files, the project's
+    /// files are first put back as they were before that message's turn;
+    /// with [`Restore::Files`] the messages stay. Refused while a turn runs.
+    pub async fn rewind_thread(
+        &self,
+        thread: SessionId,
+        seq: i64,
+        restore: Restore,
+    ) -> Result<Value, ErrorInfo> {
         let store = self.store()?;
         if !store.session_exists(thread).await? {
             return Err(unknown_thread());
@@ -1346,6 +1399,14 @@ impl Core {
                 _ => None,
             })
             .unwrap_or_default();
+        let deleted_files = match restore {
+            Restore::Conversation => None,
+            Restore::Files | Restore::Both => Some(self.restore_files(thread, seq).await?),
+        };
+        if restore == Restore::Files {
+            return Ok(json!({ "thread_id": thread.0, "files_restored": true,
+                              "files_deleted": deleted_files, "removed": 0, "text": text }));
+        }
         let removed = store.rewind_session(thread, from).await?;
         if let Ok(turns) = self.turns.lock() {
             if !turns.contains_key(&thread) {
@@ -1355,7 +1416,13 @@ impl Core {
                     .send((thread, Activity::Status(ThreadStatus::Idle)));
             }
         }
-        Ok(json!({ "thread_id": thread.0, "from": from, "removed": removed, "text": text }))
+        let mut result =
+            json!({ "thread_id": thread.0, "from": from, "removed": removed, "text": text });
+        if let Some(deleted) = deleted_files {
+            result["files_restored"] = json!(true);
+            result["files_deleted"] = json!(deleted);
+        }
+        Ok(result)
     }
 
     /// Where `thread` stands now.
@@ -2067,6 +2134,7 @@ impl Core {
                 running.events = Some(teed.clone());
             }
         }
+        let snapshot = self.take_snapshot(thread).await.err();
         let prompt = turn::Prompt {
             text: prompt,
             reply_to,
@@ -2110,6 +2178,13 @@ impl Core {
         }
         // Every event is passed on before the turn's end is reported.
         let _ = tee.await;
+        if let Some(error) = snapshot {
+            outcome.warnings.push(format!(
+                "the project's files were not copied before this turn, so they cannot be put \
+                 back to how they were before it: {}",
+                error.message
+            ));
+        }
         if let Err(error) = self.set_waiting(thread, &waiting).await {
             outcome.warnings.push(format!(
                 "the held calls and questions were not saved, so /approve and /answer may not \
@@ -2298,6 +2373,17 @@ fn listed_model(id: &str) -> ModelInfo {
         access_programs: None,
         theos_per_request: None,
     }
+}
+
+/// What `thread/rewind` puts back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Restore {
+    /// The messages only.
+    Conversation,
+    /// The project's files only; the messages stay.
+    Files,
+    /// The files, then the messages.
+    Both,
 }
 
 /// Where `thread/fork` cuts a thread, by the number of a message of the

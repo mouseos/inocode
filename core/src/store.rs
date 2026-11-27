@@ -18,7 +18,7 @@ pub use crate::store_pool::{PoolBinding, PoolCooldown};
 pub use crate::store_threads::{SessionUsage, ThreadSummary};
 use crate::ErrorInfo;
 
-const SCHEMA_VERSION: i64 = 14;
+const SCHEMA_VERSION: i64 = 15;
 /// Tool results above this size are stored once in `blobs` and referenced.
 const BLOB_THRESHOLD: usize = 16 * 1024;
 /// Text indexed per message; the rest stays readable but unsearchable.
@@ -352,10 +352,22 @@ CREATE TABLE delegations(
 CREATE INDEX delegations_parent ON delegations(parent);
 "#;
 
+/// The copy of the project's files taken before the turn whose messages
+/// begin at `seq` (docs/evidence/file-snapshots.md).
+const SCHEMA_V15: &str = r#"
+CREATE TABLE snapshots(
+    session_id INTEGER NOT NULL,
+    seq INTEGER NOT NULL,
+    tree TEXT NOT NULL,
+    created INTEGER NOT NULL,
+    PRIMARY KEY(session_id, seq)
+);
+"#;
+
 /// Schema steps; step `i` brings the database to version `i + 1`.
-const MIGRATIONS: [&str; 14] = [
+const MIGRATIONS: [&str; 15] = [
     SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9,
-    SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14,
+    SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15,
 ];
 
 /// A thread id never given before (`SCHEMA_V10`).
@@ -1139,6 +1151,45 @@ impl Store {
             }
             tx.commit().map_err(store_error)?;
             Ok(positions)
+        })
+        .await
+    }
+
+    /// Records `tree`, the copy of the project's files taken before the
+    /// turn of `session` whose messages begin after the latest one.
+    pub(crate) async fn add_snapshot(
+        &self,
+        session: SessionId,
+        tree: String,
+    ) -> Result<(), ErrorInfo> {
+        self.write(move |db| {
+            db.execute(
+                "INSERT OR REPLACE INTO snapshots(session_id, seq, tree, created)
+                 SELECT ?1, COALESCE(MAX(seq), 0) + 1, ?2, ?3 FROM messages WHERE session_id = ?1",
+                params![session.0, tree, now()],
+            )
+            .map(|_| ())
+            .map_err(store_error)
+        })
+        .await
+    }
+
+    /// The copy of the project's files taken before the turn the message
+    /// numbered `seq` of `session` came in.
+    pub(crate) async fn snapshot_before(
+        &self,
+        session: SessionId,
+        seq: i64,
+    ) -> Result<Option<String>, ErrorInfo> {
+        self.read(Duration::from_secs(5), move |db| {
+            db.query_row(
+                "SELECT tree FROM snapshots WHERE session_id = ?1 AND seq <= ?2
+                 ORDER BY seq DESC LIMIT 1",
+                params![session.0, seq],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(store_error)
         })
         .await
     }
