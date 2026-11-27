@@ -39,6 +39,7 @@ mod picture;
 mod plugins;
 pub mod pool;
 mod promise;
+mod queue;
 mod read;
 pub mod reasoning;
 pub mod remote_password;
@@ -324,6 +325,9 @@ pub struct EventPayload {
     /// The first of the messages a rewind deleted.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub from: Option<i64>,
+    /// The messages queued for the next turns of a thread.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queue: Option<Value>,
 }
 
 fn translation_service(name: &str) -> Result<translate::Service, ErrorInfo> {
@@ -438,6 +442,15 @@ impl EventPayload {
         }
     }
 
+    /// The messages queued for the next turns of the watched thread
+    /// (`queue`).
+    pub fn queue(id: u64, queue: &[store::Queued]) -> Self {
+        Self {
+            queue: Some(json!(queue)),
+            ..Self::new(id, "queue")
+        }
+    }
+
     /// The messages of the watched thread from `from` on were deleted
     /// (`rewound`).
     pub fn rewound(id: u64, from: i64) -> Self {
@@ -512,6 +525,7 @@ impl EventPayload {
             thread_id: None,
             status: None,
             from: None,
+            queue: None,
         }
     }
 }
@@ -571,6 +585,8 @@ pub enum Activity {
     Rewound(i64),
     /// The thread's status changed.
     Status(ThreadStatus),
+    /// The messages queued for the next turns, as they now are.
+    Queue(Vec<store::Queued>),
 }
 
 /// How a turn ended, for those watching its thread.
@@ -704,6 +720,9 @@ pub struct Core {
     pool: Arc<pool::Pool>,
     /// What happens in every thread, for the subscriptions.
     activity: tokio::sync::broadcast::Sender<(SessionId, Activity)>,
+    /// Held while a queue changes or its first message is sent, so no
+    /// message is lost or sent twice.
+    queue_lock: tokio::sync::Mutex<()>,
 }
 
 impl Default for Core {
@@ -741,6 +760,7 @@ impl Core {
             logins: accounts::Logins::new(accounts::LoginEndpoints::default()),
             pool: Arc::new(pool::Pool::new(None)),
             activity: tokio::sync::broadcast::channel(ACTIVITY_KEPT).0,
+            queue_lock: tokio::sync::Mutex::new(()),
         }
     }
 

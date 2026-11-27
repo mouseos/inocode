@@ -637,8 +637,19 @@ async fn dispatch(
             )
             .await
         }
-        "thread/start" | "thread/read" | "thread/fork" | "thread/rewind" | "goal/set"
-        | "goal/read" | "goal/stop" => {
+        "thread/start"
+        | "thread/read"
+        | "thread/fork"
+        | "thread/rewind"
+        | "goal/set"
+        | "goal/read"
+        | "goal/stop"
+        | "thread/queue/add"
+        | "thread/queue/list"
+        | "thread/queue/update"
+        | "thread/queue/delete"
+        | "thread/queue/reorder"
+        | "thread/queue/start" => {
             // Store work runs off the read loop, like discovery.
             tokio::spawn(thread_request(
                 request,
@@ -992,6 +1003,7 @@ async fn thread_request(
         "thread/fork" => fork_thread(&request, &core).await,
         "thread/rewind" => rewind_thread(&request, &core).await,
         "goal/set" => set_goal(&request, &core).await,
+        method if method.starts_with("thread/queue/") => queue_request(&request, &core).await,
         "goal/read" => match request.thread() {
             Ok(thread) => core.goal(thread).await.map(|goal| json!({ "goal": goal })),
             Err(error) => Err(error),
@@ -1011,6 +1023,50 @@ async fn thread_request(
     };
     // A closed connection has nobody to answer.
     let _ = send(&queue, stream_id, payload).await;
+}
+
+/// `thread/queue/*`: the messages lined up to be sent as the next turns.
+async fn queue_request(request: &Request, core: &Arc<Core>) -> Result<Value, ErrorInfo> {
+    let thread = request.thread()?;
+    let params = request.params.as_ref();
+    let queue_id = || {
+        params
+            .and_then(|params| params.get("queue_id"))
+            .and_then(Value::as_i64)
+            .ok_or_else(|| ErrorInfo::new("invalid_params", "requires a \"queue_id\" number"))
+    };
+    let queue = match request.method.as_str() {
+        "thread/queue/add" => {
+            let (queue_id, queue) = core
+                .add_to_queue(thread, request.prompt()?.to_string())
+                .await?;
+            return Ok(json!({ "queue_id": queue_id, "queue": queue }));
+        }
+        "thread/queue/start" => {
+            return Ok(json!({ "started": core.start_queue(thread).await? }));
+        }
+        "thread/queue/update" => {
+            let id = queue_id()?;
+            let prompt = request.prompt()?.to_string();
+            core.update_queued(thread, id, prompt).await?
+        }
+        "thread/queue/delete" => core.delete_queued(thread, queue_id()?).await?,
+        "thread/queue/reorder" => {
+            let ids = params
+                .and_then(|params| params.get("queue_ids"))
+                .and_then(Value::as_array)
+                .and_then(|ids| ids.iter().map(Value::as_i64).collect::<Option<Vec<_>>>())
+                .ok_or_else(|| {
+                    ErrorInfo::new(
+                        "invalid_params",
+                        "requires a \"queue_ids\" array of numbers",
+                    )
+                })?;
+            core.reorder_queue(thread, ids).await?
+        }
+        _ => core.queue(thread).await?,
+    };
+    Ok(json!({ "queue": queue }))
 }
 
 async fn start_thread(request: &Request, core: &Core) -> Result<Value, ErrorInfo> {
@@ -1629,6 +1685,22 @@ async fn relay_threads(
     let mut shown = std::collections::HashSet::new();
     if let Some(thread) = thread {
         opening.insert(0, EventPayload::started(id));
+        match core.queue(thread).await {
+            Ok(queue) if !queue.is_empty() => opening.push(EventPayload::queue(id, &queue)),
+            Ok(_) => {}
+            Err(error) => {
+                settle(
+                    id,
+                    stream_id,
+                    &queue,
+                    &in_flight,
+                    cancelled,
+                    Terminal::Failed(error),
+                )
+                .await;
+                return;
+            }
+        }
         for question in core.elicitations(thread) {
             if let Some(asked) = question["id"].as_u64() {
                 shown.insert(asked);
@@ -1678,6 +1750,7 @@ async fn relay_threads(
                             (Some(_), Activity::Event(event)) => turn_event(id, event),
                             (Some(_), Activity::TurnEnded(end)) => EventPayload::turn_ended(id, end),
                             (Some(_), Activity::Rewound(from)) => EventPayload::rewound(id, from),
+                            (Some(_), Activity::Queue(queue)) => EventPayload::queue(id, &queue),
                         },
                         Err(RecvError::Lagged(_)) => EventPayload::named(id, "lagged"),
                         Err(RecvError::Closed) => break Some(Terminal::Cancelled),
@@ -1837,6 +1910,7 @@ async fn run_turn(
     // Released before the terminal event, so a client may start the next
     // turn as soon as it reads it.
     core.end_turn(thread);
+    core.after_turn(thread, &outcome.ending);
     let terminal = match &outcome.ending {
         Ending::Interrupted => Terminal::Cancelled,
         Ending::Failed(error) => Terminal::Failed(error.clone()),

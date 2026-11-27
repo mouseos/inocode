@@ -15,10 +15,10 @@ use sha2::{Digest, Sha256};
 
 use crate::conversation::{AssistantPart, Body, Message};
 pub use crate::store_pool::{PoolBinding, PoolCooldown};
-pub use crate::store_threads::{SessionUsage, ThreadSummary};
+pub use crate::store_threads::{Queued, SessionUsage, ThreadSummary};
 use crate::ErrorInfo;
 
-const SCHEMA_VERSION: i64 = 16;
+const SCHEMA_VERSION: i64 = 17;
 /// Tool results above this size are stored once in `blobs` and referenced.
 const BLOB_THRESHOLD: usize = 16 * 1024;
 /// Text indexed per message; the rest stays readable but unsearchable.
@@ -381,10 +381,23 @@ CREATE INDEX allowances_session ON allowances(session_id);
 CREATE INDEX allowances_project ON allowances(project_id);
 "#;
 
+/// Messages the person lined up to be sent as the next turns of
+/// `session_id`, in the order of `position` (docs/evidence/message-queue.md).
+const SCHEMA_V17: &str = r#"
+CREATE TABLE queue(
+    id INTEGER PRIMARY KEY,
+    session_id INTEGER NOT NULL REFERENCES sessions(id),
+    position INTEGER NOT NULL,
+    prompt TEXT NOT NULL,
+    created INTEGER NOT NULL
+);
+CREATE INDEX queue_session ON queue(session_id, position);
+"#;
+
 /// Schema steps; step `i` brings the database to version `i + 1`.
-const MIGRATIONS: [&str; 16] = [
+const MIGRATIONS: [&str; 17] = [
     SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9,
-    SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16,
+    SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17,
 ];
 
 /// A thread id never given before (`SCHEMA_V10`).
@@ -2723,6 +2736,32 @@ mod migration {
         connection
             .query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get::<_, i64>(0))
             .expect("the version 13 table exists");
+        connection
+            .query_row("SELECT COUNT(*) FROM queue", [], |row| row.get::<_, i64>(0))
+            .expect("the version 17 table exists");
+    }
+
+    #[test]
+    fn a_queue_is_kept_on_rewind_not_forked_and_deleted_with_its_thread() {
+        let dir = tempfile::tempdir().expect("dir");
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(async {
+                let store = Store::open(dir.path().join("q.db")).await.expect("open");
+                let session = store.start_session(None, "").await.expect("session");
+                store
+                    .add_to_queue(session, "next".into())
+                    .await
+                    .expect("add");
+                store.rewind_session(session, 0).await.expect("rewind");
+                assert_eq!(store.queue(session).await.expect("queue").len(), 1);
+                let fork = store.fork_session(session).await.expect("fork");
+                assert!(store.queue(fork).await.expect("queue").is_empty());
+                assert!(store.delete_session(session).await.expect("delete"));
+                assert!(store.queue(session).await.expect("queue").is_empty());
+            });
     }
 
     #[test]

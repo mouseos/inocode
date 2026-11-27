@@ -91,6 +91,7 @@
 | [thread-fork.md](thread-fork.md) | スレッドを、人のメッセージの手前まで、またはそのメッセージの返事までで写す（`thread/fork`） | UNSUPPORTED_APPROVED | `core/src/lib.rs`（`ForkCut`・`fork_thread`）、`core/src/store_threads.rs`（`fork_session_through`） |
 | [thread-rewind.md](thread-rewind.md) | 巻き戻し：人のメッセージから後ろを消し、その文を返す（`thread/rewind`） | UNSUPPORTED_APPROVED | `core/src/lib.rs`（`rewind_thread`）、`core/src/store_threads.rs`（`rewind_session`） |
 | [file-snapshots.md](file-snapshots.md) | ターンの前にプロジェクトのフォルダの写しをとり、巻き戻しでファイルも戻す（`thread/rewind` の `restore`） | UNSUPPORTED_APPROVED | `core/src/snapshot.rs`、`core/src/lib.rs`（`take_snapshot`・`restore_files`）、`core/src/store.rs`（`snapshots`） |
+| [message-queue.md](message-queue.md) | ターンの間に並べた文を、ターンが終わるたびに次のターンとして送る列（`thread/queue/*`、購読の `queue`） | UNSUPPORTED_APPROVED | `core/src/queue.rs`、`core/src/store_threads.rs`（`queue` 表）、`server/src/lib.rs`（`queue_request`） |
 
 ## 状態の判定
 

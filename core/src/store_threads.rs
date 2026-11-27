@@ -33,6 +33,33 @@ pub struct SessionUsage {
     pub cached: u64,
 }
 
+/// A message lined up to be sent as a next turn of its thread.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Queued {
+    pub queue_id: i64,
+    pub prompt: String,
+    pub created: i64,
+}
+
+fn queued(db: &rusqlite::Connection, session: SessionId) -> Result<Vec<Queued>, ErrorInfo> {
+    let mut statement = db
+        .prepare(
+            "SELECT id, prompt, created FROM queue WHERE session_id = ?1
+             ORDER BY position, id",
+        )
+        .map_err(store_error)?;
+    let rows = statement
+        .query_map([session.0], |row| {
+            Ok(Queued {
+                queue_id: row.get(0)?,
+                prompt: row.get(1)?,
+                created: row.get(2)?,
+            })
+        })
+        .map_err(store_error)?;
+    rows.collect::<Result<_, _>>().map_err(store_error)
+}
+
 const SUMMARY_SELECT: &str = "SELECT s.id, p.key, s.title, s.created,
         COALESCE((SELECT MAX(m.created) FROM messages m WHERE m.session_id = s.id), s.created)
             AS last_activity,
@@ -228,7 +255,8 @@ impl Store {
     /// Deletes the messages of `session` from the one numbered `from` on,
     /// the questions its latest turn left, and the standing
     /// instructions quoted from the messages deleted; returns how many
-    /// messages went.
+    /// messages went. The queued messages stay: they were written for what
+    /// comes next, not for what is deleted.
     pub async fn rewind_session(&self, session: SessionId, from: i64) -> Result<usize, ErrorInfo> {
         self.write(move |db| {
             let tx = db.transaction().map_err(store_error)?;
@@ -284,9 +312,95 @@ impl Store {
         .await
     }
 
+    /// The messages lined up for the next turns of `session`, in the order
+    /// they are sent.
+    pub async fn queue(&self, session: SessionId) -> Result<Vec<Queued>, ErrorInfo> {
+        self.read(Duration::from_secs(5), move |db| queued(db, session))
+            .await
+    }
+
+    /// Lines `prompt` up after the messages queued in `session`; its id.
+    pub async fn add_to_queue(&self, session: SessionId, prompt: String) -> Result<i64, ErrorInfo> {
+        self.write(move |db| {
+            db.execute(
+                "INSERT INTO queue(session_id, position, prompt, created)
+                 SELECT ?1, COALESCE(MAX(position), 0) + 1, ?2, ?3 FROM queue WHERE session_id = ?1",
+                params![session.0, prompt, now()],
+            )
+            .map_err(store_error)?;
+            Ok(db.last_insert_rowid())
+        })
+        .await
+    }
+
+    /// Writes the queued message `id` of `session` anew; `false` when
+    /// `session` has none such.
+    pub async fn update_queued(
+        &self,
+        session: SessionId,
+        id: i64,
+        prompt: String,
+    ) -> Result<bool, ErrorInfo> {
+        self.write(move |db| {
+            db.execute(
+                "UPDATE queue SET prompt = ?3 WHERE session_id = ?1 AND id = ?2",
+                params![session.0, id, prompt],
+            )
+            .map(|changed| changed == 1)
+            .map_err(store_error)
+        })
+        .await
+    }
+
+    /// Takes the queued message `id` out of `session`'s queue; `false` when
+    /// `session` has none such.
+    pub async fn delete_queued(&self, session: SessionId, id: i64) -> Result<bool, ErrorInfo> {
+        self.write(move |db| {
+            db.execute(
+                "DELETE FROM queue WHERE session_id = ?1 AND id = ?2",
+                params![session.0, id],
+            )
+            .map(|changed| changed == 1)
+            .map_err(store_error)
+        })
+        .await
+    }
+
+    /// Puts `session`'s queue in the order of `ids`; `false`, changing
+    /// nothing, unless `ids` are exactly the ids queued, each once.
+    pub async fn reorder_queue(
+        &self,
+        session: SessionId,
+        ids: Vec<i64>,
+    ) -> Result<bool, ErrorInfo> {
+        self.write(move |db| {
+            let tx = db.transaction().map_err(store_error)?;
+            let mut current: Vec<i64> = queued(&tx, session)?
+                .into_iter()
+                .map(|queued| queued.queue_id)
+                .collect();
+            let mut given = ids.clone();
+            current.sort_unstable();
+            given.sort_unstable();
+            if current != given {
+                return Ok(false);
+            }
+            for (position, id) in ids.iter().enumerate() {
+                tx.execute(
+                    "UPDATE queue SET position = ?3 WHERE session_id = ?1 AND id = ?2",
+                    params![session.0, id, position as i64 + 1],
+                )
+                .map_err(store_error)?;
+            }
+            tx.commit().map_err(store_error)?;
+            Ok(true)
+        })
+        .await
+    }
+
     /// Deletes `session` with its messages, plan, goal, standing
-    /// instructions, choice of model, questions and the calls allowed in
-    /// it; `false`
+    /// instructions, choice of model, questions, queued messages and the
+    /// calls allowed in it; `false`
     /// when there is no such thread. The log of its requests to models, the
     /// records of its tasks and the events of notes are kept, no longer
     /// linked to the thread, and
@@ -315,6 +429,7 @@ impl Store {
                 "delegations",
                 "snapshots",
                 "allowances",
+                "queue",
             ] {
                 tx.execute(
                     &format!("DELETE FROM {table} WHERE session_id = ?1"),

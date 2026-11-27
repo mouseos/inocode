@@ -4543,3 +4543,370 @@ async fn a_rewind_can_put_the_projects_files_back_as_they_were_before_the_turn()
     })
     .await;
 }
+
+/// The prompts of a `queue` list, in send order.
+fn prompts(queue: &Value) -> Vec<&str> {
+    queue
+        .as_array()
+        .expect("queue")
+        .iter()
+        .map(|queued| queued["prompt"].as_str().expect("prompt"))
+        .collect()
+}
+
+async fn queue_call(client: &mut Client, method: &str, params: Value) -> Value {
+    call(
+        client,
+        8,
+        json!({"id": 8, "method": format!("thread/queue/{method}"), "params": params}),
+    )
+    .await
+}
+
+/// Collects a watcher's events until `turns` turns have ended.
+async fn until_turns_ended(watcher: &mut Client, stream_id: u64, turns: usize) -> Vec<Value> {
+    let mut events: Vec<Value> = Vec::new();
+    while events
+        .iter()
+        .filter(|event| event["event"] == "turn_ended")
+        .count()
+        < turns
+    {
+        events.push(next_message(watcher, stream_id).await);
+    }
+    events
+}
+
+/// The `queue`, `turn_started` and `turn_ended` events, with the prompts
+/// of each queue.
+fn queue_and_turns(events: &[Value]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|event| match event["event"].as_str() {
+            Some("queue") => Some(format!("queue {:?}", prompts(&event["queue"]))),
+            Some("turn_ended") => Some(format!("turn_ended {}", event["reason"])),
+            Some("turn_started") => Some("turn_started".to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
+async fn subscribe(watcher: &mut Client, stream_id: u64, thread: i64) {
+    watcher
+        .1
+        .write_json(
+            stream_id,
+            &json!({"id": stream_id, "method": "thread/subscribe",
+                    "params": {"thread_id": thread}}),
+        )
+        .await
+        .expect("subscribe");
+    assert_eq!(next_message(watcher, stream_id).await["event"], "started");
+}
+
+/// The events of the turn started on `stream_id`, through its terminal one.
+async fn turn_events(client: &mut Client, stream_id: u64) -> Vec<Value> {
+    let mut events = Vec::new();
+    loop {
+        let event = next_message(client, stream_id).await;
+        let kind = event["event"].as_str().unwrap_or_default().to_string();
+        events.push(event);
+        if matches!(kind.as_str(), "completed" | "failed" | "cancelled") {
+            return events;
+        }
+    }
+}
+
+#[tokio::test]
+async fn messages_queued_while_a_turn_runs_are_sent_as_the_next_turns_in_their_order() {
+    with_timeout(async {
+        let count = AtomicUsize::new(0);
+        let mock = start_mock(move |request: &MockRequest| {
+            if request.method == "GET" {
+                return MockReply::status(404, "{}");
+            }
+            let reply = MockReply::stream(vec![sse_delta("done"), finish("stop"), sse_done()]);
+            if count.fetch_add(1, Ordering::SeqCst) == 0 {
+                reply.with_head_delay(Duration::from_millis(1500))
+            } else {
+                reply
+            }
+        })
+        .await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let mut control = connect(addr).await;
+        let mut watcher = connect(addr).await;
+        let thread = thread(&mut client).await;
+        subscribe(&mut watcher, 5, thread).await;
+        assert_eq!(next_message(&mut watcher, 5).await["status"], "idle");
+
+        client
+            .1
+            .write_json(
+                2,
+                &json!({"id": 2, "method": "turn/start",
+                        "params": {"thread_id": thread, "prompt": "first"}}),
+            )
+            .await
+            .expect("send");
+        events_until(&mut watcher, 5, "turn_started").await;
+
+        let mut ids = Vec::new();
+        for prompt in ["second", "third", "fourth"] {
+            let added = queue_call(
+                &mut control,
+                "add",
+                json!({"thread_id": thread, "prompt": prompt}),
+            )
+            .await;
+            ids.push(added["result"]["queue_id"].as_i64().expect("queue id"));
+            assert_eq!(prompts(&added["result"]["queue"]).last(), Some(&prompt));
+        }
+        let reordered = queue_call(
+            &mut control,
+            "reorder",
+            json!({"thread_id": thread, "queue_ids": [ids[2], ids[0], ids[1]]}),
+        )
+        .await;
+        assert_eq!(
+            prompts(&reordered["result"]["queue"]),
+            ["fourth", "second", "third"],
+            "{reordered}"
+        );
+        let updated = queue_call(
+            &mut control,
+            "update",
+            json!({"thread_id": thread, "queue_id": ids[0], "prompt": "second edited"}),
+        )
+        .await;
+        assert_eq!(
+            prompts(&updated["result"]["queue"]),
+            ["fourth", "second edited", "third"]
+        );
+        let deleted = queue_call(
+            &mut control,
+            "delete",
+            json!({"thread_id": thread, "queue_id": ids[1]}),
+        )
+        .await;
+        assert_eq!(
+            prompts(&deleted["result"]["queue"]),
+            ["fourth", "second edited"]
+        );
+
+        // Refused, changing nothing.
+        for (method, params, code) in [
+            (
+                "add",
+                json!({"thread_id": thread, "prompt": "  "}),
+                "invalid_params",
+            ),
+            (
+                "add",
+                json!({"thread_id": thread + 100, "prompt": "x"}),
+                "unknown_thread",
+            ),
+            ("list", json!({"thread_id": thread + 100}), "unknown_thread"),
+            ("list", json!({}), "invalid_params"),
+            (
+                "update",
+                json!({"thread_id": thread, "queue_id": ids[1], "prompt": "x"}),
+                "invalid_params",
+            ),
+            (
+                "update",
+                json!({"thread_id": thread, "queue_id": ids[0], "prompt": ""}),
+                "invalid_params",
+            ),
+            ("delete", json!({"thread_id": thread}), "invalid_params"),
+            (
+                "delete",
+                json!({"thread_id": thread, "queue_id": ids[1]}),
+                "invalid_params",
+            ),
+            (
+                "reorder",
+                json!({"thread_id": thread, "queue_ids": [ids[0]]}),
+                "invalid_params",
+            ),
+            (
+                "reorder",
+                json!({"thread_id": thread, "queue_ids": [ids[0], ids[0]]}),
+                "invalid_params",
+            ),
+            (
+                "reorder",
+                json!({"thread_id": thread, "queue_ids": [ids[0], ids[1]]}),
+                "invalid_params",
+            ),
+            (
+                "reorder",
+                json!({"thread_id": thread, "queue_ids": "no"}),
+                "invalid_params",
+            ),
+        ] {
+            let refused = queue_call(&mut control, method, params).await;
+            assert_eq!(refused["error"]["code"], code, "{method}: {refused}");
+        }
+        let listed = queue_call(&mut control, "list", json!({"thread_id": thread})).await;
+        assert_eq!(
+            prompts(&listed["result"]["queue"]),
+            ["fourth", "second edited"]
+        );
+        assert!(listed["result"]["queue"][0]["created"].is_i64(), "{listed}");
+
+        let own = turn_events(&mut client, 2).await;
+        assert_eq!(own.last().unwrap()["event"], "completed");
+        let seen = until_turns_ended(&mut watcher, 5, 3).await;
+        assert_eq!(
+            queue_and_turns(&seen),
+            [
+                r#"queue ["second"]"#,
+                r#"queue ["second", "third"]"#,
+                r#"queue ["second", "third", "fourth"]"#,
+                r#"queue ["fourth", "second", "third"]"#,
+                r#"queue ["fourth", "second edited", "third"]"#,
+                r#"queue ["fourth", "second edited"]"#,
+                r#"turn_ended "completed""#,
+                r#"queue ["second edited"]"#,
+                "turn_started",
+                r#"turn_ended "completed""#,
+                "queue []",
+                "turn_started",
+                r#"turn_ended "completed""#,
+            ],
+            "{seen:?}"
+        );
+
+        // Each queued message went to the model as a request of its own,
+        // after the turn before it.
+        let chats = chats(&mock);
+        assert_eq!(chats.len(), 3);
+        let sent =
+            |index: usize, text: &str| chats[index].body["messages"].to_string().contains(text);
+        assert!(sent(0, "first") && !sent(0, "fourth"));
+        assert!(sent(1, "fourth") && !sent(1, "second edited"));
+        assert!(sent(2, "second edited"));
+        assert!((0..3).all(|index| !sent(index, "third")));
+        let listed = queue_call(&mut control, "list", json!({"thread_id": thread})).await;
+        assert_eq!(listed["result"]["queue"], json!([]));
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn the_queue_starts_when_idle_waits_after_an_interrupt_and_is_kept_in_the_store() {
+    with_timeout(async {
+        let count = AtomicUsize::new(0);
+        let mock = start_mock(move |request: &MockRequest| {
+            if request.method == "GET" {
+                return MockReply::status(404, "{}");
+            }
+            if count.fetch_add(1, Ordering::SeqCst) == 0 {
+                let mut chunks: Vec<Vec<u8>> = (0..200).map(|_| sse_delta("x")).collect();
+                chunks.push(sse_done());
+                MockReply::stream(chunks).with_delay(Duration::from_millis(20))
+            } else {
+                MockReply::stream(vec![sse_delta("done"), finish("stop"), sse_done()])
+            }
+        })
+        .await;
+        let llm = Llm::new(LlmConfig {
+            provider: ProviderKind::OpenAi,
+            auth: inocode_core::oauth::AuthKind::ApiKey,
+            base_url: mock.base_url.clone(),
+            model: "test-model".to_string(),
+            api_key: "test-key".to_string(),
+            auth_store_path: None,
+            reasoning: Default::default(),
+        })
+        .expect("client");
+        let path = database();
+        let store = Store::open(&path).await.expect("store");
+        let (addr, _stop, _handle) =
+            start_server(Arc::new(Core::with_llm(llm).with_store(store))).await;
+        let mut control = connect(addr).await;
+        let mut watcher = connect(addr).await;
+        let thread = thread(&mut control).await;
+        subscribe(&mut watcher, 5, thread).await;
+        assert_eq!(next_message(&mut watcher, 5).await["status"], "idle");
+
+        // Added while no turn runs, the message is sent at once.
+        let added = queue_call(
+            &mut control,
+            "add",
+            json!({"thread_id": thread, "prompt": "now"}),
+        )
+        .await;
+        assert!(added["result"]["queue_id"].is_i64(), "{added}");
+        let seen = events_until(&mut watcher, 5, "delta").await;
+        assert_eq!(
+            queue_and_turns(&seen),
+            [r#"queue ["now"]"#, "queue []", "turn_started"],
+            "{seen:?}"
+        );
+
+        // After an interrupted turn the queue waits.
+        queue_call(
+            &mut control,
+            "add",
+            json!({"thread_id": thread, "prompt": "later"}),
+        )
+        .await;
+        let interrupted = call(
+            &mut control,
+            9,
+            json!({"id": 9, "method": "turn/interrupt", "params": {"thread_id": thread}}),
+        )
+        .await;
+        assert_eq!(interrupted["result"]["interrupted"], true, "{interrupted}");
+        let seen = events_until(&mut watcher, 5, "turn_ended").await;
+        assert_eq!(
+            queue_and_turns(&seen),
+            [r#"queue ["later"]"#, r#"turn_ended "cancelled""#],
+            "{seen:?}"
+        );
+        assert_eq!(next_message(&mut watcher, 5).await["status"], "idle");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(chats(&mock).len(), 1);
+        let reopened = Store::open(&path).await.expect("store");
+        let kept = reopened
+            .queue(inocode_core::store::SessionId(thread))
+            .await
+            .expect("queue");
+        assert_eq!(
+            kept.iter()
+                .map(|queued| queued.prompt.as_str())
+                .collect::<Vec<_>>(),
+            ["later"]
+        );
+
+        // A screen that subscribes now is shown the queue after the status.
+        let mut late = connect(addr).await;
+        subscribe(&mut late, 6, thread).await;
+        assert_eq!(next_message(&mut late, 6).await["status"], "idle");
+        let shown = next_message(&mut late, 6).await;
+        assert_eq!(shown["event"], "queue", "{shown}");
+        assert_eq!(prompts(&shown["queue"]), ["later"]);
+
+        let started = queue_call(&mut control, "start", json!({"thread_id": thread})).await;
+        assert_eq!(started["result"]["started"], true, "{started}");
+        let seen = events_until(&mut watcher, 5, "turn_ended").await;
+        assert_eq!(
+            queue_and_turns(&seen),
+            ["queue []", "turn_started", r#"turn_ended "completed""#],
+            "{seen:?}"
+        );
+        assert!(chats(&mock)[1].body["messages"]
+            .to_string()
+            .contains("later"));
+        assert_eq!(next_message(&mut watcher, 5).await["status"], "idle");
+        let again = queue_call(&mut control, "start", json!({"thread_id": thread})).await;
+        assert_eq!(again["result"]["started"], false, "{again}");
+        let unknown = queue_call(&mut control, "start", json!({"thread_id": thread + 100})).await;
+        assert_eq!(unknown["error"]["code"], "unknown_thread", "{unknown}");
+    })
+    .await;
+}
