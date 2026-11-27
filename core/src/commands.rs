@@ -1736,13 +1736,16 @@ impl Core {
     /// The threads, the most recently active first, for `thread/list`:
     /// only those of the project with the key `project` when given.
     pub async fn threads(&self, project: Option<&str>, limit: usize) -> Result<Value, ErrorInfo> {
-        let threads: Vec<Value> = self
+        let summaries = self
             .store()?
             .sessions(project.map(str::to_string), limit)
-            .await?
-            .iter()
-            .map(summary_view)
-            .collect();
+            .await?;
+        let mut threads = Vec::with_capacity(summaries.len());
+        for summary in &summaries {
+            let mut view = summary_view(summary);
+            view["status"] = json!(self.thread_status(summary.id).await?);
+            threads.push(view);
+        }
         Ok(json!({ "threads": threads }))
     }
 

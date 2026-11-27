@@ -752,6 +752,9 @@ async fn dispatch(
             watch_resource(request, stream_id, core, queue, in_flight).await
         }
         "thread/titles/subscribe" => watch_titles(request, stream_id, core, queue, in_flight).await,
+        "thread/subscribe" | "thread/status/subscribe" => {
+            watch_threads(request, stream_id, core, queue, in_flight).await
+        }
         "models/catalog" => {
             // Fetches prices and scores: off the read loop, like discovery.
             let (id, core, queue) = (request.id, Arc::clone(core), queue.clone());
@@ -1463,6 +1466,172 @@ async fn relay_titles(
     }
 }
 
+/// `thread/subscribe {thread_id}`: what happens in one thread from now on,
+/// whichever connection started its turns. After `started`, a `status`
+/// event says where the thread stands; then each turn comes as
+/// `turn_started`, the events its own connection receives, and
+/// `turn_ended`, with a `status` event whenever the status changes.
+/// `lagged` says events were missed, so `thread/read` should be asked
+/// again. `thread/status/subscribe`: the `status` events of every thread,
+/// with `thread_id`. Both last until `cancel` names them or the connection
+/// closes.
+async fn watch_threads(
+    request: Request,
+    stream_id: u64,
+    core: &Arc<Core>,
+    queue: &mpsc::Sender<Outgoing>,
+    in_flight: &InFlight,
+) -> bool {
+    let id = request.id;
+    let thread = if request.method == "thread/subscribe" {
+        match request.thread() {
+            Ok(thread) => Some(thread),
+            Err(error) => {
+                return send_event(queue, stream_id, EventPayload::failed(id, error))
+                    .await
+                    .is_ok()
+            }
+        }
+    } else {
+        None
+    };
+    let mut pending = in_flight.lock().await;
+    if pending.contains_key(&id) {
+        drop(pending);
+        let error = ErrorInfo::new("duplicate_id", "request id is already in flight");
+        let event = EventPayload::failed(id, error);
+        return send_event(queue, stream_id, event).await.is_ok();
+    }
+    let (cancel_tx, cancel_rx) = watch::channel(false);
+    pending.insert(id, Generation::Running(cancel_tx));
+    drop(pending);
+    // Subscribed before the status is read, so no change after it is missed.
+    let activity = core.activity();
+    tokio::spawn(relay_threads(
+        id,
+        thread,
+        activity,
+        stream_id,
+        Arc::clone(core),
+        queue.clone(),
+        Arc::clone(in_flight),
+        cancel_rx,
+    ));
+    true
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn relay_threads(
+    id: u64,
+    thread: Option<inocode_core::store::SessionId>,
+    mut activity: tokio::sync::broadcast::Receiver<(
+        inocode_core::store::SessionId,
+        inocode_core::Activity,
+    )>,
+    stream_id: u64,
+    core: Arc<Core>,
+    queue: mpsc::Sender<Outgoing>,
+    in_flight: InFlight,
+    mut cancelled: watch::Receiver<bool>,
+) {
+    use inocode_core::Activity;
+    use tokio::sync::broadcast::error::RecvError;
+    let first = match thread {
+        Some(thread) => match core.thread_status(thread).await {
+            Ok(status) => Ok(EventPayload::thread_status(id, None, status)),
+            Err(error) => Err(error),
+        },
+        None => Ok(EventPayload::started(id)),
+    };
+    let first = match first {
+        Ok(first) => first,
+        Err(error) => {
+            settle(
+                id,
+                stream_id,
+                &queue,
+                &in_flight,
+                cancelled,
+                Terminal::Failed(error),
+            )
+            .await;
+            return;
+        }
+    };
+    let mut opening = vec![first];
+    if thread.is_some() {
+        opening.insert(0, EventPayload::started(id));
+    }
+    let mut terminal = None;
+    for event in opening {
+        match deliver(&queue, stream_id, event, &mut cancelled).await {
+            Delivery::Sent => {}
+            Delivery::ConnectionGone => {
+                abandon(&in_flight, id).await;
+                return;
+            }
+            Delivery::Cancelled => {
+                terminal = Some(Terminal::Cancelled);
+                break;
+            }
+        }
+    }
+    let terminal = match terminal {
+        Some(terminal) => Some(terminal),
+        None => loop {
+            tokio::select! {
+                item = activity.recv() => {
+                    let event = match item {
+                        Ok((of, item)) => match (thread, item) {
+                            (None, Activity::Status(status)) => {
+                                EventPayload::thread_status(id, Some(of), status)
+                            }
+                            (None, _) => continue,
+                            (Some(watched), _) if watched != of => continue,
+                            (Some(_), Activity::Status(status)) => {
+                                EventPayload::thread_status(id, None, status)
+                            }
+                            (Some(_), Activity::TurnStarted) => {
+                                EventPayload::named(id, "turn_started")
+                            }
+                            (Some(_), Activity::Event(event)) => turn_event(id, event),
+                            (Some(_), Activity::TurnEnded(end)) => EventPayload::turn_ended(id, end),
+                        },
+                        Err(RecvError::Lagged(_)) => EventPayload::named(id, "lagged"),
+                        Err(RecvError::Closed) => break Some(Terminal::Cancelled),
+                    };
+                    match deliver(&queue, stream_id, event, &mut cancelled).await {
+                        Delivery::Sent => {}
+                        Delivery::ConnectionGone => break None,
+                        Delivery::Cancelled => break Some(Terminal::Cancelled),
+                    }
+                }
+                _ = cancelled.changed() => break Some(Terminal::Cancelled),
+            }
+        },
+    };
+    match terminal {
+        Some(terminal) => settle(id, stream_id, &queue, &in_flight, cancelled, terminal).await,
+        None => abandon(&in_flight, id).await,
+    }
+}
+
+/// A turn's event as the connection that started the turn receives it.
+fn turn_event(id: u64, event: TurnEvent) -> EventPayload {
+    match event {
+        TurnEvent::Delta(text) => EventPayload::delta(id, text),
+        TurnEvent::Thinking(text) => EventPayload::thinking(id, text),
+        TurnEvent::ThinkingTranslation(piece) => EventPayload::thinking_translation(id, piece),
+        TurnEvent::Message { seq, message } => EventPayload::message(id, seq, &message),
+        TurnEvent::Elicitation(elicitation) => EventPayload::elicitation(id, elicitation),
+        TurnEvent::McpProgress(progress) => EventPayload::mcp(id, "mcp_progress", progress),
+        TurnEvent::McpLog(log) => EventPayload::mcp(id, "mcp_log", log),
+        TurnEvent::Estimate(estimate) => EventPayload::estimate(id, &estimate),
+        TurnEvent::Title(title) => EventPayload::title(id, "title_updated", title),
+        TurnEvent::TitleProposed(title) => EventPayload::title(id, "title_proposed", title),
+    }
+}
+
 async fn start_turn(
     request: Request,
     stream_id: u64,
@@ -1557,18 +1726,7 @@ async fn run_turn(
     };
     let _ = send_event(&queue, stream_id, EventPayload::started(id)).await;
     let (events, mut received) = mpsc::channel(SEND_QUEUE_CAPACITY);
-    let relay = |event: TurnEvent| match event {
-        TurnEvent::Delta(text) => EventPayload::delta(id, text),
-        TurnEvent::Thinking(text) => EventPayload::thinking(id, text),
-        TurnEvent::ThinkingTranslation(piece) => EventPayload::thinking_translation(id, piece),
-        TurnEvent::Message { seq, message } => EventPayload::message(id, seq, &message),
-        TurnEvent::Elicitation(elicitation) => EventPayload::elicitation(id, elicitation),
-        TurnEvent::McpProgress(progress) => EventPayload::mcp(id, "mcp_progress", progress),
-        TurnEvent::McpLog(log) => EventPayload::mcp(id, "mcp_log", log),
-        TurnEvent::Estimate(estimate) => EventPayload::estimate(id, &estimate),
-        TurnEvent::Title(title) => EventPayload::title(id, "title_updated", title),
-        TurnEvent::TitleProposed(title) => EventPayload::title(id, "title_proposed", title),
-    };
+    let relay = |event: TurnEvent| turn_event(id, event);
     let outcome = {
         let run = core.run_turn(
             thread,

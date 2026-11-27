@@ -359,9 +359,13 @@ pub struct EventPayload {
     /// The thread's new or proposed title.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    /// The thread a `thread/titles/subscribe` event is about.
+    /// The thread a `thread/titles/subscribe` or `thread/status/subscribe`
+    /// event is about.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thread_id: Option<i64>,
+    /// Where a thread now stands.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<ThreadStatus>,
 }
 
 fn translation_service(name: &str) -> Result<translate::Service, ErrorInfo> {
@@ -445,6 +449,35 @@ impl EventPayload {
         }
     }
 
+    /// Where a thread now stands (`status`), with the thread named for
+    /// `thread/status/subscribe`.
+    pub fn thread_status(id: u64, thread: Option<SessionId>, status: ThreadStatus) -> Self {
+        Self {
+            thread_id: thread.map(|thread| thread.0),
+            status: Some(status),
+            ..Self::new(id, "status")
+        }
+    }
+
+    /// The end of a turn, for `thread/subscribe` (`turn_ended`): `reason`
+    /// is `completed`, `length`, `cancelled` or `failed`.
+    pub fn turn_ended(id: u64, end: TurnEnd) -> Self {
+        Self {
+            reason: Some(end.ending),
+            usage: Some(end.usage),
+            held: Some(end.held),
+            questions: Some(end.questions),
+            warnings: (!end.warnings.is_empty()).then_some(end.warnings),
+            error: end.error,
+            ..Self::new(id, "turn_ended")
+        }
+    }
+
+    /// An event of `kind` that carries nothing but its name.
+    pub fn named(id: u64, kind: &'static str) -> Self {
+        Self::new(id, kind)
+    }
+
     /// What is left of a running turn's task by the estimate.
     pub fn estimate(id: u64, estimate: &estimate::Estimate) -> Self {
         Self {
@@ -505,6 +538,7 @@ impl EventPayload {
             estimate: None,
             title: None,
             thread_id: None,
+            status: None,
         }
     }
 }
@@ -527,6 +561,51 @@ struct Running {
     mode: watch::Sender<Option<turn::Mode>>,
     cancel: watch::Sender<bool>,
     events: Option<mpsc::Sender<TurnEvent>>,
+    /// Whether the person has calls to approve or questions to answer
+    /// once the turn ends: as before the turn until the turn leaves its own.
+    waiting: bool,
+}
+
+/// How many [`Activity`] items a subscriber may fall behind before it
+/// misses some.
+const ACTIVITY_KEPT: usize = 4096;
+
+/// Where a thread stands, for `thread/list` and the subscriptions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadStatus {
+    /// No turn runs and nothing waits for the person.
+    Idle,
+    /// A turn (or a compaction) runs.
+    Running,
+    /// No turn runs; the latest left calls to approve or questions to answer.
+    Waiting,
+}
+
+/// What happens in a thread, as `thread/subscribe` relays it.
+#[derive(Debug, Clone)]
+pub enum Activity {
+    /// A turn began; its events follow.
+    TurnStarted,
+    /// An event of the running turn, as the connection that started it
+    /// receives it.
+    Event(TurnEvent),
+    /// The turn ended.
+    TurnEnded(TurnEnd),
+    /// The thread's status changed.
+    Status(ThreadStatus),
+}
+
+/// How a turn ended, for those watching its thread.
+#[derive(Debug, Clone)]
+pub struct TurnEnd {
+    /// `completed`, `length`, `cancelled` or `failed`.
+    pub ending: &'static str,
+    pub usage: turn::TurnUsage,
+    pub held: Vec<turn::Held>,
+    pub questions: Vec<turn::Asked>,
+    pub warnings: Vec<String>,
+    pub error: Option<ErrorInfo>,
 }
 
 /// What [`Core::begin_turn`] claimed for [`Core::run_turn`].
@@ -544,6 +623,12 @@ pub struct Claim {
 struct Waiting {
     held: Vec<turn::Held>,
     questions: Vec<turn::Asked>,
+}
+
+impl Waiting {
+    fn is_empty(&self) -> bool {
+        self.held.is_empty() && self.questions.is_empty()
+    }
 }
 
 /// How the server process was started, for `settings/get` to tell the
@@ -643,6 +728,8 @@ pub struct Core {
     logins: accounts::Logins,
     /// Which account of a sign-in provider each request uses.
     pool: Arc<pool::Pool>,
+    /// What happens in every thread, for the subscriptions.
+    activity: tokio::sync::broadcast::Sender<(SessionId, Activity)>,
 }
 
 impl Default for Core {
@@ -679,6 +766,7 @@ impl Core {
             started: Started::default(),
             logins: accounts::Logins::new(accounts::LoginEndpoints::default()),
             pool: Arc::new(pool::Pool::new(None)),
+            activity: tokio::sync::broadcast::channel(ACTIVITY_KEPT).0,
         }
     }
 
@@ -1109,6 +1197,10 @@ impl Core {
             return Err(unknown_thread());
         }
         let model = self.thread_client(thread).await?;
+        let waiting = self
+            .waiting(thread)
+            .await
+            .is_ok_and(|waiting| !waiting.is_empty());
         let mut turns = self.turns.lock().map_err(|_| poisoned_turns())?;
         if turns.contains_key(&thread) {
             return Err(ErrorInfo::new(
@@ -1128,8 +1220,14 @@ impl Core {
                 mode: mode_sender,
                 cancel: cancel_sender,
                 events: None,
+                waiting,
             },
         );
+        // Sent while `turns` is held, so the statuses of a thread go out in
+        // the order its turns begin and end.
+        let _ = self
+            .activity
+            .send((thread, Activity::Status(ThreadStatus::Running)));
         Ok(Claim {
             steer,
             model,
@@ -1161,8 +1259,36 @@ impl Core {
 
     pub fn end_turn(&self, thread: SessionId) {
         if let Ok(mut turns) = self.turns.lock() {
-            turns.remove(&thread);
+            if let Some(running) = turns.remove(&thread) {
+                let status = if running.waiting {
+                    ThreadStatus::Waiting
+                } else {
+                    ThreadStatus::Idle
+                };
+                let _ = self.activity.send((thread, Activity::Status(status)));
+            }
         }
+    }
+
+    /// Where `thread` stands now.
+    pub async fn thread_status(&self, thread: SessionId) -> Result<ThreadStatus, ErrorInfo> {
+        if !self.store()?.session_exists(thread).await? {
+            return Err(unknown_thread());
+        }
+        if self.turn_running(thread) {
+            return Ok(ThreadStatus::Running);
+        }
+        Ok(if self.waiting(thread).await?.is_empty() {
+            ThreadStatus::Idle
+        } else {
+            ThreadStatus::Waiting
+        })
+    }
+
+    /// `thread/subscribe` and `thread/status/subscribe`: what happens in
+    /// every thread from now on, until the value returned is dropped.
+    pub fn activity(&self) -> tokio::sync::broadcast::Receiver<(SessionId, Activity)> {
+        self.activity.subscribe()
     }
 
     /// Tells the running turn of `thread`, if one runs, that the thread's
@@ -1755,9 +1881,42 @@ impl Core {
         mcp::subscribe(self.store()?, params).await
     }
 
-    /// Runs the turn [`Self::begin_turn`] claimed.
+    /// Runs the turn [`Self::begin_turn`] claimed. Its events go to
+    /// `events` and to those watching the thread.
     #[allow(clippy::too_many_arguments)]
     pub async fn run_turn(
+        &self,
+        thread: SessionId,
+        prompt: String,
+        reply_to: Option<i64>,
+        approvals: turn::Approvals,
+        claim: Claim,
+        cancel: watch::Receiver<bool>,
+        events: mpsc::Sender<TurnEvent>,
+    ) -> Outcome {
+        let _ = self.activity.send((thread, Activity::TurnStarted));
+        let outcome = self
+            .run_claimed(thread, prompt, reply_to, approvals, claim, cancel, events)
+            .await;
+        let (ending, error) = match &outcome.ending {
+            turn::Ending::Interrupted => ("cancelled", None),
+            turn::Ending::Failed(error) => ("failed", Some(error.clone())),
+            ending => (ending.as_str(), None),
+        };
+        let end = TurnEnd {
+            ending,
+            usage: outcome.usage.clone(),
+            held: outcome.held.clone(),
+            questions: outcome.questions.clone(),
+            warnings: outcome.warnings.clone(),
+            error,
+        };
+        let _ = self.activity.send((thread, Activity::TurnEnded(end)));
+        outcome
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_claimed(
         &self,
         thread: SessionId,
         prompt: String,
@@ -1805,9 +1964,19 @@ impl Core {
             }),
             Err(error) => return failed(error),
         };
+        // Every event passes here on its way to `events`, so those watching
+        // the thread see it too, in the same order.
+        let (teed, mut teeing) = mpsc::channel(1);
+        let activity = self.activity.clone();
+        let tee = tokio::spawn(async move {
+            while let Some(event) = teeing.recv().await {
+                let _ = activity.send((thread, Activity::Event(Clone::clone(&event))));
+                let _ = events.send(event).await;
+            }
+        });
         if let Ok(mut turns) = self.turns.lock() {
             if let Some(running) = turns.get_mut(&thread) {
-                running.events = Some(events.clone());
+                running.events = Some(teed.clone());
             }
         }
         let prompt = turn::Prompt {
@@ -1836,7 +2005,7 @@ impl Core {
                 approvals,
                 claim.steer,
                 stopped,
-                events,
+                teed,
             ),
         )
         .await;
@@ -1845,6 +2014,14 @@ impl Core {
             held: outcome.held.clone(),
             questions: outcome.questions.clone(),
         };
+        if let Ok(mut turns) = self.turns.lock() {
+            if let Some(running) = turns.get_mut(&thread) {
+                running.events = None;
+                running.waiting = !waiting.is_empty();
+            }
+        }
+        // Every event is passed on before the turn's end is reported.
+        let _ = tee.await;
         if let Err(error) = self.set_waiting(thread, &waiting).await {
             outcome.warnings.push(format!(
                 "the held calls and questions were not saved, so /approve and /answer may not \

@@ -3737,3 +3737,125 @@ async fn the_model_sets_the_title_when_asked() {
     })
     .await;
 }
+
+/// The events of a stream up to and including the first of `last`.
+async fn events_until(client: &mut Client, stream_id: u64, last: &str) -> Vec<Value> {
+    let mut events = Vec::new();
+    loop {
+        let event = next_message(client, stream_id).await;
+        let done = event["event"] == last;
+        events.push(event);
+        if done {
+            return events;
+        }
+    }
+}
+
+/// An event without the request id it came on.
+fn without_id(event: &Value) -> Value {
+    let mut event = event.clone();
+    event.as_object_mut().expect("object").remove("id");
+    event
+}
+
+#[tokio::test]
+async fn another_connection_follows_a_threads_turns_and_its_status() {
+    with_timeout(async {
+        let form = json!({"questions": [
+            {"question": "Which database?", "kind": "choose_one",
+             "options": [{"label": "SQLite"}, {"label": "Postgres"}]}
+        ]});
+        let mock = scripted(vec![
+            vec![sse_delta("hello"), finish("stop"), sse_done()],
+            tool_turn("q1", "ask", form),
+        ])
+        .await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let mut watcher = connect(addr).await;
+        let mut lister = connect(addr).await;
+        let thread = thread(&mut client).await;
+
+        watcher
+            .1
+            .write_json(
+                5,
+                &json!({"id": 5, "method": "thread/subscribe", "params": {"thread_id": thread}}),
+            )
+            .await
+            .expect("subscribe");
+        assert_eq!(next_message(&mut watcher, 5).await["event"], "started");
+        let first = next_message(&mut watcher, 5).await;
+        assert_eq!(
+            (&first["event"], &first["status"]),
+            (&json!("status"), &json!("idle"))
+        );
+        lister
+            .1
+            .write_json(
+                6,
+                &json!({"id": 6, "method": "thread/status/subscribe", "params": {}}),
+            )
+            .await
+            .expect("subscribe");
+        assert_eq!(next_message(&mut lister, 6).await["event"], "started");
+
+        let own = turn(&mut client, 2, thread, "hi").await;
+        let seen = events_until(&mut watcher, 5, "turn_ended").await;
+        assert_eq!(seen[0]["status"], "running", "{seen:?}");
+        assert_eq!(seen[1]["event"], "turn_started", "{seen:?}");
+        let relayed: Vec<Value> = seen[2..seen.len() - 1].iter().map(without_id).collect();
+        let sent: Vec<Value> = own[1..own.len() - 1].iter().map(without_id).collect();
+        assert_eq!(
+            relayed, sent,
+            "the watcher sees what the turn's own connection sees"
+        );
+        let ended = seen.last().unwrap();
+        assert_eq!(ended["reason"], "completed", "{ended}");
+        assert_eq!(ended["usage"], own.last().unwrap()["usage"]);
+        let after = next_message(&mut watcher, 5).await;
+        assert_eq!(after["status"], "idle", "{after}");
+        for expected in ["running", "idle"] {
+            let status = next_message(&mut lister, 6).await;
+            assert_eq!(status["event"], "status", "{status}");
+            assert_eq!(
+                (&status["thread_id"], &status["status"]),
+                (&json!(thread), &json!(expected))
+            );
+        }
+
+        // A turn that leaves a question leaves the thread waiting for the person.
+        let asked = turn(&mut client, 3, thread, "set up storage").await;
+        assert_eq!(
+            asked.last().unwrap()["questions"].as_array().map(Vec::len),
+            Some(1)
+        );
+        let seen = events_until(&mut watcher, 5, "turn_ended").await;
+        assert_eq!(
+            seen.last().unwrap()["questions"],
+            asked.last().unwrap()["questions"]
+        );
+        assert_eq!(next_message(&mut watcher, 5).await["status"], "waiting");
+        let listed = call(&mut client, 4, json!({"id": 4, "method": "thread/list"})).await;
+        assert_eq!(
+            listed["result"]["threads"][0]["status"], "waiting",
+            "{listed}"
+        );
+
+        for expected in ["running", "waiting"] {
+            assert_eq!(next_message(&mut lister, 6).await["status"], expected);
+        }
+
+        // An unknown thread cannot be watched.
+        let unknown = call(
+            &mut client,
+            7,
+            json!({"id": 7, "method": "thread/subscribe", "params": {"thread_id": thread + 100}}),
+        )
+        .await;
+        assert_eq!(unknown["event"], "failed", "{unknown}");
+        assert_eq!(unknown["error"]["code"], "unknown_thread", "{unknown}");
+    })
+    .await;
+}

@@ -87,6 +87,7 @@
 | [effort-estimates.md](effort-estimates.md) | 作業の時間とトークンの見積もり（過去の実測から） | RESEARCH_SUPPORTED（作業中の出し直し、査読前）／UNSUPPORTED_APPROVED | 実装済み（`core/src/estimate.rs`、`estimate`、`/estimate`） |
 | [company.md](company.md) | 会社の仕組み（役割付きの社員、自動の指名、並行、同僚のレビューと助言、予算） | RESEARCH_SUPPORTED（別会社のレビュー・厳しいレビュー・行き詰まりの助言）／UNSUPPORTED_APPROVED | 実装済み（`core/src/company.rs`、`delegate`・`review`、`members/*`・`allow/*`、`/members`・`/allow`） |
 | [thread-title.md](thread-title.md) | スレッドの題名：最初のメッセージからの自動の題名、モデルからの提案と頼まれたときの変更、題名の通知 | UNSUPPORTED_APPROVED | `core/src/title.rs`、`core/src/turn.rs`（`title` 道具、状態の題名）、`title_updated`・`title_proposed` |
+| [thread-subscribe.md](thread-subscribe.md) | スレッドの動きの購読（別の接続からターンを見る）と、スレッドの状態（`idle`・`running`・`waiting`）の通知 | UNSUPPORTED_APPROVED | `core/src/lib.rs`（`Activity`・`ThreadStatus`）、`server/src/lib.rs`（`thread/subscribe`・`thread/status/subscribe`） |
 
 ## 状態の判定
 
