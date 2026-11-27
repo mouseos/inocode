@@ -637,7 +637,8 @@ async fn dispatch(
             )
             .await
         }
-        "thread/start" | "thread/read" | "thread/fork" | "goal/set" | "goal/read" | "goal/stop" => {
+        "thread/start" | "thread/read" | "thread/fork" | "thread/rewind" | "goal/set"
+        | "goal/read" | "goal/stop" => {
             // Store work runs off the read loop, like discovery.
             tokio::spawn(thread_request(
                 request,
@@ -989,6 +990,20 @@ async fn thread_request(
     let result = match request.method.as_str() {
         "thread/start" => start_thread(&request, &core).await,
         "thread/fork" => fork_thread(&request, &core).await,
+        "thread/rewind" => match (
+            request.thread(),
+            request
+                .params
+                .as_ref()
+                .and_then(|params| params["seq"].as_i64()),
+        ) {
+            (Ok(thread), Some(seq)) => core.rewind_thread(thread, seq).await,
+            (Err(error), _) => Err(error),
+            (_, None) => Err(ErrorInfo::new(
+                "invalid_params",
+                "requires \"seq\", the number of a message of the person",
+            )),
+        },
         "goal/set" => set_goal(&request, &core).await,
         "goal/read" => match request.thread() {
             Ok(thread) => core.goal(thread).await.map(|goal| json!({ "goal": goal })),
@@ -1628,6 +1643,7 @@ async fn relay_threads(
                             }
                             (Some(_), Activity::Event(event)) => turn_event(id, event),
                             (Some(_), Activity::TurnEnded(end)) => EventPayload::turn_ended(id, end),
+                            (Some(_), Activity::Rewound(from)) => EventPayload::rewound(id, from),
                         },
                         Err(RecvError::Lagged(_)) => EventPayload::named(id, "lagged"),
                         Err(RecvError::Closed) => break Some(Terminal::Cancelled),

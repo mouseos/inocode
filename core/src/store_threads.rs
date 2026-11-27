@@ -212,6 +212,60 @@ impl Store {
         .await
     }
 
+    /// Deletes the messages of `session` from the one numbered `from` on,
+    /// the held calls and questions its latest turn left, and the standing
+    /// instructions quoted from the messages deleted; returns how many
+    /// messages went.
+    pub async fn rewind_session(&self, session: SessionId, from: i64) -> Result<usize, ErrorInfo> {
+        self.write(move |db| {
+            let tx = db.transaction().map_err(store_error)?;
+            tx.execute(
+                "INSERT INTO messages_fts(messages_fts, rowid, text)
+                 SELECT 'delete', id, text FROM messages WHERE session_id = ?1 AND seq >= ?2",
+                params![session.0, from],
+            )
+            .map_err(store_error)?;
+            let removed = tx
+                .execute(
+                    "DELETE FROM messages WHERE session_id = ?1 AND seq >= ?2",
+                    params![session.0, from],
+                )
+                .map_err(store_error)?;
+            tx.execute("DELETE FROM waiting WHERE session_id = ?1", [session.0])
+                .map_err(store_error)?;
+            let promises: Option<(String, i64)> = tx
+                .query_row(
+                    "SELECT items, seq FROM promises WHERE session_id = ?1",
+                    [session.0],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(store_error)?;
+            if let Some((items, seq)) = promises {
+                let items: Vec<serde_json::Value> = serde_json::from_str(&items)
+                    .map_err(|error| ErrorInfo::new("store", error.to_string()))?;
+                let kept: Vec<&serde_json::Value> = items
+                    .iter()
+                    .filter(|item| {
+                        item["message"]
+                            .as_i64()
+                            .is_some_and(|message| message < from)
+                    })
+                    .collect();
+                let kept = serde_json::to_string(&kept)
+                    .map_err(|error| ErrorInfo::new("store", error.to_string()))?;
+                tx.execute(
+                    "UPDATE promises SET items = ?2, seq = ?3, updated = ?4 WHERE session_id = ?1",
+                    params![session.0, kept, seq.min(from.saturating_sub(1)), now()],
+                )
+                .map_err(store_error)?;
+            }
+            tx.commit().map_err(store_error)?;
+            Ok(removed)
+        })
+        .await
+    }
+
     /// Deletes `session` with its messages, plan, goal, standing
     /// instructions, choice of model, held calls and questions; `false`
     /// when there is no such thread. The log of its requests to models, the

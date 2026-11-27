@@ -3996,3 +3996,103 @@ async fn a_thread_forks_before_or_through_a_message_of_the_person() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn a_rewind_deletes_from_a_message_of_the_person_and_returns_its_text() {
+    with_timeout(async {
+        let mock = scripted(Vec::new()).await;
+        let (core, store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let mut watcher = connect(addr).await;
+        let thread = thread(&mut client).await;
+        turn(&mut client, 2, thread, "first").await;
+        let after_first = stored(&mut client, 3, thread).await;
+        let first = after_first
+            .iter()
+            .find(|(_, role, from)| role == "user" && from == "person")
+            .expect("the first message")
+            .0;
+        turn_with(
+            &mut client,
+            4,
+            json!({"thread_id": thread, "prompt": "second, keep it short", "reply_to": first}),
+        )
+        .await;
+        let whole = stored(&mut client, 5, thread).await;
+        let second = whole
+            .iter()
+            .filter(|(_, role, from)| role == "user" && from == "person")
+            .nth(1)
+            .expect("the second message")
+            .0;
+        let session = inocode_core::store::SessionId(thread);
+        store
+            .set_promises(
+                session,
+                json!([{"quote": "first", "message": first},
+                       {"quote": "keep it short", "message": second}])
+                .to_string(),
+                second,
+            )
+            .await
+            .expect("promises");
+
+        watcher
+            .1
+            .write_json(
+                6,
+                &json!({"id": 6, "method": "thread/subscribe", "params": {"thread_id": thread}}),
+            )
+            .await
+            .expect("subscribe");
+        assert_eq!(next_message(&mut watcher, 6).await["event"], "started");
+        assert_eq!(next_message(&mut watcher, 6).await["event"], "status");
+
+        let rewound = call(
+            &mut client,
+            7,
+            json!({"id": 7, "method": "thread/rewind", "params": {"thread_id": thread, "seq": second}}),
+        )
+        .await;
+        assert_eq!(rewound["result"]["text"], "second, keep it short", "{rewound}");
+        let from = rewound["result"]["from"].as_i64().expect("from");
+        assert!(from < second, "the quote of the reply goes too: {rewound}");
+        assert_eq!(
+            rewound["result"]["removed"].as_u64(),
+            Some((whole.len() - after_first.len()) as u64)
+        );
+        assert_eq!(stored(&mut client, 8, thread).await, after_first);
+        let event = next_message(&mut watcher, 6).await;
+        assert_eq!((&event["event"], &event["from"]), (&json!("rewound"), &json!(from)));
+        assert_eq!(next_message(&mut watcher, 6).await["status"], "idle");
+        let (items, _) = store.promises(session).await.expect("read").expect("promises");
+        let items: Value = serde_json::from_str(&items).expect("json");
+        assert_eq!(items, json!([{"quote": "first", "message": first}]));
+        let found = call(
+            &mut client,
+            9,
+            json!({"id": 9, "method": "command/run",
+                   "params": {"thread_id": thread, "text": "/history keep it short"}}),
+        )
+        .await;
+        assert!(
+            !found["result"].to_string().contains("second, keep it short"),
+            "{found}"
+        );
+
+        for params in [
+            json!({"thread_id": thread, "seq": first + 1}),
+            json!({"thread_id": thread}),
+        ] {
+            let refused = call(
+                &mut client,
+                10,
+                json!({"id": 10, "method": "thread/rewind", "params": params}),
+            )
+            .await;
+            assert_eq!(refused["error"]["code"], "invalid_params", "{refused}");
+        }
+    })
+    .await;
+}

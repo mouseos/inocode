@@ -89,6 +89,7 @@
 | [thread-title.md](thread-title.md) | スレッドの題名：最初のメッセージからの自動の題名、モデルからの提案と頼まれたときの変更、題名の通知 | UNSUPPORTED_APPROVED | `core/src/title.rs`、`core/src/turn.rs`（`title` 道具、状態の題名）、`title_updated`・`title_proposed` |
 | [thread-subscribe.md](thread-subscribe.md) | スレッドの動きの購読（別の接続からターンを見る）と、スレッドの状態（`idle`・`running`・`waiting`）の通知 | UNSUPPORTED_APPROVED | `core/src/lib.rs`（`Activity`・`ThreadStatus`）、`server/src/lib.rs`（`thread/subscribe`・`thread/status/subscribe`） |
 | [thread-fork.md](thread-fork.md) | スレッドを、人のメッセージの手前まで、またはそのメッセージの返事までで写す（`thread/fork`） | UNSUPPORTED_APPROVED | `core/src/lib.rs`（`ForkCut`・`fork_thread`）、`core/src/store_threads.rs`（`fork_session_through`） |
+| [thread-rewind.md](thread-rewind.md) | 巻き戻し：人のメッセージから後ろを消し、その文を返す（`thread/rewind`） | UNSUPPORTED_APPROVED | `core/src/lib.rs`（`rewind_thread`）、`core/src/store_threads.rs`（`rewind_session`） |
 
 ## 状態の判定
 

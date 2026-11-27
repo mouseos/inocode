@@ -366,6 +366,9 @@ pub struct EventPayload {
     /// Where a thread now stands.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<ThreadStatus>,
+    /// The first of the messages a rewind deleted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<i64>,
 }
 
 fn translation_service(name: &str) -> Result<translate::Service, ErrorInfo> {
@@ -473,6 +476,15 @@ impl EventPayload {
         }
     }
 
+    /// The messages of the watched thread from `from` on were deleted
+    /// (`rewound`).
+    pub fn rewound(id: u64, from: i64) -> Self {
+        Self {
+            from: Some(from),
+            ..Self::new(id, "rewound")
+        }
+    }
+
     /// An event of `kind` that carries nothing but its name.
     pub fn named(id: u64, kind: &'static str) -> Self {
         Self::new(id, kind)
@@ -539,6 +551,7 @@ impl EventPayload {
             title: None,
             thread_id: None,
             status: None,
+            from: None,
         }
     }
 }
@@ -592,6 +605,8 @@ pub enum Activity {
     Event(TurnEvent),
     /// The turn ended.
     TurnEnded(TurnEnd),
+    /// The messages from the one numbered `from` on were deleted.
+    Rewound(i64),
     /// The thread's status changed.
     Status(ThreadStatus),
 }
@@ -1298,6 +1313,49 @@ impl Core {
         let fork = store.fork_session_through(thread, through).await?;
         self.pool.note_lineage(fork, thread).await;
         Ok(fork)
+    }
+
+    /// `thread/rewind`: deletes the person's message numbered `seq` and
+    /// everything after it, with the quote of a reply that came with it,
+    /// and returns the message's text to be written again. The held calls
+    /// and questions go, and so do the standing instructions quoted from
+    /// what was deleted. Refused while a turn runs.
+    pub async fn rewind_thread(&self, thread: SessionId, seq: i64) -> Result<Value, ErrorInfo> {
+        let store = self.store()?;
+        if !store.session_exists(thread).await? {
+            return Err(unknown_thread());
+        }
+        if self.turn_running(thread) {
+            return Err(ErrorInfo::new(
+                "turn_running",
+                "a turn is running in this thread; rewind it when the turn ends",
+            ));
+        }
+        let messages = store.since(thread, i64::MIN, usize::MAX >> 1).await?;
+        let kept = fork_end(&messages, ForkCut::Before(seq), seq)?;
+        let from = messages
+            .iter()
+            .map(|stored| stored.seq)
+            .find(|&stored| stored > kept)
+            .unwrap_or(seq);
+        let text = messages
+            .iter()
+            .find(|stored| stored.seq == seq)
+            .and_then(|stored| match &stored.message.body {
+                conversation::Body::User { parts, .. } => Some(parts.join("\n")),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let removed = store.rewind_session(thread, from).await?;
+        if let Ok(turns) = self.turns.lock() {
+            if !turns.contains_key(&thread) {
+                let _ = self.activity.send((thread, Activity::Rewound(from)));
+                let _ = self
+                    .activity
+                    .send((thread, Activity::Status(ThreadStatus::Idle)));
+            }
+        }
+        Ok(json!({ "thread_id": thread.0, "from": from, "removed": removed, "text": text }))
     }
 
     /// Where `thread` stands now.
