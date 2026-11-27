@@ -333,6 +333,7 @@ async fn an_answer_over_the_frame_limit_is_replaced_by_an_error() {
             body: inocode_core::conversation::Body::User {
                 from: inocode_core::conversation::Speaker::Person,
                 parts: vec![text.to_string()],
+                images: Vec::new(),
             },
         };
         store

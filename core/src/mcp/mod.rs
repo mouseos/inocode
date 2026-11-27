@@ -1460,6 +1460,7 @@ fn sampling_messages(
             Some("user") => Body::User {
                 from: Speaker::Person,
                 parts: texts,
+                images: Vec::new(),
             },
             Some("assistant") => {
                 let mut parts = Vec::new();

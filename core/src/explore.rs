@@ -106,6 +106,7 @@ pub(crate) async fn read_only(
         messages: vec![message(Body::User {
             from: Speaker::Person,
             parts: vec![question],
+            images: Vec::new(),
         })],
     };
     let mut cancel = context.cancel.clone();
@@ -114,6 +115,7 @@ pub(crate) async fn read_only(
             conversation.messages.push(message(Body::User {
                 from: Speaker::Harness(helper.purpose.into()),
                 parts: vec![helper.last_round.into()],
+                images: Vec::new(),
             }));
         }
         let body = request(llm, helper, &conversation, &tools, &mut cancel, usage).await?;

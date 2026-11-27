@@ -48,11 +48,13 @@ async fn the_lead_delegates_a_small_task_and_asks_for_a_review() {
     let outcome = core
         .run_turn(
             thread,
-            "Use the delegate tool to have the member helper create hello.txt in the project \
+            turn::Prompt {
+                text: "Use the delegate tool to have the member helper create hello.txt in the project \
              folder containing the single word hello. Then use the review tool to have \
              hello.txt reviewed. Then answer in one line."
                 .to_string(),
-            None,
+                ..Default::default()
+            },
             turn::Approvals::default(),
             claim,
             cancel,

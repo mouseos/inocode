@@ -247,6 +247,7 @@ fn user(text: String) -> Message {
         body: Body::User {
             from: Speaker::Person,
             parts: vec![text],
+            images: Vec::new(),
         },
     }
 }

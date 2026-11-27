@@ -363,6 +363,7 @@ fn evidence(work: &[(i64, Message)]) -> String {
             Body::User {
                 from: Speaker::Person,
                 parts,
+                ..
             } => format!("[the person wrote]\n{}", cut(&parts.join("\n"))),
             Body::User { .. } => continue,
         };
@@ -718,6 +719,7 @@ mod tests {
             message(Body::User {
                 from: Speaker::Person,
                 parts: vec!["y".repeat(ITEM_CHARS + 10)],
+                images: Vec::new(),
             }),
         )];
         assert!(evidence(&long).ends_with("[cut]"));

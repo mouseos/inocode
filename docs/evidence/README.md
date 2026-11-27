@@ -92,6 +92,8 @@
 | [thread-rewind.md](thread-rewind.md) | 巻き戻し：人のメッセージから後ろを消し、その文を返す（`thread/rewind`） | UNSUPPORTED_APPROVED | `core/src/lib.rs`（`rewind_thread`）、`core/src/store_threads.rs`（`rewind_session`） |
 | [file-snapshots.md](file-snapshots.md) | ターンの前にプロジェクトのフォルダの写しをとり、巻き戻しでファイルも戻す（`thread/rewind` の `restore`） | UNSUPPORTED_APPROVED | `core/src/snapshot.rs`、`core/src/lib.rs`（`take_snapshot`・`restore_files`）、`core/src/store.rs`（`snapshots`） |
 | [message-queue.md](message-queue.md) | ターンの間に並べた文を、ターンが終わるたびに次のターンとして送る列（`thread/queue/*`、購読の `queue`） | UNSUPPORTED_APPROVED | `core/src/queue.rs`、`core/src/store_threads.rs`（`queue` 表）、`server/src/lib.rs`（`queue_request`） |
+| [input-attachments.md](input-attachments.md) | 人のメッセージに画像・PDF・文字のファイルを添える（`turn/start` の `attachments`。画像はそのまま見せ、画像を読めないモデルは断る） | UNSUPPORTED_APPROVED | `core/src/attach.rs`、`core/src/conversation.rs`（`Body::User` の `images`）、`core/src/lib.rs`（`turn_prompt`） |
+| [file-mentions.md](file-mentions.md) | @ で指したファイルの中身を渡す（大きいものは頭だけ、`turn/start` の `mentions`）と、補完のためのパスの検索（`files/search`） | UNSUPPORTED_APPROVED | `core/src/attach.rs`、`core/src/find.rs`（`fuzzy_paths`）、`core/src/lib.rs`（`search_files`） |
 
 ## 状態の判定
 

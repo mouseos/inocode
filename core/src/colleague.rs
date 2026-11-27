@@ -284,6 +284,7 @@ pub(crate) async fn advise(
             body: Body::User {
                 from: Speaker::Person,
                 parts: vec![asked],
+                images: Vec::new(),
             },
         }],
     };
@@ -330,6 +331,7 @@ pub(crate) async fn advise(
              it against what you know. If you do not follow it, say why in your next answer.",
             colleague.model(),
         )],
+        images: Vec::new(),
     };
     Ok((message, advice.to_string()))
 }
@@ -350,6 +352,7 @@ fn render(steps: &[Message]) -> String {
             Body::User {
                 from: Speaker::Person,
                 parts,
+                ..
             } => lines.push(format!("Person: {}", parts.join("\n"))),
             Body::User { parts, .. } => {
                 lines.push(format!("Harness: {}", cut(&parts.join("\n"), RESULT_CHARS)))

@@ -2262,6 +2262,7 @@ mod tests {
             body: Body::User {
                 from: Speaker::Person,
                 parts: vec![text.to_string()],
+                images: Vec::new(),
             },
         }
     }
@@ -2616,7 +2617,7 @@ mod measure {
                                 parts: vec![format!(
                                     "turn {turn} message {i} 会話の履歴 sample text compile error E{:04}",
                                     (turn * 50 + i) % 9973
-                                )],
+                                )], images: Vec::new(),
                             },
                         })
                         .collect();

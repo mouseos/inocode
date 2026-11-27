@@ -812,7 +812,7 @@ async fn run_delegated(lead: &Lead<'_>, arguments: &str) -> Delegated {
     let (events, _) = mpsc::channel(1);
     let prompt = crate::turn::Prompt {
         text: task_message(&lead.request, profile, &arguments),
-        reply_to: None,
+        ..Default::default()
     };
     let approvals = crate::turn::Approvals { mode: lead.mode };
     let run: Pin<Box<dyn Future<Output = Outcome> + Send + '_>> = Box::pin(crate::turn::run(

@@ -348,6 +348,7 @@ async fn extract(llm: &Llm, document: &str) -> Result<String, String> {
                 parts: vec![format!(
                     "----- DOCUMENT START -----\n{document}\n----- DOCUMENT END -----"
                 )],
+                images: Vec::new(),
             },
         }],
     };

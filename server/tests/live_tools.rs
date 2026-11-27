@@ -46,7 +46,7 @@ async fn a_tool_call_and_its_result_round_trip() {
             0,
             Body::User {
                 from: Speaker::Person,
-                parts: vec!["Work out which city hosted the 1964 Summer Olympics, then call get_weather for it.".to_string()],
+                parts: vec!["Work out which city hosted the 1964 Summer Olympics, then call get_weather for it.".to_string()], images: Vec::new(),
             },
         )],
     };
@@ -126,7 +126,7 @@ async fn thinking_streams_before_the_answer() {
             Body::User {
                 from: Speaker::Person,
                 parts: vec!["A train leaves at 9:47 and the trip takes 2 hours 38 minutes.                     When does it arrive? Think it through, then give the time."
-                    .to_string()],
+                    .to_string()], images: Vec::new(),
             },
         )],
     };
@@ -360,6 +360,7 @@ async fn thinking_for(llm: &Llm, question: &str) -> String {
             Body::User {
                 from: Speaker::Person,
                 parts: vec![question.to_string()],
+                images: Vec::new(),
             },
         )],
     };
@@ -389,6 +390,7 @@ async fn gemba_score(llm: &Llm, source: &str, translation: &str) -> Option<f64> 
             Body::User {
                 from: Speaker::Person,
                 parts: vec![prompt],
+                images: Vec::new(),
             },
         )],
     };

@@ -42,8 +42,10 @@ async fn run_goal(label: &str, numbers: &str, objective: &str) {
     let outcome = core
         .run_turn(
             thread,
-            "Work on the goal.".to_string(),
-            None,
+            turn::Prompt {
+                text: "Work on the goal.".to_string(),
+                ..Default::default()
+            },
             turn::Approvals::default(),
             claim,
             cancel,

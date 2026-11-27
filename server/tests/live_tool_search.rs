@@ -49,10 +49,12 @@ async fn a_deferred_connector_tool_is_found_and_called() {
     let outcome = core
         .run_turn(
             thread,
-            "Using my Notion connector, find out my Notion user name and tell me it. \
+            turn::Prompt {
+                text: "Using my Notion connector, find out my Notion user name and tell me it. \
              Do not read or change any Notion page."
-                .to_string(),
-            None,
+                    .to_string(),
+                ..Default::default()
+            },
             turn::Approvals::default(),
             claim,
             cancel,

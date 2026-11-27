@@ -49,6 +49,8 @@ const SEND_QUEUE_CAPACITY: usize = 64;
 /// most it accepts.
 const READ_DEFAULT_LIMIT: u64 = 100;
 const READ_MAX_LIMIT: u64 = 1000;
+const SEARCH_DEFAULT_LIMIT: u64 = 20;
+const SEARCH_MAX_LIMIT: u64 = 100;
 
 /// Pause after an accept error that is not about a single connection.
 const ACCEPT_ERROR_PAUSE: std::time::Duration = std::time::Duration::from_secs(1);
@@ -649,7 +651,8 @@ async fn dispatch(
         | "thread/queue/update"
         | "thread/queue/delete"
         | "thread/queue/reorder"
-        | "thread/queue/start" => {
+        | "thread/queue/start"
+        | "files/search" => {
             // Store work runs off the read loop, like discovery.
             tokio::spawn(thread_request(
                 request,
@@ -1003,6 +1006,7 @@ async fn thread_request(
         "thread/fork" => fork_thread(&request, &core).await,
         "thread/rewind" => rewind_thread(&request, &core).await,
         "goal/set" => set_goal(&request, &core).await,
+        "files/search" => search_files(&request, &core).await,
         method if method.starts_with("thread/queue/") => queue_request(&request, &core).await,
         "goal/read" => match request.thread() {
             Ok(thread) => core.goal(thread).await.map(|goal| json!({ "goal": goal })),
@@ -1180,6 +1184,31 @@ async fn set_goal(request: &Request, core: &Core) -> Result<Value, ErrorInfo> {
     Ok(json!({ "goal": goal }))
 }
 
+/// `files/search {thread_id, query, limit?}`: files of the thread's project
+/// whose paths match `query` fuzzily, for completing a mention; `limit` is
+/// 20 when absent, at most 100.
+async fn search_files(request: &Request, core: &Core) -> Result<Value, ErrorInfo> {
+    let thread = request.thread()?;
+    let field = |name: &str| request.params.as_ref().and_then(|params| params.get(name));
+    let query = field("query")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ErrorInfo::new("invalid_params", "requires a \"query\" string"))?;
+    let limit = match field("limit") {
+        None | Some(Value::Null) => SEARCH_DEFAULT_LIMIT,
+        Some(value) => value
+            .as_u64()
+            .filter(|limit| (1..=SEARCH_MAX_LIMIT).contains(limit))
+            .ok_or_else(|| {
+                ErrorInfo::new(
+                    "invalid_params",
+                    format!("\"limit\" must be 1 to {SEARCH_MAX_LIMIT}"),
+                )
+            })?,
+    };
+    core.search_files(thread, query.to_string(), limit as usize)
+        .await
+}
+
 async fn read_thread(request: &Request, core: &Core) -> Result<Value, ErrorInfo> {
     let thread = request.thread()?;
     let field = |name: &str| request.params.as_ref().and_then(|params| params.get(name));
@@ -1317,7 +1346,10 @@ async fn run_command(
     run_turn(
         id,
         thread,
-        ((start.prompt, start.reply_to), (Default::default(), false)),
+        (
+            (start.prompt, start.reply_to, Default::default()),
+            (Default::default(), false),
+        ),
         stream_id,
         core,
         queue,
@@ -1796,7 +1828,11 @@ async fn start_turn(
     in_flight: &InFlight,
 ) -> bool {
     let parsed = request.thread().and_then(|thread| {
-        let prompt = (request.prompt()?.to_string(), request.reply_to()?);
+        let prompt = (
+            request.prompt()?.to_string(),
+            request.reply_to()?,
+            request.attached()?,
+        );
         Ok((thread, prompt, (request.approvals()?, request.names_mode())))
     });
     let (thread, prompt, allowed) = match parsed {
@@ -1837,8 +1873,8 @@ async fn start_turn(
 async fn run_turn(
     id: u64,
     thread: inocode_core::store::SessionId,
-    ((prompt, reply_to), (mut approvals, names_mode)): (
-        (String, Option<i64>),
+    ((prompt, reply_to, attached), (mut approvals, names_mode)): (
+        (String, Option<i64>, inocode_core::attach::Requested),
         (inocode_core::turn::Approvals, bool),
     ),
     stream_id: u64,
@@ -1865,6 +1901,21 @@ async fn run_turn(
             }
         }
     }
+    let prompt = match core.turn_prompt(thread, prompt, reply_to, attached).await {
+        Ok(prompt) => prompt,
+        Err(error) => {
+            settle(
+                id,
+                stream_id,
+                &queue,
+                &in_flight,
+                cancelled,
+                Terminal::Failed(error),
+            )
+            .await;
+            return;
+        }
+    };
     let claim = match core.begin_turn(thread).await {
         Ok(claim) => claim,
         Err(error) => {
@@ -1884,15 +1935,7 @@ async fn run_turn(
     let (events, mut received) = mpsc::channel(SEND_QUEUE_CAPACITY);
     let relay = |event: TurnEvent| turn_event(id, event);
     let outcome = {
-        let run = core.run_turn(
-            thread,
-            prompt,
-            reply_to,
-            approvals,
-            claim,
-            cancelled.clone(),
-            events,
-        );
+        let run = core.run_turn(thread, prompt, approvals, claim, cancelled.clone(), events);
         tokio::pin!(run);
         loop {
             tokio::select! {

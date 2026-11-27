@@ -4910,3 +4910,297 @@ async fn the_queue_starts_when_idle_waits_after_an_interrupt_and_is_kept_in_the_
     })
     .await;
 }
+
+/// A 1×1 PNG, in base64.
+const PIXEL: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+fn base64(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// The person's message of a Chat Completions request that carries
+/// images: its text and the URLs of its images.
+fn person_with_images(request: &MockRequest) -> (String, Vec<String>) {
+    let messages = request.body["messages"].as_array().expect("messages");
+    let message = messages
+        .iter()
+        .find(|message| message["role"] == "user" && message["content"].is_array())
+        .expect("a user message with parts");
+    let content = message["content"].as_array().expect("parts");
+    let text = content[0]["text"].as_str().expect("text").to_string();
+    let urls = content[1..]
+        .iter()
+        .map(|part| {
+            part["image_url"]["url"]
+                .as_str()
+                .expect("an image")
+                .to_string()
+        })
+        .collect();
+    (text, urls)
+}
+
+#[tokio::test]
+async fn attachments_and_mentions_join_the_persons_message() {
+    with_timeout(async {
+        let (project, _) = project_and_outside("attach");
+        std::fs::write(project.join("doc.txt"), "from the engine\n").expect("doc");
+        let big: String = (1..=20_000).map(|n| format!("line {n}\n")).collect();
+        std::fs::write(project.join("big.txt"), big).expect("big");
+        std::fs::create_dir_all(project.join("src")).expect("src");
+        std::fs::write(project.join("src/main.rs"), "fn main() {}\n").expect("main");
+        let mock = scripted(Vec::new()).await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = project_thread(&mut client, &project).await;
+
+        let events = turn_with(
+            &mut client,
+            2,
+            json!({"thread_id": thread, "prompt": "look at @big.txt and @src",
+            "mentions": ["big.txt", "src"],
+            "attachments": [
+                {"name": "shot.png", "media_type": "image/png", "data": PIXEL},
+                {"name": "notes.txt", "data": base64(b"alpha\nbeta\n")},
+                {"path": "doc.txt"}
+            ]}),
+        )
+        .await;
+        assert_eq!(kinds(&events).last(), Some(&"completed"), "{events:?}");
+
+        let (text, urls) = person_with_images(&chats(&mock)[0]);
+        assert!(
+            text.starts_with(
+                "look at @big.txt and @src\n\nThe person mentioned big.txt:\n1: line 1\n"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains("… cut here at about 25000 tokens: lines 1-"),
+            "{text}"
+        );
+        assert!(text.contains("Read the rest with `read` (path big.txt, from "));
+        assert!(!text.contains("line 20000"));
+        assert!(text.contains("The person mentioned the folder src. Its entries (1):\nmain.rs"));
+        assert!(text.contains("The person attached notes.txt:\n1: alpha\n2: beta"));
+        assert!(text.contains("The person attached doc.txt:\n1: from the engine"));
+        assert!(text
+            .contains("The person attached an image. Image shot.png: 1×1 pixels; shown at 1×1."));
+        assert_eq!(urls.len(), 1);
+        assert!(urls[0].starts_with("data:image/png;base64,"));
+
+        // The message event and thread/read show the stored image, not its data.
+        let person = events
+            .iter()
+            .find(|event| event["message"]["message"]["body"]["from"] == "person")
+            .expect("the person's message");
+        let shown = &person["message"]["message"]["body"]["images"][0];
+        assert_eq!(shown["media_type"], "image/png");
+        assert_eq!(
+            (shown["width"].as_u64(), shown["height"].as_u64()),
+            (Some(1), Some(1))
+        );
+        assert!(std::path::Path::new(shown["path"].as_str().expect("path")).exists());
+        let read = call(
+            &mut client,
+            3,
+            json!({"id": 3, "method": "thread/read", "params": {"thread_id": thread}}),
+        )
+        .await;
+        let stored = read["result"]["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .find(|stored| stored["message"]["body"]["from"] == "person")
+            .expect("stored")
+            .clone();
+        assert_eq!(&stored["message"]["body"]["images"][0], shown);
+        assert!(!stored.to_string().contains(PIXEL));
+        let _ = std::fs::remove_dir_all(&project);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn files_that_cannot_be_sent_refuse_the_turn_before_it_starts() {
+    with_timeout(async {
+        let (project, outside) = project_and_outside("refuse");
+        std::fs::create_dir_all(&outside).expect("outside");
+        std::fs::write(outside.join("secret.txt"), "no").expect("secret");
+        let mock = scripted(Vec::new()).await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = project_thread(&mut client, &project).await;
+        let outside_path = format!(
+            "../{}/secret.txt",
+            outside.file_name().unwrap().to_string_lossy()
+        );
+        let many: Vec<Value> = (0..11)
+            .map(|_| json!({"name": "a.txt", "data": "YQ=="}))
+            .collect();
+        let cases = [
+            (
+                json!({"mentions": [outside_path.clone()]}),
+                "outside the project folder",
+            ),
+            (
+                json!({"attachments": [{"path": outside_path}]}),
+                "outside the project folder",
+            ),
+            (
+                json!({"mentions": ["missing.txt"]}),
+                "is not a file or folder of the project",
+            ),
+            (
+                json!({"attachments": [{"name": "a.png", "data": "%%%"}]}),
+                "not valid base64",
+            ),
+            (
+                json!({"attachments": [{"name": "a.bin", "data": base64(&[0, 1, 2])}]}),
+                "is not an image (png, jpeg, gif, webp), a PDF or a UTF-8 text file",
+            ),
+            (
+                json!({"attachments": [{"name": "big.txt",
+                                         "data": base64(&vec![b'a'; 10 * 1024 * 1024 + 1])}]}),
+                "larger than 10 MiB",
+            ),
+            (json!({"attachments": many}), "at most 10 items"),
+        ];
+        for (index, (files, refusal)) in cases.into_iter().enumerate() {
+            let mut params = json!({"thread_id": thread, "prompt": "see"});
+            params
+                .as_object_mut()
+                .unwrap()
+                .extend(files.as_object().unwrap().clone());
+            let events = turn_with(&mut client, 10 + index as u64, params).await;
+            assert_eq!(kinds(&events), ["failed"], "{events:?}");
+            assert_eq!(events[0]["error"]["code"], "invalid_params");
+            let message = events[0]["error"]["message"].as_str().unwrap_or_default();
+            assert!(message.contains(refusal), "{message}");
+        }
+        let read = call(
+            &mut client,
+            3,
+            json!({"id": 3, "method": "thread/read", "params": {"thread_id": thread}}),
+        )
+        .await;
+        assert_eq!(read["result"]["messages"], json!([]));
+        assert!(chats(&mock).is_empty());
+        let _ = std::fs::remove_dir_all(&project);
+        let _ = std::fs::remove_dir_all(&outside);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn an_image_is_refused_for_a_model_listed_without_image_input() {
+    with_timeout(async {
+        let mock = scripted(Vec::new()).await;
+        let llm = Llm::new(LlmConfig {
+            provider: ProviderKind::OpenAi,
+            auth: inocode_core::oauth::AuthKind::ApiKey,
+            base_url: mock.base_url.clone(),
+            model: "gpt-text-only".to_string(),
+            api_key: "test-key".to_string(),
+            auth_store_path: None,
+            reasoning: Default::default(),
+        })
+        .expect("client");
+        let path = database();
+        let catalog = path.with_extension("files").join("catalog");
+        std::fs::create_dir_all(&catalog).expect("catalog");
+        std::fs::write(
+            catalog.join("models-dev.json"),
+            json!({"fetched_at": 0, "data": {"openai": {"models": {
+                "gpt-text-only": {"modalities": {"input": ["text"], "output": ["text"]}}
+            }}}})
+            .to_string(),
+        )
+        .expect("kept catalog");
+        let store = Store::open(path).await.expect("store");
+        let core = Arc::new(Core::with_llm(llm).with_store(store));
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client).await;
+
+        let events = turn_with(
+            &mut client,
+            2,
+            json!({"thread_id": thread, "prompt": "see",
+                   "attachments": [{"name": "shot.png", "data": PIXEL}]}),
+        )
+        .await;
+        assert_eq!(kinds(&events), ["failed"], "{events:?}");
+        assert_eq!(events[0]["error"]["code"], "invalid_params");
+        let message = events[0]["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("the model gpt-text-only of this thread does not take images"),
+            "{message}"
+        );
+        // Text files still go to it.
+        let events = turn_with(
+            &mut client,
+            3,
+            json!({"thread_id": thread, "prompt": "see",
+                   "attachments": [{"name": "a.txt", "data": base64(b"text")}]}),
+        )
+        .await;
+        assert_eq!(kinds(&events).last(), Some(&"completed"), "{events:?}");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn files_search_matches_paths_fuzzily_and_skips_ignored_files() {
+    with_timeout(async {
+        let (project, _) = project_and_outside("search");
+        std::fs::create_dir_all(project.join("src")).expect("src");
+        std::fs::create_dir_all(project.join("target")).expect("target");
+        std::fs::write(project.join(".gitignore"), "target/\n").expect("gitignore");
+        std::fs::write(project.join("src/attach_file.rs"), "").expect("file");
+        std::fs::write(project.join("src/other.rs"), "").expect("other");
+        std::fs::write(project.join("target/attach_file.rs"), "").expect("ignored");
+        let mock = scripted(Vec::new()).await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = project_thread(&mut client, &project).await;
+
+        let found = call(
+            &mut client,
+            2,
+            json!({"id": 2, "method": "files/search",
+                   "params": {"thread_id": thread, "query": "atfi"}}),
+        )
+        .await;
+        let files = found["result"]["files"].as_array().expect("files");
+        let paths: Vec<&str> = files
+            .iter()
+            .filter_map(|file| file["path"].as_str())
+            .collect();
+        assert_eq!(paths, ["src/attach_file.rs"], "{found}");
+        assert!(files[0]["score"].is_i64());
+
+        let limited = call(
+            &mut client,
+            3,
+            json!({"id": 3, "method": "files/search",
+                   "params": {"thread_id": thread, "query": "rs", "limit": 1}}),
+        )
+        .await;
+        assert_eq!(limited["result"]["files"].as_array().map(Vec::len), Some(1));
+        let refused = call(
+            &mut client,
+            4,
+            json!({"id": 4, "method": "files/search",
+                   "params": {"thread_id": thread, "query": "rs", "limit": 101}}),
+        )
+        .await;
+        assert_eq!(refused["error"]["code"], "invalid_params", "{refused}");
+        let _ = std::fs::remove_dir_all(&project);
+    })
+    .await;
+}

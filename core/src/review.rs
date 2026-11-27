@@ -131,6 +131,7 @@ fn person_messages(conversation: &Conversation) -> Vec<String> {
             Body::User {
                 from: Speaker::Person,
                 parts,
+                ..
             } => Some(split_command_file(&parts.join("\n")).0.to_string()),
             _ => None,
         })
@@ -145,6 +146,7 @@ fn transcript(conversation: &Conversation) -> String {
             Body::User {
                 from: Speaker::Person,
                 parts,
+                ..
             } => {
                 let text = parts.join("\n");
                 let (typed, file) = split_command_file(&text);
@@ -207,6 +209,7 @@ fn request(
             body: Body::User {
                 from: Speaker::Harness("review".to_string()),
                 parts: vec![text],
+                images: Vec::new(),
             },
         }],
     }
@@ -339,6 +342,7 @@ mod tests {
                     body: Body::User {
                         from: Speaker::Person,
                         parts: vec!["fix the build".into()],
+                        images: Vec::new(),
                     },
                 },
                 Message {
@@ -377,6 +381,7 @@ mod tests {
                     body: Body::User {
                         from: Speaker::Harness("continue".into()),
                         parts: vec!["harness text".into()],
+                        images: Vec::new(),
                     },
                 },
             ],
@@ -397,6 +402,7 @@ mod tests {
                 body: Body::User {
                     from: Speaker::Person,
                     parts: vec![message],
+                    images: Vec::new(),
                 },
             }],
         };

@@ -736,7 +736,7 @@ pub const BUILTINS: &[Builtin] = &[
     missing(
         "attach",
         "Attach a file or image to the next message.",
-        "turn/start carries text only; attachments cannot be sent over the protocol yet",
+        "files are attached by the screen, with the attachments of turn/start, not by a command",
     ),
     builtin(
         "devices",
@@ -1633,6 +1633,7 @@ fn markdown(messages: &[crate::store::StoredMessage]) -> String {
             Body::User {
                 from: Speaker::Person,
                 parts,
+                ..
             } => text.push_str(&format!(
                 "## Person (#{})\n\n{}\n\n",
                 stored.seq,
@@ -1641,6 +1642,7 @@ fn markdown(messages: &[crate::store::StoredMessage]) -> String {
             Body::User {
                 from: Speaker::Harness(kind),
                 parts,
+                ..
             } => text.push_str(&format!(
                 "## Harness: {kind} (#{})\n\n{}\n\n",
                 stored.seq,
@@ -2686,6 +2688,7 @@ impl Core {
                 Body::User {
                     from: Speaker::Harness(kind),
                     parts,
+                    ..
                 } if kind == crate::colleague::KIND => Some(json!({
                     "seq": stored.seq, "created": stored.created, "text": parts.join("\n"),
                 })),

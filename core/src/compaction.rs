@@ -287,8 +287,8 @@ pub(crate) fn request_bytes(system: Option<&str>, messages: &[Message], tools: &
     let images: u64 = messages
         .iter()
         .filter_map(|message| match &message.body {
-            Body::ToolResult { images, .. } => Some(images),
-            _ => None,
+            Body::ToolResult { images, .. } | Body::User { images, .. } => Some(images),
+            Body::Assistant { .. } => None,
         })
         .flatten()
         .map(|image| crate::picture::estimated_tokens(image) * IMAGE_BYTES_PER_TOKEN)
@@ -353,6 +353,7 @@ fn instruction(text: String) -> Message {
         body: Body::User {
             from: Speaker::Harness("compaction-request".to_string()),
             parts: vec![text],
+            images: Vec::new(),
         },
     }
 }
@@ -496,6 +497,7 @@ pub(crate) async fn compact_reporting(
             Body::User {
                 from: Speaker::Harness(kind),
                 parts,
+                ..
             } if kind.starts_with(KIND) => parts.first().map(String::as_str),
             _ => None,
         });
@@ -538,6 +540,7 @@ pub(crate) async fn compact_reporting(
         Body::User {
             from: Speaker::Harness(format!("{KIND}{up_to}")),
             parts: vec![record, summary],
+            images: Vec::new(),
         },
         usages,
         failure,
@@ -556,6 +559,7 @@ mod tests {
             body: Body::User {
                 from: Speaker::Person,
                 parts: vec![text.to_string()],
+                images: Vec::new(),
             },
         }
     }
@@ -611,6 +615,7 @@ mod tests {
             body: Body::User {
                 from: Speaker::Harness("compaction:3".into()),
                 parts: vec!["record".into(), "summary".into()],
+                images: Vec::new(),
             },
         };
         let sent = assemble(stored(vec![
@@ -715,6 +720,7 @@ mod tests {
             body: Body::User {
                 from: Speaker::Harness(format!("{KIND}1")),
                 parts: vec!["record".into(), long.clone()],
+                images: Vec::new(),
             },
         };
         let messages = vec![(2, earlier), (3, person(&"p".repeat(5_000)))];
@@ -731,6 +737,7 @@ mod tests {
             body: Body::User {
                 from: Speaker::Harness(format!("{KIND}4")),
                 parts: vec!["record".into(), "summary".into()],
+                images: Vec::new(),
             },
         };
         let big = format!("START{}END", "x".repeat(20_000));
@@ -772,6 +779,7 @@ mod tests {
                 body: Body::User {
                     from: Speaker::Harness(format!("{KIND}1")),
                     parts: vec![],
+                    images: Vec::new(),
                 },
             },
         ];

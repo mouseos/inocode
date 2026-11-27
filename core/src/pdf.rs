@@ -22,15 +22,19 @@ pub(crate) fn is_pdf(path: &Path) -> bool {
 }
 
 fn open(path: &Path) -> Result<pdf_extract::Document, String> {
-    let mut document = pdf_extract::Document::load(path)
+    let document = pdf_extract::Document::load(path)
         .map_err(|error| format!("cannot read the PDF {}: {error}", path.display()))?;
+    unlock(document, &path.display().to_string())
+}
+
+fn unlock(
+    mut document: pdf_extract::Document,
+    name: &str,
+) -> Result<pdf_extract::Document, String> {
     if document.is_encrypted() {
-        document.decrypt("").map_err(|_| {
-            format!(
-                "{} is protected by a password and cannot be read",
-                path.display()
-            )
-        })?;
+        document
+            .decrypt("")
+            .map_err(|_| format!("{name} is protected by a password and cannot be read"))?;
     }
     Ok(document)
 }
@@ -50,22 +54,43 @@ fn little_text(text: &str) -> bool {
 
 /// The text of the pages from `from` on, as many as fit in one call.
 pub(crate) fn text(path: &Path, from: usize) -> Result<String, String> {
-    let document = open(path)?;
+    let (mut answer, next) = pages(&open(path)?, &path.display().to_string(), from)?;
+    if let Some(next) = next {
+        answer.push_str(&format!("… continue with from={next}"));
+    }
+    Ok(answer.trim_end().to_string())
+}
+
+/// The text of the first pages of the PDF in `data`, as many as fit in one
+/// call, and the first page not shown, if any.
+pub(crate) fn data_text(data: &[u8], name: &str) -> Result<(String, Option<usize>), String> {
+    let document = pdf_extract::Document::load_mem(data)
+        .map_err(|error| format!("cannot read the PDF {name}: {error}"))?;
+    let (answer, next) = pages(&unlock(document, name)?, name, 1)?;
+    Ok((answer.trim_end().to_string(), next))
+}
+
+/// The text of the pages of `document` (called `name`) from `from` on, as
+/// many as fit in one call, and the first page not shown, if any.
+fn pages(
+    document: &pdf_extract::Document,
+    name: &str,
+    from: usize,
+) -> Result<(String, Option<usize>), String> {
     let total = document.get_pages().len();
     if total == 0 {
-        return Ok(format!("{} has no pages.", path.display()));
+        return Ok((format!("{name} has no pages."), None));
     }
     if from > total {
         return Err(format!(
-            "{} has {total} pages; page {from} is past the end",
-            path.display()
+            "{name} has {total} pages; page {from} is past the end"
         ));
     }
     let mut shown = String::new();
     let mut last = from - 1;
     let mut scans = Vec::new();
     for number in from..=total.min(from + PAGES - 1) {
-        let text = page_text(&document, number as u32);
+        let text = page_text(document, number as u32);
         let text = text.trim();
         let room = CHARS.saturating_sub(shown.chars().count());
         if number > from && text.chars().count() > room {
@@ -85,17 +110,14 @@ pub(crate) fn text(path: &Path, from: usize) -> Result<String, String> {
         }
         last = number;
     }
-    let mut answer = format!("{} pages {from}-{last} of {total}:{shown}", path.display());
+    let mut answer = format!("{name} pages {from}-{last} of {total}:{shown}");
     if !scans.is_empty() {
         answer.push_str(&format!(
             "Pages {} have almost no text; read one with `page` to see it as an image.\n",
             scans.join(", ")
         ));
     }
-    if last < total {
-        answer.push_str(&format!("… continue with from={}", last + 1));
-    }
-    Ok(answer.trim_end().to_string())
+    Ok((answer, (last < total).then_some(last + 1)))
 }
 
 /// Page `number` drawn as an image, saved in `images`, with its text.

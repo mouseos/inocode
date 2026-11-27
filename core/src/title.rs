@@ -123,6 +123,7 @@ async fn ask(
                 parts: vec![format!(
                     "The person's first message, between the lines:\n---\n{message}\n---"
                 )],
+                images: Vec::new(),
             },
         }],
     };

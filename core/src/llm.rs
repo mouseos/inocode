@@ -445,6 +445,7 @@ impl Llm {
                 body: Body::User {
                     from: Speaker::Person,
                     parts: vec![prompt.to_string()],
+                    images: Vec::new(),
                 },
             }],
         };
@@ -2968,6 +2969,7 @@ mod tests {
                 body: Body::User {
                     from: Speaker::Person,
                     parts: vec!["Weather in Paris?".into()],
+                    images: Vec::new(),
                 },
             }],
         };
@@ -3796,6 +3798,7 @@ mod tests {
                 body: Body::User {
                     from: Speaker::Person,
                     parts: vec!["hi".to_string()],
+                    images: Vec::new(),
                 },
             }],
         };

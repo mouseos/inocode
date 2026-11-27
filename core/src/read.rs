@@ -222,7 +222,7 @@ fn definition(
     Ok(answer)
 }
 
-fn cut(text: &str) -> String {
+pub(crate) fn cut(text: &str) -> String {
     match text.char_indices().nth(LINE_CHARS) {
         Some((end, _)) => format!("{}…", &text[..end]),
         None => text.to_string(),

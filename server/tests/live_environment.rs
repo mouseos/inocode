@@ -102,8 +102,10 @@ async fn requests_that_need_the_system_and_the_date() {
             let outcome = core
                 .run_turn(
                     thread,
-                    prompt.to_string(),
-                    None,
+                    turn::Prompt {
+                        text: prompt.to_string(),
+                        ..Default::default()
+                    },
                     turn::Approvals {
                         mode: turn::Mode::Full,
                     },

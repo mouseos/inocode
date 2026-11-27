@@ -282,35 +282,42 @@ pub(crate) fn providers_of(id: &str) -> &'static [&'static str] {
 /// listed or listed at 0, which subscription providers write for "not
 /// sold per token".
 pub(crate) fn price(catalog: &Value, id: &str) -> Option<Price> {
-    let wanted = [normalized(id), normalized(without_date(id))];
-    for provider in providers_of(id) {
-        let Some(models) = catalog
-            .get(provider)
-            .and_then(|listed| listed.get("models"))
-            .and_then(Value::as_object)
-        else {
-            continue;
-        };
-        let found = models
-            .iter()
-            .find(|(key, _)| wanted.contains(&normalized(key)));
-        if let Some((key, model)) = found {
-            let cost = model.get("cost")?;
-            let rate = |name: &str| cost.get(name).and_then(Value::as_f64);
-            let (input, output) = (rate("input")?, rate("output")?);
-            if input == 0.0 && output == 0.0 {
-                return None;
-            }
-            return Some(Price {
-                input,
-                output,
-                cache_read: rate("cache_read"),
-                cache_write: rate("cache_write"),
-                matched: format!("{provider}/{key}"),
-            });
-        }
+    let (provider, key, model) = listed(catalog, id)?;
+    let cost = model.get("cost")?;
+    let rate = |name: &str| cost.get(name).and_then(Value::as_f64);
+    let (input, output) = (rate("input")?, rate("output")?);
+    if input == 0.0 && output == 0.0 {
+        return None;
     }
-    None
+    Some(Price {
+        input,
+        output,
+        cache_read: rate("cache_read"),
+        cache_write: rate("cache_write"),
+        matched: format!("{provider}/{key}"),
+    })
+}
+
+/// Whether `id` takes images as input, by its models.dev `modalities`;
+/// `None` when the catalog does not list it or does not say.
+pub(crate) fn takes_images(catalog: &Value, id: &str) -> Option<bool> {
+    let (_, _, model) = listed(catalog, id)?;
+    let input = model.get("modalities")?.get("input")?.as_array()?;
+    Some(input.iter().any(|kind| kind == "image"))
+}
+
+/// The models.dev entry of `id`: its provider, key and value.
+fn listed<'a>(catalog: &'a Value, id: &str) -> Option<(&'static str, &'a str, &'a Value)> {
+    let wanted = [normalized(id), normalized(without_date(id))];
+    providers_of(id).iter().find_map(|provider| {
+        catalog
+            .get(provider)?
+            .get("models")?
+            .as_object()?
+            .iter()
+            .find(|(key, _)| wanted.contains(&normalized(key)))
+            .map(|(key, model)| (*provider, key.as_str(), model))
+    })
 }
 
 /// The scores of `id` in the rows of each metric, ranked among the rows.
@@ -520,6 +527,21 @@ mod tests {
         });
         let glm = price(&catalog, "glm-5.3").expect("found under the third name");
         assert_eq!(glm.matched, "zhipuai/glm-5.3");
+    }
+
+    #[test]
+    fn image_input_is_read_from_the_modalities() {
+        let catalog = json!({
+            "openai": {"models": {
+                "gpt-5.2": {"modalities": {"input": ["text", "image"]}},
+                "gpt-text": {"modalities": {"input": ["text"]}},
+                "gpt-unsaid": {}
+            }}
+        });
+        assert_eq!(takes_images(&catalog, "gpt-5-2"), Some(true));
+        assert_eq!(takes_images(&catalog, "gpt-text"), Some(false));
+        assert_eq!(takes_images(&catalog, "gpt-unsaid"), None);
+        assert_eq!(takes_images(&catalog, "unknown-model"), None);
     }
 
     #[tokio::test]

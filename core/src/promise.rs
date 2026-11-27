@@ -138,6 +138,7 @@ pub(crate) fn person_text(message: &Message) -> Option<String> {
         Body::User {
             from: Speaker::Person,
             parts,
+            ..
         } => Some(parts.join("\n")),
         _ => None,
     }
@@ -206,6 +207,7 @@ mod tests {
             body: Body::User {
                 from: Speaker::Person,
                 parts: vec![text.into()],
+                images: Vec::new(),
             },
         }
     }

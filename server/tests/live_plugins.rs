@@ -49,8 +49,10 @@ async fn run(core: &Core, thread: SessionId, prompt: &str) -> (turn::Outcome, Ve
     };
     let run = core.run_turn(
         thread,
-        prompt.to_string(),
-        None,
+        turn::Prompt {
+            text: prompt.to_string(),
+            ..Default::default()
+        },
         turn::Approvals::default(),
         claim,
         cancel,

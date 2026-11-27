@@ -185,7 +185,17 @@ impl Core {
             let (_, cancel) = watch::channel(false);
             let (events, _) = mpsc::channel(1);
             let outcome = core
-                .run_turn(thread, prompt, None, approvals, claim, cancel, events)
+                .run_turn(
+                    thread,
+                    crate::turn::Prompt {
+                        text: prompt,
+                        ..Default::default()
+                    },
+                    approvals,
+                    claim,
+                    cancel,
+                    events,
+                )
                 .await;
             core.end_turn(thread);
             core.after_turn(thread, &outcome.ending);

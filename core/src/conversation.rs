@@ -28,6 +28,9 @@ pub enum Body {
     User {
         from: Speaker,
         parts: Vec<String>,
+        /// Images the person attached, shown after the text.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<Image>,
     },
     Assistant {
         origin: Origin,
@@ -150,8 +153,24 @@ pub fn to_chat_completions(
             flush_images(&mut messages, &mut pending_images);
         }
         match body {
-            Body::User { parts, .. } => {
+            Body::User { parts, images, .. } if images.is_empty() => {
                 messages.push(json!({ "role": "user", "content": parts.join("\n\n") }));
+            }
+            Body::User { parts, images, .. } => {
+                let mut text = parts.join("\n\n");
+                let mut shown = Vec::new();
+                for image in images {
+                    match image.data_url() {
+                        Ok(url) => shown.push(json!({
+                            "type": "image_url",
+                            "image_url": { "url": url },
+                        })),
+                        Err(missing) => text.push_str(&format!("\n{missing}")),
+                    }
+                }
+                let mut content = vec![json!({ "type": "text", "text": text })];
+                content.append(&mut shown);
+                messages.push(json!({ "role": "user", "content": content }));
             }
             Body::Assistant { origin, parts, .. } => {
                 let replays = target.matches(origin);
@@ -259,11 +278,12 @@ pub fn to_anthropic(
         let transient =
             matches!(body, Body::User { from: Speaker::Harness(kind), .. } if kind == STATE);
         let (role, blocks) = match body {
-            Body::User { parts, .. } => (
+            Body::User { parts, images, .. } => (
                 "user",
                 parts
                     .iter()
                     .map(|text| json!({ "type": "text", "text": text }))
+                    .chain(images.iter().map(anthropic_image))
                     .collect(),
             ),
             Body::Assistant { origin, parts, .. } => {
@@ -306,19 +326,7 @@ pub fn to_anthropic(
                     json!(content)
                 } else {
                     let mut blocks = vec![json!({ "type": "text", "text": content })];
-                    for image in images {
-                        blocks.push(match image.data() {
-                            Ok(data) => json!({
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": image.media_type,
-                                    "data": data,
-                                },
-                            }),
-                            Err(missing) => json!({ "type": "text", "text": missing }),
-                        });
-                    }
+                    blocks.extend(images.iter().map(anthropic_image));
                     Value::Array(blocks)
                 };
                 let mut block = json!({
@@ -366,6 +374,34 @@ pub fn to_anthropic(
     Ok(fields)
 }
 
+/// An Anthropic image block, or a text block saying the image is gone.
+fn anthropic_image(image: &Image) -> Value {
+    match image.data() {
+        Ok(data) => json!({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": image.media_type,
+                "data": data,
+            },
+        }),
+        Err(missing) => json!({ "type": "text", "text": missing }),
+    }
+}
+
+/// A Responses `input_image` item, or an `input_text` item saying the image
+/// is gone.
+fn responses_image(image: &Image) -> Value {
+    match image.data_url() {
+        Ok(url) => json!({
+            "type": "input_image",
+            "image_url": url,
+            "detail": "auto",
+        }),
+        Err(missing) => json!({ "type": "input_text", "text": missing }),
+    }
+}
+
 /// `instructions` and `input` for a Responses body.
 pub fn to_responses(
     conversation: &Conversation,
@@ -376,12 +412,13 @@ pub fn to_responses(
     let mut input = Vec::new();
     for body in turns {
         match body {
-            Body::User { parts, .. } => input.push(json!({
+            Body::User { parts, images, .. } => input.push(json!({
                 "type": "message",
                 "role": "user",
                 "content": parts
                     .iter()
                     .map(|text| json!({ "type": "input_text", "text": text }))
+                    .chain(images.iter().map(responses_image))
                     .collect::<Vec<_>>(),
             })),
             Body::Assistant { origin, parts, .. } => {
@@ -426,16 +463,7 @@ pub fn to_responses(
                     json!(content)
                 } else {
                     let mut items = vec![json!({ "type": "input_text", "text": content })];
-                    for image in images {
-                        items.push(match image.data_url() {
-                            Ok(url) => json!({
-                                "type": "input_image",
-                                "image_url": url,
-                                "detail": "auto",
-                            }),
-                            Err(missing) => json!({ "type": "input_text", "text": missing }),
-                        });
-                    }
+                    items.extend(images.iter().map(responses_image));
                     Value::Array(items)
                 };
                 input.push(json!({
@@ -782,6 +810,7 @@ mod tests {
             Body::User {
                 from: Speaker::Person,
                 parts: vec![text.to_string()],
+                images: Vec::new(),
             },
         )
     }
@@ -961,6 +990,67 @@ mod tests {
     }
 
     #[test]
+    fn images_of_the_persons_message_reach_each_format() {
+        let dir = tempfile::tempdir().expect("dir");
+        let path = dir.path().join("a.png");
+        std::fs::write(&path, b"PNG").expect("image");
+        let image = |path: &std::path::Path| Image {
+            path: path.to_string_lossy().into_owned(),
+            media_type: "image/png".into(),
+            width: 10,
+            height: 10,
+        };
+        let gone = dir.path().join("gone.png");
+        let conversation = Conversation {
+            system: None,
+            messages: vec![message(
+                "1",
+                Body::User {
+                    from: Speaker::Person,
+                    parts: vec!["look".into(), "note".into()],
+                    images: vec![image(&path), image(&gone)],
+                },
+            )],
+        };
+        let data = "UE5H"; // base64 of "PNG"
+        let missing = format!("(the image {} is no longer available)", gone.display());
+
+        let anthropic = to_anthropic(&conversation, "m1").expect("converts");
+        assert_eq!(
+            anthropic["messages"][0]["content"],
+            json!([
+                {"type": "text", "text": "look"},
+                {"type": "text", "text": "note"},
+                {"type": "image",
+                 "source": {"type": "base64", "media_type": "image/png", "data": data}},
+                {"type": "text", "text": missing, "cache_control": {"type": "ephemeral"}}
+            ])
+        );
+
+        let responses = to_responses(&conversation, "m1").expect("converts");
+        assert_eq!(
+            responses["input"][0]["content"],
+            json!([
+                {"type": "input_text", "text": "look"},
+                {"type": "input_text", "text": "note"},
+                {"type": "input_image",
+                 "image_url": format!("data:image/png;base64,{data}"), "detail": "auto"},
+                {"type": "input_text", "text": missing}
+            ])
+        );
+
+        let chat = to_chat_completions(&conversation, "m1").expect("converts");
+        assert_eq!(
+            chat["messages"][0],
+            json!({"role": "user", "content": [
+                {"type": "text", "text": format!("look\n\nnote\n{missing}")},
+                {"type": "image_url",
+                 "image_url": {"url": format!("data:image/png;base64,{data}")}}
+            ]})
+        );
+    }
+
+    #[test]
     fn chat_completions_shape_and_same_model_reasoning() {
         let conversation = tool_round(ProviderKind::OpenAi, json!({"reasoning_content": "think"}));
         let fields = to_chat_completions(&conversation, "m1").expect("converts");
@@ -1014,6 +1104,7 @@ mod tests {
             body: Body::User {
                 from: Speaker::Harness(STATE.into()),
                 parts: vec!["plan".into()],
+                images: Vec::new(),
             },
         });
         let fields = to_anthropic(&with_state, "m1").expect("converts");

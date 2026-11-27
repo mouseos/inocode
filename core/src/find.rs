@@ -330,6 +330,94 @@ fn render(root: &Path, mut found: Vec<Found>, total: usize) -> String {
     answer
 }
 
+/// Up to `limit` files under `root` whose relative path (with `/`) holds
+/// the letters of `query` in order, ignoring case and spaces, best first,
+/// with their scores; every file, shortest path first, for an empty query.
+/// Files `.gitignore` leaves out are not listed, as [`walk`] lists them.
+pub(crate) fn fuzzy_paths(root: &Path, query: &str, limit: usize) -> Vec<(String, i64)> {
+    let query: Vec<char> = query
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect();
+    let scored = Mutex::new(Vec::new());
+    walk(root, None, || {
+        let (scored, query) = (&scored, &query);
+        Box::new(move |path| {
+            let relative = path.strip_prefix(root).unwrap_or(path);
+            let relative = relative.to_string_lossy().replace('\\', "/");
+            if let Some(score) = fuzzy_score(&relative, query) {
+                if let Ok(mut scored) = scored.lock() {
+                    scored.push((relative, score));
+                }
+            }
+        })
+    });
+    let mut scored = scored.into_inner().unwrap_or_else(|e| e.into_inner());
+    scored.sort_by(|(a, a_score), (b, b_score)| {
+        b_score
+            .cmp(a_score)
+            .then(a.len().cmp(&b.len()))
+            .then(a.cmp(b))
+    });
+    scored.truncate(limit);
+    scored
+}
+
+/// How well `query` (lower case) matches `path`, or `None` when its
+/// letters are not all in `path` in order. Each matched letter counts, more
+/// when it follows the previous match, starts a word (after `/`, `_`, `-`,
+/// `.`, a space or a lower-case letter before an upper-case one) or lies in
+/// the file's name; letters skipped between the first and last match cost
+/// a little. The best of the matches starting at each place is taken.
+fn fuzzy_score(path: &str, query: &[char]) -> Option<i64> {
+    if query.is_empty() {
+        return Some(0);
+    }
+    let chars: Vec<char> = path.chars().collect();
+    let name_start = chars.iter().rposition(|&c| c == '/').map_or(0, |i| i + 1);
+    let lower: Vec<char> = chars
+        .iter()
+        .map(|c| c.to_lowercase().next().unwrap_or(*c))
+        .collect();
+    let starts_word = |i: usize| {
+        i == 0
+            || matches!(chars[i - 1], '/' | '_' | '-' | '.' | ' ')
+            || (chars[i - 1].is_lowercase() && chars[i].is_uppercase())
+    };
+    let mut best = None;
+    for start in (0..lower.len()).filter(|&i| lower[i] == query[0]) {
+        let mut score = 0i64;
+        let mut previous: Option<usize> = None;
+        let mut at = start;
+        let mut matched = 0;
+        while matched < query.len() && at < lower.len() {
+            if lower[at] == query[matched] {
+                score += 16;
+                if previous == Some(at.wrapping_sub(1)) {
+                    score += 8;
+                }
+                if starts_word(at) {
+                    score += 8;
+                }
+                if at >= name_start {
+                    score += 4;
+                }
+                if let Some(previous) = previous {
+                    score -= (at - previous - 1) as i64;
+                }
+                previous = Some(at);
+                matched += 1;
+            }
+            at += 1;
+        }
+        if matched == query.len() {
+            best = Some(best.map_or(score, |best: i64| best.max(score)));
+        }
+    }
+    best
+}
+
 fn cut(text: &str) -> String {
     match text.char_indices().nth(LINE_CHARS) {
         Some((end, _)) => format!("{}…", &text[..end]),
@@ -368,6 +456,21 @@ mod tests {
     fn find(dir: &Path, arguments: serde_json::Value) -> String {
         let arguments: Arguments = serde_json::from_value(arguments).expect("arguments");
         search(dir, &arguments).expect("search")
+    }
+
+    #[test]
+    fn paths_match_fuzzily_best_first_without_ignored_files() {
+        let dir = project();
+        let found = fuzzy_paths(dir.path(), "src MAIN", 20);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].0, "src/main.rs");
+        // Both have the letters; the file name that starts with them wins.
+        let found = fuzzy_paths(dir.path(), "rs", 20);
+        let paths: Vec<&str> = found.iter().map(|(path, _)| path.as_str()).collect();
+        assert_eq!(paths, ["src/lib.rs", "src/main.rs"]);
+        assert!(found[0].1 >= found[1].1);
+        assert!(fuzzy_paths(dir.path(), "out", 20).is_empty());
+        assert_eq!(fuzzy_paths(dir.path(), "", 2).len(), 2);
     }
 
     #[test]

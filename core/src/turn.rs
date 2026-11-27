@@ -264,12 +264,13 @@ pub struct Asked {
     pub questions: serde_json::Value,
 }
 
-/// What the person sent to start a turn: the text, and the earlier message
-/// of the thread it replies to, if any (its seq).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// What the person sent to start a turn: the text, the earlier message of
+/// the thread it replies to, if any (its seq), and the files sent with it.
+#[derive(Debug, Clone, Default)]
 pub struct Prompt {
     pub text: String,
     pub reply_to: Option<i64>,
+    pub attached: crate::attach::Attached,
 }
 
 /// Characters of a replied-to message that are quoted; the rest is read
@@ -309,6 +310,7 @@ async fn quote(store: &Store, session: SessionId, seq: i64) -> Result<Body, Erro
         Body::User {
             from: Speaker::Person,
             parts,
+            ..
         } => ("the person".to_string(), parts.join("\n")),
         Body::User { parts, .. } => ("the harness".to_string(), parts.join("\n")),
         Body::Assistant { parts, .. } => (
@@ -343,6 +345,7 @@ async fn quote(store: &Store, session: SessionId, seq: i64) -> Result<Body, Erro
     Ok(Body::User {
         from: Speaker::Harness(REPLY_KIND.to_string()),
         parts: vec![note],
+        images: Vec::new(),
     })
 }
 
@@ -382,6 +385,7 @@ async fn open_issues(store: &Store, project: Option<ProjectId>) -> Result<Option
              shows more):\n{}",
             lines.join("\n")
         )],
+        images: Vec::new(),
     }))
 }
 
@@ -1439,6 +1443,7 @@ impl Thread<'_> {
         self.record(vec![Body::User {
             from: Speaker::Harness(ESCALATION_KIND.to_string()),
             parts: vec![note],
+            images: Vec::new(),
         }])
         .await?;
         let options: Vec<serde_json::Value> = options
@@ -1654,6 +1659,7 @@ impl Thread<'_> {
         self.record(vec![Body::User {
             from: Speaker::Harness(crate::goal::GOAL_KIND.to_string()),
             parts: vec![text],
+            images: Vec::new(),
         }])
         .await?;
         Ok(true)
@@ -1711,6 +1717,7 @@ impl Thread<'_> {
                          finding was not applied."
                             .to_string(),
                     ],
+                    images: Vec::new(),
                 }])
                 .await?;
                 return Ok(false);
@@ -1737,6 +1744,7 @@ impl Thread<'_> {
         self.record(vec![Body::User {
             from: Speaker::Harness(crate::goal::GOAL_KIND.to_string()),
             parts: vec![text],
+            images: Vec::new(),
         }])
         .await?;
         Ok(goes_on)
@@ -2010,6 +2018,7 @@ fn person(text: String) -> Body {
     Body::User {
         from: Speaker::Person,
         parts: vec![text],
+        images: Vec::new(),
     }
 }
 
@@ -2098,7 +2107,7 @@ pub async fn run(
         if matches!(ending, Ending::Completed | Ending::Length) {
             prompt = Prompt {
                 text: left.join("\n\n"),
-                reply_to: None,
+                ..Prompt::default()
             };
             continue;
         }
@@ -2504,7 +2513,15 @@ async fn steps(
     }
     thread.request = prompt.text.clone();
     thread.advised_from = thread.conversation.messages.len();
-    opening.push(person(prompt.text));
+    let images = thread
+        .store
+        .files_folder()
+        .join("images")
+        .join(format!("thread-{}", thread.session.0));
+    match crate::attach::message(prompt.text, prompt.attached, images).await {
+        Ok(message) => opening.push(message),
+        Err(error) => return Ending::Failed(error),
+    }
     if let Err(error) = thread.record(opening).await {
         return Ending::Failed(error);
     }
@@ -2546,6 +2563,7 @@ async fn steps(
                 body: Body::User {
                     from: Speaker::Harness(crate::conversation::STATE.to_string()),
                     parts: vec![state],
+                    images: Vec::new(),
                 },
             });
         }
@@ -2614,6 +2632,7 @@ async fn steps(
             bodies.push(Body::User {
                 from: Speaker::Harness(RESUME_KIND.to_string()),
                 parts: vec![RESUME.to_string()],
+                images: Vec::new(),
             });
         }
         let sign = match &thread.colleague {
@@ -2636,6 +2655,7 @@ async fn steps(
                     "Stopped: this delegated task used up its budget of {} tokens.",
                     thread.budget.unwrap_or_default()
                 )],
+                images: Vec::new(),
             };
             if let Err(error) = thread.record(vec![note]).await {
                 return Ending::Failed(error);

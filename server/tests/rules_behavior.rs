@@ -87,6 +87,7 @@ async fn decide(llm: &Llm, system: String, scenario: &Value) -> Result<String, S
             body: Body::User {
                 from: Speaker::Person,
                 parts: vec![prompt],
+                images: Vec::new(),
             },
         }],
     };

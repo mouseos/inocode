@@ -8,6 +8,7 @@
 pub mod accounts;
 mod agent_tools;
 mod ask;
+pub mod attach;
 mod audio;
 mod camera;
 #[cfg(windows)]
@@ -156,6 +157,12 @@ impl Request {
                 ErrorInfo::new("invalid_params", "\"reply_to\" must be a message seq")
             }),
         }
+    }
+
+    /// The files a `turn/start` sends with its prompt: `attachments` and
+    /// `mentions`, both optional.
+    pub fn attached(&self) -> Result<attach::Requested, ErrorInfo> {
+        attach::Requested::parse(self.params.as_ref())
     }
 
     /// The answer of a `turn/answer` request: the question's id
@@ -2034,14 +2041,96 @@ impl Core {
         mcp::subscribe(self.store()?, params).await
     }
 
+    /// What the person sends to start a turn of `thread`: `text`, the
+    /// message it replies to, and the files of `requested`, read now from
+    /// the data sent or the thread's project folder. Refused with
+    /// `invalid_params`, before anything is stored, when a file cannot be
+    /// read or the thread's model is known not to take images
+    /// (docs/evidence/input-attachments.md, docs/evidence/file-mentions.md).
+    pub async fn turn_prompt(
+        &self,
+        thread: SessionId,
+        text: String,
+        reply_to: Option<i64>,
+        requested: attach::Requested,
+    ) -> Result<turn::Prompt, ErrorInfo> {
+        let mut prompt = turn::Prompt {
+            text,
+            reply_to,
+            attached: Default::default(),
+        };
+        if requested.is_empty() {
+            return Ok(prompt);
+        }
+        let store = self.store()?;
+        if !store.session_exists(thread).await? {
+            return Err(unknown_thread());
+        }
+        let folder = store
+            .session_project(thread)
+            .await?
+            .map(|(_, key)| std::path::PathBuf::from(key));
+        let attached = attach::gather(requested, folder).await?;
+        if let Some(image) = attached.first_image() {
+            let model = self.thread_client(thread).await?;
+            let listed = catalog::kept(&store.files_folder().join("catalog"), "models-dev");
+            if listed.and_then(|listed| catalog::takes_images(&listed, model.model()))
+                == Some(false)
+            {
+                return Err(ErrorInfo::new(
+                    "invalid_params",
+                    format!(
+                        "the model {} of this thread does not take images, so {image} cannot \
+                         be shown to it; choose a model that reads images, or send the message \
+                         without it",
+                        model.model()
+                    ),
+                ));
+            }
+        }
+        prompt.attached = attached;
+        Ok(prompt)
+    }
+
+    /// `files/search`: up to `limit` files of the project folder of
+    /// `thread` whose paths match `query` fuzzily, best first, leaving out
+    /// what `.gitignore` leaves out.
+    pub async fn search_files(
+        &self,
+        thread: SessionId,
+        query: String,
+        limit: usize,
+    ) -> Result<Value, ErrorInfo> {
+        let store = self.store()?;
+        if !store.session_exists(thread).await? {
+            return Err(unknown_thread());
+        }
+        let folder = store
+            .session_project(thread)
+            .await?
+            .map(|(_, key)| std::path::PathBuf::from(key))
+            .ok_or_else(|| {
+                ErrorInfo::new(
+                    "invalid_params",
+                    "this thread has no project folder to search",
+                )
+            })?;
+        let found = tokio::task::spawn_blocking(move || find::fuzzy_paths(&folder, &query, limit))
+            .await
+            .map_err(|error| ErrorInfo::new("internal", error.to_string()))?;
+        let files: Vec<Value> = found
+            .into_iter()
+            .map(|(path, score)| json!({ "path": path, "score": score }))
+            .collect();
+        Ok(json!({ "files": files }))
+    }
+
     /// Runs the turn [`Self::begin_turn`] claimed. Its events go to
     /// `events` and to those watching the thread.
-    #[allow(clippy::too_many_arguments)]
     pub async fn run_turn(
         &self,
         thread: SessionId,
-        prompt: String,
-        reply_to: Option<i64>,
+        prompt: turn::Prompt,
         approvals: turn::Approvals,
         claim: Claim,
         cancel: watch::Receiver<bool>,
@@ -2049,7 +2138,7 @@ impl Core {
     ) -> Outcome {
         let _ = self.activity.send((thread, Activity::TurnStarted));
         let outcome = self
-            .run_claimed(thread, prompt, reply_to, approvals, claim, cancel, events)
+            .run_claimed(thread, prompt, approvals, claim, cancel, events)
             .await;
         let (ending, error) = match &outcome.ending {
             turn::Ending::Interrupted => ("cancelled", None),
@@ -2067,12 +2156,10 @@ impl Core {
         outcome
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn run_claimed(
         &self,
         thread: SessionId,
-        prompt: String,
-        reply_to: Option<i64>,
+        prompt: turn::Prompt,
         approvals: turn::Approvals,
         claim: Claim,
         cancel: watch::Receiver<bool>,
@@ -2150,10 +2237,6 @@ impl Core {
             }
         }
         let snapshot = self.take_snapshot(thread).await.err();
-        let prompt = turn::Prompt {
-            text: prompt,
-            reply_to,
-        };
         // The turn stops on its connection's cancel or on `turn/interrupt`
         // from any connection.
         let (stop, stopped) = watch::channel(false);

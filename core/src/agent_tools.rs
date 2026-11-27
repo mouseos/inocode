@@ -1045,6 +1045,7 @@ mod tests {
             body: Body::User {
                 from: Speaker::Person,
                 parts: vec![long],
+                images: Vec::new(),
             },
         };
         let text = render(&message);
