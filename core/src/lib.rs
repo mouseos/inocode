@@ -814,6 +814,10 @@ pub struct Core {
     provider: Provider,
     store: Option<Store>,
     turns: Mutex<HashMap<SessionId, Running>>,
+    /// How many times each thread's choices were written, changed only
+    /// while `turns` is held: a turn compares it with the count when it was
+    /// asked for, so a choice made while it starts is not lost.
+    choices_written: Mutex<HashMap<SessionId, u64>>,
     /// The credential store; `None` is [`oauth::Store::default_path`].
     credentials: Option<std::path::PathBuf>,
     /// Clients by everything that made them, so a changed provider gets a
@@ -860,6 +864,7 @@ impl Core {
             provider,
             store: None,
             turns: Mutex::new(HashMap::new()),
+            choices_written: Mutex::new(HashMap::new()),
             credentials: None,
             clients: Mutex::new(HashMap::new()),
             started: Started::default(),
@@ -1299,6 +1304,27 @@ impl Core {
     /// Claims `thread` for a new turn and makes its model. One turn runs
     /// per thread; [`Self::end_turn`] releases it.
     pub async fn begin_turn(&self, thread: SessionId) -> Result<Claim, ErrorInfo> {
+        let asked = self.choices_seen(thread);
+        self.begin_turn_asked(thread, asked).await
+    }
+
+    /// How many times `thread`'s choices were written so far; given to
+    /// [`Self::begin_turn_asked`] when a turn is asked for.
+    pub fn choices_seen(&self, thread: SessionId) -> u64 {
+        let _turns = self.turns.lock();
+        self.choices_written
+            .lock()
+            .map(|written| written.get(&thread).copied().unwrap_or(0))
+            .unwrap_or(0)
+    }
+
+    /// [`Self::begin_turn`] for a turn asked for when `thread`'s choices had
+    /// been written `asked` times: choices written since reach the turn.
+    pub async fn begin_turn_asked(
+        &self,
+        thread: SessionId,
+        asked: u64,
+    ) -> Result<Claim, ErrorInfo> {
         if !self.store()?.session_exists(thread).await? {
             return Err(unknown_thread());
         }
@@ -1310,33 +1336,58 @@ impl Core {
             .waiting(thread)
             .await
             .is_ok_and(|waiting| !waiting.is_empty());
-        let mut turns = self.turns.lock().map_err(|_| poisoned_turns())?;
-        if turns.contains_key(&thread) {
-            return Err(ErrorInfo::new(
-                "turn_running",
-                "a turn is already running in this thread",
-            ));
+        // The guard is not held across the awaits below.
+        let (steer, model, mode, cancel, changed) = {
+            let mut turns = self.turns.lock().map_err(|_| poisoned_turns())?;
+            if turns.contains_key(&thread) {
+                return Err(ErrorInfo::new(
+                    "turn_running",
+                    "a turn is already running in this thread",
+                ));
+            }
+            let (steer_sender, steer) = mpsc::unbounded_channel();
+            let (model_sender, model) = watch::channel(model);
+            let (mode_sender, mode) = watch::channel(None);
+            let (cancel_sender, cancel) = watch::channel(false);
+            turns.insert(
+                thread,
+                Running {
+                    steer: steer_sender,
+                    model: model_sender,
+                    mode: mode_sender,
+                    cancel: cancel_sender,
+                    events: None,
+                    waiting,
+                },
+            );
+            // Sent while `turns` is held, so the statuses of a thread go out in
+            // the order its turns begin and end.
+            let _ = self
+                .activity
+                .send((thread, Activity::Status(ThreadStatus::Running)));
+            let changed = self
+                .choices_written
+                .lock()
+                .map(|written| written.get(&thread).copied().unwrap_or(0) != asked)
+                .unwrap_or(false);
+            (steer, model, mode, cancel, changed)
+        };
+        if changed {
+            // Written before the turn was registered: read back what was
+            // kept and hand it to the turn as a change.
+            let client = self.thread_client(thread).await;
+            let mode = self.thread_mode(thread).await;
+            if let Ok(turns) = self.turns.lock() {
+                if let Some(running) = turns.get(&thread) {
+                    if let Ok(client) = client {
+                        running.model.send_replace(client);
+                    }
+                    if let Ok(mode) = mode {
+                        running.mode.send_replace(Some(mode.unwrap_or_default()));
+                    }
+                }
+            }
         }
-        let (steer_sender, steer) = mpsc::unbounded_channel();
-        let (model_sender, model) = watch::channel(model);
-        let (mode_sender, mode) = watch::channel(None);
-        let (cancel_sender, cancel) = watch::channel(false);
-        turns.insert(
-            thread,
-            Running {
-                steer: steer_sender,
-                model: model_sender,
-                mode: mode_sender,
-                cancel: cancel_sender,
-                events: None,
-                waiting,
-            },
-        );
-        // Sent while `turns` is held, so the statuses of a thread go out in
-        // the order its turns begin and end.
-        let _ = self
-            .activity
-            .send((thread, Activity::Status(ThreadStatus::Running)));
         Ok(Claim {
             steer,
             model,
@@ -1734,6 +1785,9 @@ impl Core {
             .map_err(|error| ErrorInfo::new("internal", error.to_string()))?;
         self.store()?.set_thread_settings(thread, text).await?;
         if let Ok(turns) = self.turns.lock() {
+            if let Ok(mut written) = self.choices_written.lock() {
+                *written.entry(thread).or_default() += 1;
+            }
             if let Some(running) = turns.get(&thread) {
                 if let Some(client) = client {
                     running.model.send_replace(client);

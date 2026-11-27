@@ -1444,7 +1444,7 @@ async fn run_command(
         thread,
         (
             (start.prompt, start.reply_to, Default::default()),
-            (Default::default(), false, None),
+            (Default::default(), false, None, core.choices_seen(thread)),
         ),
         stream_id,
         core,
@@ -1975,10 +1975,14 @@ async fn start_turn(
     pending.insert(id, Generation::Running(cancel_tx));
     drop(pending);
 
+    // Counted when the turn is asked for, so a choice written from now on
+    // reaches it even if it is written before the turn is registered.
+    let (approvals, names_mode, plan) = allowed;
+    let asked = core.choices_seen(thread);
     tokio::spawn(run_turn(
         id,
         thread,
-        (prompt, allowed),
+        (prompt, (approvals, names_mode, plan, asked)),
         stream_id,
         Arc::clone(core),
         queue.clone(),
@@ -1989,8 +1993,9 @@ async fn start_turn(
 }
 
 /// What a `turn/start` chose for its turn: the approvals, whether it named
-/// its mode, and plan mode when it sets it.
-type TurnChoices = (inocode_core::turn::Approvals, bool, Option<bool>);
+/// its mode, plan mode when it sets it, and how many times the thread's
+/// choices had been written when it was asked for.
+type TurnChoices = (inocode_core::turn::Approvals, bool, Option<bool>, u64);
 
 /// Runs one turn and relays its events. The turn goes on when the
 /// connection closes: what it makes is stored and `thread/read` returns it.
@@ -1998,7 +2003,7 @@ type TurnChoices = (inocode_core::turn::Approvals, bool, Option<bool>);
 async fn run_turn(
     id: u64,
     thread: inocode_core::store::SessionId,
-    ((prompt, reply_to, attached), (mut approvals, names_mode, plan)): (
+    ((prompt, reply_to, attached), (mut approvals, names_mode, plan, asked)): (
         (String, Option<i64>, inocode_core::attach::Requested),
         TurnChoices,
     ),
@@ -2023,7 +2028,7 @@ async fn run_turn(
             return;
         }
     };
-    let claim = match core.begin_turn(thread).await {
+    let claim = match core.begin_turn_asked(thread, asked).await {
         Ok(claim) => claim,
         Err(error) => {
             settle(
