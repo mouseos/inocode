@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use crate::conversation::{AssistantPart, Body, Message, Speaker};
 use crate::store::{HistoryQuery, NewNote, Note, NoteId, NoteKind, NoteQuery, ProjectId};
 use crate::store::{SessionId, Source as NoteSource, ThreadSummary};
-use crate::{turn, Choice, Core, ErrorInfo};
+use crate::{turn, Activity, Choice, Core, ErrorInfo, ThreadChange};
 
 /// When a command may be used while a turn of its thread runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1591,6 +1591,7 @@ fn summary_view(summary: &ThreadSummary) -> Value {
         "created": summary.created,
         "last_activity": summary.last_activity,
         "messages": summary.messages,
+        "archived": summary.archived,
     })
 }
 
@@ -1714,11 +1715,17 @@ async fn git(folder: &Path, arguments: &[&str]) -> Result<String, ErrorInfo> {
 
 impl Core {
     /// The threads, the most recently active first, for `thread/list`:
-    /// only those of the project with the key `project` when given.
-    pub async fn threads(&self, project: Option<&str>, limit: usize) -> Result<Value, ErrorInfo> {
+    /// only those of the project with the key `project` when given, and
+    /// only the archived ones or only the others, as `archived` says.
+    pub async fn threads(
+        &self,
+        project: Option<&str>,
+        archived: bool,
+        limit: usize,
+    ) -> Result<Value, ErrorInfo> {
         let summaries = self
             .store()?
-            .sessions(project.map(str::to_string), limit)
+            .sessions(project.map(str::to_string), Some(archived), limit)
             .await?;
         let mut threads = Vec::with_capacity(summaries.len());
         for summary in &summaries {
@@ -1727,6 +1734,104 @@ impl Core {
             threads.push(view);
         }
         Ok(json!({ "threads": threads }))
+    }
+
+    /// `thread/rename`: gives `thread` the title `title`.
+    pub async fn rename_thread(&self, thread: SessionId, title: &str) -> Result<Value, ErrorInfo> {
+        if !self.store()?.rename_session(thread, title).await? {
+            return Err(crate::unknown_thread());
+        }
+        self.announce_title(thread, title).await;
+        Ok(json!({ "thread_id": thread.0, "title": title }))
+    }
+
+    /// `thread/delete` and `/delete confirm`: deletes `thread` for good,
+    /// with its commands and files. Refused while a turn runs.
+    pub async fn delete_thread(&self, thread: SessionId) -> Result<Value, ErrorInfo> {
+        let store = self.store()?;
+        if !store.session_exists(thread).await? {
+            return Err(crate::unknown_thread());
+        }
+        if self.turn_running(thread) {
+            return Err(ErrorInfo::new(
+                "turn_running",
+                "a turn is running in this thread; delete it when the turn ends",
+            ));
+        }
+        store.delete_session(thread).await?;
+        crate::shell::stop_all(&store.files_folder().join("logs"), thread);
+        let kept = store.remove_thread_files(thread).await;
+        let _ = self
+            .activity
+            .send((thread, Activity::Changed(ThreadChange::Deleted)));
+        Ok(json!({ "deleted": thread.0, "files_not_removed": kept }))
+    }
+
+    /// `thread/archive` and `thread/unarchive`. An archived thread is left
+    /// out of `thread/list` and refuses new turns with `thread_archived`
+    /// until it is unarchived; it can still be read. Archiving is refused
+    /// while a turn runs. Those watching are told only when the state
+    /// changes.
+    pub async fn set_thread_archived(
+        &self,
+        thread: SessionId,
+        archived: bool,
+    ) -> Result<Value, ErrorInfo> {
+        let store = self.store()?;
+        if archived && self.turn_running(thread) {
+            return Err(ErrorInfo::new(
+                "turn_running",
+                "a turn is running in this thread; archive it when the turn ends",
+            ));
+        }
+        let before = store
+            .set_archived(thread, archived)
+            .await?
+            .ok_or_else(crate::unknown_thread)?;
+        if before != archived {
+            let change = match archived {
+                true => ThreadChange::Archived,
+                false => ThreadChange::Unarchived,
+            };
+            let _ = self.activity.send((thread, Activity::Changed(change)));
+        }
+        Ok(json!({ "thread_id": thread.0, "archived": archived }))
+    }
+
+    /// `thread/export`: `thread` as Markdown or JSON text, as `/export`
+    /// gives it without a path.
+    pub async fn export_thread(&self, thread: SessionId, format: &str) -> Result<Value, ErrorInfo> {
+        if !self.store()?.session_exists(thread).await? {
+            return Err(crate::unknown_thread());
+        }
+        self.export(thread, Some(format), None).await
+    }
+
+    /// `thread/search` and `/history`: up to `limit` messages of every
+    /// thread matching `query`.
+    pub async fn search_threads(&self, query: &str, limit: usize) -> Result<Value, ErrorInfo> {
+        let found = self
+            .store()?
+            .search_history(HistoryQuery {
+                text: query.to_string(),
+                project: None,
+                since: None,
+                until: None,
+                limit,
+                budget: Duration::from_secs(2),
+            })
+            .await?;
+        let hits: Vec<Value> = found
+            .items
+            .iter()
+            .map(|hit| {
+                json!({
+                    "thread_id": hit.session.0, "seq": hit.seq, "role": hit.role,
+                    "created": hit.created, "snippet": hit.snippet,
+                })
+            })
+            .collect();
+        Ok(json!({ "hits": hits, "truncated": found.truncated }))
     }
 
     /// The commands `thread` (or a client without one) may call. With
@@ -1916,7 +2021,7 @@ impl Core {
             ("resume", _) => match value(0) {
                 None => {
                     let threads: Vec<Value> = store
-                        .sessions(None, 50)
+                        .sessions(None, None, 50)
                         .await?
                         .iter()
                         .map(summary_view)
@@ -1941,39 +2046,19 @@ impl Core {
             ("fork", _) => {
                 let fork = store.fork_session(thread).await?;
                 self.pool.note_lineage(fork, thread).await;
+                let _ = self.activity.send((
+                    fork,
+                    Activity::Changed(ThreadChange::Created { from: Some(thread) }),
+                ));
                 json!({ "thread_id": fork.0, "from": thread.0 })
             }
-            ("delete", _) => {
-                store.delete_session(thread).await?;
-                crate::shell::stop_all(&store.files_folder().join("logs"), thread);
-                let kept = store.remove_thread_files(thread).await;
-                json!({ "deleted": thread.0, "files_not_removed": kept })
-            }
+            ("delete", _) => self.delete_thread(thread).await?,
             ("compact", _) => self.compact(thread).await?,
             ("stop", _) => json!({ "interrupted": self.interrupt(thread) }),
             ("export", _) => self.export(thread, value(0), value(1)).await?,
             ("history", _) => {
-                let found = store
-                    .search_history(HistoryQuery {
-                        text: value(0).unwrap_or_default().to_string(),
-                        project: None,
-                        since: None,
-                        until: None,
-                        limit: 20,
-                        budget: Duration::from_secs(2),
-                    })
-                    .await?;
-                let hits: Vec<Value> = found
-                    .items
-                    .iter()
-                    .map(|hit| {
-                        json!({
-                            "thread_id": hit.session.0, "seq": hit.seq, "role": hit.role,
-                            "created": hit.created, "snippet": hit.snippet,
-                        })
-                    })
-                    .collect();
-                json!({ "hits": hits, "truncated": found.truncated })
+                self.search_threads(value(0).unwrap_or_default(), 20)
+                    .await?
             }
             ("goal", None) => {
                 let options = goal_options(value(0).unwrap_or_default()).map_err(invalid)?;

@@ -22,6 +22,7 @@ pub struct ThreadSummary {
     /// When its latest message was stored; its creation when it has none.
     pub last_activity: i64,
     pub messages: i64,
+    pub archived: bool,
 }
 
 /// The requests to models a thread made, added up.
@@ -63,7 +64,7 @@ fn queued(db: &rusqlite::Connection, session: SessionId) -> Result<Vec<Queued>, 
 const SUMMARY_SELECT: &str = "SELECT s.id, p.key, s.title, s.created,
         COALESCE((SELECT MAX(m.created) FROM messages m WHERE m.session_id = s.id), s.created)
             AS last_activity,
-        (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id)
+        (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id), s.archived
      FROM sessions s LEFT JOIN projects p ON p.id = s.project_id";
 
 fn summary_row(row: &rusqlite::Row) -> rusqlite::Result<ThreadSummary> {
@@ -74,26 +75,30 @@ fn summary_row(row: &rusqlite::Row) -> rusqlite::Result<ThreadSummary> {
         created: row.get(3)?,
         last_activity: row.get(4)?,
         messages: row.get(5)?,
+        archived: row.get(6)?,
     })
 }
 
 impl Store {
     /// Threads, the most recently active first; only those of the project
-    /// with the key `project` when given.
+    /// with the key `project` when given, and only the archived or the
+    /// other ones when `archived` is given.
     pub async fn sessions(
         &self,
         project: Option<String>,
+        archived: Option<bool>,
         limit: usize,
     ) -> Result<Vec<ThreadSummary>, ErrorInfo> {
         self.read(Duration::from_secs(30), move |db| {
             let mut statement = db
                 .prepare_cached(&format!(
-                    "{SUMMARY_SELECT} WHERE ?1 IS NULL OR p.key = ?1
-                     ORDER BY last_activity DESC, s.id DESC LIMIT ?2"
+                    "{SUMMARY_SELECT} WHERE (?1 IS NULL OR p.key = ?1)
+                       AND (?2 IS NULL OR s.archived = ?2)
+                     ORDER BY last_activity DESC, s.id DESC LIMIT ?3"
                 ))
                 .map_err(store_error)?;
             let rows = statement
-                .query_map(params![project, limit as i64], summary_row)
+                .query_map(params![project, archived, limit as i64], summary_row)
                 .map_err(store_error)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(store_error)
         })
@@ -111,6 +116,49 @@ impl Store {
                 summary_row,
             )
             .optional()
+            .map_err(store_error)
+        })
+        .await
+    }
+
+    /// Archives `session` or brings it back; `None` when there is no such
+    /// thread, else whether it was archived before.
+    pub async fn set_archived(
+        &self,
+        session: SessionId,
+        archived: bool,
+    ) -> Result<Option<bool>, ErrorInfo> {
+        self.write(move |db| {
+            let tx = db.transaction().map_err(store_error)?;
+            let before: Option<bool> = tx
+                .query_row(
+                    "SELECT archived FROM sessions WHERE id = ?1",
+                    [session.0],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(store_error)?;
+            tx.execute(
+                "UPDATE sessions SET archived = ?1 WHERE id = ?2",
+                params![archived, session.0],
+            )
+            .map_err(store_error)?;
+            tx.commit().map_err(store_error)?;
+            Ok(before)
+        })
+        .await
+    }
+
+    /// Whether `session` is archived; `false` when there is no such thread.
+    pub async fn is_archived(&self, session: SessionId) -> Result<bool, ErrorInfo> {
+        self.read(Duration::from_secs(5), move |db| {
+            db.query_row(
+                "SELECT archived FROM sessions WHERE id = ?1",
+                [session.0],
+                |row| row.get(0),
+            )
+            .optional()
+            .map(Option::unwrap_or_default)
             .map_err(store_error)
         })
         .await

@@ -7,14 +7,15 @@
     - 問いが片付く（答え・中断）と `answered`（`elicitation` にその id）を送る。ほかの画面はそれで問いを閉じる。
     - `turn_ended` の `reason` は `completed`・`length`・`cancelled`・`failed`。`usage`・`questions`・`warnings`・`error` も付く。
     - 状態が変わるたびに `status` を送る。
-  - `thread/status/subscribe`：すべてのスレッドの `status` を、`thread_id` を付けて流す。
+    - ターンが走っている間、プロジェクトのファイルの差分 `diff` も、ほかのターンのイベントと同じく流す（`turn-diff.md`）。
+    - そのスレッドの `thread_renamed`・`thread_archived`・`thread_unarchived` も流す。スレッドが消えると `thread_deleted` を送り、購読はそこで終わる（`thread-operations.md`）。
+  - `thread/status/subscribe`：すべてのスレッドの `status` を、`thread_id` を付けて流す。スレッドの一覧の変化（`thread_created`・`thread_deleted`・`thread_renamed`・`thread_archived`・`thread_unarchived`）も、名前を変えずにこの購読で流す（`thread-operations.md`）。
   - 状態は 3 つ：`idle`（何も走らず、人を待つものもない）、`running`（ターンか圧縮が走っている）、`waiting`（走っているターンが人の答えを待っている、または走っていないが最後のターンが質問を残した）。
     - 走っているターンが最初の問いを出すと、その `elicitation` の前に `waiting` を送り、最後の問いが片付くと、その `answered` の後に `running` を送る。この 2 つはターンのイベントを分ける所（`Core::run_claimed`）で送るので、`begin_turn` の `running` と `end_turn` の `idle`・`waiting` の間に、イベントと同じ順で届く。
   - `thread/list` の各スレッドに `status` を付ける。
-  - 購読者が遅れて取りこぼしたら `lagged` を送る。画面は `thread/read` で読み直す。どちらの購読も `cancel` か接続が切れるまで続く。
+  - 購読者が遅れて取りこぼしたら `lagged` を送る。画面は `thread/read` で読み直す。どちらの購読も `cancel` か接続が切れるまで続く（`thread/subscribe` は、スレッドが消えたときも終わる）。
   - 範囲外：
     - 委任したメンバーのスレッドの動き（今も捨てている）。
-    - スレッドの作成・削除・名前の変更などの通知（洗い出しの ⑪）。
 - **関連ソースコード：**
   - `core/src/lib.rs`：`ThreadStatus`、`Activity`、`TurnEnd`、`Core::activity`、`Core::thread_status`。
     - `Core::begin_turn` と `Core::end_turn` が状態を送る。`turns` の鍵を持ったまま送るので、順番が入れ替わらない。

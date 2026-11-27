@@ -38,6 +38,9 @@ impl Core {
         if !store.session_exists(thread).await? {
             return Err(unknown_thread());
         }
+        if store.is_archived(thread).await? {
+            return Err(crate::archived_thread());
+        }
         let (id, queue) = {
             let _held = self.queue_lock.lock().await;
             let id = store.add_to_queue(thread, prompt).await?;

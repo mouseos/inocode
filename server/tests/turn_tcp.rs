@@ -5204,3 +5204,471 @@ async fn files_search_matches_paths_fuzzily_and_skips_ignored_files() {
     })
     .await;
 }
+
+/// The `diff` events among `events`, without their request ids.
+fn diffs(events: &[Value]) -> Vec<Value> {
+    events
+        .iter()
+        .filter(|event| event["event"] == "diff")
+        .map(without_id)
+        .collect()
+}
+
+/// The files of a diff as `(path, status)`.
+fn changed_files(diff: &Value) -> Vec<(String, String)> {
+    diff["files"]
+        .as_array()
+        .expect("files")
+        .iter()
+        .map(|file| {
+            (
+                file["path"].as_str().expect("path").to_string(),
+                file["status"].as_str().expect("status").to_string(),
+            )
+        })
+        .collect()
+}
+
+async fn thread_diff(client: &mut Client, stream_id: u64, params: Value) -> Value {
+    call(
+        client,
+        stream_id,
+        json!({"id": stream_id, "method": "thread/diff", "params": params}),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn a_turns_diff_is_sent_while_it_works_and_can_be_asked_for_later() {
+    with_timeout(async {
+        let (project, _) = project_and_outside("diff");
+        std::fs::write(project.join("kept.txt"), "before\n").expect("write");
+        let mock = scripted(vec![
+            tool_turn(
+                "w1",
+                "write",
+                json!({"path": "kept.txt", "content": "after\n"}),
+            ),
+            tool_turn("s1", "shell", shell_call("echo made > made.txt")),
+            text_turn("Changed."),
+            tool_turn("s2", "shell", shell_call("echo x > t.txt; rm t.txt")),
+        ])
+        .await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let mut watcher = connect(addr).await;
+        let thread = project_thread(&mut client, &project).await;
+        subscribe(&mut watcher, 5, thread).await;
+
+        let events = turn_with(
+            &mut client,
+            2,
+            json!({"thread_id": thread, "prompt": "change", "mode": "full"}),
+        )
+        .await;
+        assert_eq!(kinds(&events).last(), Some(&"completed"), "{events:?}");
+        let sent = diffs(&events);
+        assert!(!sent.is_empty(), "{events:?}");
+        assert!(
+            sent.windows(2).all(|pair| pair[0] != pair[1]),
+            "a diff is sent again only when it changed: {sent:?}"
+        );
+        let last = &sent.last().unwrap()["diff"];
+        assert_eq!(
+            changed_files(last),
+            [
+                ("kept.txt".to_string(), "modified".to_string()),
+                ("made.txt".to_string(), "added".to_string())
+            ],
+            "{last}"
+        );
+        assert_eq!(last["files"][0]["added"], 1, "{last}");
+        assert_eq!(last["files"][0]["removed"], 1, "{last}");
+        assert!(last["text"].as_str().unwrap().contains("+after"), "{last}");
+        assert_eq!(last["truncated"], false);
+        let first = stored(&mut client, 3, thread)
+            .await
+            .into_iter()
+            .find(|(_, role, from)| role == "user" && from == "person")
+            .expect("the message")
+            .0;
+        assert_eq!(last["seq"], first, "{last}");
+        let seen = events_until(&mut watcher, 5, "turn_ended").await;
+        assert_eq!(diffs(&seen), sent, "a watcher sees the same diffs");
+
+        // Asked for later, the latest turn's diff is the same.
+        let latest = thread_diff(&mut client, 4, json!({"thread_id": thread})).await;
+        assert_eq!(latest["result"]["thread_id"], thread, "{latest}");
+        for field in ["seq", "files", "text", "truncated"] {
+            assert_eq!(latest["result"][field], last[field], "{field}: {latest}");
+        }
+
+        // A file made and removed again in one call is no change.
+        let events = turn_with(
+            &mut client,
+            6,
+            json!({"thread_id": thread, "prompt": "tidy", "mode": "full"}),
+        )
+        .await;
+        assert_eq!(kinds(&events).last(), Some(&"completed"), "{events:?}");
+        assert!(tool_results(&events)[0].contains("exit code 0"));
+        assert_eq!(diffs(&events), Vec::<Value>::new(), "{events:?}");
+        let latest = thread_diff(&mut client, 7, json!({"thread_id": thread})).await;
+        assert_eq!(latest["result"]["files"], json!([]), "{latest}");
+        assert!(latest["result"]["seq"].as_i64().unwrap() > first);
+
+        // The first turn's diff runs to the copy taken before the second.
+        let earlier = thread_diff(&mut client, 8, json!({"thread_id": thread, "seq": first})).await;
+        assert_eq!(earlier["result"]["seq"], first, "{earlier}");
+        assert_eq!(earlier["result"]["files"], last["files"], "{earlier}");
+        let unknown = thread_diff(&mut client, 9, json!({"thread_id": thread + 100})).await;
+        assert_eq!(unknown["error"]["code"], "unknown_thread", "{unknown}");
+        let bad = thread_diff(&mut client, 10, json!({"thread_id": thread, "seq": "one"})).await;
+        assert_eq!(bad["error"]["code"], "invalid_params", "{bad}");
+        let _ = std::fs::remove_dir_all(&project);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_thread_without_a_project_has_no_diff() {
+    with_timeout(async {
+        let mock = scripted(vec![tool_turn("s1", "shell", shell_call("echo hi"))]).await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client).await;
+        let events = turn_with(
+            &mut client,
+            2,
+            json!({"thread_id": thread, "prompt": "say hi", "mode": "full"}),
+        )
+        .await;
+        assert_eq!(kinds(&events).last(), Some(&"completed"), "{events:?}");
+        assert!(!tool_results(&events).is_empty());
+        assert_eq!(diffs(&events), Vec::<Value>::new());
+        let none = thread_diff(&mut client, 3, json!({"thread_id": thread})).await;
+        assert_eq!(none["error"]["code"], "no_snapshot", "{none}");
+    })
+    .await;
+}
+
+async fn thread_call(client: &mut Client, stream_id: u64, method: &str, params: Value) -> Value {
+    call(
+        client,
+        stream_id,
+        json!({"id": stream_id, "method": method, "params": params}),
+    )
+    .await
+}
+
+/// The ids of the threads `thread/list` gives with `params`.
+async fn listed(client: &mut Client, stream_id: u64, params: Value) -> Vec<(i64, bool)> {
+    let listed = thread_call(client, stream_id, "thread/list", params).await;
+    listed["result"]["threads"]
+        .as_array()
+        .expect("threads")
+        .iter()
+        .map(|thread| {
+            (
+                thread["thread_id"].as_i64().expect("id"),
+                thread["archived"].as_bool().expect("archived"),
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn threads_are_renamed_exported_searched_archived_and_deleted_by_request() {
+    with_timeout(async {
+        let plan = json!({"items": [{"step": "deploy to prod", "status": "pending"}]});
+        let mock = scripted(vec![
+            text_turn("Noted."),
+            text_turn("Again."),
+            tool_turn("a1", "plan", plan),
+        ])
+        .await;
+        let (core, store) = core_and_store(&mock).await;
+        prod_rule(&store).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let mut other = connect(addr).await;
+        let thread = thread(&mut client).await;
+        let events = turn(&mut client, 2, thread, "the zebra crossing").await;
+        assert_eq!(kinds(&events).last(), Some(&"completed"));
+
+        let renamed = thread_call(
+            &mut client,
+            3,
+            "thread/rename",
+            json!({"thread_id": thread, "title": "Zebras"}),
+        )
+        .await;
+        assert_eq!(renamed["result"]["title"], "Zebras", "{renamed}");
+        let list = thread_call(&mut client, 3, "thread/list", json!({})).await;
+        assert_eq!(list["result"]["threads"][0]["title"], "Zebras", "{list}");
+        for (params, code) in [
+            (json!({"thread_id": thread, "title": " "}), "invalid_params"),
+            (
+                json!({"thread_id": thread + 100, "title": "x"}),
+                "unknown_thread",
+            ),
+        ] {
+            let refused = thread_call(&mut client, 3, "thread/rename", params).await;
+            assert_eq!(refused["error"]["code"], code, "{refused}");
+        }
+
+        let markdown = thread_call(
+            &mut client,
+            4,
+            "thread/export",
+            json!({"thread_id": thread}),
+        )
+        .await;
+        assert_eq!(markdown["result"]["format"], "markdown", "{markdown}");
+        assert!(markdown["result"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("the zebra crossing"));
+        let exported = thread_call(
+            &mut client,
+            4,
+            "thread/export",
+            json!({"thread_id": thread, "format": "json"}),
+        )
+        .await;
+        let messages: Value =
+            serde_json::from_str(exported["result"]["text"].as_str().expect("text")).expect("json");
+        assert!(messages
+            .as_array()
+            .is_some_and(|messages| messages.len() >= 2));
+        for (params, code) in [
+            (
+                json!({"thread_id": thread, "format": "xml"}),
+                "invalid_params",
+            ),
+            (json!({"thread_id": thread + 100}), "unknown_thread"),
+        ] {
+            let refused = thread_call(&mut client, 4, "thread/export", params).await;
+            assert_eq!(refused["error"]["code"], code, "{refused}");
+        }
+
+        let found = thread_call(&mut client, 5, "thread/search", json!({"query": "zebra"})).await;
+        let hits = found["result"]["hits"].as_array().expect("hits");
+        assert!(hits.iter().any(|hit| hit["thread_id"] == thread), "{found}");
+        for params in [json!({}), json!({"query": "zebra", "limit": 0})] {
+            let refused = thread_call(&mut client, 5, "thread/search", params).await;
+            assert_eq!(refused["error"]["code"], "invalid_params", "{refused}");
+        }
+
+        // An archived thread is hidden, refuses new turns, and goes on once
+        // it is unarchived.
+        let archived = thread_call(
+            &mut client,
+            6,
+            "thread/archive",
+            json!({"thread_id": thread}),
+        )
+        .await;
+        assert_eq!(archived["result"]["archived"], true, "{archived}");
+        assert!(listed(&mut client, 6, json!({}))
+            .await
+            .iter()
+            .all(|(id, _)| *id != thread));
+        assert_eq!(
+            listed(&mut client, 6, json!({"archived": true})).await,
+            [(thread, true)]
+        );
+        let refused = turn(&mut client, 7, thread, "more").await;
+        assert_eq!(refused.last().unwrap()["event"], "failed", "{refused:?}");
+        assert_eq!(
+            refused.last().unwrap()["error"]["code"],
+            "thread_archived",
+            "{refused:?}"
+        );
+        let queued = thread_call(
+            &mut client,
+            7,
+            "thread/queue/add",
+            json!({"thread_id": thread, "prompt": "later"}),
+        )
+        .await;
+        assert_eq!(queued["error"]["code"], "thread_archived", "{queued}");
+        assert!(!stored(&mut client, 7, thread).await.is_empty());
+        let unarchived = thread_call(
+            &mut client,
+            8,
+            "thread/unarchive",
+            json!({"thread_id": thread}),
+        )
+        .await;
+        assert_eq!(unarchived["result"]["archived"], false, "{unarchived}");
+        assert!(listed(&mut client, 8, json!({}))
+            .await
+            .contains(&(thread, false)));
+        let resent = turn(&mut client, 9, thread, "more").await;
+        assert_eq!(kinds(&resent).last(), Some(&"completed"), "{resent:?}");
+        let unknown = thread_call(
+            &mut client,
+            9,
+            "thread/archive",
+            json!({"thread_id": thread + 100}),
+        )
+        .await;
+        assert_eq!(unknown["error"]["code"], "unknown_thread", "{unknown}");
+
+        // Neither deleted nor archived while a turn runs.
+        client
+            .1
+            .write_json(
+                10,
+                &json!({"id": 10, "method": "turn/start",
+                        "params": {"thread_id": thread, "prompt": "ship it"}}),
+            )
+            .await
+            .expect("send");
+        let prompt = until_prompt(&mut client, 10).await;
+        for method in ["thread/delete", "thread/archive"] {
+            let refused = thread_call(&mut other, 11, method, json!({"thread_id": thread})).await;
+            assert_eq!(
+                refused["error"]["code"], "turn_running",
+                "{method}: {refused}"
+            );
+        }
+        let answered = thread_call(
+            &mut other,
+            12,
+            "turn/answer",
+            json!({"thread_id": thread, "elicitation": prompt["id"], "action": "decline"}),
+        )
+        .await;
+        assert_eq!(answered["result"]["accepted"], true, "{answered}");
+        events_until(&mut client, 10, "completed").await;
+
+        let deleted = thread_call(
+            &mut client,
+            13,
+            "thread/delete",
+            json!({"thread_id": thread}),
+        )
+        .await;
+        assert_eq!(deleted["result"]["deleted"], thread, "{deleted}");
+        let gone = thread_call(&mut client, 13, "thread/read", json!({"thread_id": thread})).await;
+        assert_eq!(gone["error"]["code"], "unknown_thread", "{gone}");
+        let again = thread_call(
+            &mut client,
+            13,
+            "thread/delete",
+            json!({"thread_id": thread}),
+        )
+        .await;
+        assert_eq!(again["error"]["code"], "unknown_thread", "{again}");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn every_screen_hears_of_threads_created_renamed_archived_and_deleted() {
+    with_timeout(async {
+        let mock = scripted(Vec::new()).await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let mut lister = connect(addr).await;
+        let mut watcher = connect(addr).await;
+        lister
+            .1
+            .write_json(
+                6,
+                &json!({"id": 6, "method": "thread/status/subscribe", "params": {}}),
+            )
+            .await
+            .expect("subscribe");
+        assert_eq!(next_message(&mut lister, 6).await["event"], "started");
+
+        let started = thread_call(&mut client, 2, "thread/start", json!({})).await;
+        let thread = started["result"]["thread_id"].as_i64().expect("thread");
+        let created = without_id(&next_message(&mut lister, 6).await);
+        assert_eq!(
+            created,
+            json!({"event": "thread_created", "thread_id": thread})
+        );
+        subscribe(&mut watcher, 5, thread).await;
+        assert_eq!(next_message(&mut watcher, 5).await["status"], "idle");
+
+        let forked = thread_call(&mut client, 3, "thread/fork", json!({"thread_id": thread})).await;
+        let fork = forked["result"]["thread_id"].as_i64().expect("fork");
+        thread_call(
+            &mut client,
+            4,
+            "thread/rename",
+            json!({"thread_id": thread, "title": "Plans"}),
+        )
+        .await;
+        thread_call(
+            &mut client,
+            4,
+            "thread/archive",
+            json!({"thread_id": thread}),
+        )
+        .await;
+        thread_call(
+            &mut client,
+            4,
+            "thread/archive",
+            json!({"thread_id": thread}),
+        )
+        .await;
+        thread_call(
+            &mut client,
+            4,
+            "thread/unarchive",
+            json!({"thread_id": thread}),
+        )
+        .await;
+        thread_call(&mut client, 4, "thread/delete", json!({"thread_id": fork})).await;
+        thread_call(
+            &mut client,
+            4,
+            "thread/delete",
+            json!({"thread_id": thread}),
+        )
+        .await;
+
+        let mut heard = Vec::new();
+        for _ in 0..6 {
+            heard.push(without_id(&next_message(&mut lister, 6).await));
+        }
+        assert_eq!(
+            heard,
+            [
+                json!({"event": "thread_created", "thread_id": fork, "from": thread}),
+                json!({"event": "thread_renamed", "thread_id": thread, "title": "Plans"}),
+                json!({"event": "thread_archived", "thread_id": thread}),
+                json!({"event": "thread_unarchived", "thread_id": thread}),
+                json!({"event": "thread_deleted", "thread_id": fork}),
+                json!({"event": "thread_deleted", "thread_id": thread}),
+            ],
+            "archiving twice is told once"
+        );
+
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            seen.push(without_id(&next_message(&mut watcher, 5).await));
+        }
+        assert_eq!(
+            seen,
+            [
+                json!({"event": "thread_renamed", "title": "Plans"}),
+                json!({"event": "thread_archived"}),
+                json!({"event": "thread_unarchived"}),
+                json!({"event": "thread_deleted"}),
+            ]
+        );
+        // `thread_deleted` ended the stream: there is nothing left to cancel.
+        let cancelled = thread_call(&mut watcher, 7, "cancel", json!({"request_id": 5})).await;
+        assert_eq!(cancelled["result"]["cancelled"], false, "{cancelled}");
+    })
+    .await;
+}

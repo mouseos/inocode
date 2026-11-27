@@ -66,6 +66,10 @@ pub enum TurnEvent {
     Title(String),
     /// A title the model proposes for the thread; the title is unchanged.
     TitleProposed(String),
+    /// What changed in the project's files since the copy taken before the
+    /// turn, as `{seq, files, text, truncated}`
+    /// (docs/evidence/turn-diff.md).
+    Diff(serde_json::Value),
 }
 
 /// Why a turn ended.

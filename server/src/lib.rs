@@ -643,6 +643,13 @@ async fn dispatch(
         | "thread/read"
         | "thread/fork"
         | "thread/rewind"
+        | "thread/rename"
+        | "thread/delete"
+        | "thread/archive"
+        | "thread/unarchive"
+        | "thread/export"
+        | "thread/search"
+        | "thread/diff"
         | "goal/set"
         | "goal/read"
         | "goal/stop"
@@ -1005,6 +1012,10 @@ async fn thread_request(
         "thread/start" => start_thread(&request, &core).await,
         "thread/fork" => fork_thread(&request, &core).await,
         "thread/rewind" => rewind_thread(&request, &core).await,
+        "thread/rename" | "thread/delete" | "thread/archive" | "thread/unarchive"
+        | "thread/export" | "thread/search" | "thread/diff" => {
+            thread_operation(&request, &core).await
+        }
         "goal/set" => set_goal(&request, &core).await,
         "files/search" => search_files(&request, &core).await,
         method if method.starts_with("thread/queue/") => queue_request(&request, &core).await,
@@ -1121,6 +1132,80 @@ async fn fork_thread(request: &Request, core: &Core) -> Result<Value, ErrorInfo>
     };
     let fork = core.fork_thread(thread, cut).await?;
     Ok(json!({ "thread_id": fork.0, "from": thread.0 }))
+}
+
+/// `thread/rename {thread_id, title}`, `thread/delete {thread_id}`,
+/// `thread/archive {thread_id}`, `thread/unarchive {thread_id}`,
+/// `thread/export {thread_id, format?}` (`markdown`, the default, or
+/// `json`), `thread/search {query, limit?}` and
+/// `thread/diff {thread_id, seq?}` (docs/evidence/thread-operations.md,
+/// docs/evidence/turn-diff.md).
+async fn thread_operation(request: &Request, core: &Core) -> Result<Value, ErrorInfo> {
+    let field = |name: &str| {
+        request
+            .params
+            .as_ref()
+            .and_then(|params| params.get(name))
+            .filter(|value| !value.is_null())
+    };
+    if request.method == "thread/search" {
+        let query = field("query")
+            .and_then(Value::as_str)
+            .filter(|query| !query.trim().is_empty())
+            .ok_or_else(|| ErrorInfo::new("invalid_params", "requires a \"query\" string"))?;
+        let limit = match field("limit") {
+            None => SEARCH_DEFAULT_LIMIT,
+            Some(value) => value
+                .as_u64()
+                .filter(|limit| (1..=SEARCH_MAX_LIMIT).contains(limit))
+                .ok_or_else(|| {
+                    ErrorInfo::new(
+                        "invalid_params",
+                        format!("\"limit\" must be 1 to {SEARCH_MAX_LIMIT}"),
+                    )
+                })?,
+        };
+        return core.search_threads(query, limit as usize).await;
+    }
+    let thread = request.thread()?;
+    match request.method.as_str() {
+        "thread/rename" => {
+            let title = field("title")
+                .and_then(Value::as_str)
+                .filter(|title| !title.trim().is_empty())
+                .ok_or_else(|| {
+                    ErrorInfo::new("invalid_params", "requires a non-empty \"title\" string")
+                })?;
+            core.rename_thread(thread, title).await
+        }
+        "thread/delete" => core.delete_thread(thread).await,
+        "thread/archive" => core.set_thread_archived(thread, true).await,
+        "thread/unarchive" => core.set_thread_archived(thread, false).await,
+        "thread/export" => {
+            let format = match field("format") {
+                None => "markdown",
+                Some(Value::String(format)) if format == "markdown" || format == "json" => {
+                    format.as_str()
+                }
+                Some(_) => {
+                    return Err(ErrorInfo::new(
+                        "invalid_params",
+                        "\"format\" must be \"markdown\" or \"json\"",
+                    ))
+                }
+            };
+            core.export_thread(thread, format).await
+        }
+        _ => {
+            let seq = match field("seq") {
+                None => None,
+                Some(value) => Some(value.as_i64().ok_or_else(|| {
+                    ErrorInfo::new("invalid_params", "\"seq\" must be a message number")
+                })?),
+            };
+            core.thread_diff(thread, seq).await
+        }
+    }
 }
 
 /// `thread/rewind {thread_id, seq, restore?}`: `restore` is
@@ -1241,8 +1326,9 @@ async fn read_thread(request: &Request, core: &Core) -> Result<Value, ErrorInfo>
     Ok(json!({ "messages": messages }))
 }
 
-/// `thread/list`: `project`, a project's key, and `limit` (100 when absent,
-/// at most 1,000).
+/// `thread/list`: `project`, a project's key, `archived` (`false` when
+/// absent: the archived threads are left out; `true` lists only them), and
+/// `limit` (100 when absent, at most 1,000).
 async fn list_threads(params: &Value, core: &Core) -> Result<Value, ErrorInfo> {
     let project = match params.get("project") {
         None | Some(Value::Null) => None,
@@ -1266,7 +1352,17 @@ async fn list_threads(params: &Value, core: &Core) -> Result<Value, ErrorInfo> {
                 )
             })?,
     };
-    core.threads(project, limit as usize).await
+    let archived = match params.get("archived") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(archived)) => *archived,
+        Some(_) => {
+            return Err(ErrorInfo::new(
+                "invalid_params",
+                "\"archived\" must be true or false",
+            ))
+        }
+    };
+    core.threads(project, archived, limit as usize).await
 }
 
 /// `command/run`: `thread_id`, and the command as typed in `text`
@@ -1625,9 +1721,13 @@ async fn relay_titles(
 /// `answered` when a question is settled), and `turn_ended`, with a
 /// `status` event whenever the status changes.
 /// `lagged` says events were missed, so `thread/read` should be asked
-/// again. `thread/status/subscribe`: the `status` events of every thread,
-/// with `thread_id`. Both last until `cancel` names them or the connection
-/// closes.
+/// again. `thread_renamed`, `thread_archived` and `thread_unarchived` say
+/// what happened to the thread; `thread_deleted` ends the stream.
+/// `thread/status/subscribe`: the `status` events of every thread, and the
+/// changes to the list of threads (`thread_created`, with `from` for a
+/// fork, `thread_deleted`, `thread_renamed`, `thread_archived`,
+/// `thread_unarchived`), with `thread_id`. Both last until `cancel` names
+/// them or the connection closes.
 async fn watch_threads(
     request: Request,
     stream_id: u64,
@@ -1687,7 +1787,7 @@ async fn relay_threads(
     in_flight: InFlight,
     mut cancelled: watch::Receiver<bool>,
 ) {
-    use inocode_core::Activity;
+    use inocode_core::{Activity, ThreadChange};
     use tokio::sync::broadcast::error::RecvError;
     let first = match thread {
         Some(thread) => match core.thread_status(thread).await {
@@ -1764,8 +1864,23 @@ async fn relay_threads(
                             (None, Activity::Status(status)) => {
                                 EventPayload::thread_status(id, Some(of), status)
                             }
+                            (None, Activity::Changed(change)) => {
+                                EventPayload::thread_change(id, Some(of), &change)
+                            }
                             (None, _) => continue,
                             (Some(watched), _) if watched != of => continue,
+                            (Some(_), Activity::Changed(ThreadChange::Deleted)) => {
+                                let deleted = EventPayload::thread_change(
+                                    id,
+                                    None,
+                                    &ThreadChange::Deleted,
+                                );
+                                break Some(Terminal::Ended(Box::new(deleted)));
+                            }
+                            (Some(_), Activity::Changed(ThreadChange::Created { .. })) => continue,
+                            (Some(_), Activity::Changed(change)) => {
+                                EventPayload::thread_change(id, None, &change)
+                            }
                             (Some(_), Activity::Status(status)) => {
                                 EventPayload::thread_status(id, None, status)
                             }
@@ -1817,6 +1932,7 @@ fn turn_event(id: u64, event: TurnEvent) -> EventPayload {
         TurnEvent::Estimate(estimate) => EventPayload::estimate(id, &estimate),
         TurnEvent::Title(title) => EventPayload::title(id, "title_updated", title),
         TurnEvent::TitleProposed(title) => EventPayload::title(id, "title_proposed", title),
+        TurnEvent::Diff(diff) => EventPayload::diff(id, diff),
     }
 }
 

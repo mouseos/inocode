@@ -81,6 +81,109 @@ async fn take_locked(store: &Path, folder: &Path) -> Result<String, ErrorInfo> {
     Ok(String::from_utf8_lossy(&tree).trim().to_string())
 }
 
+/// The most of a diff's text kept, in bytes; the rest is cut at a line's
+/// end (docs/evidence/turn-diff.md).
+pub(crate) const DIFF_TEXT_MAX: usize = 256 * 1024;
+
+/// What changed between two copies of a project's files.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct Diff {
+    pub files: Vec<ChangedFile>,
+    /// The unified diff, at most [`DIFF_TEXT_MAX`] bytes.
+    pub text: String,
+    /// Whether `text` was cut.
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct ChangedFile {
+    pub path: String,
+    /// `added`, `modified` or `deleted`.
+    pub status: &'static str,
+    /// Lines added and removed; `None` for a binary file.
+    pub added: Option<u64>,
+    pub removed: Option<u64>,
+}
+
+/// What changed in the files of `folder` since the copy `tree`, taken now
+/// as [`take`] does.
+pub(crate) async fn diff(store: &Path, folder: &Path, tree: &str) -> Result<Diff, ErrorInfo> {
+    let now = {
+        let _one = ONE_AT_A_TIME.lock().await;
+        take_locked(store, folder).await?
+    };
+    diff_trees(store, folder, tree, &now).await
+}
+
+/// What changed from the copy `from` to the copy `to`.
+pub(crate) async fn diff_trees(
+    store: &Path,
+    folder: &Path,
+    from: &str,
+    to: &str,
+) -> Result<Diff, ErrorInfo> {
+    let diff_tree = |extra: &[&str]| {
+        let mut arguments = vec!["diff-tree", "-r", "--no-renames", "--no-ext-diff"];
+        arguments.extend_from_slice(extra);
+        arguments.extend_from_slice(&[from, to]);
+        run(git(store, folder, &arguments), "diff-tree")
+    };
+    let statuses = diff_tree(&["-z", "--name-status"]).await?;
+    let mut files = Vec::new();
+    let mut fields = statuses
+        .split(|&byte| byte == 0)
+        .filter(|field| !field.is_empty());
+    while let (Some(status), Some(path)) = (fields.next(), fields.next()) {
+        files.push(ChangedFile {
+            path: String::from_utf8_lossy(path).into_owned(),
+            status: match status.first() {
+                Some(b'A') => "added",
+                Some(b'D') => "deleted",
+                _ => "modified",
+            },
+            added: None,
+            removed: None,
+        });
+    }
+    if files.is_empty() {
+        return Ok(Diff {
+            files,
+            text: String::new(),
+            truncated: false,
+        });
+    }
+    let counts = diff_tree(&["-z", "--numstat"]).await?;
+    for entry in counts
+        .split(|&byte| byte == 0)
+        .filter(|entry| !entry.is_empty())
+    {
+        let entry = String::from_utf8_lossy(entry);
+        let mut parts = entry.splitn(3, '\t');
+        let (Some(added), Some(removed), Some(path)) = (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        if let Some(file) = files.iter_mut().find(|file| file.path == path) {
+            file.added = added.parse().ok();
+            file.removed = removed.parse().ok();
+        }
+    }
+    let mut text = diff_tree(&["-p", "--no-color", "--no-textconv"]).await?;
+    let truncated = text.len() > DIFF_TEXT_MAX;
+    if truncated {
+        let end = text[..DIFF_TEXT_MAX]
+            .iter()
+            .rposition(|&byte| byte == b'\n')
+            .map_or(0, |line_end| line_end + 1);
+        text.truncate(end);
+    }
+    Ok(Diff {
+        files,
+        text: String::from_utf8_lossy(&text).into_owned(),
+        truncated,
+    })
+}
+
 /// Puts the files of `folder` back as they were in the copy `tree`: those
 /// changed or deleted since are written again, and those added since are
 /// deleted. Files the `.gitignore` files leave out are not touched.
@@ -182,5 +285,40 @@ mod tests {
             "what .gitignore leaves out is not touched"
         );
         assert_eq!(take(&store, &project).await.expect("copy"), tree);
+    }
+
+    #[tokio::test]
+    async fn a_diff_lists_each_changed_file_and_cuts_a_long_text() {
+        let (project, store) = (folder("project"), folder("store").join("copies"));
+        std::fs::write(project.join("kept.txt"), "one\ntwo\n").expect("write");
+        std::fs::write(project.join("gone.txt"), "here\n").expect("write");
+        let tree = take(&store, &project).await.expect("copy");
+        assert_eq!(diff(&store, &project, &tree).await.expect("diff").files, []);
+
+        std::fs::write(project.join("kept.txt"), "one\nthree\n").expect("write");
+        std::fs::remove_file(project.join("gone.txt")).expect("remove");
+        std::fs::write(project.join("new.bin"), [0u8, 1, 2]).expect("write");
+        let changed = diff(&store, &project, &tree).await.expect("diff");
+        let summary: Vec<_> = changed
+            .files
+            .iter()
+            .map(|file| (file.path.as_str(), file.status, file.added, file.removed))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("gone.txt", "deleted", Some(0), Some(1)),
+                ("kept.txt", "modified", Some(1), Some(1)),
+                ("new.bin", "added", None, None),
+            ]
+        );
+        assert!(changed.text.contains("-two\n+three\n"), "{}", changed.text);
+        assert!(!changed.truncated);
+
+        std::fs::write(project.join("long.txt"), "line\n".repeat(DIFF_TEXT_MAX / 4))
+            .expect("write");
+        let long = diff(&store, &project, &tree).await.expect("diff");
+        assert!(long.truncated);
+        assert!(long.text.len() <= DIFF_TEXT_MAX && long.text.ends_with('\n'));
     }
 }

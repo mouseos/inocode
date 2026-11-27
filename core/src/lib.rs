@@ -329,12 +329,16 @@ pub struct EventPayload {
     /// Where a thread now stands.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<ThreadStatus>,
-    /// The first of the messages a rewind deleted.
+    /// The first of the messages a rewind deleted, or the thread a new
+    /// thread was forked from (`thread_created`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub from: Option<i64>,
     /// The messages queued for the next turns of a thread.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub queue: Option<Value>,
+    /// What changed in the project's files during a turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diff: Option<Value>,
 }
 
 fn translation_service(name: &str) -> Result<translate::Service, ErrorInfo> {
@@ -467,6 +471,36 @@ impl EventPayload {
         }
     }
 
+    /// What changed in the project's files since the turn began (`diff`).
+    pub fn diff(id: u64, diff: Value) -> Self {
+        Self {
+            diff: Some(diff),
+            ..Self::new(id, "diff")
+        }
+    }
+
+    /// A change to the list of threads, of `thread` when the subscription
+    /// is not of that thread alone: `thread_created` (with `from` for a
+    /// fork), `thread_deleted`, `thread_archived`, `thread_unarchived`, or
+    /// `thread_renamed` (with `title`).
+    pub fn thread_change(id: u64, thread: Option<SessionId>, change: &ThreadChange) -> Self {
+        let event = Self {
+            thread_id: thread.map(|thread| thread.0),
+            ..Self::new(id, change.event())
+        };
+        match change {
+            ThreadChange::Created { from } => Self {
+                from: from.map(|from| from.0),
+                ..event
+            },
+            ThreadChange::Renamed(title) => Self {
+                title: Some(title.clone()),
+                ..event
+            },
+            _ => event,
+        }
+    }
+
     /// An event of `kind` that carries nothing but its name.
     pub fn named(id: u64, kind: &'static str) -> Self {
         Self::new(id, kind)
@@ -533,6 +567,7 @@ impl EventPayload {
             status: None,
             from: None,
             queue: None,
+            diff: None,
         }
     }
 }
@@ -562,7 +597,7 @@ struct Running {
 
 /// How many [`Activity`] items a subscriber may fall behind before it
 /// misses some.
-const ACTIVITY_KEPT: usize = 4096;
+pub(crate) const ACTIVITY_KEPT: usize = 4096;
 
 /// Where a thread stands, for `thread/list` and the subscriptions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -594,6 +629,35 @@ pub enum Activity {
     Status(ThreadStatus),
     /// The messages queued for the next turns, as they now are.
     Queue(Vec<store::Queued>),
+    /// The thread was created, deleted, archived or unarchived.
+    Changed(ThreadChange),
+}
+
+/// A change to the list of threads, for the subscriptions
+/// (docs/evidence/thread-operations.md).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ThreadChange {
+    /// A new thread; `from` is the thread it was forked from.
+    Created {
+        from: Option<SessionId>,
+    },
+    Deleted,
+    Archived,
+    Unarchived,
+    /// The thread's new title, sent by the store whenever it gives one.
+    Renamed(String),
+}
+
+impl ThreadChange {
+    fn event(&self) -> &'static str {
+        match self {
+            Self::Created { .. } => "thread_created",
+            Self::Deleted => "thread_deleted",
+            Self::Archived => "thread_archived",
+            Self::Unarchived => "thread_unarchived",
+            Self::Renamed(_) => "thread_renamed",
+        }
+    }
 }
 
 /// How a turn ended, for those watching its thread.
@@ -781,6 +845,7 @@ impl Core {
     /// beside it.
     pub fn with_store(mut self, store: Store) -> Self {
         self.pool = Arc::new(pool::Pool::new(Some(store.clone())));
+        self.activity = store.activity();
         self.store = Some(store);
         self
     }
@@ -1115,6 +1180,10 @@ impl Core {
                 .map_err(|error| ErrorInfo::new("internal", error.to_string()))?;
             store.set_thread_settings(thread, text).await?;
         }
+        let _ = self.activity.send((
+            thread,
+            Activity::Changed(ThreadChange::Created { from: None }),
+        ));
         Ok(thread)
     }
 
@@ -1196,6 +1265,9 @@ impl Core {
     pub async fn begin_turn(&self, thread: SessionId) -> Result<Claim, ErrorInfo> {
         if !self.store()?.session_exists(thread).await? {
             return Err(unknown_thread());
+        }
+        if self.store()?.is_archived(thread).await? {
+            return Err(archived_thread());
         }
         let model = self.thread_client(thread).await?;
         let waiting = self
@@ -1298,18 +1370,63 @@ impl Core {
         };
         let fork = store.fork_session_through(thread, through).await?;
         self.pool.note_lineage(fork, thread).await;
+        let _ = self.activity.send((
+            fork,
+            Activity::Changed(ThreadChange::Created { from: Some(thread) }),
+        ));
         Ok(fork)
     }
 
     /// Copies the files of `thread`'s project before a turn; nothing for a
     /// thread without a project.
-    async fn take_snapshot(&self, thread: SessionId) -> Result<(), ErrorInfo> {
+    async fn take_snapshot(&self, thread: SessionId) -> Result<Option<TurnCopy>, ErrorInfo> {
         let store = self.store()?;
         let Some((project, folder)) = store.session_project(thread).await? else {
-            return Ok(());
+            return Ok(None);
         };
-        let tree = snapshot::take(&self.snapshots(project), std::path::Path::new(&folder)).await?;
-        store.add_snapshot(thread, tree).await
+        let (copies, folder) = (self.snapshots(project), std::path::PathBuf::from(folder));
+        let tree = snapshot::take(&copies, &folder).await?;
+        let seq = store.add_snapshot(thread, tree.clone()).await?;
+        Ok(Some(TurnCopy {
+            copies,
+            folder,
+            tree,
+            seq,
+        }))
+    }
+
+    /// `thread/diff`: what changed in the project's files during the turn
+    /// the message numbered `seq` came in (the latest turn when `None`):
+    /// from the copy taken before it to the copy taken before the next
+    /// turn, or to the files as they are now when no turn followed.
+    pub async fn thread_diff(
+        &self,
+        thread: SessionId,
+        seq: Option<i64>,
+    ) -> Result<Value, ErrorInfo> {
+        let store = self.store()?;
+        if !store.session_exists(thread).await? {
+            return Err(unknown_thread());
+        }
+        let no_copy = || {
+            ErrorInfo::new(
+                "no_snapshot",
+                "no copy of the project's files was taken before this turn",
+            )
+        };
+        let (project, folder) = store.session_project(thread).await?.ok_or_else(no_copy)?;
+        let (at, tree, next) = store
+            .snapshot_span(thread, seq)
+            .await?
+            .ok_or_else(no_copy)?;
+        let (copies, folder) = (self.snapshots(project), std::path::PathBuf::from(folder));
+        let diff = match next {
+            Some(next) => snapshot::diff_trees(&copies, &folder, &tree, &next).await?,
+            None => snapshot::diff(&copies, &folder, &tree).await?,
+        };
+        let mut value = diff_value(at, diff);
+        value["thread_id"] = json!(thread.0);
+        Ok(value)
     }
 
     /// Where the copies of `project`'s files are kept.
@@ -2209,9 +2326,18 @@ impl Core {
         // between the statuses `begin_turn` and `end_turn` send.
         let (teed, mut teeing) = mpsc::channel(1);
         let activity = self.activity.clone();
+        let changed = Arc::new(tokio::sync::Notify::new());
+        let files_may_change = Arc::clone(&changed);
         let tee = tokio::spawn(async move {
             let mut open = std::collections::HashSet::new();
             while let Some(event) = teeing.recv().await {
+                if let TurnEvent::Message { message, .. } = &event {
+                    if let conversation::Body::ToolResult { name, .. } = &message.body {
+                        if !leaves_files(name) {
+                            files_may_change.notify_one();
+                        }
+                    }
+                }
                 let status = match &event {
                     TurnEvent::Elicitation(question) => question["id"]
                         .as_u64()
@@ -2236,7 +2362,15 @@ impl Core {
                 running.events = Some(teed.clone());
             }
         }
-        let snapshot = self.take_snapshot(thread).await.err();
+        let (snapshot, copy) = match self.take_snapshot(thread).await {
+            Ok(copy) => (None, copy),
+            Err(error) => (Some(error), None),
+        };
+        // The diff is made beside the turn, so the model does not wait for
+        // it; the last one is made once the turn's calls are done.
+        let (finish, finished) = tokio::sync::oneshot::channel();
+        let differ =
+            copy.map(|copy| tokio::spawn(send_diffs(copy, changed, finished, teed.clone())));
         // The turn stops on its connection's cancel or on `turn/interrupt`
         // from any connection.
         let (stop, stopped) = watch::channel(false);
@@ -2264,6 +2398,10 @@ impl Core {
         )
         .await;
         forward.abort();
+        let _ = finish.send(());
+        if let Some(differ) = differ {
+            let _ = differ.await;
+        }
         let waiting = Waiting {
             questions: outcome.questions.clone(),
         };
@@ -2533,8 +2671,89 @@ fn fork_end(messages: &[StoredMessage], cut: ForkCut, seq: i64) -> Result<i64, E
         .map_or(i64::MIN, |last| messages[last].seq))
 }
 
+/// The copy of a project's files taken before a turn: where the copies
+/// are kept, the project's folder, the copy's tree, and the number of the
+/// turn's first message.
+struct TurnCopy {
+    copies: std::path::PathBuf,
+    folder: std::path::PathBuf,
+    tree: String,
+    seq: i64,
+}
+
+/// Whether the tool `name` is known to leave the project's files as they
+/// are. After a call to any other tool the turn's diff is made again, so an
+/// MCP tool, a shell command or input to a job always counts as a change
+/// (docs/evidence/turn-diff.md).
+fn leaves_files(name: &str) -> bool {
+    matches!(
+        name,
+        read::READ
+            | find::FIND
+            | explore::EXPLORE
+            | fetch::FETCH
+            | web_search::SEARCH
+            | mcp::SEARCH
+            | plugins::SEARCH
+            | agent_tools::PLAN
+            | agent_tools::RECALL
+            | agent_tools::LESSON
+            | agent_tools::METHOD
+            | agent_tools::ISSUE
+            | ask::ASK
+            | title::TITLE
+            | promise::PROMISE
+    )
+}
+
+/// A diff as `diff` events and `thread/diff` give it.
+fn diff_value(seq: i64, diff: snapshot::Diff) -> Value {
+    json!({ "seq": seq, "files": diff.files, "text": diff.text, "truncated": diff.truncated })
+}
+
+/// Sends the turn's diff as a [`TurnEvent::Diff`] each time `changed` is
+/// notified and once more when `finished` fires, whenever it differs from
+/// the last one sent; a diff with no file is not sent while none was. A
+/// diff that cannot be made is skipped.
+async fn send_diffs(
+    copy: TurnCopy,
+    changed: Arc<tokio::sync::Notify>,
+    mut finished: tokio::sync::oneshot::Receiver<()>,
+    events: mpsc::Sender<TurnEvent>,
+) {
+    let mut sent: Option<snapshot::Diff> = None;
+    loop {
+        let last = tokio::select! {
+            biased;
+            _ = &mut finished => true,
+            () = changed.notified() => false,
+        };
+        if let Ok(diff) = snapshot::diff(&copy.copies, &copy.folder, &copy.tree).await {
+            let same = sent
+                .as_ref()
+                .map_or(diff.files.is_empty(), |sent| *sent == diff);
+            if !same {
+                let _ = events
+                    .send(TurnEvent::Diff(diff_value(copy.seq, diff.clone())))
+                    .await;
+                sent = Some(diff);
+            }
+        }
+        if last {
+            return;
+        }
+    }
+}
+
 fn unknown_thread() -> ErrorInfo {
     ErrorInfo::new("unknown_thread", "no thread has this id")
+}
+
+pub(crate) fn archived_thread() -> ErrorInfo {
+    ErrorInfo::new(
+        "thread_archived",
+        "this thread is archived; unarchive it with thread/unarchive to go on",
+    )
 }
 
 fn poisoned_turns() -> ErrorInfo {

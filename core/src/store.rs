@@ -18,7 +18,7 @@ pub use crate::store_pool::{PoolBinding, PoolCooldown};
 pub use crate::store_threads::{Queued, SessionUsage, ThreadSummary};
 use crate::ErrorInfo;
 
-const SCHEMA_VERSION: i64 = 17;
+const SCHEMA_VERSION: i64 = 18;
 /// Tool results above this size are stored once in `blobs` and referenced.
 const BLOB_THRESHOLD: usize = 16 * 1024;
 /// Text indexed per message; the rest stays readable but unsearchable.
@@ -394,10 +394,15 @@ CREATE TABLE queue(
 CREATE INDEX queue_session ON queue(session_id, position);
 "#;
 
+/// Whether a thread is archived: hidden from `thread/list` and refusing
+/// new turns until it is unarchived (docs/evidence/thread-operations.md).
+const SCHEMA_V18: &str = "ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;";
+
 /// Schema steps; step `i` brings the database to version `i + 1`.
-const MIGRATIONS: [&str; 17] = [
+const MIGRATIONS: [&str; 18] = [
     SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9,
     SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17,
+    SCHEMA_V18,
 ];
 
 /// A thread id never given before (`SCHEMA_V10`).
@@ -632,6 +637,9 @@ struct Inner {
     next_elicitation: std::sync::atomic::AtomicU64,
     /// Each new title a thread is given, for whoever listens.
     titles: tokio::sync::broadcast::Sender<(SessionId, String)>,
+    /// What happens in every thread, for the subscriptions: kept here so
+    /// that a new title goes out in order with the other changes.
+    activity: tokio::sync::broadcast::Sender<(SessionId, crate::Activity)>,
 }
 
 impl Store {
@@ -648,6 +656,16 @@ impl Store {
 
     pub(crate) fn titled(&self, session: SessionId, title: &str) {
         let _ = self.inner.titles.send((session, title.to_string()));
+        let renamed = crate::ThreadChange::Renamed(title.to_string());
+        let _ = self
+            .inner
+            .activity
+            .send((session, crate::Activity::Changed(renamed)));
+    }
+
+    /// Where what happens in this store's threads is sent.
+    pub(crate) fn activity(&self) -> tokio::sync::broadcast::Sender<(SessionId, crate::Activity)> {
+        self.inner.activity.clone()
     }
 
     pub(crate) fn mcp(&self) -> &tokio::sync::Mutex<Option<Arc<crate::mcp::Tools>>> {
@@ -970,6 +988,7 @@ impl Store {
                 elicitations: Mutex::new(HashMap::new()),
                 next_elicitation: std::sync::atomic::AtomicU64::new(last_elicitation),
                 titles: tokio::sync::broadcast::channel(TITLES_KEPT).0,
+                activity: tokio::sync::broadcast::channel(crate::ACTIVITY_KEPT).0,
             }),
         })
     }
@@ -1239,19 +1258,53 @@ impl Store {
     }
 
     /// Records `tree`, the copy of the project's files taken before the
-    /// turn of `session` whose messages begin after the latest one.
+    /// turn of `session` whose messages begin after the latest one, and
+    /// returns the number its first message will have.
     pub(crate) async fn add_snapshot(
         &self,
         session: SessionId,
         tree: String,
-    ) -> Result<(), ErrorInfo> {
+    ) -> Result<i64, ErrorInfo> {
         self.write(move |db| {
+            let seq: i64 = db
+                .query_row(
+                    "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?1",
+                    [session.0],
+                    |row| row.get(0),
+                )
+                .map_err(store_error)?;
             db.execute(
                 "INSERT OR REPLACE INTO snapshots(session_id, seq, tree, created)
-                 SELECT ?1, COALESCE(MAX(seq), 0) + 1, ?2, ?3 FROM messages WHERE session_id = ?1",
-                params![session.0, tree, now()],
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![session.0, seq, tree, now()],
             )
-            .map(|_| ())
+            .map_err(store_error)?;
+            Ok(seq)
+        })
+        .await
+    }
+
+    /// The copy taken before the turn the message numbered `seq` of
+    /// `session` came in (the latest turn's when `None`), as `(the number
+    /// the copy was recorded at, its tree, the tree of the next turn's
+    /// copy)`.
+    pub(crate) async fn snapshot_span(
+        &self,
+        session: SessionId,
+        seq: Option<i64>,
+    ) -> Result<Option<(i64, String, Option<String>)>, ErrorInfo> {
+        self.read(Duration::from_secs(5), move |db| {
+            db.query_row(
+                "SELECT s.seq, s.tree,
+                        (SELECT n.tree FROM snapshots n
+                         WHERE n.session_id = s.session_id AND n.seq > s.seq
+                         ORDER BY n.seq LIMIT 1)
+                 FROM snapshots s WHERE s.session_id = ?1 AND s.seq <= ?2
+                 ORDER BY s.seq DESC LIMIT 1",
+                params![session.0, seq.unwrap_or(i64::MAX)],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
             .map_err(store_error)
         })
         .await
