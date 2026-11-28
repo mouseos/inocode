@@ -480,6 +480,14 @@ impl EventPayload {
 
     /// The messages queued for the next turns of the watched thread
     /// (`queue`).
+    /// The person's command started as job `job` (`shell_started`).
+    pub fn shell_started(id: u64, job: u64) -> Self {
+        Self {
+            result: Some(json!({ "job_id": job })),
+            ..Self::new(id, "shell_started")
+        }
+    }
+
     /// The watched thread's commands (`jobs`).
     pub fn jobs(id: u64, jobs: &[shell::JobInfo]) -> Self {
         Self {
@@ -2297,6 +2305,7 @@ impl Core {
             text,
             reply_to,
             attached: Default::default(),
+            shell: None,
         };
         if requested.is_empty() {
             return Ok(prompt);
@@ -2334,6 +2343,24 @@ impl Core {
     /// `files/search`: up to `limit` files of the project folder of
     /// `thread` whose paths match `query` fuzzily, best first, leaving out
     /// what `.gitignore` leaves out.
+    /// Answers a side question about `thread` with its model, sending the
+    /// answer's text on `deltas` as it comes; nothing is kept in the thread
+    /// (docs/evidence/side-question.md).
+    pub async fn aside(
+        &self,
+        thread: SessionId,
+        question: &str,
+        deltas: tokio::sync::mpsc::Sender<String>,
+        cancel: watch::Receiver<bool>,
+    ) -> Result<String, ErrorInfo> {
+        let store = self.store()?;
+        if !store.session_exists(thread).await? {
+            return Err(unknown_thread());
+        }
+        let llm = self.thread_client(thread).await?;
+        turn::aside(&llm, store, thread, question, deltas, cancel).await
+    }
+
     /// The job log folder, once `thread` is known to exist and to have job
     /// `id` when one is named (docs/evidence/background-jobs.md).
     async fn job_place(

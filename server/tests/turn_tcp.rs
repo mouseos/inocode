@@ -2872,6 +2872,159 @@ async fn a_screen_lists_watches_types_into_and_stops_the_threads_jobs() {
 }
 
 #[tokio::test]
+async fn the_persons_command_runs_and_its_output_is_the_prompt_the_model_answers() {
+    with_timeout(async {
+        let (project, _) = project_and_outside("person-shell");
+        let mock = scripted(Vec::new()).await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = project_thread(&mut client, &project).await;
+
+        let events = turn_with(
+            &mut client,
+            2,
+            json!({"thread_id": thread, "shell": "echo hello-from-person"}),
+        )
+        .await;
+        let started = events
+            .iter()
+            .find(|event| event["event"] == "shell_started")
+            .expect("shell_started");
+        assert_eq!(started["result"]["job_id"], 1);
+        assert_eq!(roles(&events), ["user", "assistant"]);
+        let asked = events
+            .iter()
+            .find(|event| event["event"] == "message")
+            .unwrap()["message"]["message"]
+            .to_string();
+        assert!(asked.contains("$ echo hello-from-person"), "{asked}");
+        assert!(asked.contains("ended with exit code 0"), "{asked}");
+        assert!(asked.contains("hello-from-person"), "{asked}");
+        assert_eq!(events.last().unwrap()["event"], "completed");
+        let sent = chats(&mock)[0].body["messages"].to_string();
+        assert!(sent.contains("hello-from-person"), "{sent}");
+
+        let refused = turn_with(
+            &mut client,
+            3,
+            json!({"thread_id": thread, "shell": "echo a", "prompt": "and this"}),
+        )
+        .await;
+        assert_eq!(refused.last().unwrap()["error"]["code"], "invalid_params");
+        let _ = std::fs::remove_dir_all(&project);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn stopping_the_turn_stops_the_persons_command_and_the_model_is_not_asked() {
+    with_timeout(async {
+        let (project, _) = project_and_outside("person-shell-stop");
+        let mock = scripted(Vec::new()).await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let mut other = connect(addr).await;
+        let thread = project_thread(&mut client, &project).await;
+        let sleep = if cfg!(windows) {
+            "Start-Sleep -Seconds 60"
+        } else {
+            "sleep 60"
+        };
+        client
+            .1
+            .write_json(
+                2,
+                &json!({"id": 2, "method": "turn/start",
+                        "params": {"thread_id": thread, "shell": sleep}}),
+            )
+            .await
+            .expect("start");
+        events_until(&mut client, 2, "shell_started").await;
+        let interrupted = call(
+            &mut other,
+            3,
+            json!({"id": 3, "method": "turn/interrupt", "params": {"thread_id": thread}}),
+        )
+        .await;
+        assert_eq!(interrupted["result"]["interrupted"], true, "{interrupted}");
+        let events = events_until(&mut client, 2, "cancelled").await;
+        let kept = events
+            .iter()
+            .find(|event| event["event"] == "message")
+            .expect("message")["message"]["message"]
+            .to_string();
+        assert!(kept.contains("I stopped it before it ended."), "{kept}");
+        assert!(chats(&mock).is_empty());
+        let listed = call(
+            &mut other,
+            4,
+            json!({"id": 4, "method": "thread/jobs/list", "params": {"thread_id": thread}}),
+        )
+        .await;
+        assert_eq!(listed["result"]["jobs"][0]["running"], false, "{listed}");
+        let _ = std::fs::remove_dir_all(&project);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_side_question_is_answered_from_the_conversation_and_not_kept() {
+    with_timeout(async {
+        let mock = scripted(vec![
+            vec![sse_delta("the plan is set"), finish("stop"), sse_done()],
+            vec![sse_delta("side "), sse_delta("answer"), finish("stop"), sse_done()],
+        ])
+        .await;
+        let (addr, _stop, _handle) = start_server(core_for(&mock).await).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client).await;
+        turn(&mut client, 2, thread, "remember the word zebra").await;
+        let before = call(
+            &mut client,
+            3,
+            json!({"id": 3, "method": "thread/read", "params": {"thread_id": thread}}),
+        )
+        .await;
+
+        client
+            .1
+            .write_json(
+                4,
+                &json!({"id": 4, "method": "thread/btw",
+                        "params": {"thread_id": thread, "question": "which word?"}}),
+            )
+            .await
+            .expect("btw");
+        let events = events_until(&mut client, 4, "completed").await;
+        assert_eq!(kinds(&events), ["started", "delta", "delta", "completed"]);
+        assert_eq!(events.last().unwrap()["result"]["text"], "side answer");
+        let asked = &chats(&mock)[1].body;
+        let messages = asked["messages"].to_string();
+        assert!(messages.contains("remember the word zebra"), "{messages}");
+        assert!(messages.contains("Question: which word?"), "{messages}");
+        assert!(asked["tools"].as_array().is_some_and(|tools| !tools.is_empty()));
+        let after = call(
+            &mut client,
+            5,
+            json!({"id": 5, "method": "thread/read", "params": {"thread_id": thread}}),
+        )
+        .await;
+        assert_eq!(after["result"], before["result"]);
+
+        let empty = call(
+            &mut client,
+            6,
+            json!({"id": 6, "method": "thread/btw", "params": {"thread_id": thread, "question": " "}}),
+        )
+        .await;
+        assert_eq!(empty["error"]["code"], "invalid_params", "{empty}");
+    })
+    .await;
+}
+
+#[tokio::test]
 async fn a_fetched_page_comes_as_its_main_content_and_is_saved_whole() {
     with_timeout(async {
         let page = "<!doctype html><html><head><title>Guide</title></head><body>\

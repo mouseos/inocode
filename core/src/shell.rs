@@ -286,6 +286,62 @@ pub(crate) fn watch_job(logs: &Path, session: SessionId, id: u64) -> Result<JobW
     })
 }
 
+/// A command the person runs from the input box, outside the sandbox
+/// (docs/evidence/person-shell.md).
+pub(crate) struct PersonJob(Arc<Job>);
+
+impl PersonJob {
+    pub(crate) fn start(place: Place<'_>, command: &str) -> Result<Self, String> {
+        let folder = place
+            .folder
+            .filter(|folder| folder.is_dir())
+            .ok_or("commands need a project folder, and this thread has none")?;
+        let job = start(
+            (place.logs, place.session),
+            folder,
+            command.to_string(),
+            false,
+            place.activity,
+        )?;
+        Ok(Self(job))
+    }
+
+    pub(crate) fn id(&self) -> u64 {
+        self.0.id
+    }
+
+    /// Waits for the command to end, or stops it when `cancel` is raised;
+    /// gives how it ended as the model is shown a job's end, and whether it
+    /// was stopped.
+    pub(crate) async fn finish(self, mut cancel: watch::Receiver<bool>) -> (String, bool) {
+        let job = self.0;
+        let mut ended = job.ended.subscribe();
+        let stopped = tokio::select! {
+            () = async { drop(ended.wait_for(Option::is_some).await) } => false,
+            () = cancelled(&mut cancel) => true,
+        };
+        if stopped && job.ended.borrow().is_none() {
+            if let Ok(mut killer) = job.killer.lock() {
+                let _ = killer.kill();
+            }
+            let mut ended = job.ended.subscribe();
+            let _ = tokio::time::timeout(Duration::from_secs(5), async {
+                drop(ended.wait_for(Option::is_some).await)
+            })
+            .await;
+        }
+        if let Ok(mut reported) = job.reported.lock() {
+            *reported = true;
+        }
+        let state = *job.ended.borrow();
+        let text = match state {
+            Some((code, took)) => finished(&job, code, took),
+            None => running(&job),
+        };
+        (text, stopped)
+    }
+}
+
 /// Tells the thread's watchers what its jobs now are.
 fn announce(key: &Key, activity: &broadcast::Sender<(SessionId, crate::Activity)>) {
     let jobs = list(&key.0, key.1);

@@ -65,6 +65,9 @@ pub enum TurnEvent {
     /// One model request of the turn ended: what it used and how fast, the
     /// turn's totals so far, and how full the context is.
     Usage(UsageReport),
+    /// The person's command started as job `u64`; its output can be
+    /// watched with the thread's jobs while the turn waits for it.
+    ShellStarted(u64),
     /// The thread's new title.
     Title(String),
     /// A title the model proposes for the thread; the title is unchanged.
@@ -384,6 +387,9 @@ pub struct Prompt {
     pub text: String,
     pub reply_to: Option<i64>,
     pub attached: crate::attach::Attached,
+    /// A command the person runs; its output becomes the prompt
+    /// (docs/evidence/person-shell.md).
+    pub shell: Option<String>,
 }
 
 /// Characters of a replied-to message that are quoted; the rest is read
@@ -1812,6 +1818,34 @@ impl Thread<'_> {
         self.goal.as_ref().is_some_and(crate::goal::Goal::is_active)
     }
 
+    /// Runs the person's command and words its end as the person's
+    /// message; `true` when the turn was stopped while it ran.
+    async fn run_for_person(
+        &mut self,
+        command: &str,
+        cancel: &watch::Receiver<bool>,
+    ) -> Result<(String, bool), ErrorInfo> {
+        let place = crate::shell::Place {
+            session: self.session,
+            folder: self.folder.as_deref(),
+            logs: self.store.files_folder().join("logs"),
+            cancel: cancel.clone(),
+            sandboxed: false,
+            activity: self.store.activity(),
+        };
+        let job = crate::shell::PersonJob::start(place, command)
+            .map_err(|message| ErrorInfo::new("shell_failed", message))?;
+        let _ = self.events.send(TurnEvent::ShellStarted(job.id())).await;
+        let (ended, stopped) = job.finish(cancel.clone()).await;
+        let mut text = format!(
+            "I ran this command myself in the project folder, outside the sandbox:\n$ {command}\n{ended}"
+        );
+        if stopped {
+            text.push_str("\nI stopped it before it ended.");
+        }
+        Ok((text, stopped))
+    }
+
     /// Reports each request recorded since the last report.
     async fn report_usage(&mut self, llm: &Llm, usage: &TurnUsage) {
         if self.reported >= usage.records.len() {
@@ -2534,6 +2568,90 @@ impl TaskStart {
 /// summary and the recent part kept. Returns the stored compaction
 /// message's position (`None` when nothing could be replaced) and what went
 /// wrong beside it.
+/// Who asks a side question, as the model is told.
+const ASIDE_KIND: &str = "aside";
+
+/// Answers the person's side question from `session`'s conversation as the
+/// model is sent it, without tools, and keeps neither the question nor the
+/// answer (docs/evidence/side-question.md). The answer's text comes on
+/// `deltas` as it is written.
+pub(crate) async fn aside(
+    llm: &Llm,
+    store: &Store,
+    session: SessionId,
+    question: &str,
+    deltas: mpsc::Sender<String>,
+    mut cancel: watch::Receiver<bool>,
+) -> Result<String, ErrorInfo> {
+    let (events, _) = mpsc::channel(1);
+    let thread = open(
+        store,
+        session,
+        "",
+        Approvals::default(),
+        cancel.clone(),
+        events,
+    )
+    .await?;
+    // The thread's own tools, so that the start of the request is the one
+    // its turns send and can be read from the provider's cache.
+    let tools = agent_tools::specs(thread.sandboxed());
+    let mut sent = thread.conversation;
+    sent.messages.push(Message {
+        id: "aside".to_string(),
+        body: Body::User {
+            from: Speaker::Harness(ASIDE_KIND.to_string()),
+            parts: vec![format!(
+                "The person asks a side question while the work may go on. Answer it \
+                 from this conversation only, briefly. You cannot use tools for it, so call \
+                 none. The question and your answer are not kept in the thread.\n\n\
+                 Question: {question}"
+            )],
+            images: Vec::new(),
+        },
+    });
+    let started = tokio::select! {
+        started = llm.converse(&sent, &tools) => started?,
+        () = cancelled(&mut cancel) => {
+            return Err(ErrorInfo::new("cancelled", "the side question was stopped"));
+        }
+    };
+    let mut stream = started;
+    let mut answer = String::new();
+    let mut failure = None;
+    let mut stopped = false;
+    loop {
+        tokio::select! {
+            next = stream.next_piece() => match next {
+                Ok(Some(crate::llm::Piece::Text(text))) => {
+                    answer.push_str(&text);
+                    let _ = deltas.send(text).await;
+                }
+                Ok(Some(crate::llm::Piece::Thinking(_))) => {}
+                Ok(None) => break,
+                Err(error) => {
+                    failure = Some(error);
+                    break;
+                }
+            },
+            () = cancelled(&mut cancel) => {
+                stopped = true;
+                break;
+            }
+        }
+    }
+    let _ = store
+        .log_requests(session, &[stream.record(ASIDE_KIND)])
+        .await;
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    if stopped {
+        return Err(ErrorInfo::new("cancelled", "the side question was stopped"));
+    }
+    Ok(answer)
+}
+
 pub(crate) async fn compact_now(
     llm: &Llm,
     compactor: Option<&Llm>,
@@ -2749,6 +2867,19 @@ async fn steps(
     if let Some(seq) = prompt.reply_to {
         match quote(thread.store, thread.session, seq).await {
             Ok(quoted) => opening.push(quoted),
+            Err(error) => return Ending::Failed(error),
+        }
+    }
+    let mut prompt = prompt;
+    if let Some(command) = prompt.shell.take() {
+        match thread.run_for_person(&command, cancel).await {
+            Ok((text, false)) => prompt.text = text,
+            Ok((text, true)) => {
+                if let Err(error) = thread.record(vec![person(text)]).await {
+                    return Ending::Failed(error);
+                }
+                return Ending::Interrupted;
+            }
             Err(error) => return Ending::Failed(error),
         }
     }

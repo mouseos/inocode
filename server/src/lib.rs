@@ -782,6 +782,7 @@ async fn dispatch(
             watch_threads(request, stream_id, core, queue, in_flight).await
         }
         "thread/jobs/watch" => watch_job(request, stream_id, core, queue, in_flight).await,
+        "thread/btw" => ask_aside(request, stream_id, core, queue, in_flight).await,
         "models/catalog" => {
             // Fetches prices and scores: off the read loop, like discovery.
             let (id, core, queue) = (request.id, Arc::clone(core), queue.clone());
@@ -1182,6 +1183,113 @@ async fn watch_job(
         Arc::clone(in_flight),
         cancel_rx,
     ));
+    true
+}
+
+/// `thread/btw {thread_id, question}`: a side question answered from the
+/// thread's conversation without tools, while a turn may run. The answer
+/// streams as `delta` events and ends with `completed`, whose `result`
+/// holds its whole text; nothing is kept in the thread
+/// (docs/evidence/side-question.md).
+async fn ask_aside(
+    request: Request,
+    stream_id: u64,
+    core: &Arc<Core>,
+    queue: &mpsc::Sender<Outgoing>,
+    in_flight: &InFlight,
+) -> bool {
+    let id = request.id;
+    let parsed = request.thread().and_then(|thread| {
+        request
+            .params
+            .as_ref()
+            .and_then(|params| params.get("question"))
+            .and_then(Value::as_str)
+            .filter(|question| !question.trim().is_empty())
+            .map(|question| (thread, question.to_string()))
+            .ok_or_else(|| {
+                ErrorInfo::new("invalid_params", "requires a non-empty \"question\" string")
+            })
+    });
+    let (thread, question) = match parsed {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            return send_event(queue, stream_id, EventPayload::failed(id, error))
+                .await
+                .is_ok()
+        }
+    };
+    let mut pending = in_flight.lock().await;
+    if pending.contains_key(&id) {
+        drop(pending);
+        let error = ErrorInfo::new("duplicate_id", "request id is already in flight");
+        let event = EventPayload::failed(id, error);
+        return send_event(queue, stream_id, event).await.is_ok();
+    }
+    let (cancel_tx, cancel_rx) = watch::channel(false);
+    pending.insert(id, Generation::Running(cancel_tx));
+    drop(pending);
+    let (core, queue, in_flight) = (Arc::clone(core), queue.clone(), Arc::clone(in_flight));
+    tokio::spawn(async move {
+        let mut cancelled = cancel_rx;
+        let (deltas, mut texts) = mpsc::channel(64);
+        let answer = core.aside(thread, &question, deltas, cancelled.clone());
+        tokio::pin!(answer);
+        let mut gone = false;
+        let mut stopped = false;
+        let started = deliver(&queue, stream_id, EventPayload::started(id), &mut cancelled).await;
+        match started {
+            Delivery::Sent => {}
+            Delivery::ConnectionGone => gone = true,
+            Delivery::Cancelled => stopped = true,
+        }
+        let answered = loop {
+            tokio::select! {
+                answered = &mut answer => break answered,
+                Some(text) = texts.recv() => {
+                    if gone || stopped {
+                        continue;
+                    }
+                    match deliver(&queue, stream_id, EventPayload::delta(id, text), &mut cancelled).await {
+                        Delivery::Sent => {}
+                        Delivery::ConnectionGone => gone = true,
+                        Delivery::Cancelled => stopped = true,
+                    }
+                }
+            }
+        };
+        if gone {
+            abandon(&in_flight, id).await;
+            return;
+        }
+        while let Ok(text) = texts.try_recv() {
+            if stopped {
+                break;
+            }
+            if let Delivery::ConnectionGone = deliver(
+                &queue,
+                stream_id,
+                EventPayload::delta(id, text),
+                &mut cancelled,
+            )
+            .await
+            {
+                abandon(&in_flight, id).await;
+                return;
+            }
+        }
+        let terminal = match answered {
+            _ if stopped => Terminal::Cancelled,
+            Ok(text) => {
+                let mut ended = EventPayload::completed(id);
+                ended.result = Some(json!({ "text": text }));
+                Terminal::Ended(Box::new(ended))
+            }
+            Err(error) if error.code == "cancelled" => Terminal::Cancelled,
+            Err(error) => Terminal::Failed(error),
+        };
+        settle(id, stream_id, &queue, &in_flight, cancelled, terminal).await;
+    });
     true
 }
 
@@ -1691,7 +1799,7 @@ async fn run_command(
         id,
         thread,
         (
-            (start.prompt, start.reply_to, Default::default()),
+            (start.prompt, start.reply_to, Default::default(), None),
             (Default::default(), false, None, core.choices_seen(thread)),
         ),
         stream_id,
@@ -2185,6 +2293,7 @@ fn turn_event(id: u64, event: TurnEvent) -> EventPayload {
         TurnEvent::McpLog(log) => EventPayload::mcp(id, "mcp_log", log),
         TurnEvent::Estimate(estimate) => EventPayload::estimate(id, &estimate),
         TurnEvent::Usage(report) => EventPayload::usage(id, &report),
+        TurnEvent::ShellStarted(job) => EventPayload::shell_started(id, job),
         TurnEvent::Title(title) => EventPayload::title(id, "title_updated", title),
         TurnEvent::TitleProposed(title) => EventPayload::title(id, "title_proposed", title),
         TurnEvent::Diff(diff) => EventPayload::diff(id, diff),
@@ -2200,11 +2309,15 @@ async fn start_turn(
     in_flight: &InFlight,
 ) -> bool {
     let parsed = request.thread().and_then(|thread| {
-        let prompt = (
-            request.prompt()?.to_string(),
-            request.reply_to()?,
-            request.attached()?,
-        );
+        let prompt = match person_shell(&request)? {
+            Some(command) => (command.clone(), None, Default::default(), Some(command)),
+            None => (
+                request.prompt()?.to_string(),
+                request.reply_to()?,
+                request.attached()?,
+                None,
+            ),
+        };
         Ok((
             thread,
             prompt,
@@ -2247,6 +2360,37 @@ async fn start_turn(
     true
 }
 
+/// The command of a `turn/start` that runs the person's command instead of
+/// sending a prompt; it takes no prompt, reply or attachments.
+fn person_shell(request: &Request) -> Result<Option<String>, ErrorInfo> {
+    let params = request.params.as_ref();
+    let Some(shell) = params
+        .and_then(|params| params.get("shell"))
+        .filter(|shell| !shell.is_null())
+    else {
+        return Ok(None);
+    };
+    let command = shell
+        .as_str()
+        .filter(|command| !command.trim().is_empty())
+        .ok_or_else(|| ErrorInfo::new("invalid_params", "\"shell\" must be a non-empty string"))?;
+    let given = |name: &str| {
+        params
+            .and_then(|params| params.get(name))
+            .is_some_and(|value| !value.is_null())
+    };
+    if ["prompt", "reply_to", "attachments", "mentions"]
+        .iter()
+        .any(|name| given(name))
+    {
+        return Err(ErrorInfo::new(
+            "invalid_params",
+            "\"shell\" takes no prompt, reply_to, attachments or mentions",
+        ));
+    }
+    Ok(Some(command.to_string()))
+}
+
 /// What a `turn/start` chose for its turn: the approvals, whether it named
 /// its mode, plan mode when it sets it, and how many times the thread's
 /// choices had been written when it was asked for.
@@ -2258,8 +2402,13 @@ type TurnChoices = (inocode_core::turn::Approvals, bool, Option<bool>, u64);
 async fn run_turn(
     id: u64,
     thread: inocode_core::store::SessionId,
-    ((prompt, reply_to, attached), (mut approvals, names_mode, plan, asked)): (
-        (String, Option<i64>, inocode_core::attach::Requested),
+    ((prompt, reply_to, attached, shell), (mut approvals, names_mode, plan, asked)): (
+        (
+            String,
+            Option<i64>,
+            inocode_core::attach::Requested,
+            Option<String>,
+        ),
         TurnChoices,
     ),
     stream_id: u64,
@@ -2269,7 +2418,7 @@ async fn run_turn(
     cancelled: watch::Receiver<bool>,
 ) {
     let prompt = match core.turn_prompt(thread, prompt, reply_to, attached).await {
-        Ok(prompt) => prompt,
+        Ok(prompt) => inocode_core::turn::Prompt { shell, ..prompt },
         Err(error) => {
             settle(
                 id,
