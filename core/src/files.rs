@@ -226,6 +226,80 @@ pub fn copy(from: &Path, to: &Path, recursive: bool, overwrite: bool) -> Result<
     Ok(json!({}))
 }
 
+/// Changes a watcher may hold before the screen reads them; beyond that
+/// they are dropped and the watcher is told it missed some.
+const CHANGES_KEPT: usize = 1024;
+
+/// A change the operating system reported under a watched path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Change {
+    /// `created`, `modified`, `renamed`, `removed` or `other`.
+    pub kind: &'static str,
+    pub paths: Vec<String>,
+}
+
+/// A watched path: its changes come on `changes` until this is dropped;
+/// `missed` is raised when some were dropped.
+pub struct Watch {
+    _watcher: notify::RecommendedWatcher,
+    pub changes: tokio::sync::mpsc::Receiver<Change>,
+    pub missed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+fn change_of(event: notify::Event) -> Option<Change> {
+    use notify::event::{EventKind, ModifyKind};
+    let kind = match event.kind {
+        EventKind::Access(_) => return None,
+        EventKind::Create(_) => "created",
+        EventKind::Modify(ModifyKind::Name(_)) => "renamed",
+        EventKind::Modify(_) => "modified",
+        EventKind::Remove(_) => "removed",
+        EventKind::Any | EventKind::Other => "other",
+    };
+    Some(Change {
+        kind,
+        paths: event
+            .paths
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect(),
+    })
+}
+
+/// Watches a file or folder (with what is under it when `recursive`) by
+/// the operating system's notifications (docs/evidence/file-requests.md).
+pub fn watch(path: &Path, recursive: bool) -> Result<Watch, ErrorInfo> {
+    use notify::Watcher;
+    std::fs::symlink_metadata(path).map_err(|error| failed(path, error))?;
+    let (sender, changes) = tokio::sync::mpsc::channel(CHANGES_KEPT);
+    let missed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = std::sync::Arc::clone(&missed);
+    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        let Some(change) = event.ok().and_then(change_of) else {
+            return;
+        };
+        if sender.try_send(change).is_err() {
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    })
+    .map_err(|error| ErrorInfo::new("fs_failed", format!("cannot watch: {error}")))?;
+    let mode = match recursive {
+        true => notify::RecursiveMode::Recursive,
+        false => notify::RecursiveMode::NonRecursive,
+    };
+    watcher.watch(path, mode).map_err(|error| {
+        ErrorInfo::new(
+            "fs_failed",
+            format!("cannot watch {}: {error}", path.display()),
+        )
+    })?;
+    Ok(Watch {
+        _watcher: watcher,
+        changes,
+        missed,
+    })
+}
+
 fn copy_folder(from: &Path, to: &Path) -> Result<(), ErrorInfo> {
     std::fs::create_dir_all(to).map_err(|error| failed(to, error))?;
     for entry in std::fs::read_dir(from).map_err(|error| failed(from, error))? {

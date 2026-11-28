@@ -1167,3 +1167,67 @@ async fn a_thread_moves_to_another_folder_and_to_its_own_worktree_removed_with_i
     })
     .await;
 }
+
+#[tokio::test]
+async fn a_watched_folder_reports_its_changes_until_it_is_unwatched() {
+    with_timeout(async {
+        let database = database();
+        let folder = database.with_file_name("watched");
+        std::fs::create_dir_all(folder.join("inner")).expect("folder");
+        let mock = scripted(Vec::new()).await;
+        let (addr, _stop, _handle) = start_server(core_for(&mock, &database).await).await;
+        let mut client = connect(addr).await;
+        client
+            .1
+            .write_json(
+                2,
+                &json!({"id": 2, "method": "fs/watch",
+                        "params": {"path": folder.to_string_lossy(), "recursive": true}}),
+            )
+            .await
+            .expect("watch");
+        let started = next_message(&mut client, 2).await;
+        assert_eq!(started["event"], "started", "{started}");
+        std::fs::write(folder.join("inner").join("made.txt"), "x").expect("write");
+        let changed = loop {
+            let event = next_message(&mut client, 2).await;
+            assert_eq!(event["event"], "changed", "{event}");
+            if event["result"]["paths"].to_string().contains("made.txt") {
+                break event;
+            }
+        };
+        assert!(
+            ["created", "modified", "other"].contains(&changed["result"]["kind"].as_str().unwrap()),
+            "{changed}"
+        );
+
+        client
+            .1
+            .write_json(
+                3,
+                &json!({"id": 3, "method": "fs/unwatch", "params": {"watch_id": 2}}),
+            )
+            .await
+            .expect("unwatch");
+        let (mut unwatched, mut ended) = (None, false);
+        while unwatched.is_none() || !ended {
+            let (stream, message): (u64, Value) = client.0.read_json().await.expect("read");
+            match stream {
+                3 => unwatched = Some(message),
+                2 => ended = message["event"] == "cancelled",
+                _ => panic!("{message}"),
+            }
+        }
+        assert_eq!(unwatched.unwrap()["result"]["unwatched"], true);
+        let missing = call(
+            &mut client,
+            4,
+            json!({"id": 4, "method": "fs/watch",
+                   "params": {"path": folder.join("missing").to_string_lossy()}}),
+        )
+        .await;
+        assert_eq!(missing["event"], "failed", "{missing}");
+        assert_eq!(missing["error"]["code"], "not_found", "{missing}");
+    })
+    .await;
+}

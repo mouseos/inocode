@@ -798,6 +798,8 @@ async fn dispatch(
         }
         "thread/jobs/watch" => watch_job(request, stream_id, core, queue, in_flight).await,
         "thread/btw" => ask_aside(request, stream_id, core, queue, in_flight).await,
+        "fs/watch" => watch_path(request, stream_id, queue, in_flight).await,
+        "fs/unwatch" => unwatch(request, stream_id, queue, in_flight).await,
         "models/catalog" => {
             // Fetches prices and scores: off the read loop, like discovery.
             let (id, core, queue) = (request.id, Arc::clone(core), queue.clone());
@@ -1348,6 +1350,132 @@ async fn watch_job(
         cancel_rx,
     ));
     true
+}
+
+/// `fs/watch {path, recursive?}`: the operating system's reports of changes
+/// under `path`, as `changed` events (`result: {kind, paths}`), until the
+/// watch is cancelled, by `cancel` or by `fs/unwatch {watch_id}` with this
+/// request's id. `lagged` says some changes were dropped
+/// (docs/evidence/file-requests.md).
+async fn watch_path(
+    request: Request,
+    stream_id: u64,
+    queue: &mpsc::Sender<Outgoing>,
+    in_flight: &InFlight,
+) -> bool {
+    let id = request.id;
+    let params = request.params.as_ref();
+    let watched = params
+        .and_then(|params| params.get("path"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| ErrorInfo::new("invalid_params", "requires a \"path\" string"))
+        .and_then(inocode_core::files::absolute)
+        .and_then(|path| {
+            let recursive = match params.and_then(|params| params.get("recursive")) {
+                None | Some(Value::Null) => false,
+                Some(value) => value.as_bool().ok_or_else(|| {
+                    ErrorInfo::new("invalid_params", "\"recursive\" must be true or false")
+                })?,
+            };
+            inocode_core::files::watch(&path, recursive).map(|watch| (path, watch))
+        });
+    let (path, watch) = match watched {
+        Ok(watched) => watched,
+        Err(error) => {
+            return send_event(queue, stream_id, EventPayload::failed(id, error))
+                .await
+                .is_ok()
+        }
+    };
+    let mut pending = in_flight.lock().await;
+    if pending.contains_key(&id) {
+        drop(pending);
+        let error = ErrorInfo::new("duplicate_id", "request id is already in flight");
+        let event = EventPayload::failed(id, error);
+        return send_event(queue, stream_id, event).await.is_ok();
+    }
+    let (cancel_tx, cancel_rx) = watch::channel(false);
+    pending.insert(id, Generation::Running(cancel_tx));
+    drop(pending);
+    let (queue, in_flight) = (queue.clone(), Arc::clone(in_flight));
+    tokio::spawn(async move {
+        let mut cancelled = cancel_rx;
+        let mut watch = watch;
+        let mut opening = EventPayload::started(id);
+        opening.result = Some(json!({ "path": path.to_string_lossy() }));
+        let terminal = 'relay: {
+            match deliver(&queue, stream_id, opening, &mut cancelled).await {
+                Delivery::Sent => {}
+                Delivery::ConnectionGone => break 'relay None,
+                Delivery::Cancelled => break 'relay Some(Terminal::Cancelled),
+            }
+            loop {
+                let event = tokio::select! {
+                    change = watch.changes.recv() => match change {
+                        Some(change) => {
+                            if watch.missed.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                                match deliver(&queue, stream_id, EventPayload::named(id, "lagged"), &mut cancelled).await {
+                                    Delivery::Sent => {}
+                                    Delivery::ConnectionGone => break 'relay None,
+                                    Delivery::Cancelled => break 'relay Some(Terminal::Cancelled),
+                                }
+                            }
+                            let mut event = EventPayload::named(id, "changed");
+                            event.result = Some(json!(change));
+                            event
+                        }
+                        None => break 'relay Some(Terminal::Completed),
+                    },
+                    _ = cancelled.changed() => break 'relay Some(Terminal::Cancelled),
+                };
+                match deliver(&queue, stream_id, event, &mut cancelled).await {
+                    Delivery::Sent => {}
+                    Delivery::ConnectionGone => break 'relay None,
+                    Delivery::Cancelled => break 'relay Some(Terminal::Cancelled),
+                }
+            }
+        };
+        drop(watch);
+        match terminal {
+            Some(terminal) => settle(id, stream_id, &queue, &in_flight, cancelled, terminal).await,
+            None => abandon(&in_flight, id).await,
+        }
+    });
+    true
+}
+
+/// `fs/unwatch {watch_id}`: stops the `fs/watch` of that request id on this
+/// connection, as `cancel` does.
+async fn unwatch(
+    request: Request,
+    stream_id: u64,
+    queue: &mpsc::Sender<Outgoing>,
+    in_flight: &InFlight,
+) -> bool {
+    let target = request
+        .params
+        .as_ref()
+        .and_then(|params| params.get("watch_id"))
+        .and_then(Value::as_u64)
+        .ok_or_else(|| ErrorInfo::new("invalid_params", "requires a \"watch_id\" number"));
+    let body = match target {
+        Ok(target) => {
+            let stopped = match in_flight.lock().await.get(&target) {
+                Some(Generation::Running(cancel_tx)) => cancel_tx.send(true).is_ok(),
+                Some(Generation::Settling) | None => false,
+            };
+            ResponseBody::Result {
+                result: json!({ "unwatched": stopped }),
+            }
+        }
+        Err(error) => ResponseBody::Error { error },
+    };
+    let response = Response {
+        id: Some(request.id),
+        body,
+    };
+    let payload = serde_json::to_value(response).unwrap_or(Value::Null);
+    send(queue, stream_id, payload).await
 }
 
 /// `thread/btw {thread_id, question}`: a side question answered from the

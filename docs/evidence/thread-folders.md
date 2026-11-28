@@ -11,7 +11,7 @@
     - git は、状態を読むときと同じ守り（フック・fsmonitor・全体と system の設定を読まない）で走らせる。そのため worktree を作るときに post-checkout のフックは走らない。
     - そのスレッドにもう worktree があれば `already_exists`。git が断れば `worktree_failed`（git の文をそのまま返す）。
   - 片付け（ユーザーの選択「削除で消す」）：
-    - スレッドを削除したとき、そのスレッドのフォルダが自分の worktree なら、変更もgit が追っていないファイルも無いときだけ `git worktree remove` で消す。ブランチは残す。
+    - スレッドを削除したとき、そのスレッドのフォルダが自分の worktree なら、変更も、git が追っていないファイルも無いときだけ `git worktree remove` で消す。ブランチは残す。
     - 残したときは、削除の答えの `worktree` に `{path, removed: false, kept_because}` を入れる。消したときは `{path, removed: true}`。worktree でないスレッドでは `null`。
     - アーカイブでは消さない。
   - 範囲外・限界：

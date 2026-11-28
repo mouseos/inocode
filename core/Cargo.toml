@@ -25,6 +25,7 @@ hayro = "0.9"
 hmac = "0.12"
 hound = "3.5"
 nokhwa = { version = "0.10", default-features = false, features = ["input-native"] }
+notify = "8"
 p384 = { version = "0.13", default-features = false, features = ["ecdsa", "std"] }
 pdf-extract = "0.12"
 portable-pty = "0.9"
