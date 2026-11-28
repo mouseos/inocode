@@ -1231,3 +1231,124 @@ async fn a_watched_folder_reports_its_changes_until_it_is_unwatched() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn projects_and_threads_sit_in_groups_nested_to_any_depth() {
+    with_timeout(async {
+        let database = database();
+        let folder = database.with_file_name("z581kl");
+        std::fs::create_dir_all(&folder).expect("folder");
+        let mock = scripted(Vec::new()).await;
+        let (addr, _stop, _handle) = start_server(core_for(&mock, &database).await).await;
+        let mut client = connect(addr).await;
+        let mut next = 1;
+        let mut ask = |method: &str, params: Value| {
+            next += 1;
+            (
+                next,
+                json!({"id": next, "method": method, "params": params}),
+            )
+        };
+
+        let (n, request) = ask("groups/create", json!({"name": "android"}));
+        let android = call(&mut client, n, request).await["result"]["group_id"]
+            .as_i64()
+            .unwrap();
+        let (n, request) = ask(
+            "groups/create",
+            json!({"name": "bootloader", "parent_id": android}),
+        );
+        let bootloader = call(&mut client, n, request).await["result"]["group_id"]
+            .as_i64()
+            .unwrap();
+        let (n, request) = ask(
+            "projects/group",
+            json!({"project": folder.to_string_lossy(), "group_id": bootloader}),
+        );
+        let grouped = call(&mut client, n, request).await;
+        assert_eq!(grouped["result"]["group_id"], bootloader, "{grouped}");
+        let in_project = thread(&mut client, Some(&folder)).await;
+        let (n, request) = ask("thread/start", json!({"group_id": android}));
+        let notes = call(&mut client, n, request).await["result"]["thread_id"]
+            .as_i64()
+            .unwrap();
+
+        let (n, request) = ask("groups/list", json!({}));
+        let listed = call(&mut client, n, request).await;
+        let groups = listed["result"]["groups"].as_array().unwrap().clone();
+        assert_eq!(groups.len(), 2, "{listed}");
+        assert!(groups
+            .iter()
+            .any(|group| group["name"] == "bootloader" && group["parent_id"] == android));
+        assert!(listed["result"]["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(
+                |project| project["project"] == folder.to_string_lossy().as_ref()
+                    && project["group_id"] == bootloader
+            ));
+        let (n, request) = ask("thread/list", json!({}));
+        let threads = call(&mut client, n, request).await;
+        let group_of = |thread: i64| {
+            threads["result"]["threads"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["thread_id"] == thread)
+                .map(|entry| entry["group_id"].clone())
+        };
+        assert_eq!(group_of(in_project), Some(json!(bootloader)), "{threads}");
+        assert_eq!(group_of(notes), Some(json!(android)), "{threads}");
+
+        let (n, request) = ask(
+            "groups/move",
+            json!({"group_id": android, "parent_id": bootloader}),
+        );
+        let cycle = call(&mut client, n, request).await;
+        assert_eq!(cycle["error"]["code"], "invalid_params", "{cycle}");
+        let (n, request) = ask("groups/delete", json!({"group_id": android}));
+        let full = call(&mut client, n, request).await;
+        assert_eq!(full["error"]["code"], "group_not_empty", "{full}");
+        let (n, request) = ask(
+            "thread/group",
+            json!({"thread_id": in_project, "group_id": android}),
+        );
+        let refused = call(&mut client, n, request).await;
+        assert_eq!(refused["error"]["code"], "invalid_params", "{refused}");
+        let (n, request) = ask(
+            "groups/rename",
+            json!({"group_id": bootloader, "name": "boot"}),
+        );
+        assert_eq!(
+            call(&mut client, n, request).await["result"]["name"],
+            "boot"
+        );
+
+        // Emptied, a group can go.
+        let (n, request) = ask(
+            "projects/group",
+            json!({"project": folder.to_string_lossy(), "group_id": null}),
+        );
+        call(&mut client, n, request).await;
+        let (n, request) = ask("groups/delete", json!({"group_id": bootloader}));
+        assert_eq!(
+            call(&mut client, n, request).await["result"]["deleted"],
+            bootloader
+        );
+        let (n, request) = ask(
+            "thread/group",
+            json!({"thread_id": notes, "group_id": null}),
+        );
+        call(&mut client, n, request).await;
+        let (n, request) = ask("groups/delete", json!({"group_id": android}));
+        assert_eq!(
+            call(&mut client, n, request).await["result"]["deleted"],
+            android
+        );
+        let (n, request) = ask("thread/start", json!({"group_id": android}));
+        let gone = call(&mut client, n, request).await;
+        assert_eq!(gone["error"]["code"], "unknown_group", "{gone}");
+    })
+    .await;
+}

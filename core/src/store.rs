@@ -18,7 +18,7 @@ pub use crate::store_pool::{PoolBinding, PoolCooldown};
 pub use crate::store_threads::{Queued, SessionUsage, ThreadSummary};
 use crate::ErrorInfo;
 
-const SCHEMA_VERSION: i64 = 18;
+const SCHEMA_VERSION: i64 = 19;
 /// Tool results above this size are stored once in `blobs` and referenced.
 const BLOB_THRESHOLD: usize = 16 * 1024;
 /// Text indexed per message; the rest stays readable but unsearchable.
@@ -398,11 +398,25 @@ CREATE INDEX queue_session ON queue(session_id, position);
 /// new turns until it is unarchived (docs/evidence/thread-operations.md).
 const SCHEMA_V18: &str = "ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;";
 
+/// Groups nested to any depth, holding projects and the threads without a
+/// project (docs/evidence/project-groups.md).
+const SCHEMA_V19: &str = r#"
+CREATE TABLE groups(
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    parent_id INTEGER REFERENCES groups(id),
+    created INTEGER NOT NULL
+);
+CREATE INDEX groups_parent ON groups(parent_id);
+ALTER TABLE projects ADD COLUMN group_id INTEGER REFERENCES groups(id);
+ALTER TABLE sessions ADD COLUMN group_id INTEGER REFERENCES groups(id);
+"#;
+
 /// Schema steps; step `i` brings the database to version `i + 1`.
-const MIGRATIONS: [&str; 18] = [
+const MIGRATIONS: [&str; 19] = [
     SCHEMA, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6, SCHEMA_V7, SCHEMA_V8, SCHEMA_V9,
     SCHEMA_V10, SCHEMA_V11, SCHEMA_V12, SCHEMA_V13, SCHEMA_V14, SCHEMA_V15, SCHEMA_V16, SCHEMA_V17,
-    SCHEMA_V18,
+    SCHEMA_V18, SCHEMA_V19,
 ];
 
 /// A thread id never given before (`SCHEMA_V10`).

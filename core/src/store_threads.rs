@@ -23,6 +23,8 @@ pub struct ThreadSummary {
     pub last_activity: i64,
     pub messages: i64,
     pub archived: bool,
+    /// The group it is in: its project's, or its own when it has no project.
+    pub group_id: Option<i64>,
 }
 
 /// The requests to models a thread made, added up.
@@ -64,7 +66,8 @@ fn queued(db: &rusqlite::Connection, session: SessionId) -> Result<Vec<Queued>, 
 const SUMMARY_SELECT: &str = "SELECT s.id, p.key, s.title, s.created,
         COALESCE((SELECT MAX(m.created) FROM messages m WHERE m.session_id = s.id), s.created)
             AS last_activity,
-        (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id), s.archived
+        (SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id), s.archived,
+        CASE WHEN s.project_id IS NULL THEN s.group_id ELSE p.group_id END
      FROM sessions s LEFT JOIN projects p ON p.id = s.project_id";
 
 fn summary_row(row: &rusqlite::Row) -> rusqlite::Result<ThreadSummary> {
@@ -76,6 +79,7 @@ fn summary_row(row: &rusqlite::Row) -> rusqlite::Result<ThreadSummary> {
         last_activity: row.get(4)?,
         messages: row.get(5)?,
         archived: row.get(6)?,
+        group_id: row.get(7)?,
     })
 }
 
@@ -243,8 +247,8 @@ impl Store {
             let fork = new_session_id(&tx)?;
             let copied = tx
                 .execute(
-                    "INSERT INTO sessions(id, project_id, title, created)
-                     SELECT ?3, project_id, title, ?2 FROM sessions WHERE id = ?1",
+                    "INSERT INTO sessions(id, project_id, title, created, group_id)
+                     SELECT ?3, project_id, title, ?2, group_id FROM sessions WHERE id = ?1",
                     params![session.0, time, fork],
                 )
                 .map_err(store_error)?;

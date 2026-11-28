@@ -59,6 +59,7 @@ pub use shell::{complete_utf8, JobInfo, JobLog, JobWatch};
 mod snapshot;
 mod sse;
 pub mod store;
+mod store_groups;
 mod store_pool;
 mod store_threads;
 mod title;
@@ -2562,6 +2563,52 @@ impl Core {
             "thread_id": thread.0, "project": folder, "branch": branch,
             "from": repo.to_string_lossy(), "hook_messages": said,
         }))
+    }
+
+    /// `groups/*`, `projects/group` and `thread/group`: the groups that hold
+    /// projects and threads without a project, nested to any depth
+    /// (docs/evidence/project-groups.md).
+    pub async fn groups(&self) -> Result<Value, ErrorInfo> {
+        let (groups, projects) = self.store()?.groups().await?;
+        Ok(json!({ "groups": groups, "projects": projects }))
+    }
+
+    pub async fn create_group(&self, name: &str, parent: Option<i64>) -> Result<Value, ErrorInfo> {
+        let id = self.store()?.create_group(name, parent).await?;
+        Ok(json!({ "group_id": id }))
+    }
+
+    pub async fn rename_group(&self, id: i64, name: &str) -> Result<Value, ErrorInfo> {
+        self.store()?.rename_group(id, name).await?;
+        Ok(json!({ "group_id": id, "name": name.trim() }))
+    }
+
+    pub async fn move_group(&self, id: i64, parent: Option<i64>) -> Result<Value, ErrorInfo> {
+        self.store()?.move_group(id, parent).await?;
+        Ok(json!({ "group_id": id, "parent_id": parent }))
+    }
+
+    pub async fn delete_group(&self, id: i64) -> Result<Value, ErrorInfo> {
+        self.store()?.delete_group(id).await?;
+        Ok(json!({ "deleted": id }))
+    }
+
+    pub async fn group_project(
+        &self,
+        project: &str,
+        group: Option<i64>,
+    ) -> Result<Value, ErrorInfo> {
+        self.store()?.group_project(project, group).await?;
+        Ok(json!({ "project": project, "group_id": group }))
+    }
+
+    pub async fn group_thread(
+        &self,
+        thread: SessionId,
+        group: Option<i64>,
+    ) -> Result<Value, ErrorInfo> {
+        self.store()?.group_thread(thread, group).await?;
+        Ok(json!({ "thread_id": thread.0, "group_id": group }))
     }
 
     /// Every installed plugin, on or off (docs/evidence/plugin-management.md).

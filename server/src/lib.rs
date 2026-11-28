@@ -663,6 +663,13 @@ async fn dispatch(
         | "thread/worktree"
         | "hooks/list"
         | "hooks/trust"
+        | "groups/list"
+        | "groups/create"
+        | "groups/rename"
+        | "groups/move"
+        | "groups/delete"
+        | "projects/group"
+        | "thread/group"
         | "thread/jobs/list"
         | "thread/jobs/read"
         | "thread/jobs/write"
@@ -1046,6 +1053,13 @@ async fn thread_request(
         method if method.starts_with("thread/queue/") => queue_request(&request, &core).await,
         method if method.starts_with("thread/jobs/") => job_request(&request, &core).await,
         "thread/folder" | "thread/worktree" => folder_request(&request, &core).await,
+        method
+            if method.starts_with("groups/")
+                || method == "projects/group"
+                || method == "thread/group" =>
+        {
+            group_request(&request, &core).await
+        }
         "hooks/list" => match request
             .params
             .as_ref()
@@ -1204,6 +1218,52 @@ async fn folder_request(request: &Request, core: &Arc<Core>) -> Result<Value, Er
             core.add_worktree(thread, text("branch")?, text("base")?)
                 .await
         }
+    }
+}
+
+/// `groups/*`, `projects/group {project, group_id}` and `thread/group
+/// {thread_id, group_id}`; a `group_id` or `parent_id` of `null` is the top
+/// (docs/evidence/project-groups.md).
+async fn group_request(request: &Request, core: &Arc<Core>) -> Result<Value, ErrorInfo> {
+    let params = request.params.as_ref();
+    let field = |name: &str| params.and_then(|params| params.get(name));
+    let id = |name: &str| -> Result<i64, ErrorInfo> {
+        field(name).and_then(Value::as_i64).ok_or_else(|| {
+            ErrorInfo::new("invalid_params", format!("requires a \"{name}\" number"))
+        })
+    };
+    // Absent or null: the top.
+    let place = |name: &str| -> Result<Option<i64>, ErrorInfo> {
+        match field(name) {
+            None | Some(Value::Null) => Ok(None),
+            Some(value) => value.as_i64().map(Some).ok_or_else(|| {
+                ErrorInfo::new(
+                    "invalid_params",
+                    format!("\"{name}\" must be a group id or null"),
+                )
+            }),
+        }
+    };
+    let text = |name: &str| -> Result<&str, ErrorInfo> {
+        field(name).and_then(Value::as_str).ok_or_else(|| {
+            ErrorInfo::new("invalid_params", format!("requires a \"{name}\" string"))
+        })
+    };
+    match request.method.as_str() {
+        "groups/list" => core.groups().await,
+        "groups/create" => core.create_group(text("name")?, place("parent_id")?).await,
+        "groups/rename" => core.rename_group(id("group_id")?, text("name")?).await,
+        "groups/move" => core.move_group(id("group_id")?, place("parent_id")?).await,
+        "groups/delete" => core.delete_group(id("group_id")?).await,
+        "projects/group" => {
+            core.group_project(text("project")?, place("group_id")?)
+                .await
+        }
+        "thread/group" => {
+            core.group_thread(request.thread()?, place("group_id")?)
+                .await
+        }
+        _ => Err(ErrorInfo::new("method_not_found", "unknown groups method")),
     }
 }
 
@@ -1764,8 +1824,33 @@ async fn start_thread(request: &Request, core: &Core) -> Result<Value, ErrorInfo
             ))
         }
     };
+    // A thread without a project may start in a group
+    // (docs/evidence/project-groups.md).
+    let group =
+        match request
+            .params
+            .as_ref()
+            .and_then(|params| params.get("group_id"))
+        {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(value.as_i64().ok_or_else(|| {
+                ErrorInfo::new("invalid_params", "\"group_id\" must be a group id")
+            })?),
+        };
+    if group.is_some() && project.is_some() {
+        return Err(ErrorInfo::new(
+            "invalid_params",
+            "a thread with a project is where its project is; give \"group_id\" only without \"project\"",
+        ));
+    }
     let thread = core.start_thread(project).await?;
-    Ok(json!({ "thread_id": thread.0 }))
+    if let Some(group) = group {
+        if let Err(error) = core.group_thread(thread, Some(group)).await {
+            let _ = core.delete_thread(thread).await;
+            return Err(error);
+        }
+    }
+    Ok(json!({ "thread_id": thread.0, "group_id": group }))
 }
 
 /// `thread/fork {thread_id, before?, through?}`: a copy of the thread, of

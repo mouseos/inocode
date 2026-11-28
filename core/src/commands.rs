@@ -1640,6 +1640,7 @@ fn summary_view(summary: &ThreadSummary) -> Value {
         "last_activity": summary.last_activity,
         "messages": summary.messages,
         "archived": summary.archived,
+        "group_id": summary.group_id,
     })
 }
 
