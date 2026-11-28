@@ -669,6 +669,13 @@ async fn dispatch(
         | "plugins/remove"
         | "plugins/enable"
         | "plugins/disable"
+        | "fs/readFile"
+        | "fs/writeFile"
+        | "fs/createDirectory"
+        | "fs/getMetadata"
+        | "fs/readDirectory"
+        | "fs/remove"
+        | "fs/copy"
         | "files/search" => {
             // Store work runs off the read loop, like discovery.
             tokio::spawn(thread_request(
@@ -1033,6 +1040,12 @@ async fn thread_request(
         method if method.starts_with("thread/queue/") => queue_request(&request, &core).await,
         method if method.starts_with("thread/jobs/") => job_request(&request, &core).await,
         method if method.starts_with("plugins/") => plugin_request(&request, &core).await,
+        method if method.starts_with("fs/") => {
+            let request = request.clone();
+            tokio::task::spawn_blocking(move || file_request(&request))
+                .await
+                .unwrap_or_else(|error| Err(ErrorInfo::new("internal", error.to_string())))
+        }
         "goal/read" => match request.thread() {
             Ok(thread) => core.goal(thread).await.map(|goal| json!({ "goal": goal })),
             Err(error) => Err(error),
@@ -1055,6 +1068,86 @@ async fn thread_request(
 }
 
 /// `thread/queue/*`: the messages lined up to be sent as the next turns.
+/// `fs/*`: files by absolute path (docs/evidence/file-requests.md).
+fn file_request(request: &Request) -> Result<Value, ErrorInfo> {
+    use inocode_core::files;
+    let field = |name: &str| {
+        request
+            .params
+            .as_ref()
+            .and_then(|params| params.get(name))
+            .filter(|value| !value.is_null())
+    };
+    let path = |name: &str| {
+        field(name)
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                ErrorInfo::new("invalid_params", format!("requires a \"{name}\" string"))
+            })
+            .and_then(files::absolute)
+    };
+    let flag = |name: &str, default: bool| match field(name) {
+        None => Ok(default),
+        Some(value) => value.as_bool().ok_or_else(|| {
+            ErrorInfo::new(
+                "invalid_params",
+                format!("\"{name}\" must be true or false"),
+            )
+        }),
+    };
+    let number = |name: &str| match field(name) {
+        None => Ok(None),
+        Some(value) => value.as_u64().map(Some).ok_or_else(|| {
+            ErrorInfo::new("invalid_params", format!("\"{name}\" must be a byte count"))
+        }),
+    };
+    match request.method.as_str() {
+        "fs/readFile" => {
+            let base64 = match field("encoding").map(|value| value.as_str()) {
+                None | Some(Some("utf8")) => false,
+                Some(Some("base64")) => true,
+                Some(_) => {
+                    return Err(ErrorInfo::new(
+                        "invalid_params",
+                        "\"encoding\" must be \"utf8\" or \"base64\"",
+                    ))
+                }
+            };
+            files::read_file(
+                &path("path")?,
+                number("offset")?.unwrap_or(0),
+                number("limit")?,
+                base64,
+            )
+        }
+        "fs/writeFile" => {
+            let text = |name: &str| field(name).and_then(Value::as_str).map(str::to_string);
+            let contents = match (text("text"), text("data")) {
+                (Some(text), None) => files::Contents::Text(text),
+                (None, Some(data)) => files::Contents::Base64(data),
+                _ => {
+                    return Err(ErrorInfo::new(
+                        "invalid_params",
+                        "requires a \"text\" string or a base64 \"data\" string, not both",
+                    ))
+                }
+            };
+            files::write_file(&path("path")?, contents, flag("create_parents", false)?)
+        }
+        "fs/createDirectory" => files::create_directory(&path("path")?, flag("recursive", true)?),
+        "fs/getMetadata" => files::metadata(&path("path")?).map(|meta| json!(meta)),
+        "fs/readDirectory" => files::read_directory(&path("path")?),
+        "fs/remove" => files::remove(&path("path")?, flag("recursive", false)?),
+        "fs/copy" => files::copy(
+            &path("from")?,
+            &path("to")?,
+            flag("recursive", false)?,
+            flag("overwrite", false)?,
+        ),
+        _ => Err(ErrorInfo::new("method_not_found", "unknown fs method")),
+    }
+}
+
 /// `plugins/*` (docs/evidence/plugin-management.md).
 async fn plugin_request(request: &Request, core: &Arc<Core>) -> Result<Value, ErrorInfo> {
     let text = |name: &str| {

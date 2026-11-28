@@ -26,6 +26,7 @@ mod edit;
 pub mod estimate;
 mod explore;
 mod fetch;
+pub mod files;
 mod find;
 mod git;
 pub mod goal;

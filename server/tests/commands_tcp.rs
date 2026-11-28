@@ -956,3 +956,96 @@ async fn an_installed_plugin_is_turned_off_on_and_deleted_from_a_screen() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn a_screen_reads_writes_lists_copies_and_deletes_files_by_absolute_path() {
+    with_timeout(async {
+        let database = database();
+        let base = database.with_file_name("files");
+        let mock = scripted(Vec::new()).await;
+        let (addr, _stop, _handle) = start_server(core_for(&mock, &database).await).await;
+        let mut client = connect(addr).await;
+        let mut id = 1;
+        let mut fs = |method: &str, params: Value| {
+            id += 1;
+            (id, json!({"id": id, "method": method, "params": params}))
+        };
+        let path = |name: &str| base.join(name).to_string_lossy().into_owned();
+
+        let (n, request) = fs(
+            "fs/writeFile",
+            json!({"path": path("a/b/note.txt"), "text": "hello 世界", "create_parents": true}),
+        );
+        let written = call(&mut client, n, request).await;
+        assert_eq!(written["result"]["written"], 12, "{written}");
+        let (n, request) = fs("fs/readFile", json!({"path": path("a/b/note.txt")}));
+        let read = call(&mut client, n, request).await;
+        assert_eq!(read["result"]["text"], "hello 世界", "{read}");
+        assert_eq!(read["result"]["size"], 12);
+        let (n, request) = fs(
+            "fs/readFile",
+            json!({"path": path("a/b/note.txt"), "offset": 6, "limit": 3, "encoding": "base64"}),
+        );
+        let part = call(&mut client, n, request).await;
+        assert_eq!(part["result"]["data"], "5LiW", "{part}");
+        let (n, request) = fs(
+            "fs/writeFile",
+            json!({"path": path("a/bytes.bin"), "data": "//79"}),
+        );
+        call(&mut client, n, request).await;
+        let (n, request) = fs("fs/readFile", json!({"path": path("a/bytes.bin")}));
+        let binary = call(&mut client, n, request).await;
+        assert_eq!(binary["error"]["code"], "not_text", "{binary}");
+
+        let (n, request) = fs("fs/readDirectory", json!({"path": path("a")}));
+        let listed = call(&mut client, n, request).await;
+        let entries = listed["result"]["entries"]
+            .as_array()
+            .expect("entries")
+            .clone();
+        assert_eq!(entries[0]["name"], "b", "{listed}");
+        assert_eq!(entries[0]["kind"], "directory");
+        assert_eq!(entries[1]["name"], "bytes.bin");
+        assert_eq!(entries[1]["size"], 3);
+        let (n, request) = fs("fs/getMetadata", json!({"path": path("a/b/note.txt")}));
+        let meta = call(&mut client, n, request).await;
+        assert_eq!(meta["result"]["kind"], "file", "{meta}");
+        assert!(meta["result"]["modified_ms"].is_u64());
+
+        let (n, request) = fs("fs/copy", json!({"from": path("a"), "to": path("c")}));
+        let folder = call(&mut client, n, request).await;
+        assert_eq!(folder["error"]["code"], "invalid_params", "{folder}");
+        let (n, request) = fs(
+            "fs/copy",
+            json!({"from": path("a"), "to": path("c"), "recursive": true}),
+        );
+        call(&mut client, n, request).await;
+        assert_eq!(
+            std::fs::read_to_string(base.join("c/b/note.txt")).expect("copied"),
+            "hello 世界"
+        );
+        let (n, request) = fs(
+            "fs/copy",
+            json!({"from": path("a/bytes.bin"), "to": path("c/bytes.bin")}),
+        );
+        let exists = call(&mut client, n, request).await;
+        assert_eq!(exists["error"]["code"], "already_exists", "{exists}");
+
+        let (n, request) = fs("fs/remove", json!({"path": path("c")}));
+        let full = call(&mut client, n, request).await;
+        assert_eq!(full["error"]["code"], "fs_failed", "{full}");
+        let (n, request) = fs("fs/remove", json!({"path": path("c"), "recursive": true}));
+        call(&mut client, n, request).await;
+        assert!(!base.join("c").exists());
+        let (n, request) = fs("fs/createDirectory", json!({"path": path("d/e")}));
+        call(&mut client, n, request).await;
+        assert!(base.join("d/e").is_dir());
+        let (n, request) = fs("fs/getMetadata", json!({"path": path("missing")}));
+        let missing = call(&mut client, n, request).await;
+        assert_eq!(missing["error"]["code"], "not_found", "{missing}");
+        let (n, request) = fs("fs/readFile", json!({"path": "relative.txt"}));
+        let relative = call(&mut client, n, request).await;
+        assert_eq!(relative["error"]["code"], "invalid_params", "{relative}");
+    })
+    .await;
+}
