@@ -481,6 +481,19 @@ impl EventPayload {
 
     /// The messages queued for the next turns of the watched thread
     /// (`queue`).
+    /// The older part of the thread is being summarized
+    /// (`compaction_started`), or was (`compaction_ended`, with the
+    /// summary's `seq` when one was stored).
+    pub fn compaction(id: u64, ended: Option<Option<i64>>) -> Self {
+        match ended {
+            None => Self::new(id, "compaction_started"),
+            Some(seq) => Self {
+                result: Some(json!({ "seq": seq })),
+                ..Self::new(id, "compaction_ended")
+            },
+        }
+    }
+
     /// A step of a helper answering a call (`helper`).
     pub fn helper(id: u64, step: &turn::HelperStep) -> Self {
         Self {

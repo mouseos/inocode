@@ -2419,6 +2419,8 @@ fn turn_event(id: u64, event: TurnEvent) -> EventPayload {
         TurnEvent::Usage(report) => EventPayload::usage(id, &report),
         TurnEvent::ShellStarted(job) => EventPayload::shell_started(id, job),
         TurnEvent::Helper(step) => EventPayload::helper(id, &step),
+        TurnEvent::CompactionStarted => EventPayload::compaction(id, None),
+        TurnEvent::CompactionEnded { seq } => EventPayload::compaction(id, Some(seq)),
         TurnEvent::Delegated {
             call_id,
             thread_id,

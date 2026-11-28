@@ -347,6 +347,15 @@ async fn summarize(
     Ok((summary.trim().to_string(), stream.record("compact")))
 }
 
+/// What the person asked the summary to keep, after the fixed request
+/// (docs/evidence/compaction-controls.md).
+fn focused(focus: Option<&str>) -> String {
+    match focus.map(str::trim).filter(|focus| !focus.is_empty()) {
+        Some(focus) => format!("\n\nThe person asked this summary to keep, above all: {focus}"),
+        None => String::new(),
+    }
+}
+
 fn instruction(text: String) -> Message {
     Message {
         id: "compaction-request".to_string(),
@@ -368,6 +377,7 @@ async fn summary(
     llm: &Llm,
     summarizer: Option<&Llm>,
     system: Option<String>,
+    focus: Option<&str>,
     messages: &[(i64, Message)],
     replaced: &[(i64, Message)],
     tools: &[ToolSpec],
@@ -402,11 +412,17 @@ async fn summary(
             .iter()
             .map(|(_, message)| message.clone())
             .collect();
-        request.push(instruction(format!("{FULL_INSTRUCTIONS}{SUMMARY_CONTENT}")));
+        request.push(instruction(format!(
+            "{FULL_INSTRUCTIONS}{SUMMARY_CONTENT}{}",
+            focused(focus)
+        )));
         Some((request, tools))
     } else if replaced_tokens <= budget {
         let mut request = replaced_messages;
-        request.push(instruction(format!("{INSTRUCTIONS}{SUMMARY_CONTENT}")));
+        request.push(instruction(format!(
+            "{INSTRUCTIONS}{SUMMARY_CONTENT}{}",
+            focused(focus)
+        )));
         Some((request, &[][..]))
     } else {
         None
@@ -436,8 +452,9 @@ async fn summary(
              parts and you keep one summary up to date. Summary of the parts before this \
              one:\n{summary}\n\nPart {} of {count}:\n{part}\nRewrite the summary so that it \
              also covers this part, keeping every detail from the earlier summary that the \
-             remaining work needs. {SUMMARY_CONTENT}",
-            index + 1
+             remaining work needs. {SUMMARY_CONTENT}{}",
+            index + 1,
+            focused(focus)
         );
         let conversation = Conversation {
             system: system.clone(),
@@ -468,16 +485,21 @@ pub(crate) async fn compact(
     input: u64,
     window: u64,
 ) -> Option<(Body, Vec<RequestRecord>)> {
-    compact_reporting(llm, summarizer, system, messages, tools, input, window)
-        .await
-        .map(|(body, usages, _)| (body, usages))
+    compact_reporting(
+        llm, summarizer, system, None, messages, tools, input, window,
+    )
+    .await
+    .map(|(body, usages, _)| (body, usages))
 }
 
-/// [`compact`], with why no summary could be written when it could not.
+/// [`compact`], keeping `focus` above all when the person gave it, with why
+/// no summary could be written when it could not.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn compact_reporting(
     llm: &Llm,
     summarizer: Option<&Llm>,
     system: Option<String>,
+    focus: Option<&str>,
     messages: &[(i64, Message)],
     tools: &[ToolSpec],
     input: u64,
@@ -507,7 +529,7 @@ pub(crate) async fn compact_reporting(
     let fresh = &replaced[previous.map_or(0, |index| index + 1)..];
     let record = record(previous_record, record_lines(fresh));
     let (written, usages) = summary(
-        llm, summarizer, system, messages, replaced, tools, input, window,
+        llm, summarizer, system, focus, messages, replaced, tools, input, window,
     )
     .await;
     let (summary, failure) = match written {

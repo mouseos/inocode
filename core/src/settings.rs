@@ -525,6 +525,16 @@ pub struct Role {
     pub effort: Option<String>,
 }
 
+/// How the conversation is compacted (docs/evidence/compaction-controls.md).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Compaction {
+    /// Whether a turn compacts by itself near the context window; on when
+    /// absent. `/compact` works either way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto: Option<bool>,
+}
+
 /// Helper roles; an absent one uses the conversation's model.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -642,6 +652,7 @@ pub struct Settings {
     pub default: Selection,
     pub roles: Roles,
     pub server: Server,
+    pub compaction: Compaction,
 }
 
 fn section<T: for<'de> Deserialize<'de> + Default>(
@@ -683,6 +694,7 @@ impl Settings {
             default: section(file, "default")?,
             roles: section(file, "roles")?,
             server: section(file, "server")?,
+            compaction: section(file, "compaction")?,
         };
         settings.check()?;
         Ok(settings)
@@ -971,7 +983,7 @@ pub enum RemoveError {
 }
 
 /// The sections `set_sections` may change.
-pub const SECTIONS: [&str; 3] = ["default", "roles", "server"];
+pub const SECTIONS: [&str; 4] = ["default", "roles", "server", "compaction"];
 
 /// Merges `patch` into the sections it names, one level deep: a field set
 /// to `null` is removed. Other sections are refused. `server.remote_password`
@@ -982,7 +994,7 @@ pub async fn set_sections(path: &Path, patch: &Value) -> Result<Settings, String
     let patch = patch.as_object().ok_or("the change is not an object")?;
     if let Some(name) = patch.keys().find(|name| !SECTIONS.contains(&name.as_str())) {
         return Err(format!(
-            "\"{name}\" cannot be set here; the sections are default, roles and server"
+            "\"{name}\" cannot be set here; the sections are default, roles, server and compaction"
         ));
     }
     let mut patch = patch.clone();

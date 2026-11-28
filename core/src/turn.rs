@@ -79,6 +79,11 @@ pub enum TurnEvent {
         thread_id: SessionId,
         member: String,
     },
+    /// The thread's older part is being replaced by a summary.
+    CompactionStarted,
+    /// The compaction ended: `seq` is the summary's position when one was
+    /// stored (docs/evidence/compaction-controls.md).
+    CompactionEnded { seq: Option<i64> },
     /// The thread's new title.
     Title(String),
     /// A title the model proposes for the thread; the title is unchanged.
@@ -1032,6 +1037,31 @@ impl Thread<'_> {
         if !due {
             return Ok(());
         }
+        let settings = crate::settings::read(&self.thinking_translation.settings).await;
+        let auto = settings
+            .ok()
+            .and_then(|settings| crate::settings::Settings::from_value(&settings).ok())
+            .is_none_or(|settings| settings.compaction.auto != Some(false));
+        if !auto {
+            return Ok(());
+        }
+        let _ = self.events.send(TurnEvent::CompactionStarted).await;
+        let compacted = self.compact_due(llm, tools, input, window, usage).await;
+        let seq = compacted.as_ref().ok().copied().flatten();
+        let _ = self.events.send(TurnEvent::CompactionEnded { seq }).await;
+        compacted.map(drop)
+    }
+
+    /// The compaction [`Self::compact_if_due`] found due: the stored
+    /// summary's position, or `None` when nothing could be replaced.
+    async fn compact_due(
+        &mut self,
+        llm: &Llm,
+        tools: &[ToolSpec],
+        input: u64,
+        window: u64,
+        usage: &mut TurnUsage,
+    ) -> Result<Option<i64>, ErrorInfo> {
         let sent: Vec<(i64, Message)> = self
             .seqs
             .iter()
@@ -1049,19 +1079,20 @@ impl Thread<'_> {
         )
         .await;
         let Some((body, summary_usages)) = compacted else {
-            return Ok(());
+            return Ok(None);
         };
         for record in summary_usages {
             usage.add(record.usage);
             usage.records.push(record);
         }
         self.record(vec![body]).await?;
+        let summary = self.next_seq - 1;
         let stored = self.store.since(self.session, 0, i64::MAX as usize).await?;
         let (seqs, messages) = compaction::assemble(stored).into_iter().unzip();
         self.seqs = seqs;
         self.conversation.messages = messages;
         self.shorten_people(window);
-        Ok(())
+        Ok(Some(summary))
     }
 
     /// Sends the person's large messages from earlier turns shortened, each
@@ -2688,6 +2719,7 @@ pub(crate) async fn compact_now(
     compactor: Option<&Llm>,
     store: &Store,
     session: SessionId,
+    focus: Option<&str>,
 ) -> Result<(Option<i64>, Option<String>), ErrorInfo> {
     let window = llm.context_window().await.ok_or_else(|| {
         ErrorInfo::new(
@@ -2718,6 +2750,7 @@ pub(crate) async fn compact_now(
         llm,
         compactor,
         thread.conversation.system.clone(),
+        focus,
         &sent,
         &tools,
         input,

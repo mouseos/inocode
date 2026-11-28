@@ -232,8 +232,12 @@ pub const BUILTINS: &[Builtin] = &[
     ),
     builtin(
         "compact",
-        "Replace the older part of this thread with a summary now.",
-        &[form("Compact the thread.", &[], AfterTurn)],
+        "Replace the older part of this thread with a summary now, keeping what the instructions name above all.",
+        &[form(
+            "Compact the thread.",
+            &[optional("instructions", Text)],
+            AfterTurn,
+        )],
         None,
     ),
     builtin(
@@ -2081,7 +2085,7 @@ impl Core {
                 json!({ "thread_id": fork.0, "from": thread.0 })
             }
             ("delete", _) => self.delete_thread(thread).await?,
-            ("compact", _) => self.compact(thread).await?,
+            ("compact", _) => self.compact(thread, value(0)).await?,
             ("stop", _) => json!({ "interrupted": self.interrupt(thread) }),
             ("export", _) => self.export(thread, value(0), value(1)).await?,
             ("history", _) => {
@@ -2478,7 +2482,7 @@ impl Core {
         Ok(Ran::Result(result))
     }
 
-    async fn compact(&self, thread: SessionId) -> Result<Value, ErrorInfo> {
+    async fn compact(&self, thread: SessionId, focus: Option<&str>) -> Result<Value, ErrorInfo> {
         let settings = self.settings().await?;
         let choice = Choice::of(&self.thread_choice(thread).await?, &settings.default);
         // Claimed like a turn, so no turn starts while the summary is made.
@@ -2492,12 +2496,21 @@ impl Core {
         } = self.begin_turn(thread).await?;
         drop((steer, cancel));
         let main = model.borrow().clone();
+        let _ = self.activity.send((
+            thread,
+            crate::Activity::Event(turn::TurnEvent::CompactionStarted),
+        ));
         let compacted = async {
             let compactor =
                 self.role_client(&settings, &choice, settings.roles.compact.as_ref(), &main)?;
-            turn::compact_now(&main, compactor.as_deref(), self.store()?, thread).await
+            turn::compact_now(&main, compactor.as_deref(), self.store()?, thread, focus).await
         }
         .await;
+        let ended = compacted.as_ref().ok().and_then(|(seq, _)| *seq);
+        let _ = self.activity.send((
+            thread,
+            crate::Activity::Event(turn::TurnEvent::CompactionEnded { seq: ended }),
+        ));
         self.end_turn(thread);
         let (seq, warning) = compacted?;
         let mut result = json!({ "compacted": seq.is_some(), "seq": seq });

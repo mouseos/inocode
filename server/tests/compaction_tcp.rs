@@ -29,6 +29,10 @@ fn database() -> std::path::PathBuf {
 }
 
 async fn core_for(mock: &MockApi) -> Arc<Core> {
+    core_at(mock, database()).await
+}
+
+async fn core_at(mock: &MockApi, database: std::path::PathBuf) -> Arc<Core> {
     let llm = Llm::new(LlmConfig {
         provider: ProviderKind::OpenAi,
         auth: inocode_core::oauth::AuthKind::ApiKey,
@@ -39,7 +43,7 @@ async fn core_for(mock: &MockApi) -> Arc<Core> {
         reasoning: Default::default(),
     })
     .expect("client");
-    let store = Store::open(database()).await.expect("store");
+    let store = Store::open(database).await.expect("store");
     Arc::new(Core::with_llm(llm).with_store(store))
 }
 
@@ -190,6 +194,21 @@ async fn the_named_model_summarizes_in_parts_when_the_history_exceeds_its_window
             "{}",
             parts[1]
         );
+        // The screens are told when it starts and which message it stored.
+        let started = events
+            .iter()
+            .position(|event| event["event"] == "compaction_started")
+            .expect("compaction_started");
+        let ended = events
+            .iter()
+            .position(|event| event["event"] == "compaction_ended")
+            .expect("compaction_ended");
+        assert!(started < ended);
+        let stored = events[started..ended]
+            .iter()
+            .find(|event| event["event"] == "message")
+            .expect("the summary message");
+        assert_eq!(events[ended]["result"]["seq"], stored["message"]["seq"]);
     })
     .await;
 }
@@ -292,6 +311,134 @@ async fn a_compact_command_without_a_summary_fails_and_leaves_the_thread_as_it_w
         )
         .await;
         assert_eq!(count(&after), count(&before), "nothing was added");
+    })
+    .await;
+}
+
+/// The turn of the compaction tests with its three steps, without usage
+/// reports so it does not compact by itself, on `core`.
+async fn steps_without_usage(core: Arc<Core>) -> (Client, i64, impl Sized) {
+    let (addr, stop, handle) = start_server(core).await;
+    let mut client = connect(addr).await;
+    let response = call(&mut client, 1, json!({"id": 1, "method": "thread/start"})).await;
+    let thread = response["result"]["thread_id"].as_i64().expect("thread");
+    name_thread(&mut client, thread).await;
+    client
+        .1
+        .write_json(
+            2,
+            &json!({"id": 2, "method": "turn/start",
+                    "params": {"thread_id": thread, "prompt": "do the work"}}),
+        )
+        .await
+        .expect("send");
+    while !matches!(
+        next_message(&mut client, 2).await["event"].as_str(),
+        Some("completed" | "failed")
+    ) {}
+    (client, thread, (stop, handle))
+}
+
+fn steps_mock_reply(index: usize) -> MockReply {
+    match index {
+        0..=2 => MockReply::stream(vec![
+            call_chunk(
+                &format!("c{index}"),
+                &format!("STEP {index} {}", "x".repeat(1_900)),
+            ),
+            finish("tool_calls"),
+            sse_done(),
+        ]),
+        _ => MockReply::stream(vec![sse_delta("done"), finish("stop"), sse_done()]),
+    }
+}
+
+#[tokio::test]
+async fn compact_keeps_what_its_instructions_name_above_all() {
+    with_timeout(async {
+        let step = AtomicUsize::new(0);
+        let mock = start_mock(move |request: &MockRequest| {
+            if request.method == "GET" {
+                return models();
+            }
+            if is_summary_request(request) {
+                return MockReply::stream(vec![sse_delta("SUMMARY"), finish("stop"), sse_done()]);
+            }
+            steps_mock_reply(step.fetch_add(1, Ordering::SeqCst))
+        })
+        .await;
+        let core = core_for(&mock).await;
+        let (mut client, thread, _server) = steps_without_usage(core).await;
+        let compacted = call(
+            &mut client,
+            4,
+            json!({"id": 4, "method": "command/run",
+                   "params": {"thread_id": thread, "text": "/compact keep the test results"}}),
+        )
+        .await;
+        assert_eq!(compacted["result"]["compacted"], true, "{compacted}");
+        let asked = mock
+            .requests()
+            .into_iter()
+            .find(is_summary_request)
+            .expect("a summary request")
+            .body
+            .to_string();
+        assert!(
+            asked.contains(
+                "The person asked this summary to keep, above all: keep the test results"
+            ),
+            "{asked}"
+        );
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn with_automatic_compaction_off_a_turn_does_not_compact() {
+    with_timeout(async {
+        let step = AtomicUsize::new(0);
+        let mock = start_mock(move |request: &MockRequest| {
+            if request.method == "GET" {
+                return models();
+            }
+            work(step.fetch_add(1, Ordering::SeqCst))
+        })
+        .await;
+        let database = database();
+        std::fs::write(
+            database.with_file_name("settings.json"),
+            json!({"roles": {"compact": {"model": SMALL}}, "compaction": {"auto": false}})
+                .to_string(),
+        )
+        .expect("settings");
+        let (addr, _stop, _handle) = start_server(core_at(&mock, database).await).await;
+        let mut client = connect(addr).await;
+        let response = call(&mut client, 1, json!({"id": 1, "method": "thread/start"})).await;
+        let thread = response["result"]["thread_id"].as_i64().expect("thread");
+        name_thread(&mut client, thread).await;
+        client
+            .1
+            .write_json(
+                2,
+                &json!({"id": 2, "method": "turn/start",
+                        "params": {"thread_id": thread, "prompt": "do the work"}}),
+            )
+            .await
+            .expect("send");
+        let mut events = Vec::new();
+        loop {
+            let event = next_message(&mut client, 2).await;
+            let done = matches!(event["event"].as_str(), Some("completed" | "failed"));
+            events.push(event);
+            if done {
+                break;
+            }
+        }
+        assert!(!events
+            .iter()
+            .any(|event| event["event"] == "compaction_started"));
+        assert!(!mock.requests().iter().any(is_summary_request));
     })
     .await;
 }
