@@ -2249,6 +2249,63 @@ async fn thread_requests_report_their_errors() {
     .await;
 }
 
+#[tokio::test]
+async fn each_model_request_reports_its_usage_the_totals_and_the_context() {
+    with_timeout(async {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&calls);
+        let mock = start_mock(move |request: &MockRequest| {
+            if request.method == "GET" {
+                return MockReply::status(
+                    200,
+                    &json!({"data": [{"id": "test-model", "context_length": 12000}]}).to_string(),
+                );
+            }
+            if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                MockReply::stream(vec![
+                    tool_call_chunk(),
+                    finish("tool_calls"),
+                    usage_chunk(100),
+                    sse_done(),
+                ])
+            } else {
+                MockReply::stream(vec![
+                    sse_delta("done"),
+                    finish("stop"),
+                    usage_chunk(150),
+                    sse_done(),
+                ])
+            }
+        })
+        .await;
+        let (addr, _stop, _handle) = start_server(core_for(&mock).await).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client).await;
+
+        let events = turn(&mut client, 2, thread, "read a").await;
+        let reports: Vec<&Value> = events
+            .iter()
+            .filter(|event| event["event"] == "usage")
+            .map(|event| &event["tokens"])
+            .collect();
+        assert_eq!(reports.len(), 2, "{events:?}");
+        assert_eq!(reports[0]["purpose"], "turn");
+        assert_eq!(reports[0]["input"], 100);
+        assert_eq!(reports[0]["output"], 5);
+        assert_eq!(reports[0]["total"]["requests"], 1);
+        assert_eq!(reports[1]["total"]["requests"], 2);
+        assert_eq!(reports[1]["total"]["input"], 250);
+        assert_eq!(reports[1]["total"]["output"], 10);
+        assert_eq!(reports[1]["context_used"], 150);
+        assert_eq!(reports[1]["context_window"], 12000);
+        assert_eq!(reports[1]["outcome"], "completed");
+        assert!(reports[1]["duration_ms"].is_u64());
+        let last = events.last().unwrap();
+        assert_eq!(last["usage"]["input"], 250);
+    })
+    .await;
+}
+
 /// The chat requests the mock received, without model discovery.
 fn chats(mock: &MockApi) -> Vec<MockRequest> {
     mock.requests()

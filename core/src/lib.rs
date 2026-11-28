@@ -360,6 +360,9 @@ pub struct EventPayload {
     /// Whether plan mode is now on (`plan_mode`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan: Option<bool>,
+    /// One request's usage, the turn's totals and the context (`usage`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<Value>,
 }
 
 fn translation_service(name: &str) -> Result<translate::Service, ErrorInfo> {
@@ -544,6 +547,14 @@ impl EventPayload {
         }
     }
 
+    /// A model request of a running turn ended.
+    pub fn usage(id: u64, report: &turn::UsageReport) -> Self {
+        Self {
+            tokens: serde_json::to_value(report).ok(),
+            ..Self::new(id, "usage")
+        }
+    }
+
     pub fn message(id: u64, seq: i64, message: &conversation::Message) -> Self {
         Self {
             message: Some(json!({ "seq": seq, "message": message })),
@@ -599,6 +610,7 @@ impl EventPayload {
             queue: None,
             diff: None,
             plan: None,
+            tokens: None,
         }
     }
 }

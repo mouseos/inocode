@@ -62,6 +62,9 @@ pub enum TurnEvent {
     /// What is left of the task by the estimate, at the start and after
     /// each model request (docs/evidence/effort-estimates.md).
     Estimate(crate::estimate::Estimate),
+    /// One model request of the turn ended: what it used and how fast, the
+    /// turn's totals so far, and how full the context is.
+    Usage(UsageReport),
     /// The thread's new title.
     Title(String),
     /// A title the model proposes for the thread; the title is unchanged.
@@ -107,6 +110,74 @@ pub struct TurnUsage {
     pub cached: u64,
     #[serde(skip)]
     pub records: Vec<crate::RequestRecord>,
+}
+
+/// What [`TurnEvent::Usage`] tells about a request.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct UsageReport {
+    pub purpose: &'static str,
+    pub provider: String,
+    pub model: String,
+    pub input: Option<u64>,
+    pub output: Option<u64>,
+    pub cached: Option<u64>,
+    pub first_output_ms: Option<u64>,
+    pub duration_ms: u64,
+    /// Output tokens per second after the first output, or over the whole
+    /// request when it had no text.
+    pub output_per_second: Option<f64>,
+    pub outcome: &'static str,
+    /// The turn's requests and tokens so far, this one included.
+    pub total: UsageTotal,
+    /// The input of the latest request of the turn's own model, which is
+    /// what the conversation fills of its context.
+    pub context_used: Option<u64>,
+    pub context_window: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UsageTotal {
+    pub requests: u64,
+    pub input: u64,
+    pub output: u64,
+    pub cached: u64,
+}
+
+impl UsageReport {
+    fn new(
+        record: &crate::RequestRecord,
+        total: &TurnUsage,
+        context_used: Option<u64>,
+        context_window: Option<u64>,
+    ) -> Self {
+        let generating = match record.first_output_ms {
+            Some(first) => record.duration_ms.saturating_sub(first),
+            None => record.duration_ms,
+        };
+        let output = record.usage.map(|usage| usage.output);
+        Self {
+            purpose: record.purpose,
+            provider: record.provider.clone(),
+            model: record.model.clone(),
+            input: record.usage.map(|usage| usage.input),
+            output,
+            cached: record.usage.map(|usage| usage.cached),
+            first_output_ms: record.first_output_ms,
+            duration_ms: record.duration_ms,
+            output_per_second: output
+                .filter(|_| generating > 0)
+                .map(|output| output as f64 * 1000.0 / generating as f64),
+            outcome: record.outcome,
+            total: UsageTotal {
+                requests: total.requests,
+                input: total.input,
+                output: total.output,
+                cached: total.cached,
+            },
+            context_used,
+            context_window,
+        }
+    }
 }
 
 impl TurnUsage {
@@ -648,6 +719,10 @@ struct Thread<'a> {
     plan: bool,
     /// The usage of the automatic title's requests, when it was started.
     title_spent: Option<crate::title::Spent>,
+    /// How many of the turn's request records were reported.
+    reported: usize,
+    /// See [`UsageReport::context_used`].
+    context_used: Option<u64>,
 }
 
 /// The translation of the thinking as the settings last read give it: one
@@ -1737,6 +1812,24 @@ impl Thread<'_> {
         self.goal.as_ref().is_some_and(crate::goal::Goal::is_active)
     }
 
+    /// Reports each request recorded since the last report.
+    async fn report_usage(&mut self, llm: &Llm, usage: &TurnUsage) {
+        if self.reported >= usage.records.len() {
+            return;
+        }
+        let window = llm.context_window().await;
+        for record in &usage.records[self.reported..] {
+            if record.purpose == "turn" {
+                if let Some(measured) = record.usage {
+                    self.context_used = Some(measured.input);
+                }
+            }
+            let report = UsageReport::new(record, usage, self.context_used, window);
+            let _ = self.events.send(TurnEvent::Usage(report)).await;
+        }
+        self.reported = usage.records.len();
+    }
+
     /// Sends what is left of the task by the estimate, from what it used
     /// so far. Nothing is sent without past tasks to go by.
     async fn send_estimate(&self, usage: &TurnUsage) {
@@ -2590,6 +2683,8 @@ async fn open<'a>(
         proposed,
         title_spent: None,
         plan: false,
+        reported: 0,
+        context_used: None,
     })
 }
 
@@ -2698,7 +2793,7 @@ async fn steps(
             () = cancelled(cancel) => None,
         };
         match compacted {
-            Some(Ok(())) => {}
+            Some(Ok(())) => thread.report_usage(llm, usage).await,
             Some(Err(error)) => return Ending::Failed(error),
             None => return Ending::Interrupted,
         }
@@ -2755,6 +2850,7 @@ async fn steps(
         }
         thread.thinking_translation.answer_ended();
         usage.add_stream(&stream, "turn");
+        thread.report_usage(llm, usage).await;
         thread.send_estimate(usage).await;
         if let Some(measured) = stream.usage() {
             llm.measured(
@@ -2770,6 +2866,7 @@ async fn steps(
         };
         let stop = *stop;
         let results = thread.results(llm, &body, usage).await;
+        thread.report_usage(llm, usage).await;
         let mut bodies = vec![body.clone()];
         bodies.extend(results);
         let mut steered = false;

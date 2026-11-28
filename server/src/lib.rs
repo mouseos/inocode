@@ -1930,6 +1930,7 @@ fn turn_event(id: u64, event: TurnEvent) -> EventPayload {
         TurnEvent::McpProgress(progress) => EventPayload::mcp(id, "mcp_progress", progress),
         TurnEvent::McpLog(log) => EventPayload::mcp(id, "mcp_log", log),
         TurnEvent::Estimate(estimate) => EventPayload::estimate(id, &estimate),
+        TurnEvent::Usage(report) => EventPayload::usage(id, &report),
         TurnEvent::Title(title) => EventPayload::title(id, "title_updated", title),
         TurnEvent::TitleProposed(title) => EventPayload::title(id, "title_proposed", title),
         TurnEvent::Diff(diff) => EventPayload::diff(id, diff),
