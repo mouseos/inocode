@@ -659,6 +659,10 @@ async fn dispatch(
         | "thread/queue/delete"
         | "thread/queue/reorder"
         | "thread/queue/start"
+        | "thread/jobs/list"
+        | "thread/jobs/read"
+        | "thread/jobs/write"
+        | "thread/jobs/stop"
         | "files/search" => {
             // Store work runs off the read loop, like discovery.
             tokio::spawn(thread_request(
@@ -777,6 +781,7 @@ async fn dispatch(
         "thread/subscribe" | "thread/status/subscribe" => {
             watch_threads(request, stream_id, core, queue, in_flight).await
         }
+        "thread/jobs/watch" => watch_job(request, stream_id, core, queue, in_flight).await,
         "models/catalog" => {
             // Fetches prices and scores: off the read loop, like discovery.
             let (id, core, queue) = (request.id, Arc::clone(core), queue.clone());
@@ -1019,6 +1024,7 @@ async fn thread_request(
         "goal/set" => set_goal(&request, &core).await,
         "files/search" => search_files(&request, &core).await,
         method if method.starts_with("thread/queue/") => queue_request(&request, &core).await,
+        method if method.starts_with("thread/jobs/") => job_request(&request, &core).await,
         "goal/read" => match request.thread() {
             Ok(thread) => core.goal(thread).await.map(|goal| json!({ "goal": goal })),
             Err(error) => Err(error),
@@ -1041,6 +1047,248 @@ async fn thread_request(
 }
 
 /// `thread/queue/*`: the messages lined up to be sent as the next turns.
+/// The bytes of a job's log one `thread/jobs/read` gives at most.
+const JOB_READ_DEFAULT: u64 = 64 * 1024;
+const JOB_READ_MAX: u64 = 1024 * 1024;
+
+fn job_id(request: &Request) -> Result<u64, ErrorInfo> {
+    request
+        .params
+        .as_ref()
+        .and_then(|params| params.get("job_id"))
+        .and_then(Value::as_u64)
+        .ok_or_else(|| ErrorInfo::new("invalid_params", "requires a \"job_id\" number"))
+}
+
+/// `thread/jobs/*`: the commands a thread's turns started
+/// (docs/evidence/background-jobs.md).
+async fn job_request(request: &Request, core: &Arc<Core>) -> Result<Value, ErrorInfo> {
+    let thread = request.thread()?;
+    let field = |name: &str| {
+        request
+            .params
+            .as_ref()
+            .and_then(|params| params.get(name))
+            .filter(|value| !value.is_null())
+    };
+    match request.method.as_str() {
+        "thread/jobs/list" => Ok(json!({ "jobs": core.jobs(thread).await? })),
+        "thread/jobs/read" => {
+            let offset = match field("offset") {
+                None => 0,
+                Some(value) => value.as_u64().ok_or_else(|| {
+                    ErrorInfo::new("invalid_params", "\"offset\" must be a byte position")
+                })?,
+            };
+            let limit = match field("limit") {
+                None => JOB_READ_DEFAULT,
+                Some(value) => value
+                    .as_u64()
+                    .filter(|limit| (1..=JOB_READ_MAX).contains(limit))
+                    .ok_or_else(|| {
+                        ErrorInfo::new(
+                            "invalid_params",
+                            format!("\"limit\" must be 1 to {JOB_READ_MAX}"),
+                        )
+                    })?,
+            };
+            let log = core
+                .job_log(thread, job_id(request)?, offset, limit)
+                .await?;
+            Ok(json!(log))
+        }
+        "thread/jobs/write" => {
+            let input = match field("input") {
+                None => None,
+                Some(value) => Some(value.as_str().ok_or_else(|| {
+                    ErrorInfo::new("invalid_params", "\"input\" must be a string")
+                })?),
+            };
+            let keys = match field("keys") {
+                None => Vec::new(),
+                Some(value) => value
+                    .as_array()
+                    .and_then(|keys| {
+                        keys.iter()
+                            .map(|key| key.as_str().map(str::to_string))
+                            .collect::<Option<Vec<_>>>()
+                    })
+                    .ok_or_else(|| {
+                        ErrorInfo::new("invalid_params", "\"keys\" must be a list of key names")
+                    })?,
+            };
+            if input.is_none_or(str::is_empty) && keys.is_empty() {
+                return Err(ErrorInfo::new(
+                    "invalid_params",
+                    "requires an \"input\" string or \"keys\"",
+                ));
+            }
+            let written = core
+                .write_job(thread, job_id(request)?, input, &keys)
+                .await?;
+            Ok(json!({ "written": written }))
+        }
+        "thread/jobs/stop" => {
+            let stopped = core.stop_job(thread, job_id(request)?).await?;
+            Ok(json!({ "stopped": stopped }))
+        }
+        _ => Err(ErrorInfo::new("method_not_found", "unknown jobs method")),
+    }
+}
+
+/// `thread/jobs/watch {thread_id, job_id}`: a job's screen, then its
+/// output as it comes (`output`, terminal text with its control
+/// sequences), then `job_ended` and `completed` when it ends. A watcher
+/// that falls behind by more than the job keeps gets `lagged` and misses
+/// that output; the log keeps it all.
+async fn watch_job(
+    request: Request,
+    stream_id: u64,
+    core: &Arc<Core>,
+    queue: &mpsc::Sender<Outgoing>,
+    in_flight: &InFlight,
+) -> bool {
+    let id = request.id;
+    let watched = match request.thread() {
+        Ok(thread) => match job_id(&request) {
+            Ok(job) => core.watch_job(thread, job).await,
+            Err(error) => Err(error),
+        },
+        Err(error) => Err(error),
+    };
+    let watched = match watched {
+        Ok(watched) => watched,
+        Err(error) => {
+            return send_event(queue, stream_id, EventPayload::failed(id, error))
+                .await
+                .is_ok()
+        }
+    };
+    let mut pending = in_flight.lock().await;
+    if pending.contains_key(&id) {
+        drop(pending);
+        let error = ErrorInfo::new("duplicate_id", "request id is already in flight");
+        let event = EventPayload::failed(id, error);
+        return send_event(queue, stream_id, event).await.is_ok();
+    }
+    let (cancel_tx, cancel_rx) = watch::channel(false);
+    pending.insert(id, Generation::Running(cancel_tx));
+    drop(pending);
+    tokio::spawn(relay_job(
+        id,
+        watched,
+        stream_id,
+        queue.clone(),
+        Arc::clone(in_flight),
+        cancel_rx,
+    ));
+    true
+}
+
+fn job_text(id: u64, kind: &'static str, text: String) -> EventPayload {
+    let mut event = EventPayload::named(id, kind);
+    event.text = Some(text);
+    event
+}
+
+async fn relay_job(
+    id: u64,
+    watched: inocode_core::JobWatch,
+    stream_id: u64,
+    queue: mpsc::Sender<Outgoing>,
+    in_flight: InFlight,
+    mut cancelled: watch::Receiver<bool>,
+) {
+    use tokio::sync::broadcast::error::RecvError;
+    let inocode_core::JobWatch {
+        job,
+        screen,
+        mut output,
+        ended,
+    } = watched;
+    let mut ending = ended.clone();
+    let mut opening = EventPayload::started(id);
+    opening.result = Some(json!({ "job": job }));
+    let mut first = vec![opening, job_text(id, "screen", screen)];
+    // Bytes of a character the last chunk cut in two.
+    let mut carry: Vec<u8> = Vec::new();
+    let terminal = 'relay: {
+        for event in first.drain(..) {
+            match deliver(&queue, stream_id, event, &mut cancelled).await {
+                Delivery::Sent => {}
+                Delivery::ConnectionGone => break 'relay None,
+                Delivery::Cancelled => break 'relay Some(Terminal::Cancelled),
+            }
+        }
+        loop {
+            let event = tokio::select! {
+                biased;
+                chunk = output.recv() => match chunk {
+                    Ok(chunk) => {
+                        carry.extend(chunk);
+                        let whole = inocode_core::complete_utf8(&carry);
+                        let rest = carry.split_off(whole);
+                        let text = String::from_utf8_lossy(&carry).into_owned();
+                        carry = rest;
+                        if text.is_empty() {
+                            continue;
+                        }
+                        job_text(id, "output", text)
+                    }
+                    Err(RecvError::Lagged(_)) => EventPayload::named(id, "lagged"),
+                    Err(RecvError::Closed) => break 'relay Some(Terminal::Cancelled),
+                },
+                // All of a job's output is sent before it is marked ended.
+                () = async { drop(ending.wait_for(Option::is_some).await) } => {
+                    let mut lagged = false;
+                    loop {
+                        match output.try_recv() {
+                            Ok(chunk) => carry.extend(chunk),
+                            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
+                                lagged = true;
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    let end = *ended.borrow();
+                    let mut last = Vec::new();
+                    if lagged {
+                        last.push(EventPayload::named(id, "lagged"));
+                    }
+                    if !carry.is_empty() {
+                        let text = String::from_utf8_lossy(&carry).into_owned();
+                        last.push(job_text(id, "output", text));
+                    }
+                    let mut event = EventPayload::named(id, "job_ended");
+                    event.result = Some(json!({
+                        "exit_code": end.map(|(code, _)| code),
+                        "duration_ms": end.map(|(_, took)| took.as_millis() as u64),
+                    }));
+                    last.push(event);
+                    for event in last {
+                        match deliver(&queue, stream_id, event, &mut cancelled).await {
+                            Delivery::Sent => {}
+                            Delivery::ConnectionGone => break 'relay None,
+                            Delivery::Cancelled => break 'relay Some(Terminal::Cancelled),
+                        }
+                    }
+                    break 'relay Some(Terminal::Completed);
+                }
+                _ = cancelled.changed() => break 'relay Some(Terminal::Cancelled),
+            };
+            match deliver(&queue, stream_id, event, &mut cancelled).await {
+                Delivery::Sent => {}
+                Delivery::ConnectionGone => break 'relay None,
+                Delivery::Cancelled => break 'relay Some(Terminal::Cancelled),
+            }
+        }
+    };
+    match terminal {
+        Some(terminal) => settle(id, stream_id, &queue, &in_flight, cancelled, terminal).await,
+        None => abandon(&in_flight, id).await,
+    }
+}
+
 async fn queue_request(request: &Request, core: &Arc<Core>) -> Result<Value, ErrorInfo> {
     let thread = request.thread()?;
     let params = request.params.as_ref();
@@ -1833,6 +2081,11 @@ async fn relay_threads(
                 return;
             }
         }
+        if let Ok(jobs) = core.jobs(thread).await {
+            if !jobs.is_empty() {
+                opening.push(EventPayload::jobs(id, &jobs));
+            }
+        }
         for question in core.elicitations(thread) {
             if let Some(asked) = question["id"].as_u64() {
                 shown.insert(asked);
@@ -1898,6 +2151,7 @@ async fn relay_threads(
                             (Some(_), Activity::TurnEnded(end)) => EventPayload::turn_ended(id, end),
                             (Some(_), Activity::Rewound(from)) => EventPayload::rewound(id, from),
                             (Some(_), Activity::Queue(queue)) => EventPayload::queue(id, &queue),
+                            (Some(_), Activity::Jobs(jobs)) => EventPayload::jobs(id, &jobs),
                         },
                         Err(RecvError::Lagged(_)) => EventPayload::named(id, "lagged"),
                         Err(RecvError::Closed) => break Some(Terminal::Cancelled),

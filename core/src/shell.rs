@@ -11,9 +11,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch};
 
 use crate::conversation::ToolSpec;
 use crate::store::SessionId;
@@ -108,6 +108,188 @@ struct Job {
     ended: watch::Sender<Option<(i64, Duration)>>,
     /// Whether the model has been shown how it ended.
     reported: Mutex<bool>,
+    /// The terminal's output as it comes, for the screens that watch the
+    /// job; sent while `screen` is locked, so a watcher that reads the
+    /// screen and subscribes under that lock misses and repeats nothing.
+    output: broadcast::Sender<Vec<u8>>,
+}
+
+/// The output chunks a watcher may fall behind by before it misses some.
+const OUTPUT_KEPT: usize = 1024;
+
+/// A job as the screens list it (docs/evidence/background-jobs.md).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct JobInfo {
+    pub id: u64,
+    pub command: String,
+    pub running: bool,
+    pub exit_code: Option<i64>,
+    /// How long it ran, or has run so far.
+    pub duration_ms: u64,
+    pub log: String,
+}
+
+impl JobInfo {
+    fn of(job: &Job) -> Self {
+        let ended = *job.ended.borrow();
+        Self {
+            id: job.id,
+            command: job.command.clone(),
+            running: ended.is_none(),
+            exit_code: ended.map(|(code, _)| code),
+            duration_ms: ended
+                .map_or_else(|| job.started.elapsed(), |(_, took)| took)
+                .as_millis() as u64,
+            log: job.log.display().to_string(),
+        }
+    }
+}
+
+/// A part of a job's log, without terminal control sequences.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct JobLog {
+    pub job: JobInfo,
+    pub text: String,
+    /// Where `text` starts and the next part starts, in bytes of the log.
+    pub offset: u64,
+    pub next_offset: u64,
+    /// The log's size when it was read.
+    pub size: u64,
+}
+
+/// What a screen needs to follow a job: its screen now, as terminal text
+/// that draws it, and the output from then on.
+pub struct JobWatch {
+    pub job: JobInfo,
+    pub screen: String,
+    pub output: broadcast::Receiver<Vec<u8>>,
+    pub ended: watch::Receiver<Option<(i64, Duration)>>,
+}
+
+/// The jobs of a thread, oldest first.
+pub(crate) fn list(logs: &Path, session: SessionId) -> Vec<JobInfo> {
+    let Ok(registry) = registry().lock() else {
+        return Vec::new();
+    };
+    registry
+        .get(&(logs.to_path_buf(), session))
+        .map(|jobs| jobs.jobs.iter().map(|job| JobInfo::of(job)).collect())
+        .unwrap_or_default()
+}
+
+fn job_of(logs: &Path, session: SessionId, id: u64) -> Result<Arc<Job>, String> {
+    find(&(logs.to_path_buf(), session), id).ok_or_else(|| format!("no job {id} in this thread"))
+}
+
+/// `limit` bytes of a job's log from `offset`, ending before a character
+/// cut in two.
+pub(crate) fn read_log(
+    logs: &Path,
+    session: SessionId,
+    id: u64,
+    offset: u64,
+    limit: u64,
+) -> Result<JobLog, String> {
+    use std::io::Seek;
+    let job = job_of(logs, session, id)?;
+    let info = JobInfo::of(&job);
+    let mut file = File::open(&job.log)
+        .map_err(|error| format!("could not open {}: {error}", job.log.display()))?;
+    let size = file
+        .metadata()
+        .map_err(|error| format!("could not read {}: {error}", job.log.display()))?
+        .len();
+    let offset = offset.min(size);
+    file.seek(std::io::SeekFrom::Start(offset))
+        .map_err(|error| format!("could not read {}: {error}", job.log.display()))?;
+    let mut bytes = Vec::new();
+    file.take(limit)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("could not read {}: {error}", job.log.display()))?;
+    let whole = complete_utf8(&bytes);
+    let next_offset = offset + whole as u64;
+    Ok(JobLog {
+        job: info,
+        text: String::from_utf8_lossy(&bytes[..whole]).into_owned(),
+        offset,
+        next_offset,
+        size,
+    })
+}
+
+/// How many bytes of `bytes` leave no character cut at the end.
+pub fn complete_utf8(bytes: &[u8]) -> usize {
+    match std::str::from_utf8(bytes) {
+        Ok(_) => bytes.len(),
+        // An invalid sequence is kept, to be replaced; only an unfinished
+        // one at the end waits for the rest.
+        Err(error) if error.error_len().is_none() => error.valid_up_to(),
+        Err(_) => bytes.len(),
+    }
+}
+
+/// Types `bytes` into a running job.
+pub(crate) fn write_to(
+    logs: &Path,
+    session: SessionId,
+    id: u64,
+    bytes: &[u8],
+) -> Result<(), String> {
+    let job = job_of(logs, session, id)?;
+    if job.ended.borrow().is_some() {
+        return Err(format!("job {id} has already ended"));
+    }
+    let mut writer = job.writer.lock().map_err(|_| "the job is unusable")?;
+    writer
+        .write_all(bytes)
+        .and_then(|()| writer.flush())
+        .map_err(|error| format!("could not send to job {id}: {error}"))
+}
+
+/// The bytes of `input` and then of each key, by the names the `job` tool
+/// takes.
+pub(crate) fn typed(input: Option<&str>, keys: &[String]) -> Result<Vec<u8>, String> {
+    let mut bytes = input.unwrap_or_default().as_bytes().to_vec();
+    for key in keys {
+        bytes.extend(key_bytes(key)?);
+    }
+    Ok(bytes)
+}
+
+/// Stops a job; `false` when it had already ended.
+pub(crate) fn stop_job(logs: &Path, session: SessionId, id: u64) -> Result<bool, String> {
+    let job = job_of(logs, session, id)?;
+    if job.ended.borrow().is_some() {
+        return Ok(false);
+    }
+    let mut killer = job.killer.lock().map_err(|_| "the job is unusable")?;
+    let killed = killer.kill();
+    // portable-pty 0.9.0 reports a Windows kill that succeeded as an error
+    // and one that failed as success, so there the result says nothing.
+    if cfg!(not(windows)) {
+        killed.map_err(|error| format!("could not stop job {id}: {error}"))?;
+    }
+    Ok(true)
+}
+
+pub(crate) fn watch_job(logs: &Path, session: SessionId, id: u64) -> Result<JobWatch, String> {
+    let job = job_of(logs, session, id)?;
+    let screen = job.screen.lock().map_err(|_| "the job is unusable")?;
+    let output = job.output.subscribe();
+    let drawn = screen.screen().contents_formatted();
+    drop(screen);
+    Ok(JobWatch {
+        job: JobInfo::of(&job),
+        screen: drawn,
+        output,
+        ended: job.ended.subscribe(),
+    })
+}
+
+/// Tells the thread's watchers what its jobs now are.
+fn announce(key: &Key, activity: &broadcast::Sender<(SessionId, crate::Activity)>) {
+    let jobs = list(&key.0, key.1);
+    let _ = activity.send((key.1, crate::Activity::Jobs(jobs)));
 }
 
 /// Jobs are kept per log folder (one per database) and thread, so threads
@@ -146,6 +328,7 @@ pub(crate) struct Place<'a> {
     /// Whether commands run confined; a call that asked to run outside the
     /// sandbox reaches [`shell`] only once approved.
     pub sandboxed: bool,
+    pub activity: broadcast::Sender<(SessionId, crate::Activity)>,
 }
 
 #[derive(Deserialize)]
@@ -938,6 +1121,7 @@ pub(crate) async fn shell(place: Place<'_>, arguments: &str) -> Result<String, S
         folder,
         arguments.command,
         confined,
+        place.activity,
     )?;
     let wait = wait_time(arguments.wait_seconds, DEFAULT_WAIT);
     Ok(settle(&job, wait, place.cancel).await)
@@ -1018,7 +1202,13 @@ pub(crate) fn stop_all(logs: &Path, session: SessionId) {
     }
 }
 
-fn start(key: Key, folder: &Path, command: String, confined: bool) -> Result<Arc<Job>, String> {
+fn start(
+    key: Key,
+    folder: &Path,
+    command: String,
+    confined: bool,
+    activity: broadcast::Sender<(SessionId, crate::Activity)>,
+) -> Result<Arc<Job>, String> {
     let id = {
         let mut registry = registry().lock().map_err(|_| "the job list is unusable")?;
         let jobs = registry.entry(key.clone()).or_default();
@@ -1085,14 +1275,16 @@ fn start(key: Key, folder: &Path, command: String, confined: bool) -> Result<Arc
         killer: Mutex::new(child.clone_killer()),
         ended,
         reported: Mutex::new(false),
+        output: broadcast::channel(OUTPUT_KEPT).0,
     });
     registry()
         .lock()
         .map_err(|_| "the job list is unusable")?
-        .entry(key)
+        .entry(key.clone())
         .or_default()
         .jobs
         .push(Arc::clone(&job));
+    announce(&key, &activity);
 
     let copier = {
         let job = Arc::clone(&job);
@@ -1113,6 +1305,7 @@ fn start(key: Key, folder: &Path, command: String, confined: bool) -> Result<Arc
         waiter
             .ended
             .send_replace(Some((code, waiter.started.elapsed())));
+        announce(&key, &activity);
     });
     Ok(job)
 }
@@ -1180,6 +1373,7 @@ fn copy(mut reader: Box<dyn Read + Send>, file: File, job: &Job) {
                 let chunk = &buffer[..read];
                 let cursor = job.screen.lock().ok().map(|mut screen| {
                     screen.process(chunk);
+                    let _ = job.output.send(chunk.to_vec());
                     screen.screen().cursor_position()
                 });
                 // Windows' pseudo console asks where the cursor is and

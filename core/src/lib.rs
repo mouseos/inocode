@@ -52,6 +52,7 @@ pub mod sandbox;
 pub mod secrets;
 pub mod settings;
 mod shell;
+pub use shell::{complete_utf8, JobInfo, JobLog, JobWatch};
 mod snapshot;
 mod sse;
 pub mod store;
@@ -479,6 +480,14 @@ impl EventPayload {
 
     /// The messages queued for the next turns of the watched thread
     /// (`queue`).
+    /// The watched thread's commands (`jobs`).
+    pub fn jobs(id: u64, jobs: &[shell::JobInfo]) -> Self {
+        Self {
+            result: Some(json!({ "jobs": jobs })),
+            ..Self::new(id, "jobs")
+        }
+    }
+
     pub fn queue(id: u64, queue: &[store::Queued]) -> Self {
         Self {
             queue: Some(json!(queue)),
@@ -674,6 +683,8 @@ pub enum Activity {
     Queue(Vec<store::Queued>),
     /// The thread was created, deleted, archived or unarchived.
     Changed(ThreadChange),
+    /// The thread's commands, as they now are: sent when one starts or ends.
+    Jobs(Vec<shell::JobInfo>),
 }
 
 /// A change to the list of threads, for the subscriptions
@@ -2323,6 +2334,77 @@ impl Core {
     /// `files/search`: up to `limit` files of the project folder of
     /// `thread` whose paths match `query` fuzzily, best first, leaving out
     /// what `.gitignore` leaves out.
+    /// The job log folder, once `thread` is known to exist and to have job
+    /// `id` when one is named (docs/evidence/background-jobs.md).
+    async fn job_place(
+        &self,
+        thread: SessionId,
+        id: Option<u64>,
+    ) -> Result<std::path::PathBuf, ErrorInfo> {
+        let store = self.store()?;
+        if !store.session_exists(thread).await? {
+            return Err(unknown_thread());
+        }
+        let logs = store.files_folder().join("logs");
+        if let Some(id) = id {
+            if !shell::list(&logs, thread).iter().any(|job| job.id == id) {
+                return Err(ErrorInfo::new(
+                    "unknown_job",
+                    format!("no job {id} in this thread"),
+                ));
+            }
+        }
+        Ok(logs)
+    }
+
+    /// The commands the thread's turns started, oldest first.
+    pub async fn jobs(&self, thread: SessionId) -> Result<Vec<JobInfo>, ErrorInfo> {
+        let logs = self.job_place(thread, None).await?;
+        Ok(shell::list(&logs, thread))
+    }
+
+    pub async fn job_log(
+        &self,
+        thread: SessionId,
+        id: u64,
+        offset: u64,
+        limit: u64,
+    ) -> Result<JobLog, ErrorInfo> {
+        let logs = self.job_place(thread, Some(id)).await?;
+        tokio::task::spawn_blocking(move || shell::read_log(&logs, thread, id, offset, limit))
+            .await
+            .map_err(|error| ErrorInfo::new("internal", error.to_string()))?
+            .map_err(|message| ErrorInfo::new("job_failed", message))
+    }
+
+    /// Types `input` and then `keys` (named as the `job` tool names them)
+    /// into a running job; returns how many bytes were sent.
+    pub async fn write_job(
+        &self,
+        thread: SessionId,
+        id: u64,
+        input: Option<&str>,
+        keys: &[String],
+    ) -> Result<usize, ErrorInfo> {
+        let logs = self.job_place(thread, Some(id)).await?;
+        let bytes = shell::typed(input, keys)
+            .map_err(|message| ErrorInfo::new("invalid_params", message))?;
+        shell::write_to(&logs, thread, id, &bytes)
+            .map_err(|message| ErrorInfo::new("job_failed", message))?;
+        Ok(bytes.len())
+    }
+
+    /// Stops a job; `false` when it had already ended.
+    pub async fn stop_job(&self, thread: SessionId, id: u64) -> Result<bool, ErrorInfo> {
+        let logs = self.job_place(thread, Some(id)).await?;
+        shell::stop_job(&logs, thread, id).map_err(|message| ErrorInfo::new("job_failed", message))
+    }
+
+    pub async fn watch_job(&self, thread: SessionId, id: u64) -> Result<JobWatch, ErrorInfo> {
+        let logs = self.job_place(thread, Some(id)).await?;
+        shell::watch_job(&logs, thread, id).map_err(|message| ErrorInfo::new("job_failed", message))
+    }
+
     pub async fn search_files(
         &self,
         thread: SessionId,

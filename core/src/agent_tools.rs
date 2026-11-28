@@ -354,6 +354,7 @@ fn place<'a>(context: &Context<'a>) -> shell::Place<'a> {
         logs: context.store.files_folder().join("logs"),
         cancel: context.cancel.clone(),
         sandboxed: context.sandboxed,
+        activity: context.store.activity(),
     }
 }
 

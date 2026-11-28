@@ -162,6 +162,7 @@ async fn a_turn_streams_stores_and_reports_why_it_ended() {
                 "message",
                 "delta",
                 "delta",
+                "usage",
                 "message",
                 "completed"
             ]
@@ -2720,6 +2721,151 @@ async fn commands_run_in_a_terminal_that_can_be_answered() {
                 .is_some_and(|text| text.contains("- job 2 is running")),
             "{state}"
         );
+        let _ = std::fs::remove_dir_all(&project);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_screen_lists_watches_types_into_and_stops_the_threads_jobs() {
+    with_timeout(async {
+        let (project, _) = project_and_outside("jobs");
+        let (prompt, sleep) = if cfg!(windows) {
+            (
+                "$a = Read-Host 'continue? [y/N]'; Write-Output \"got $a\"",
+                "Start-Sleep -Seconds 60",
+            )
+        } else {
+            (
+                "printf 'continue? [y/N] '; read a; echo \"got $a\"",
+                "sleep 60",
+            )
+        };
+        let mock = scripted(vec![
+            tool_turn("s1", "shell", json!({"command": prompt, "wait_seconds": 3})),
+            tool_turn("s2", "shell", json!({"command": sleep, "wait_seconds": 1})),
+        ])
+        .await;
+        let (core, _store) = core_and_store(&mock).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let thread = project_thread(&mut client, &project).await;
+        turn(&mut client, 2, thread, "check the build").await;
+
+        let listed = call(
+            &mut client,
+            3,
+            json!({"id": 3, "method": "thread/jobs/list", "params": {"thread_id": thread}}),
+        )
+        .await;
+        let jobs = listed["result"]["jobs"].as_array().expect("jobs").clone();
+        assert_eq!(jobs.len(), 2, "{listed}");
+        assert_eq!(jobs[0]["id"], 1);
+        assert_eq!(jobs[0]["running"], true);
+        assert_eq!(jobs[1]["running"], true);
+
+        let mut subscriber = connect(addr).await;
+        subscriber
+            .1
+            .write_json(
+                4,
+                &json!({"id": 4, "method": "thread/subscribe", "params": {"thread_id": thread}}),
+            )
+            .await
+            .expect("subscribe");
+        let opening = events_until(&mut subscriber, 4, "jobs").await;
+        let opened = &opening.last().unwrap()["result"]["jobs"];
+        assert_eq!(opened[0]["command"], jobs[0]["command"], "{opening:?}");
+        assert_eq!(opened[1]["running"], true, "{opening:?}");
+
+        let mut watcher = connect(addr).await;
+        watcher
+            .1
+            .write_json(
+                5,
+                &json!({"id": 5, "method": "thread/jobs/watch",
+                        "params": {"thread_id": thread, "job_id": 1}}),
+            )
+            .await
+            .expect("watch");
+        let started = next_message(&mut watcher, 5).await;
+        assert_eq!(started["event"], "started");
+        assert_eq!(started["result"]["job"]["id"], 1);
+        let screen = next_message(&mut watcher, 5).await;
+        assert_eq!(screen["event"], "screen");
+        assert!(
+            screen["text"].as_str().unwrap().contains("continue? [y/N]"),
+            "{screen}"
+        );
+
+        let written = call(
+            &mut client,
+            6,
+            json!({"id": 6, "method": "thread/jobs/write",
+                   "params": {"thread_id": thread, "job_id": 1, "input": "y", "keys": ["Enter"]}}),
+        )
+        .await;
+        assert_eq!(written["result"]["written"], 2, "{written}");
+        let watched = events_until(&mut watcher, 5, "completed").await;
+        let output: String = watched
+            .iter()
+            .filter(|event| event["event"] == "output")
+            .map(|event| event["text"].as_str().unwrap())
+            .collect();
+        assert!(output.contains("got y"), "{watched:?}");
+        let ended = watched
+            .iter()
+            .find(|event| event["event"] == "job_ended")
+            .expect("job_ended");
+        assert_eq!(ended["result"]["exit_code"], 0);
+
+        let read = call(
+            &mut client,
+            7,
+            json!({"id": 7, "method": "thread/jobs/read",
+                   "params": {"thread_id": thread, "job_id": 1}}),
+        )
+        .await;
+        let log = &read["result"];
+        assert!(log["text"].as_str().unwrap().contains("got y"), "{read}");
+        assert_eq!(log["job"]["running"], false);
+        assert_eq!(log["offset"], 0);
+        assert_eq!(log["next_offset"], log["size"]);
+        let changed = events_until(&mut subscriber, 4, "jobs").await;
+        assert_eq!(
+            changed.last().unwrap()["result"]["jobs"][0]["running"],
+            false
+        );
+
+        let stopped = call(
+            &mut client,
+            8,
+            json!({"id": 8, "method": "thread/jobs/stop",
+                   "params": {"thread_id": thread, "job_id": 2}}),
+        )
+        .await;
+        assert_eq!(stopped["result"]["stopped"], true, "{stopped}");
+        let changed = events_until(&mut subscriber, 4, "jobs").await;
+        assert_eq!(
+            changed.last().unwrap()["result"]["jobs"][1]["running"],
+            false
+        );
+        let again = call(
+            &mut client,
+            9,
+            json!({"id": 9, "method": "thread/jobs/stop",
+                   "params": {"thread_id": thread, "job_id": 2}}),
+        )
+        .await;
+        assert_eq!(again["result"]["stopped"], false, "{again}");
+        let unknown = call(
+            &mut client,
+            10,
+            json!({"id": 10, "method": "thread/jobs/stop",
+                   "params": {"thread_id": thread, "job_id": 9}}),
+        )
+        .await;
+        assert_eq!(unknown["error"]["code"], "unknown_job", "{unknown}");
         let _ = std::fs::remove_dir_all(&project);
     })
     .await;
