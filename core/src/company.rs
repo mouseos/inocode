@@ -707,6 +707,8 @@ pub(crate) struct Lead<'a> {
     pub company: Arc<Company>,
     /// The person's request of the delegating turn.
     pub request: String,
+    /// Where the delegating turn reports.
+    pub events: mpsc::Sender<crate::turn::TurnEvent>,
 }
 
 /// What one delegated run gives back to the delegating turn.
@@ -738,12 +740,13 @@ names, numbers and error text exactly. No greetings, politeness, preamble or clo
 /// that cycle.
 pub(crate) fn delegate<'a, 'b: 'a>(
     lead: &'a Lead<'b>,
+    call_id: &'a str,
     arguments: &'a str,
 ) -> Pin<Box<dyn Future<Output = Delegated> + Send + 'a>> {
-    Box::pin(run_delegated(lead, arguments))
+    Box::pin(run_delegated(lead, call_id, arguments))
 }
 
-async fn run_delegated(lead: &Lead<'_>, arguments: &str) -> Delegated {
+async fn run_delegated(lead: &Lead<'_>, call_id: &str, arguments: &str) -> Delegated {
     let arguments: DelegateArguments = match serde_json::from_str(arguments) {
         Ok(arguments) => arguments,
         Err(error) => return Delegated::refused(format!("delegate needs a task: {error}")),
@@ -809,7 +812,27 @@ async fn run_delegated(lead: &Lead<'_>, arguments: &str) -> Delegated {
         title: None,
     };
     let (_steer, steer) = mpsc::unbounded_channel();
-    let (events, _) = mpsc::channel(1);
+    let _ = lead
+        .events
+        .send(crate::turn::TurnEvent::Delegated {
+            call_id: call_id.to_string(),
+            thread_id: child,
+            member: profile.name.clone(),
+        })
+        .await;
+    // The member's turn is shown to its thread's subscribers as any turn.
+    let activity = lead.store.activity();
+    let _ = activity.send((child, crate::Activity::TurnStarted));
+    let _ = activity.send((child, crate::Activity::Status(crate::ThreadStatus::Running)));
+    let (events, mut shown) = mpsc::channel(64);
+    let relay = {
+        let activity = activity.clone();
+        tokio::spawn(async move {
+            while let Some(event) = shown.recv().await {
+                let _ = activity.send((child, crate::Activity::Event(event)));
+            }
+        })
+    };
     let prompt = crate::turn::Prompt {
         text: task_message(&lead.request, profile, &arguments),
         ..Default::default()
@@ -826,6 +849,12 @@ async fn run_delegated(lead: &Lead<'_>, arguments: &str) -> Delegated {
         events,
     ));
     let outcome = run.await;
+    let _ = relay.await;
+    let _ = activity.send((
+        child,
+        crate::Activity::TurnEnded(crate::TurnEnd::of(&outcome)),
+    ));
+    let _ = activity.send((child, crate::Activity::Status(crate::ThreadStatus::Idle)));
     let report = last_words(lead.store, child).await;
     let (ended, failed) = match &outcome.ending {
         _ if outcome.over_budget => (format!("stopped at its token budget of {budget}"), false),

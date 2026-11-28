@@ -260,6 +260,7 @@ mod tests {
             seq: 4,
             shown: &shown,
             events: None,
+            call_id: None,
             sampling: None,
         };
         let call = |quote: &str, message: i64| {

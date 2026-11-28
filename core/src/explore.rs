@@ -99,6 +99,50 @@ pub(crate) async fn read_only(
     question: String,
     usage: &mut TurnUsage,
 ) -> Result<(String, usize), String> {
+    let shown_steps = Steps { context, helper };
+    shown_steps
+        .send(serde_json::json!({"kind": "started", "question": question}))
+        .await;
+    let answered = read_rounds(llm, context, helper, question, usage, &shown_steps).await;
+    let ended = match &answered {
+        Ok((answer, _)) => serde_json::json!({"kind": "ended", "answer": answer}),
+        Err(error) => serde_json::json!({"kind": "ended", "error": error}),
+    };
+    shown_steps.send(ended).await;
+    answered
+}
+
+/// Characters of a helper's tool result shown to the screens; the helper
+/// itself gets it whole.
+const SHOWN_RESULT_CHARS: usize = 2_000;
+
+/// Where a helper's steps are shown, when the turn reports.
+struct Steps<'a, 'b> {
+    context: &'a Context<'b>,
+    helper: &'a Helper,
+}
+
+impl Steps<'_, '_> {
+    async fn send(&self, step: serde_json::Value) {
+        if let Some(events) = self.context.events {
+            let step = crate::turn::HelperStep {
+                call_id: self.context.call_id.map(str::to_string),
+                helper: self.helper.purpose,
+                step,
+            };
+            let _ = events.send(crate::turn::TurnEvent::Helper(step)).await;
+        }
+    }
+}
+
+async fn read_rounds(
+    llm: &Llm,
+    context: &Context<'_>,
+    helper: &Helper,
+    question: String,
+    usage: &mut TurnUsage,
+    steps: &Steps<'_, '_>,
+) -> Result<(String, usize), String> {
     let mut reads = 0;
     let tools = vec![find::spec(), read::spec()];
     let mut conversation = Conversation {
@@ -150,6 +194,29 @@ pub(crate) async fn read_only(
             };
         }
         let stop = *stop;
+        for part in parts {
+            match part {
+                AssistantPart::Text { text } if !text.trim().is_empty() => {
+                    steps
+                        .send(serde_json::json!({"kind": "text", "text": text}))
+                        .await;
+                }
+                AssistantPart::ToolCall {
+                    call_id,
+                    name,
+                    arguments,
+                    ..
+                } => {
+                    steps
+                        .send(serde_json::json!({
+                            "kind": "call", "call_id": call_id, "name": name,
+                            "arguments": arguments,
+                        }))
+                        .await;
+                }
+                _ => {}
+            }
+        }
         conversation.messages.push(message(body));
         for (call_id, name, arguments) in calls {
             let (content, is_error) = if stop == StopReason::Length {
@@ -183,6 +250,14 @@ pub(crate) async fn read_only(
                     }
                 }
             };
+            let shown: String = content.chars().take(SHOWN_RESULT_CHARS).collect();
+            steps
+                .send(serde_json::json!({
+                    "kind": "result", "call_id": call_id, "content": shown,
+                    "is_error": is_error,
+                    "truncated": shown.len() < content.len(),
+                }))
+                .await;
             conversation.messages.push(message(Body::ToolResult {
                 call_id,
                 name,

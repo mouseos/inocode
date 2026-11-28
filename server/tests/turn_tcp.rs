@@ -436,6 +436,32 @@ async fn explore_answers_with_places_found_by_a_helper_that_only_reads() {
         let events = turn(&mut client, 2, thread, "fix the needle").await;
         assert_eq!(tool_results(&events), ["a.txt:2-2 the needle"]);
         assert_eq!(events.last().unwrap()["event"], "completed");
+        // Each step of the helper is shown with the call it answers.
+        let steps: Vec<&Value> = events
+            .iter()
+            .filter(|event| event["event"] == "helper")
+            .map(|event| &event["result"])
+            .collect();
+        assert!(steps
+            .iter()
+            .all(|step| step["call_id"] == "e1" && step["helper"] == "explore"));
+        let kinds: Vec<&str> = steps
+            .iter()
+            .map(|step| step["step"]["kind"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            kinds,
+            ["started", "call", "result", "call", "result", "call", "result", "ended"],
+            "{steps:?}"
+        );
+        assert_eq!(steps[0]["step"]["question"], "where is the needle?");
+        assert_eq!(steps[1]["step"]["name"], "find");
+        assert!(steps[2]["step"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("a.txt:2"));
+        assert_eq!(steps[4]["step"]["is_error"], true);
+        assert_eq!(steps[7]["step"]["answer"], "a.txt:2-2 the needle");
         let chats = chats(&mock);
         assert_eq!(chats.len(), 6);
         // The helper has its own instructions and only the reading tools.

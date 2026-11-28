@@ -857,6 +857,7 @@ mod tests {
                 seq: 1,
                 shown: &shown,
                 events: None,
+                call_id: None,
                 sampling: None,
             };
             let mut goal = Goal::new(objective, None, None, None, 1).expect("goal");

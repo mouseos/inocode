@@ -68,6 +68,17 @@ pub enum TurnEvent {
     /// The person's command started as job `u64`; its output can be
     /// watched with the thread's jobs while the turn waits for it.
     ShellStarted(u64),
+    /// A step of a helper that answers a call of the turn: `explore`, a
+    /// review, a goal check (docs/evidence/helper-steps.md).
+    Helper(HelperStep),
+    /// The call `call_id` handed its task to a member, whose turn runs in
+    /// thread `thread_id`: the member's events reach that thread's
+    /// subscribers.
+    Delegated {
+        call_id: String,
+        thread_id: SessionId,
+        member: String,
+    },
     /// The thread's new title.
     Title(String),
     /// A title the model proposes for the thread; the title is unchanged.
@@ -113,6 +124,20 @@ pub struct TurnUsage {
     pub cached: u64,
     #[serde(skip)]
     pub records: Vec<crate::RequestRecord>,
+}
+
+/// What [`TurnEvent::Helper`] tells.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct HelperStep {
+    /// The call of the turn the helper answers.
+    pub call_id: Option<String>,
+    /// What the helper's requests are logged as: `explore`, `review`, …
+    pub helper: &'static str,
+    /// `{kind: "started", question}`, `{kind: "text", text}`,
+    /// `{kind: "call", call_id, name, arguments}`,
+    /// `{kind: "result", call_id, content, is_error}` or
+    /// `{kind: "ended", answer}` / `{kind: "ended", error}`.
+    pub step: serde_json::Value,
 }
 
 /// What [`TurnEvent::Usage`] tells about a request.
@@ -1121,6 +1146,7 @@ impl Thread<'_> {
         &mut self,
         llm: &Llm,
         pending: &Body,
+        call_id: &str,
         name: &str,
         arguments: &str,
         usage: &mut TurnUsage,
@@ -1177,6 +1203,7 @@ impl Thread<'_> {
             sandboxed: self.sandboxed(),
             seq: self.next_seq,
             events: Some(&self.events),
+            call_id: Some(call_id),
             shown: &self.shown,
             sampling: Some(crate::mcp::Sampling {
                 model: llm,
@@ -1958,6 +1985,7 @@ impl Thread<'_> {
             sandboxed: self.sandboxed(),
             seq: self.next_seq,
             events: None,
+            call_id: None,
             shown: &self.shown,
             sampling: None,
         };
@@ -2164,6 +2192,7 @@ impl Thread<'_> {
             colleague: self.colleague.clone(),
             company,
             request: self.request.clone(),
+            events: self.events.clone(),
         };
         let plans: Vec<(bool, Vec<String>)> = runnable
             .iter()
@@ -2174,7 +2203,7 @@ impl Thread<'_> {
             let started = std::time::Instant::now();
             let runs = runnable
                 .iter()
-                .map(|(_, arguments)| crate::company::delegate(&lead, arguments));
+                .map(|(call, arguments)| crate::company::delegate(&lead, call, arguments));
             let finished = futures_util::future::join_all(runs).await;
             for ((call, _), delegated) in runnable.iter().zip(finished) {
                 done.push((call.to_string(), delegated, started.elapsed()));
@@ -2182,7 +2211,7 @@ impl Thread<'_> {
         } else {
             for (call, arguments) in &runnable {
                 let started = std::time::Instant::now();
-                let delegated = crate::company::delegate(&lead, arguments).await;
+                let delegated = crate::company::delegate(&lead, call, arguments).await;
                 done.push((call.to_string(), delegated, started.elapsed()));
             }
         }
@@ -2232,7 +2261,9 @@ impl Thread<'_> {
                             answer
                         }
                         None => {
-                            let answer = self.answer(llm, body, name, arguments, usage).await;
+                            let answer = self
+                                .answer(llm, body, call_id, name, arguments, usage)
+                                .await;
                             self.tally.add(name, arguments, started.elapsed());
                             answer
                         }

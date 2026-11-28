@@ -481,6 +481,23 @@ impl EventPayload {
 
     /// The messages queued for the next turns of the watched thread
     /// (`queue`).
+    /// A step of a helper answering a call (`helper`).
+    pub fn helper(id: u64, step: &turn::HelperStep) -> Self {
+        Self {
+            result: serde_json::to_value(step).ok(),
+            ..Self::new(id, "helper")
+        }
+    }
+
+    /// A call handed its task to a member running in `thread`
+    /// (`delegated`).
+    pub fn delegated(id: u64, call_id: &str, thread: SessionId, member: &str) -> Self {
+        Self {
+            result: Some(json!({ "call_id": call_id, "thread_id": thread.0, "member": member })),
+            ..Self::new(id, "delegated")
+        }
+    }
+
     /// The person's command started as job `job` (`shell_started`).
     pub fn shell_started(id: u64, job: u64) -> Self {
         Self {
@@ -732,6 +749,23 @@ pub struct TurnEnd {
     pub questions: Vec<turn::Asked>,
     pub warnings: Vec<String>,
     pub error: Option<ErrorInfo>,
+}
+
+impl TurnEnd {
+    pub(crate) fn of(outcome: &Outcome) -> Self {
+        let (ending, error) = match &outcome.ending {
+            turn::Ending::Interrupted => ("cancelled", None),
+            turn::Ending::Failed(error) => ("failed", Some(error.clone())),
+            ending => (ending.as_str(), None),
+        };
+        Self {
+            ending,
+            usage: outcome.usage.clone(),
+            questions: outcome.questions.clone(),
+            warnings: outcome.warnings.clone(),
+            error,
+        }
+    }
 }
 
 /// What [`Core::begin_turn`] claimed for [`Core::run_turn`].
@@ -2519,19 +2553,9 @@ impl Core {
         let outcome = self
             .run_claimed(thread, prompt, approvals, claim, cancel, events)
             .await;
-        let (ending, error) = match &outcome.ending {
-            turn::Ending::Interrupted => ("cancelled", None),
-            turn::Ending::Failed(error) => ("failed", Some(error.clone())),
-            ending => (ending.as_str(), None),
-        };
-        let end = TurnEnd {
-            ending,
-            usage: outcome.usage.clone(),
-            questions: outcome.questions.clone(),
-            warnings: outcome.warnings.clone(),
-            error,
-        };
-        let _ = self.activity.send((thread, Activity::TurnEnded(end)));
+        let _ = self
+            .activity
+            .send((thread, Activity::TurnEnded(TurnEnd::of(&outcome))));
         outcome
     }
 

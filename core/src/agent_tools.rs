@@ -198,8 +198,11 @@ pub(crate) struct Context<'a> {
     pub seq: i64,
     /// Images the call shows the model, added to its answer.
     pub shown: &'a std::sync::Mutex<Vec<crate::conversation::Image>>,
-    /// Where the turn reports, for questions of MCP servers to the person.
+    /// Where the turn reports, for questions of MCP servers to the person
+    /// and the steps of helpers.
     pub events: Option<&'a tokio::sync::mpsc::Sender<crate::turn::TurnEvent>>,
+    /// The id of the model's call being answered, when there is one.
+    pub call_id: Option<&'a str>,
     /// The model that answers MCP servers' requests to run it, and the
     /// turn's usage they count in.
     pub sampling: Option<mcp::Sampling<'a>>,

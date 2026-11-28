@@ -2418,6 +2418,12 @@ fn turn_event(id: u64, event: TurnEvent) -> EventPayload {
         TurnEvent::Estimate(estimate) => EventPayload::estimate(id, &estimate),
         TurnEvent::Usage(report) => EventPayload::usage(id, &report),
         TurnEvent::ShellStarted(job) => EventPayload::shell_started(id, job),
+        TurnEvent::Helper(step) => EventPayload::helper(id, &step),
+        TurnEvent::Delegated {
+            call_id,
+            thread_id,
+            member,
+        } => EventPayload::delegated(id, &call_id, thread_id, &member),
         TurnEvent::Title(title) => EventPayload::title(id, "title_updated", title),
         TurnEvent::TitleProposed(title) => EventPayload::title(id, "title_proposed", title),
         TurnEvent::Diff(diff) => EventPayload::diff(id, diff),

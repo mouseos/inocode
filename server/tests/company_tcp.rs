@@ -630,3 +630,88 @@ async fn members_and_allow_lists_are_kept_and_the_repository_list_needs_approval
     })
     .await;
 }
+
+#[tokio::test]
+async fn a_members_turn_is_shown_live_in_its_own_thread_linked_from_the_call() {
+    with_timeout(async {
+        let folder = folder();
+        let project = folder.join("project");
+        let lead = scripted(vec![
+            tool_turn(
+                "d1",
+                "delegate",
+                json!({"member": "coder", "task": "Write hello into b.txt.", "files": ["b.txt"]}),
+            ),
+            text_turn("all done"),
+        ])
+        .await;
+        let member = scripted_after(
+            vec![
+                tool_turn(
+                    "w1",
+                    "write",
+                    json!({"path": "b.txt", "content": "hello\n"}),
+                ),
+                text_turn("Wrote b.txt."),
+            ],
+            Duration::from_millis(800),
+        )
+        .await;
+        let reviewer = scripted(Vec::new()).await;
+        let core = core_with(&folder, settings(&lead, &member, &reviewer)).await;
+        let (addr, _stop, _handle) = start_server(core).await;
+        let mut client = connect(addr).await;
+        let mut watcher = connect(addr).await;
+        let thread = project_thread(&mut client, &project).await;
+        client
+            .1
+            .write_json(
+                2,
+                &json!({"id": 2, "method": "turn/start",
+                        "params": {"thread_id": thread, "prompt": "put hello in b.txt"}}),
+            )
+            .await
+            .expect("start");
+        let delegated = loop {
+            let event = next_message(&mut client, 2).await;
+            if event["event"] == "delegated" {
+                break event;
+            }
+        };
+        assert_eq!(delegated["result"]["call_id"], "d1");
+        assert_eq!(delegated["result"]["member"], "coder");
+        let child = delegated["result"]["thread_id"].as_i64().expect("thread");
+        watcher
+            .1
+            .write_json(
+                3,
+                &json!({"id": 3, "method": "thread/subscribe", "params": {"thread_id": child}}),
+            )
+            .await
+            .expect("subscribe");
+        let mut seen = Vec::new();
+        loop {
+            let event = next_message(&mut watcher, 3).await;
+            let ended = event["event"] == "turn_ended";
+            seen.push(event);
+            if ended {
+                break;
+            }
+        }
+        let texts = serde_json::to_string(&seen).expect("json");
+        assert!(texts.contains("Wrote b.txt."), "{texts}");
+        assert!(
+            seen.iter().any(|event| event["event"] == "message"
+                && event["message"]["message"]["body"]["role"] == "tool_result"),
+            "{texts}"
+        );
+        assert_eq!(seen.last().unwrap()["reason"], "completed", "{texts}");
+        loop {
+            let event = next_message(&mut client, 2).await;
+            if event["event"] == "completed" {
+                break;
+            }
+        }
+    })
+    .await;
+}
