@@ -3050,6 +3050,163 @@ async fn a_side_question_is_answered_from_the_conversation_and_not_kept() {
     .await;
 }
 
+/// The core of [`core_and_store`] on the database at `database`.
+async fn core_at(mock: &MockApi, database: std::path::PathBuf) -> Arc<Core> {
+    let llm = Llm::new(LlmConfig {
+        provider: ProviderKind::OpenAi,
+        auth: inocode_core::oauth::AuthKind::ApiKey,
+        base_url: mock.base_url.clone(),
+        model: "test-model".to_string(),
+        api_key: "test-key".to_string(),
+        auth_store_path: None,
+        reasoning: Default::default(),
+    })
+    .expect("client");
+    inocode_core::sandbox::configure(true, Some(env!("CARGO_BIN_EXE_inocode-server").into()));
+    let store = Store::open(database).await.expect("store");
+    Arc::new(Core::with_llm(llm).with_store(store))
+}
+
+/// A hook that prints `json` and ends well, in the shell hooks run in.
+fn prints(json: &Value) -> String {
+    format!("echo '{json}'")
+}
+
+#[tokio::test]
+async fn hooks_refuse_a_call_add_to_the_prompt_and_results_and_keep_the_turn_going() {
+    with_timeout(async {
+        let database = database();
+        let project = database.with_file_name("hooked");
+        std::fs::create_dir_all(&project).expect("project");
+        std::fs::write(project.join("a.txt"), "alpha\n").expect("file");
+        let once = if cfg!(windows) {
+            format!(
+                "if (-not (Test-Path stopped)) {{ New-Item stopped | Out-Null; {} }}",
+                prints(&json!({"decision": "block", "reason": "run the tests"}))
+            )
+        } else {
+            format!(
+                "test -f stopped || {{ touch stopped; {}; }}",
+                prints(&json!({"decision": "block", "reason": "run the tests"}))
+            )
+        };
+        let refuse = if cfg!(windows) {
+            "[Console]::Error.WriteLine('writes are off'); exit 2"
+        } else {
+            "echo 'writes are off' >&2; exit 2"
+        };
+        let hooks = json!({
+            "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "echo remember-the-rule"}]}],
+            "PreToolUse": [{"matcher": "Write|Edit", "hooks": [{"type": "command", "command": refuse}]}],
+            "PostToolUse": [{"matcher": "read", "hooks": [{"type": "command", "command": prints(&json!(
+                {"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": "read-is-checked"}}
+            ))}]}],
+            "Stop": [{"hooks": [{"type": "command", "command": once}]}],
+            "Notification": [{"hooks": [{"type": "http", "url": "http://example.invalid"}]}],
+        });
+        std::fs::write(
+            database.with_file_name("settings.json"),
+            json!({"language": LANGUAGE, "hooks": hooks}).to_string(),
+        )
+        .expect("settings");
+        let mock = scripted(vec![
+            tool_turn("w1", "write", json!({"path": "b.txt", "content": "x"})),
+            tool_turn("r1", "read", json!({"path": "a.txt"})),
+            vec![sse_delta("first done"), finish("stop"), sse_done()],
+            vec![sse_delta("second done"), finish("stop"), sse_done()],
+        ])
+        .await;
+        let (addr, _stop, _handle) = start_server(core_at(&mock, database).await).await;
+        let mut client = connect(addr).await;
+        let thread = project_thread(&mut client, &project).await;
+
+        let events = turn(&mut client, 2, thread, "change b").await;
+        let results = tool_results(&events);
+        assert!(
+            results[0].starts_with("Not run: a hook refused it: writes are off"),
+            "{results:?}"
+        );
+        assert!(!project.join("b.txt").exists());
+        assert!(
+            results[1].contains("alpha") && results[1].contains("Hooks add:\nread-is-checked"),
+            "{results:?}"
+        );
+        let chats = chats(&mock);
+        assert_eq!(chats.len(), 4, "the Stop hook had the turn go on once");
+        let first = chats[0].body["messages"].to_string();
+        assert!(first.contains("A UserPromptSubmit hook adds:\\nremember-the-rule"), "{first}");
+        let last = chats[3].body["messages"].to_string();
+        assert!(last.contains("A Stop hook asks you to go on: run the tests"), "{last}");
+        let ended = events.last().unwrap();
+        assert_eq!(ended["event"], "completed");
+        assert!(
+            ended["warnings"].to_string().contains("only \\\"command\\\" hooks run here"),
+            "{ended}"
+        );
+        let _ = std::fs::remove_dir_all(&project);
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn a_projects_hooks_run_only_once_trusted_as_they_are() {
+    with_timeout(async {
+        let database = database();
+        let project = database.with_file_name("trusting");
+        std::fs::create_dir_all(project.join(".inocode")).expect("project");
+        let write = |text: &str| {
+            let hooks = json!({"UserPromptSubmit": [{"hooks": [{"type": "command", "command": format!("echo {text}")}]}]});
+            std::fs::write(
+                project.join(".inocode").join("settings.json"),
+                json!({"hooks": hooks}).to_string(),
+            )
+            .expect("hooks");
+        };
+        write("project-says-hi");
+        let mock = scripted(Vec::new()).await;
+        let (addr, _stop, _handle) = start_server(core_at(&mock, database).await).await;
+        let mut client = connect(addr).await;
+        let thread = project_thread(&mut client, &project).await;
+
+        let events = turn(&mut client, 2, thread, "hello").await;
+        assert!(
+            events.last().unwrap()["warnings"].to_string().contains("not used until the person trusts them"),
+            "{:?}",
+            events.last()
+        );
+        assert!(!chats(&mock)[0].body.to_string().contains("project-says-hi"));
+        let listed = call(
+            &mut client,
+            3,
+            json!({"id": 3, "method": "hooks/list", "params": {"thread_id": thread}}),
+        )
+        .await;
+        assert_eq!(listed["result"]["project"]["trusted"], false, "{listed}");
+        let trusted = call(
+            &mut client,
+            4,
+            json!({"id": 4, "method": "hooks/trust", "params": {"thread_id": thread}}),
+        )
+        .await;
+        assert_eq!(trusted["result"]["trusted"], true, "{trusted}");
+
+        turn(&mut client, 5, thread, "hello again").await;
+        assert!(chats(&mock)[1].body.to_string().contains("project-says-hi"));
+        write("changed-hook");
+        let listed = call(
+            &mut client,
+            6,
+            json!({"id": 6, "method": "hooks/list", "params": {"thread_id": thread}}),
+        )
+        .await;
+        assert_eq!(listed["result"]["project"]["trusted"], false, "a changed hook needs trusting again: {listed}");
+        turn(&mut client, 7, thread, "and again").await;
+        assert!(!chats(&mock)[2].body.to_string().contains("changed-hook"));
+        let _ = std::fs::remove_dir_all(&project);
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn a_fetched_page_comes_as_its_main_content_and_is_saved_whole() {
     with_timeout(async {

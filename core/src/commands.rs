@@ -1807,6 +1807,15 @@ impl Core {
             ));
         }
         let folder = store.session_project(thread).await?.map(|(_, key)| key);
+        let mut said = self
+            .run_hooks(
+                thread,
+                folder.as_deref().map(std::path::Path::new),
+                "SessionEnd",
+                Some("thread_deleted"),
+                json!({ "reason": "thread_deleted" }),
+            )
+            .await;
         store.delete_session(thread).await?;
         crate::shell::stop_all(&store.files_folder().join("logs"), thread);
         let kept = store.remove_thread_files(thread).await;
@@ -1816,7 +1825,19 @@ impl Core {
         let worktree = match folder {
             Some(folder) if std::path::Path::new(&folder) == own && own.is_dir() => {
                 match crate::worktree::remove_if_clean(&own).await {
-                    Ok(()) => json!({ "path": folder, "removed": true }),
+                    Ok(()) => {
+                        said.extend(
+                            self.run_hooks(
+                                thread,
+                                None,
+                                "WorktreeRemove",
+                                None,
+                                json!({ "worktree_path": folder }),
+                            )
+                            .await,
+                        );
+                        json!({ "path": folder, "removed": true })
+                    }
                     Err(why) => json!({ "path": folder, "removed": false, "kept_because": why }),
                 }
             }
@@ -1825,7 +1846,10 @@ impl Core {
         let _ = self
             .activity
             .send((thread, Activity::Changed(ThreadChange::Deleted)));
-        Ok(json!({ "deleted": thread.0, "files_not_removed": kept, "worktree": worktree }))
+        Ok(json!({
+            "deleted": thread.0, "files_not_removed": kept, "worktree": worktree,
+            "hook_messages": said,
+        }))
     }
 
     /// `thread/archive` and `thread/unarchive`. An archived thread is left
@@ -2530,6 +2554,22 @@ impl Core {
         } = self.begin_turn(thread).await?;
         drop((steer, cancel));
         let main = model.borrow().clone();
+        // Read without failing: the turn is claimed, and must be ended.
+        let folder = match self.store() {
+            Ok(store) => store.session_project(thread).await.ok().flatten(),
+            Err(_) => None,
+        }
+        .map(|(_, key)| key);
+        let folder = folder.as_deref().map(std::path::Path::new);
+        let mut said = self
+            .run_hooks(
+                thread,
+                folder,
+                "PreCompact",
+                Some("manual"),
+                json!({ "trigger": "manual", "custom_instructions": focus.unwrap_or_default() }),
+            )
+            .await;
         let _ = self.activity.send((
             thread,
             crate::Activity::Event(turn::TurnEvent::CompactionStarted),
@@ -2545,9 +2585,19 @@ impl Core {
             thread,
             crate::Activity::Event(turn::TurnEvent::CompactionEnded { seq: ended }),
         ));
+        said.extend(
+            self.run_hooks(
+                thread,
+                folder,
+                "PostCompact",
+                Some("manual"),
+                json!({ "trigger": "manual" }),
+            )
+            .await,
+        );
         self.end_turn(thread);
         let (seq, warning) = compacted?;
-        let mut result = json!({ "compacted": seq.is_some(), "seq": seq });
+        let mut result = json!({ "compacted": seq.is_some(), "seq": seq, "hook_messages": said });
         if let Some(warning) = warning {
             result["warnings"] = json!([warning]);
         }

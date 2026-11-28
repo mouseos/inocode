@@ -1396,7 +1396,7 @@ pub(crate) const COMMAND_SHELL: &str =
 pub(crate) const COMMAND_SHELL: &str = "sh (sh -c); use POSIX shell syntax";
 
 #[cfg(windows)]
-fn shell_command(command: &str) -> Vec<String> {
+pub(crate) fn shell_command(command: &str) -> Vec<String> {
     [
         "powershell.exe",
         "-NoLogo",
@@ -1409,7 +1409,7 @@ fn shell_command(command: &str) -> Vec<String> {
 }
 
 #[cfg(not(windows))]
-fn shell_command(command: &str) -> Vec<String> {
+pub(crate) fn shell_command(command: &str) -> Vec<String> {
     ["sh", "-c", command].map(String::from).to_vec()
 }
 

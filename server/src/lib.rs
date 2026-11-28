@@ -661,6 +661,8 @@ async fn dispatch(
         | "thread/queue/start"
         | "thread/folder"
         | "thread/worktree"
+        | "hooks/list"
+        | "hooks/trust"
         | "thread/jobs/list"
         | "thread/jobs/read"
         | "thread/jobs/write"
@@ -1044,6 +1046,21 @@ async fn thread_request(
         method if method.starts_with("thread/queue/") => queue_request(&request, &core).await,
         method if method.starts_with("thread/jobs/") => job_request(&request, &core).await,
         "thread/folder" | "thread/worktree" => folder_request(&request, &core).await,
+        "hooks/list" => match request
+            .params
+            .as_ref()
+            .and_then(|params| params.get("thread_id"))
+        {
+            None | Some(Value::Null) => core.hooks(None).await,
+            Some(_) => match request.thread() {
+                Ok(thread) => core.hooks(Some(thread)).await,
+                Err(error) => Err(error),
+            },
+        },
+        "hooks/trust" => match request.thread() {
+            Ok(thread) => core.trust_hooks(thread).await,
+            Err(error) => Err(error),
+        },
         method if method.starts_with("plugins/") => plugin_request(&request, &core).await,
         method if method.starts_with("fs/") => {
             let request = request.clone();
@@ -2587,6 +2604,7 @@ fn turn_event(id: u64, event: TurnEvent) -> EventPayload {
         TurnEvent::Usage(report) => EventPayload::usage(id, &report),
         TurnEvent::ShellStarted(job) => EventPayload::shell_started(id, job),
         TurnEvent::Helper(step) => EventPayload::helper(id, &step),
+        TurnEvent::Hook { event, text } => EventPayload::hook(id, &event, &text),
         TurnEvent::CompactionStarted => EventPayload::compaction(id, None),
         TurnEvent::CompactionEnded { seq } => EventPayload::compaction(id, Some(seq)),
         TurnEvent::Delegated {

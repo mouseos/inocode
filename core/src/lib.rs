@@ -31,6 +31,7 @@ mod find;
 mod git;
 pub mod goal;
 pub mod hidden_input;
+mod hooks;
 mod language;
 mod llm;
 mod mcp;
@@ -509,6 +510,14 @@ impl EventPayload {
         Self {
             result: Some(json!({ "call_id": call_id, "thread_id": thread.0, "member": member })),
             ..Self::new(id, "delegated")
+        }
+    }
+
+    /// What a hook says to the person (`hook`).
+    pub fn hook(id: u64, event: &str, text: &str) -> Self {
+        Self {
+            result: Some(json!({ "event": event, "text": text })),
+            ..Self::new(id, "hook")
         }
     }
 
@@ -2392,6 +2401,64 @@ impl Core {
     /// `files/search`: up to `limit` files of the project folder of
     /// `thread` whose paths match `query` fuzzily, best first, leaving out
     /// what `.gitignore` leaves out.
+    /// Runs `event`'s hooks for `thread` working in `folder`, outside a
+    /// turn; gives what they say to the person (docs/evidence/hooks.md).
+    pub(crate) async fn run_hooks(
+        &self,
+        thread: SessionId,
+        folder: Option<&std::path::Path>,
+        event: &str,
+        target: Option<&str>,
+        input: Value,
+    ) -> Vec<String> {
+        let Ok(store) = self.store() else {
+            return Vec::new();
+        };
+        let hooks = hooks::Hooks::load(store, thread.0, folder);
+        if !hooks.has(event) {
+            return Vec::new();
+        }
+        hooks.run(event, target, input).await.messages
+    }
+
+    /// `hooks/list {thread_id?}`: the settings' hooks, and the hooks of the
+    /// thread's project with whether they are trusted as they are.
+    pub async fn hooks(&self, thread: Option<SessionId>) -> Result<Value, ErrorInfo> {
+        let store = self.store()?;
+        let folder = match thread {
+            Some(thread) => self.thread_folder(thread).await?,
+            None => None,
+        };
+        Ok(hooks::listing(store, folder.as_deref()))
+    }
+
+    /// `hooks/trust {thread_id}`: trusts the hooks of the thread's project
+    /// as they are now; `false` when it has none.
+    pub async fn trust_hooks(&self, thread: SessionId) -> Result<Value, ErrorInfo> {
+        let store = self.store()?;
+        let folder = self
+            .thread_folder(thread)
+            .await?
+            .ok_or_else(|| ErrorInfo::new("invalid_params", "this thread has no project folder"))?;
+        let trusted = hooks::trust(store, &folder)
+            .map_err(|message| ErrorInfo::new("hooks_failed", message))?;
+        Ok(json!({ "trusted": trusted, "project": folder.to_string_lossy() }))
+    }
+
+    async fn thread_folder(
+        &self,
+        thread: SessionId,
+    ) -> Result<Option<std::path::PathBuf>, ErrorInfo> {
+        let store = self.store()?;
+        if !store.session_exists(thread).await? {
+            return Err(unknown_thread());
+        }
+        Ok(store
+            .session_project(thread)
+            .await?
+            .map(|(_, key)| std::path::PathBuf::from(key)))
+    }
+
     /// Moves `thread` to the project of `folder`, an existing folder named by
     /// its absolute path; its next turn works there. Refused while a turn
     /// runs (docs/evidence/thread-folders.md).
@@ -2408,9 +2475,20 @@ impl Core {
                 format!("{folder} is not an existing folder named by its absolute path"),
             ));
         }
+        let before = self.thread_folder(thread).await?;
         let project = store.project(folder).await?;
         store.set_session_project(thread, project).await?;
-        Ok(json!({ "thread_id": thread.0, "project": folder }))
+        let said = self
+            .run_hooks(
+                thread,
+                Some(path),
+                "CwdChanged",
+                None,
+                json!({ "old_cwd": before.map(|folder| folder.to_string_lossy().into_owned()),
+                        "new_cwd": folder }),
+            )
+            .await;
+        Ok(json!({ "thread_id": thread.0, "project": folder, "hook_messages": said }))
     }
 
     fn refuse_while_running(&self, thread: SessionId) -> Result<(), ErrorInfo> {
@@ -2460,9 +2538,29 @@ impl Core {
         let folder = target.to_string_lossy().into_owned();
         let project = store.project(&folder).await?;
         store.set_session_project(thread, project).await?;
+        let mut said = self
+            .run_hooks(
+                thread,
+                Some(&target),
+                "WorktreeCreate",
+                None,
+                json!({ "worktree_path": folder, "branch": branch,
+                        "repository": repo.to_string_lossy() }),
+            )
+            .await;
+        said.extend(
+            self.run_hooks(
+                thread,
+                Some(&target),
+                "CwdChanged",
+                None,
+                json!({ "old_cwd": repo.to_string_lossy(), "new_cwd": folder }),
+            )
+            .await,
+        );
         Ok(json!({
             "thread_id": thread.0, "project": folder, "branch": branch,
-            "from": repo.to_string_lossy(),
+            "from": repo.to_string_lossy(), "hook_messages": said,
         }))
     }
 

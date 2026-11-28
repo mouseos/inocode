@@ -84,6 +84,9 @@ pub enum TurnEvent {
     /// The compaction ended: `seq` is the summary's position when one was
     /// stored (docs/evidence/compaction-controls.md).
     CompactionEnded { seq: Option<i64> },
+    /// What a hook says to the person, or why it failed
+    /// (docs/evidence/hooks.md).
+    Hook { event: String, text: String },
     /// The thread's new title.
     Title(String),
     /// A title the model proposes for the thread; the title is unchanged.
@@ -757,6 +760,13 @@ struct Thread<'a> {
     title_spent: Option<crate::title::Spent>,
     /// How many of the turn's request records were reported.
     reported: usize,
+    hooks: crate::hooks::Hooks,
+    /// What a `PreToolUse` hook decided for the call being answered.
+    hook_permission: Option<(String, Option<String>)>,
+    /// Why a hook asked the work to stop (`continue: false`).
+    hook_stop: Option<String>,
+    /// A `Stop` hook already had the turn go on.
+    stop_hook_active: bool,
     /// See [`UsageReport::context_used`].
     context_used: Option<u64>,
 }
@@ -1045,10 +1055,22 @@ impl Thread<'_> {
         if !auto {
             return Ok(());
         }
+        self.hook(
+            "PreCompact",
+            Some("auto"),
+            serde_json::json!({"trigger": "auto"}),
+        )
+        .await;
         let _ = self.events.send(TurnEvent::CompactionStarted).await;
         let compacted = self.compact_due(llm, tools, input, window, usage).await;
         let seq = compacted.as_ref().ok().copied().flatten();
         let _ = self.events.send(TurnEvent::CompactionEnded { seq }).await;
+        self.hook(
+            "PostCompact",
+            Some("auto"),
+            serde_json::json!({"trigger": "auto"}),
+        )
+        .await;
         compacted.map(drop)
     }
 
@@ -1182,6 +1204,93 @@ impl Thread<'_> {
         arguments: &str,
         usage: &mut TurnUsage,
     ) -> Answer {
+        let tool_input = serde_json::from_str::<serde_json::Value>(arguments)
+            .unwrap_or_else(|_| serde_json::json!(arguments));
+        let before = self
+            .hook(
+                "PreToolUse",
+                Some(name),
+                serde_json::json!({
+                    "tool_name": name, "tool_input": tool_input, "tool_use_id": call_id,
+                }),
+            )
+            .await;
+        let denied = match &before.permission {
+            Some((decision, reason)) if decision == "deny" => Some(reason.clone()),
+            _ => None,
+        };
+        if let Some(why) = before.block.clone().map(Some).or(denied) {
+            let why = why.unwrap_or_else(|| "no reason given".to_string());
+            return (
+                format!("Not run: a hook refused it: {why}. Do not retry it as it is."),
+                true,
+            );
+        }
+        let changed = before.updated_input.as_ref().map(|input| input.to_string());
+        let arguments = changed.as_deref().unwrap_or(arguments);
+        self.hook_permission = before.permission.clone();
+        let subagent = matches!(name, crate::explore::EXPLORE);
+        if subagent {
+            self.hook(
+                "SubagentStart",
+                Some(name),
+                serde_json::json!({"agent_type": name, "tool_use_id": call_id}),
+            )
+            .await;
+        }
+        let (mut text, is_error) = self
+            .answer_checked(llm, pending, call_id, name, arguments, usage)
+            .await;
+        self.hook_permission = None;
+        if subagent {
+            self.hook(
+                "SubagentStop",
+                Some(name),
+                serde_json::json!({"agent_type": name, "tool_use_id": call_id}),
+            )
+            .await;
+        }
+        let tool_input = serde_json::from_str::<serde_json::Value>(arguments)
+            .unwrap_or_else(|_| serde_json::json!(arguments));
+        let (event, input) = match is_error {
+            false => (
+                "PostToolUse",
+                serde_json::json!({
+                    "tool_name": name, "tool_input": tool_input, "tool_use_id": call_id,
+                    "tool_response": {"content": text},
+                }),
+            ),
+            true => (
+                "PostToolUseFailure",
+                serde_json::json!({
+                    "tool_name": name, "tool_input": tool_input, "tool_use_id": call_id,
+                    "error": text,
+                }),
+            ),
+        };
+        let after = self.hook(event, Some(name), input).await;
+        let mut notes = before.context;
+        notes.extend(after.context);
+        if let Some(why) = after.block {
+            notes.push(why);
+        }
+        if !notes.is_empty() {
+            text.push_str(&format!("\n\nHooks add:\n{}", notes.join("\n\n")));
+        }
+        (text, is_error)
+    }
+
+    /// [`Self::answer`] once the hooks before the call let it run.
+    #[allow(clippy::too_many_arguments)]
+    async fn answer_checked(
+        &mut self,
+        llm: &Llm,
+        pending: &Body,
+        call_id: &str,
+        name: &str,
+        arguments: &str,
+        usage: &mut TurnUsage,
+    ) -> Answer {
         let decision = match self.store.check(self.project, name, arguments, None).await {
             Ok(decision) => decision,
             Err(error) => {
@@ -1210,12 +1319,24 @@ impl Thread<'_> {
         if self.plan && plan_refuses(name, arguments) {
             return (crate::plan_mode::REFUSED.to_string(), true);
         }
-        if self.mode != Mode::Full || (self.plan && plan_asks(name, arguments)) {
-            if let Some(answer) = self
-                .approval(llm, pending, name, arguments, asked_rules, usage)
-                .await
-            {
-                return answer;
+        match self.hook_permission.take() {
+            // A PreToolUse hook allowed it: no approval is asked.
+            Some((decision, _)) if decision == "allow" => {}
+            Some((decision, reason)) if decision == "ask" => {
+                let reason = reason.unwrap_or_else(|| "a hook asks the person".to_string());
+                if let Some(answer) = self.ask_person(name, arguments, asked_rules, reason).await {
+                    return answer;
+                }
+            }
+            _ => {
+                if self.mode != Mode::Full || (self.plan && plan_asks(name, arguments)) {
+                    if let Some(answer) = self
+                        .approval(llm, pending, name, arguments, asked_rules, usage)
+                        .await
+                    {
+                        return answer;
+                    }
+                }
             }
         }
         if name == crate::plan_mode::EXIT_PLAN && self.plan {
@@ -1485,6 +1606,29 @@ impl Thread<'_> {
         rules: Vec<NoteId>,
         reason: String,
     ) -> Option<Answer> {
+        let tool_input = serde_json::from_str::<serde_json::Value>(arguments)
+            .unwrap_or_else(|_| serde_json::json!(arguments));
+        let decided = self
+            .hook(
+                "PermissionRequest",
+                Some(name),
+                serde_json::json!({"tool_name": name, "tool_input": tool_input}),
+            )
+            .await;
+        match decided.permission {
+            Some((decision, _)) if decision == "allow" => return None,
+            Some((decision, why)) if decision == "deny" => {
+                return Some((
+                    format!(
+                        "Denied by a hook: {}. It was not run. Do not retry it or work around \
+                         the refusal.",
+                        why.unwrap_or_else(|| "no reason given".to_string())
+                    ),
+                    true,
+                ))
+            }
+            _ => {}
+        }
         let titles = self.titles(&rules).await;
         let question = serde_json::json!({
             "mode": APPROVAL_MODE,
@@ -1550,6 +1694,20 @@ impl Thread<'_> {
     /// `id` added, answered with `turn/answer`, and waits for the answer for
     /// as long as the turn runs.
     async fn put_to_person(&mut self, mut question: serde_json::Value) -> Heard {
+        let kind = match question["mode"].as_str() {
+            Some(APPROVAL_MODE) => "permission_prompt",
+            _ => "elicitation_dialog",
+        };
+        let message = match question["tool"].as_str() {
+            Some(tool) => format!("inocode needs your permission to use {tool}"),
+            None => "inocode is waiting for your answer".to_string(),
+        };
+        self.hook(
+            "Notification",
+            Some(kind),
+            serde_json::json!({"message": message, "notification_type": kind}),
+        )
+        .await;
         let (id, answer) = self.store.wait_elicitation(self.session);
         question["id"] = serde_json::json!(id);
         self.store.describe_elicitation(id, question.clone());
@@ -1874,6 +2032,42 @@ impl Thread<'_> {
 
     fn goal_active(&self) -> bool {
         self.goal.as_ref().is_some_and(crate::goal::Goal::is_active)
+    }
+
+    /// Runs `event`'s hooks; shows what they say to the person, and keeps a
+    /// request to stop.
+    async fn hook(
+        &mut self,
+        event: &str,
+        target: Option<&str>,
+        input: serde_json::Value,
+    ) -> crate::hooks::Said {
+        if !self.hooks.has(event) {
+            return Default::default();
+        }
+        let said = self.hooks.run(event, target, input).await;
+        for text in &said.messages {
+            let _ = self
+                .events
+                .send(TurnEvent::Hook {
+                    event: event.to_string(),
+                    text: text.clone(),
+                })
+                .await;
+        }
+        if let Some(stop) = &said.stop {
+            self.hook_stop.get_or_insert_with(|| stop.clone());
+        }
+        said
+    }
+
+    /// What hooks said for the model, as a message of the harness.
+    fn hook_note(event: &str, context: &[String]) -> Option<Body> {
+        (!context.is_empty()).then(|| Body::User {
+            from: Speaker::Harness(HOOK_KIND.to_string()),
+            parts: vec![format!("A {event} hook adds:\n{}", context.join("\n\n"))],
+            images: Vec::new(),
+        })
     }
 
     /// Runs the person's command and words its end as the person's
@@ -2225,6 +2419,14 @@ impl Thread<'_> {
             request: self.request.clone(),
             events: self.events.clone(),
         };
+        for (call, _) in &runnable {
+            self.hook(
+                "SubagentStart",
+                Some(crate::company::DELEGATE),
+                serde_json::json!({"agent_type": crate::company::DELEGATE, "tool_use_id": call}),
+            )
+            .await;
+        }
         let plans: Vec<(bool, Vec<String>)> = runnable
             .iter()
             .map(|(_, arguments)| crate::company::plan(arguments))
@@ -2247,6 +2449,12 @@ impl Thread<'_> {
             }
         }
         for (call, delegated, took) in done {
+            self.hook(
+                "SubagentStop",
+                Some(crate::company::DELEGATE),
+                serde_json::json!({"agent_type": crate::company::DELEGATE, "tool_use_id": call}),
+            )
+            .await;
             usage.requests += delegated.usage.requests;
             usage.input += delegated.usage.input;
             usage.output += delegated.usage.output;
@@ -2630,6 +2838,9 @@ impl TaskStart {
 /// summary and the recent part kept. Returns the stored compaction
 /// message's position (`None` when nothing could be replaced) and what went
 /// wrong beside it.
+/// The harness's messages that carry what hooks said.
+const HOOK_KIND: &str = "hook";
+
 /// Who asks a side question, as the model is told.
 const ASIDE_KIND: &str = "aside";
 
@@ -2818,6 +3029,7 @@ async fn open<'a>(
         events.clone(),
     )
     .await;
+    let hooks = crate::hooks::Hooks::load(store, session.0, folder.as_deref());
     Ok(Thread {
         store,
         session,
@@ -2867,6 +3079,10 @@ async fn open<'a>(
         plan: false,
         reported: 0,
         context_used: None,
+        hooks,
+        hook_permission: None,
+        hook_stop: None,
+        stop_hook_active: false,
     })
 }
 
@@ -2920,8 +3136,19 @@ async fn steps(
     if thread.budget.is_none() {
         harness.push(crate::title::spec());
     }
+    let unused = std::mem::take(&mut thread.hooks.warnings);
+    thread.warnings.extend(unused);
     let mut opening = Vec::new();
+    let mut after_prompt = Vec::new();
     if thread.conversation.messages.is_empty() {
+        let started = thread
+            .hook(
+                "SessionStart",
+                Some("startup"),
+                serde_json::json!({"source": "startup"}),
+            )
+            .await;
+        opening.extend(Thread::hook_note("SessionStart", &started.context));
         match open_issues(thread.store, thread.project).await {
             Ok(Some(issues)) => opening.push(issues),
             Ok(None) => {}
@@ -2947,6 +3174,20 @@ async fn steps(
             Err(error) => return Ending::Failed(error),
         }
     }
+    let submitted = thread
+        .hook(
+            "UserPromptSubmit",
+            None,
+            serde_json::json!({"prompt": prompt.text}),
+        )
+        .await;
+    if let Some(why) = submitted.block {
+        return Ending::Failed(ErrorInfo::new(
+            "hook_blocked",
+            format!("a UserPromptSubmit hook blocked the prompt: {why}"),
+        ));
+    }
+    after_prompt.extend(Thread::hook_note("UserPromptSubmit", &submitted.context));
     thread.request = prompt.text.clone();
     thread.advised_from = thread.conversation.messages.len();
     let images = thread
@@ -2958,6 +3199,7 @@ async fn steps(
         Ok(message) => opening.push(message),
         Err(error) => return Ending::Failed(error),
     }
+    opening.extend(after_prompt);
     if let Err(error) = thread.record(opening).await {
         return Ending::Failed(error);
     }
@@ -3069,7 +3311,7 @@ async fn steps(
             bodies.push(person(text));
             steered = true;
         }
-        let step = match failure {
+        let mut step = match failure {
             Some(_) => None,
             None => Some(next_step(stop, steered, cuts)),
         };
@@ -3090,6 +3332,34 @@ async fn steps(
         if let (Some(call), Some(Step::Continue)) = (sign, &step) {
             if let Err(error) = thread.ask_colleague(call, cancel, usage).await {
                 return Ending::Failed(error);
+            }
+        }
+        if let Some(why) = thread.hook_stop.take() {
+            thread
+                .warnings
+                .push(format!("a hook stopped the turn: {why}"));
+            return Ending::Completed;
+        }
+        if matches!(step, Some(Step::Finish(Ending::Completed))) && !thread.goal_active() {
+            let active = thread.stop_hook_active;
+            let said = thread
+                .hook(
+                    "Stop",
+                    None,
+                    serde_json::json!({"stop_hook_active": active}),
+                )
+                .await;
+            if let Some(why) = said.block {
+                thread.stop_hook_active = true;
+                let note = Body::User {
+                    from: Speaker::Harness(HOOK_KIND.to_string()),
+                    parts: vec![format!("A Stop hook asks you to go on: {why}")],
+                    images: Vec::new(),
+                };
+                if let Err(error) = thread.record(vec![note]).await {
+                    return Ending::Failed(error);
+                }
+                step = Some(Step::Continue);
             }
         }
         if over_budget(thread.budget, usage, step.as_ref()) {
