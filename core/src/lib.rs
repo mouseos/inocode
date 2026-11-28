@@ -2343,6 +2343,47 @@ impl Core {
     /// `files/search`: up to `limit` files of the project folder of
     /// `thread` whose paths match `query` fuzzily, best first, leaving out
     /// what `.gitignore` leaves out.
+    /// Every installed plugin, on or off (docs/evidence/plugin-management.md).
+    pub async fn plugins(&self) -> Result<Value, ErrorInfo> {
+        let root = plugins::folder(self.store()?);
+        let plugins = tokio::task::spawn_blocking(move || plugins::listing(&root))
+            .await
+            .map_err(|error| ErrorInfo::new("internal", error.to_string()))?;
+        Ok(json!({ "plugins": plugins }))
+    }
+
+    pub async fn search_plugins(&self, query: &str) -> Result<Value, ErrorInfo> {
+        let found = plugins::search(self.store()?, &json!({ "query": query }).to_string())
+            .await
+            .map_err(|error| ErrorInfo::new("plugins", error))?;
+        Ok(serde_json::from_str(&found).unwrap_or_else(|_| json!({ "text": found })))
+    }
+
+    /// Installs `name@catalog` as the person asked, without the approval the
+    /// model's `plugin_install` waits for.
+    pub async fn install_plugin(&self, plugin: &str) -> Result<Value, ErrorInfo> {
+        let text = plugins::install(self.store()?, &json!({ "plugin": plugin }).to_string())
+            .await
+            .map_err(|error| ErrorInfo::new("plugins", error))?;
+        Ok(json!({ "text": text }))
+    }
+
+    pub async fn remove_plugin(&self, plugin: &str) -> Result<Value, ErrorInfo> {
+        plugins::remove(self.store()?, plugin)
+            .await
+            .map_err(|error| ErrorInfo::new("plugins", error))?;
+        Ok(json!({ "removed": plugin }))
+    }
+
+    /// Turns `name@catalog` on or off; `changed` is `false` when it already
+    /// was.
+    pub async fn enable_plugin(&self, plugin: &str, enabled: bool) -> Result<Value, ErrorInfo> {
+        let changed = plugins::set_enabled(self.store()?, plugin, enabled)
+            .await
+            .map_err(|error| ErrorInfo::new("plugins", error))?;
+        Ok(json!({ "plugin": plugin, "enabled": enabled, "changed": changed }))
+    }
+
     /// Answers a side question about `thread` with its model, sending the
     /// answer's text on `deltas` as it comes; nothing is kept in the thread
     /// (docs/evidence/side-question.md).

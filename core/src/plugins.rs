@@ -614,6 +614,111 @@ fn installed_at(root: &Path, catalog: &str, name: &str) -> PathBuf {
     root.join("installed").join(catalog).join(name)
 }
 
+/// The plugins turned off, as `name@catalog`; they stay installed
+/// (docs/evidence/plugin-management.md).
+const DISABLED_FILE: &str = "disabled.json";
+
+fn disabled(root: &Path) -> std::collections::BTreeSet<String> {
+    std::fs::read_to_string(root.join(DISABLED_FILE))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn write_disabled(root: &Path, ids: &std::collections::BTreeSet<String>) -> Result<(), String> {
+    std::fs::create_dir_all(root)
+        .map_err(|error| format!("cannot make {}: {error}", root.display()))?;
+    let path = root.join(DISABLED_FILE);
+    let partial = root.join(format!(".{DISABLED_FILE}.partial"));
+    let text = serde_json::to_string_pretty(ids).map_err(|error| error.to_string())?;
+    std::fs::write(&partial, text)
+        .and_then(|()| std::fs::rename(&partial, &path))
+        .map_err(|error| format!("cannot write {}: {error}", path.display()))
+}
+
+/// `name@catalog`, split, for an installed plugin.
+fn installed_id<'a>(root: &Path, plugin: &'a str) -> Result<(&'a str, &'a str), String> {
+    let (name, catalog) = plugin
+        .rsplit_once('@')
+        .filter(|(name, catalog)| plain(name) && plain(catalog))
+        .ok_or("give the plugin as name@catalog")?;
+    if !installed_at(root, catalog, name).is_dir() {
+        return Err(format!("{plugin} is not installed"));
+    }
+    Ok((name, catalog))
+}
+
+/// Deletes an installed plugin's files; it is no longer listed or turned off.
+pub(crate) async fn remove(store: &Store, plugin: &str) -> Result<(), String> {
+    let root = folder(store);
+    let (name, catalog) = installed_id(&root, plugin)?;
+    let target = installed_at(&root, catalog, name);
+    let id = plugin.to_string();
+    tokio::task::spawn_blocking(move || {
+        std::fs::remove_dir_all(&target)
+            .map_err(|error| format!("cannot delete {}: {error}", target.display()))?;
+        let mut off = disabled(&root);
+        if off.remove(&id) {
+            write_disabled(&root, &off)?;
+        }
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    store.forget_mcp().await;
+    Ok(())
+}
+
+/// Turns an installed plugin on or off; `false` when it already was.
+pub(crate) async fn set_enabled(
+    store: &Store,
+    plugin: &str,
+    enabled: bool,
+) -> Result<bool, String> {
+    let root = folder(store);
+    installed_id(&root, plugin)?;
+    let id = plugin.to_string();
+    let changed = tokio::task::spawn_blocking(move || {
+        let mut off = disabled(&root);
+        let changed = match enabled {
+            true => off.remove(&id),
+            false => off.insert(id),
+        };
+        if changed {
+            write_disabled(&root, &off)?;
+        }
+        Ok::<bool, String>(changed)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    if changed {
+        store.forget_mcp().await;
+    }
+    Ok(changed)
+}
+
+/// Every installed plugin, on or off, as the screens list them.
+pub(crate) fn listing(root: &Path) -> Vec<Value> {
+    let off = disabled(root);
+    Installed::every(root)
+        .iter()
+        .map(|plugin| {
+            json!({
+                "id": plugin.id(),
+                "name": plugin.name(),
+                "catalog": plugin.catalog,
+                "enabled": !off.contains(&plugin.id()),
+                "path": plugin.root(),
+                "skills": plugin.skills().iter().map(|skill| &skill.name).collect::<Vec<_>>(),
+                "servers": plugin.servers().iter().map(|(name, _)| name).collect::<Vec<_>>(),
+                "commands": plugin.commands().iter()
+                    .map(|(name, _)| format!("/{}:{name}", plugin.name()))
+                    .collect::<Vec<_>>(),
+            })
+        })
+        .collect()
+}
+
 /// A plugin's manifest: Codex's, else Claude's; empty when it has none.
 fn manifest(folder: &Path) -> Value {
     [".codex-plugin/plugin.json", ".claude-plugin/plugin.json"]
@@ -661,8 +766,22 @@ impl Installed {
         }
     }
 
-    /// The installed plugins under `root`.
+    /// The installed plugins under `root` that are turned on.
     pub(crate) fn all(root: &Path) -> Vec<Self> {
+        let off = disabled(root);
+        Self::every(root)
+            .into_iter()
+            .filter(|plugin| !off.contains(&plugin.id()))
+            .collect()
+    }
+
+    /// `name@catalog`.
+    pub(crate) fn id(&self) -> String {
+        format!("{}@{}", self.name, self.catalog)
+    }
+
+    /// The installed plugins under `root`, on or off.
+    fn every(root: &Path) -> Vec<Self> {
         let mut plugins = Vec::new();
         let Ok(catalogs) = std::fs::read_dir(root.join("installed")) else {
             return plugins;

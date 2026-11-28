@@ -663,6 +663,12 @@ async fn dispatch(
         | "thread/jobs/read"
         | "thread/jobs/write"
         | "thread/jobs/stop"
+        | "plugins/list"
+        | "plugins/search"
+        | "plugins/install"
+        | "plugins/remove"
+        | "plugins/enable"
+        | "plugins/disable"
         | "files/search" => {
             // Store work runs off the read loop, like discovery.
             tokio::spawn(thread_request(
@@ -1026,6 +1032,7 @@ async fn thread_request(
         "files/search" => search_files(&request, &core).await,
         method if method.starts_with("thread/queue/") => queue_request(&request, &core).await,
         method if method.starts_with("thread/jobs/") => job_request(&request, &core).await,
+        method if method.starts_with("plugins/") => plugin_request(&request, &core).await,
         "goal/read" => match request.thread() {
             Ok(thread) => core.goal(thread).await.map(|goal| json!({ "goal": goal })),
             Err(error) => Err(error),
@@ -1048,6 +1055,30 @@ async fn thread_request(
 }
 
 /// `thread/queue/*`: the messages lined up to be sent as the next turns.
+/// `plugins/*` (docs/evidence/plugin-management.md).
+async fn plugin_request(request: &Request, core: &Arc<Core>) -> Result<Value, ErrorInfo> {
+    let text = |name: &str| {
+        request
+            .params
+            .as_ref()
+            .and_then(|params| params.get(name))
+            .and_then(Value::as_str)
+            .filter(|text| !text.trim().is_empty())
+            .ok_or_else(|| {
+                ErrorInfo::new("invalid_params", format!("requires a \"{name}\" string"))
+            })
+    };
+    match request.method.as_str() {
+        "plugins/list" => core.plugins().await,
+        "plugins/search" => core.search_plugins(text("query")?).await,
+        "plugins/install" => core.install_plugin(text("plugin")?).await,
+        "plugins/remove" => core.remove_plugin(text("plugin")?).await,
+        "plugins/enable" => core.enable_plugin(text("plugin")?, true).await,
+        "plugins/disable" => core.enable_plugin(text("plugin")?, false).await,
+        _ => Err(ErrorInfo::new("method_not_found", "unknown plugins method")),
+    }
+}
+
 /// The bytes of a job's log one `thread/jobs/read` gives at most.
 const JOB_READ_DEFAULT: u64 = 64 * 1024;
 const JOB_READ_MAX: u64 = 1024 * 1024;

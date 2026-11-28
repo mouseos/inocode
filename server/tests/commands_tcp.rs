@@ -873,3 +873,86 @@ async fn title_changes_reach_a_subscriber_while_no_turn_runs() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn an_installed_plugin_is_turned_off_on_and_deleted_from_a_screen() {
+    with_timeout(async {
+        let database = database();
+        let plugin = database
+            .with_file_name("plugins")
+            .join("installed")
+            .join("test-catalog")
+            .join("notes");
+        std::fs::create_dir_all(plugin.join("skills").join("write")).expect("plugin");
+        std::fs::write(
+            plugin.join("skills").join("write").join("SKILL.md"),
+            "---\nname: write-note\ndescription: \"Writes a note\"\n---\nWrite it.",
+        )
+        .expect("skill");
+        let mock = scripted(Vec::new()).await;
+        let (addr, _stop, _handle) = start_server(core_for(&mock, &database).await).await;
+        let mut client = connect(addr).await;
+        let thread = thread(&mut client, None).await;
+        let request = |id: u64, method: &str, params: Value| {
+            json!({"id": id, "method": method, "params": params})
+        };
+        let skills = |listed: &Value| -> Vec<String> {
+            listed["result"]["skills"]
+                .as_array()
+                .expect("skills")
+                .iter()
+                .map(|skill| skill["name"].as_str().expect("name").to_string())
+                .collect()
+        };
+
+        let listed = call(&mut client, 2, request(2, "plugins/list", json!({}))).await;
+        let plugins = &listed["result"]["plugins"];
+        assert_eq!(plugins[0]["id"], "notes@test-catalog", "{listed}");
+        assert_eq!(plugins[0]["enabled"], true);
+        assert_eq!(skills(&command(&mut client, 3, thread, "/skills").await).len(), 1);
+
+        let off = call(
+            &mut client,
+            4,
+            request(4, "plugins/disable", json!({"plugin": "notes@test-catalog"})),
+        )
+        .await;
+        assert_eq!(off["result"]["changed"], true, "{off}");
+        let again = call(
+            &mut client,
+            5,
+            request(5, "plugins/disable", json!({"plugin": "notes@test-catalog"})),
+        )
+        .await;
+        assert_eq!(again["result"]["changed"], false, "{again}");
+        let listed = call(&mut client, 6, request(6, "plugins/list", json!({}))).await;
+        assert_eq!(listed["result"]["plugins"][0]["enabled"], false, "{listed}");
+        assert!(skills(&command(&mut client, 7, thread, "/skills").await).is_empty());
+        assert!(plugin.is_dir(), "turning it off keeps its files");
+
+        let on = command(&mut client, 8, thread, "/plugins enable notes@test-catalog").await;
+        assert_eq!(on["result"]["changed"], true, "{on}");
+        assert_eq!(skills(&command(&mut client, 9, thread, "/skills").await).len(), 1);
+
+        let removed = call(
+            &mut client,
+            10,
+            request(10, "plugins/remove", json!({"plugin": "notes@test-catalog"})),
+        )
+        .await;
+        assert_eq!(removed["result"]["removed"], "notes@test-catalog", "{removed}");
+        assert!(!plugin.exists());
+        let listed = call(&mut client, 11, request(11, "plugins/list", json!({}))).await;
+        assert_eq!(listed["result"]["plugins"], json!([]), "{listed}");
+        let missing = call(
+            &mut client,
+            12,
+            request(12, "plugins/remove", json!({"plugin": "notes@test-catalog"})),
+        )
+        .await;
+        assert_eq!(missing["error"]["code"], "plugins", "{missing}");
+        let bad = call(&mut client, 13, request(13, "plugins/enable", json!({}))).await;
+        assert_eq!(bad["error"]["code"], "invalid_params", "{bad}");
+    })
+    .await;
+}

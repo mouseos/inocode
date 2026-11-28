@@ -785,6 +785,24 @@ pub const BUILTINS: &[Builtin] = &[
                 &[arg("plugin", Text)],
                 Now,
             ),
+            sub(
+                "remove",
+                "Delete an installed plugin, as name@catalog.",
+                &[arg("plugin", Text)],
+                Now,
+            ),
+            sub(
+                "disable",
+                "Turn an installed plugin off without deleting it, as name@catalog.",
+                &[arg("plugin", Text)],
+                Now,
+            ),
+            sub(
+                "enable",
+                "Turn an installed plugin back on, as name@catalog.",
+                &[arg("plugin", Text)],
+                Now,
+            ),
         ],
         Some("list"),
     ),
@@ -2372,42 +2390,16 @@ impl Core {
                 .map_err(|error| ErrorInfo::new("transcribe", error))?;
                 json!({ "text": text })
             }
-            ("plugins", Some("list")) => {
-                let root = crate::plugins::folder(store);
-                let plugins = tokio::task::spawn_blocking(move || {
-                    crate::plugins::Installed::all(&root)
-                        .iter()
-                        .map(|plugin| {
-                            json!({
-                                "name": plugin.name(),
-                                "path": plugin.root(),
-                                "skills": plugin.skills().iter().map(|skill| &skill.name).collect::<Vec<_>>(),
-                                "servers": plugin.servers().iter().map(|(name, _)| name).collect::<Vec<_>>(),
-                                "commands": plugin.commands().iter()
-                                    .map(|(name, _)| format!("/{}:{name}", plugin.name()))
-                                    .collect::<Vec<_>>(),
-                            })
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .await
-                .map_err(|error| ErrorInfo::new("internal", error.to_string()))?;
-                json!({ "plugins": plugins })
-            }
+            ("plugins", Some("list")) => self.plugins().await?,
             ("plugins", Some("search")) => {
-                let found =
-                    crate::plugins::search(store, &json!({ "query": value(0) }).to_string())
-                        .await
-                        .map_err(|error| ErrorInfo::new("plugins", error))?;
-                serde_json::from_str(&found).unwrap_or_else(|_| json!({ "text": found }))
+                self.search_plugins(value(0).unwrap_or_default()).await?
             }
-            ("plugins", _) => {
-                let text =
-                    crate::plugins::install(store, &json!({ "plugin": value(0) }).to_string())
-                        .await
-                        .map_err(|error| ErrorInfo::new("plugins", error))?;
-                json!({ "text": text })
+            ("plugins", Some("remove")) => self.remove_plugin(value(0).unwrap_or_default()).await?,
+            ("plugins", Some(sub @ ("enable" | "disable"))) => {
+                self.enable_plugin(value(0).unwrap_or_default(), sub == "enable")
+                    .await?
             }
+            ("plugins", _) => self.install_plugin(value(0).unwrap_or_default()).await?,
             ("skills", _) => {
                 let skills: Vec<Value> = registry
                     .customs
