@@ -19,7 +19,7 @@ const NOTHING: &str = if cfg!(windows) { "nul" } else { "/dev/null" };
 /// (`core.fsmonitor`) and the hooks are turned off, the system and global
 /// settings are not read, and submodules, whose own settings are not
 /// checked, are not looked into (docs/evidence/git-context.md).
-fn git(folder: &Path, arguments: &[&str]) -> tokio::process::Command {
+pub(crate) fn git(folder: &Path, arguments: &[&str]) -> tokio::process::Command {
     let mut command = tokio::process::Command::new("git");
     command
         .args([

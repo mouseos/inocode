@@ -1049,3 +1049,121 @@ async fn a_screen_reads_writes_lists_copies_and_deletes_files_by_absolute_path()
     })
     .await;
 }
+
+fn git(folder: &std::path::Path, arguments: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@example.invalid",
+        ])
+        .args(arguments)
+        .current_dir(folder)
+        .output()
+        .expect("git");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[tokio::test]
+async fn a_thread_moves_to_another_folder_and_to_its_own_worktree_removed_with_it() {
+    with_timeout(async {
+        let database = database();
+        let repo = database.with_file_name("repo");
+        std::fs::create_dir_all(&repo).expect("repo");
+        git(&repo, &["init", "-q"]);
+        std::fs::write(repo.join("kept.txt"), "kept\n").expect("file");
+        git(&repo, &["add", "kept.txt"]);
+        git(&repo, &["commit", "-q", "-m", "first"]);
+        let other = database.with_file_name("other");
+        std::fs::create_dir_all(&other).expect("other");
+        let mock = scripted(Vec::new()).await;
+        let (addr, _stop, _handle) = start_server(core_for(&mock, &database).await).await;
+        let mut client = connect(addr).await;
+        let first = thread(&mut client, Some(&repo)).await;
+        let request = |id: u64, method: &str, params: Value| {
+            json!({"id": id, "method": method, "params": params})
+        };
+
+        let made = call(
+            &mut client,
+            2,
+            request(2, "thread/worktree", json!({"thread_id": first})),
+        )
+        .await;
+        let branch = format!("inocode/thread-{first}");
+        assert_eq!(made["result"]["branch"], branch, "{made}");
+        let place = std::path::PathBuf::from(made["result"]["project"].as_str().unwrap());
+        assert!(place.join("kept.txt").is_file(), "{made}");
+        assert!(git(&repo, &["branch", "--list", &branch]).contains(&branch));
+        // The thread works in its worktree from now on.
+        let found = call(
+            &mut client,
+            3,
+            request(3, "files/search", json!({"thread_id": first, "query": "kept"})),
+        )
+        .await;
+        assert_eq!(found["result"]["files"][0]["path"], "kept.txt", "{found}");
+        let again = call(
+            &mut client,
+            4,
+            request(4, "thread/worktree", json!({"thread_id": first})),
+        )
+        .await;
+        assert_eq!(again["error"]["code"], "already_exists", "{again}");
+
+        let moved = call(
+            &mut client,
+            5,
+            request(5, "thread/folder", json!({"thread_id": first, "project": other.to_string_lossy()})),
+        )
+        .await;
+        assert_eq!(moved["result"]["project"], other.to_string_lossy().as_ref(), "{moved}");
+        let relative = call(
+            &mut client,
+            6,
+            request(6, "thread/folder", json!({"thread_id": first, "project": "other"})),
+        )
+        .await;
+        assert_eq!(relative["error"]["code"], "invalid_params", "{relative}");
+        let back = command(
+            &mut client,
+            7,
+            first,
+            &format!("/cd {}", place.to_string_lossy()),
+        )
+        .await;
+        assert_eq!(back["result"]["project"], place.to_string_lossy().as_ref(), "{back}");
+
+        let deleted = call(
+            &mut client,
+            8,
+            request(8, "thread/delete", json!({"thread_id": first})),
+        )
+        .await;
+        assert_eq!(deleted["result"]["worktree"]["removed"], true, "{deleted}");
+        assert!(!place.exists());
+        assert!(git(&repo, &["branch", "--list", &branch]).contains(&branch), "the branch stays");
+
+        // A worktree with work not committed stays.
+        let second = thread(&mut client, Some(&repo)).await;
+        let made = command(&mut client, 9, second, "/worktree feature-x").await;
+        assert_eq!(made["result"]["branch"], "feature-x", "{made}");
+        let place = std::path::PathBuf::from(made["result"]["project"].as_str().unwrap());
+        std::fs::write(place.join("new.txt"), "work\n").expect("work");
+        let deleted = call(
+            &mut client,
+            10,
+            request(10, "thread/delete", json!({"thread_id": second})),
+        )
+        .await;
+        assert_eq!(deleted["result"]["worktree"]["removed"], false, "{deleted}");
+        assert!(place.join("new.txt").is_file());
+    })
+    .await;
+}

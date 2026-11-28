@@ -53,6 +53,7 @@ pub mod sandbox;
 pub mod secrets;
 pub mod settings;
 mod shell;
+mod worktree;
 pub use shell::{complete_utf8, JobInfo, JobLog, JobWatch};
 mod snapshot;
 mod sse;
@@ -2391,6 +2392,80 @@ impl Core {
     /// `files/search`: up to `limit` files of the project folder of
     /// `thread` whose paths match `query` fuzzily, best first, leaving out
     /// what `.gitignore` leaves out.
+    /// Moves `thread` to the project of `folder`, an existing folder named by
+    /// its absolute path; its next turn works there. Refused while a turn
+    /// runs (docs/evidence/thread-folders.md).
+    pub async fn move_thread(&self, thread: SessionId, folder: &str) -> Result<Value, ErrorInfo> {
+        let store = self.store()?;
+        if !store.session_exists(thread).await? {
+            return Err(unknown_thread());
+        }
+        self.refuse_while_running(thread)?;
+        let path = std::path::Path::new(folder);
+        if !path.is_absolute() || !path.is_dir() {
+            return Err(ErrorInfo::new(
+                "invalid_params",
+                format!("{folder} is not an existing folder named by its absolute path"),
+            ));
+        }
+        let project = store.project(folder).await?;
+        store.set_session_project(thread, project).await?;
+        Ok(json!({ "thread_id": thread.0, "project": folder }))
+    }
+
+    fn refuse_while_running(&self, thread: SessionId) -> Result<(), ErrorInfo> {
+        if self.turn_running(thread) {
+            return Err(ErrorInfo::new(
+                "turn_running",
+                "a turn is running in this thread; change its folder when the turn ends",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Gives `thread` a git worktree of its project's repository, on a new
+    /// branch, and moves the thread there. The worktree is removed with the
+    /// thread when it has nothing uncommitted (docs/evidence/thread-folders.md).
+    pub async fn add_worktree(
+        &self,
+        thread: SessionId,
+        branch: Option<&str>,
+        base: Option<&str>,
+    ) -> Result<Value, ErrorInfo> {
+        let store = self.store()?;
+        if !store.session_exists(thread).await? {
+            return Err(unknown_thread());
+        }
+        self.refuse_while_running(thread)?;
+        let repo = store
+            .session_project(thread)
+            .await?
+            .map(|(_, key)| std::path::PathBuf::from(key))
+            .filter(|folder| folder.is_dir())
+            .ok_or_else(|| {
+                ErrorInfo::new(
+                    "invalid_params",
+                    "this thread has no project folder to make a worktree of",
+                )
+            })?;
+        let target = worktree::place(&store.files_folder(), thread.0);
+        if target.exists() {
+            return Err(ErrorInfo::new(
+                "already_exists",
+                format!("this thread already has a worktree in {}", target.display()),
+            ));
+        }
+        let branch = branch.map_or_else(|| worktree::default_branch(thread.0), str::to_string);
+        worktree::add(&repo, &target, &branch, base).await?;
+        let folder = target.to_string_lossy().into_owned();
+        let project = store.project(&folder).await?;
+        store.set_session_project(thread, project).await?;
+        Ok(json!({
+            "thread_id": thread.0, "project": folder, "branch": branch,
+            "from": repo.to_string_lossy(),
+        }))
+    }
+
     /// Every installed plugin, on or off (docs/evidence/plugin-management.md).
     pub async fn plugins(&self) -> Result<Value, ErrorInfo> {
         let root = plugins::folder(self.store()?);

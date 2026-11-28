@@ -659,6 +659,8 @@ async fn dispatch(
         | "thread/queue/delete"
         | "thread/queue/reorder"
         | "thread/queue/start"
+        | "thread/folder"
+        | "thread/worktree"
         | "thread/jobs/list"
         | "thread/jobs/read"
         | "thread/jobs/write"
@@ -1039,6 +1041,7 @@ async fn thread_request(
         "files/search" => search_files(&request, &core).await,
         method if method.starts_with("thread/queue/") => queue_request(&request, &core).await,
         method if method.starts_with("thread/jobs/") => job_request(&request, &core).await,
+        "thread/folder" | "thread/worktree" => folder_request(&request, &core).await,
         method if method.starts_with("plugins/") => plugin_request(&request, &core).await,
         method if method.starts_with("fs/") => {
             let request = request.clone();
@@ -1145,6 +1148,43 @@ fn file_request(request: &Request) -> Result<Value, ErrorInfo> {
             flag("overwrite", false)?,
         ),
         _ => Err(ErrorInfo::new("method_not_found", "unknown fs method")),
+    }
+}
+
+/// `thread/folder {thread_id, project}` and `thread/worktree {thread_id,
+/// branch?, base?}` (docs/evidence/thread-folders.md).
+async fn folder_request(request: &Request, core: &Arc<Core>) -> Result<Value, ErrorInfo> {
+    let thread = request.thread()?;
+    let text = |name: &str| -> Result<Option<&str>, ErrorInfo> {
+        match request
+            .params
+            .as_ref()
+            .and_then(|params| params.get(name))
+            .filter(|value| !value.is_null())
+        {
+            None => Ok(None),
+            Some(value) => value
+                .as_str()
+                .filter(|text| !text.trim().is_empty())
+                .map(Some)
+                .ok_or_else(|| {
+                    ErrorInfo::new(
+                        "invalid_params",
+                        format!("\"{name}\" must be a non-empty string"),
+                    )
+                }),
+        }
+    };
+    match request.method.as_str() {
+        "thread/folder" => {
+            let folder = text("project")?
+                .ok_or_else(|| ErrorInfo::new("invalid_params", "requires a \"project\" folder"))?;
+            core.move_thread(thread, folder).await
+        }
+        _ => {
+            core.add_worktree(thread, text("branch")?, text("base")?)
+                .await
+        }
     }
 }
 

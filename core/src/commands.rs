@@ -211,6 +211,22 @@ pub const BUILTINS: &[Builtin] = &[
         None,
     ),
     builtin(
+        "cd",
+        "Move this thread to another folder, named by its absolute path; the next turn works there.",
+        &[form("Move the thread.", &[arg("folder", Text)], AfterTurn)],
+        None,
+    ),
+    builtin(
+        "worktree",
+        "Give this thread a git worktree of its project on a new branch, and work there.",
+        &[form(
+            "Make the worktree.",
+            &[optional("branch", Text)],
+            AfterTurn,
+        )],
+        None,
+    ),
+    builtin(
         "fork",
         "Copy this thread into a new one.",
         &[form(
@@ -1790,13 +1806,26 @@ impl Core {
                 "a turn is running in this thread; delete it when the turn ends",
             ));
         }
+        let folder = store.session_project(thread).await?.map(|(_, key)| key);
         store.delete_session(thread).await?;
         crate::shell::stop_all(&store.files_folder().join("logs"), thread);
         let kept = store.remove_thread_files(thread).await;
+        // The thread's own worktree goes with it, unless work in it would be
+        // lost (docs/evidence/thread-folders.md).
+        let own = crate::worktree::place(&store.files_folder(), thread.0);
+        let worktree = match folder {
+            Some(folder) if std::path::Path::new(&folder) == own && own.is_dir() => {
+                match crate::worktree::remove_if_clean(&own).await {
+                    Ok(()) => json!({ "path": folder, "removed": true }),
+                    Err(why) => json!({ "path": folder, "removed": false, "kept_because": why }),
+                }
+            }
+            _ => Value::Null,
+        };
         let _ = self
             .activity
             .send((thread, Activity::Changed(ThreadChange::Deleted)));
-        Ok(json!({ "deleted": thread.0, "files_not_removed": kept }))
+        Ok(json!({ "deleted": thread.0, "files_not_removed": kept, "worktree": worktree }))
     }
 
     /// `thread/archive` and `thread/unarchive`. An archived thread is left
@@ -2069,6 +2098,11 @@ impl Core {
                     json!({ "thread": summary_view(&summary) })
                 }
             },
+            ("cd", _) => {
+                self.move_thread(thread, value(0).unwrap_or_default())
+                    .await?
+            }
+            ("worktree", _) => self.add_worktree(thread, value(0), None).await?,
             ("rename", _) => {
                 let title = value(0).unwrap_or_default();
                 store.rename_session(thread, title).await?;

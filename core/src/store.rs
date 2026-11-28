@@ -1093,6 +1093,23 @@ impl Store {
     }
 
     /// The project of `session` and its key, when it has one.
+    /// Moves `session` to `project`.
+    pub async fn set_session_project(
+        &self,
+        session: SessionId,
+        project: ProjectId,
+    ) -> Result<(), ErrorInfo> {
+        self.write(move |db| {
+            db.execute(
+                "UPDATE sessions SET project_id = ?1 WHERE id = ?2",
+                params![project.0, session.0],
+            )
+            .map(drop)
+            .map_err(store_error)
+        })
+        .await
+    }
+
     pub async fn session_project(
         &self,
         session: SessionId,
